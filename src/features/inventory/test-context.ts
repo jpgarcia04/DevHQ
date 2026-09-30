@@ -1,0 +1,43 @@
+import { vi } from 'vitest'
+import type { InventoryContextValue } from './inventory-context'
+
+// Tests judge validity against a fixed clock instead of the machine's.
+export const testNow = Date.parse('2026-09-30T12:00:00Z')
+export const minutesFromNow = (minutes: number) =>
+  new Date(testNow + minutes * 60_000).toISOString()
+
+export function inventoryContext(
+  overrides: Partial<InventoryContextValue> = {},
+): InventoryContextValue {
+  return {
+    mode: 'real',
+    nativeAvailable: true,
+    setMode: vi.fn(),
+    snapshot: {
+      applications: [],
+      resources: [
+        {
+          id: 'host-1',
+          name: 'Host One',
+          kind: 'server',
+          description: '',
+          operatingSystem: 'Linux',
+        },
+      ],
+      observations: [],
+      incidents: [],
+      events: [],
+    },
+    loadState: 'ready',
+    error: null,
+    now: testNow,
+    reload: vi.fn(async () => true),
+    saveResource: vi.fn(async () => {}),
+    saveApplication: vi.fn(async () => {}),
+    recordObservation: vi.fn(async () => {}),
+    openIncident: vi.fn(async () => {}),
+    updateIncidentStatus: vi.fn(async () => {}),
+    recordEvent: vi.fn(async () => {}),
+    ...overrides,
+  }
+}

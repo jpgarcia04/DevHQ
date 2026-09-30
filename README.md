@@ -9,7 +9,8 @@ recordar eventos, relacionar infraestructura y verificar resultados de automatiz
 > completo, sí puede pertenecer.
 
 DevHQ no reemplaza VS Code, una terminal, GitHub Desktop, Docker Desktop, Codex ni
-Claude Code. Ya conserva inventario local, pero **aún no observa ni opera sistemas reales**.
+Claude Code. Ya conserva inventario local y la evidencia que registras a mano, pero **aún
+no observa ni opera sistemas reales**.
 
 ## Qué incluye
 
@@ -19,6 +20,8 @@ Claude Code. Ya conserva inventario local, pero **aún no observa ni opera siste
 - Infrastructure compartida con enlaces a las aplicaciones que dependen de ella,
   incidencias del recurso y enlaces desde los componentes de cada aplicación.
 - Incidents con severidad, estado, contexto desplegable y filtros; Activity global.
+- En Mi inventario: observaciones, incidencias y eventos manuales persistentes, con
+  procedencia, hora y vigencia visibles.
 - Previews de Automations (Trigger → Condition → Action → Verification), Security
   y Settings informativos.
 
@@ -41,7 +44,36 @@ aplicación se reemplaza su lista de componentes de forma atómica: quitar un
 componente también quita su vínculo. La eliminación de aplicaciones o recursos
 completos queda fuera de este incremento. Un recurso inexistente se rechaza antes
 de escribir la aplicación. Un fallo de SQLite/IPC muestra un error y permite reintentar.
-No se conservan observaciones, incidencias ni actividad reales todavía.
+
+### Observaciones, incidencias y eventos
+
+Todo registro real apunta por ID a **una** aplicación o **un** recurso y lleva
+`source = manual`: DevHQ guarda lo que tú informas y nunca lo presenta como un check.
+
+- **Observación**: resultado (healthy/degraded/unhealthy), qué se vio, momento observado,
+  momento registrado y vigencia (1 h–30 días). Es inmutable; se corrige registrando otra.
+- **Incidencia**: título, severidad y estado open → investigating → resolved (reabrible).
+  Cada cambio guarda una nota opcional en su historial.
+- **Evento**: la línea temporal. Registrar una observación o cambiar una incidencia escribe
+  su evento en la misma transacción; despliegues, backups, mantenimiento y notas se
+  registran a mano. Si se anota mucho después de ocurrir, se muestran ambos momentos.
+
+Estados de evidencia de un sujeto, a partir de su observación **más reciente** (sustituye
+a las anteriores aunque sigan vigentes):
+
+| Estado                                   | Cuándo                           | Presentación                       |
+| ---------------------------------------- | -------------------------------- | ---------------------------------- |
+| Not observed                             | Nunca hubo observación           | Círculo discontinuo; no es salud   |
+| Observation expired                      | La más reciente pasó su vigencia | Reloj; muestra el último resultado |
+| Healthy / Attention required / Unhealthy | La más reciente sigue vigente    | Punto de color                     |
+
+**Needs attention** ordena: incidencias críticas, fallos observados, avisos, resultados
+degradados, problemas caducados, incidencias informativas y resultados sanos caducados.
+Lo nunca observado no entra en esa lista, pero Overview lo cuenta como hueco de cobertura:
+una lista vacía solo tranquiliza si todo tiene evidencia vigente. Una incidencia o evento
+de un recurso aparece también en las aplicaciones que lo usan. Lifecycle sigue siendo
+independiente de health. La vigencia se reevalúa al cargar y cada 30 s con la ventana
+abierta; ese reloj no lee datos ni ejecuta comprobaciones.
 
 ## Ejecutar
 
@@ -56,7 +88,7 @@ npm run dev               # preview web: http://127.0.0.1:1420
 npm run check             # ESLint, tests, TypeScript, Vite y cargo check
 cargo test --manifest-path src-tauri/Cargo.toml --lib # persistencia y migraciones
 cargo fmt --manifest-path src-tauri/Cargo.toml --check
-cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 npm run tauri build       # ejecutable e instalador NSIS para Windows
 ```
 
@@ -85,21 +117,26 @@ de Tauri. No hay servidor HTTP de aplicación, store global ni capa de repositor
 artificial. Los selectores de dominio no dependen de React ni de los mocks. Las vistas
 consumen explícitamente el escenario durante esta etapa.
 
-Rust expone solo `list_inventory`, `save_application` y `save_resource`. Abre
-`inventory.sqlite3` en el directorio de datos de la aplicación que proporciona
-Tauri; las migraciones transaccionales v1→v2 usan `PRAGMA user_version` y las
-relaciones aplican claves foráneas. La UI invoca esos casos de uso con contratos
-tipados. Se conserva la barra nativa de ventana. La CSP limita recursos y las
+Rust expone `list_inventory` (una lectura consistente de inventario y registros),
+`save_application`, `save_resource`, `record_observation`, `open_incident`,
+`update_incident_status` y `record_event`. Abre `inventory.sqlite3` en el directorio de
+datos de la aplicación que proporciona Tauri; las migraciones transaccionales v1→v3 usan
+`PRAGMA user_version` y una versión más nueva se rechaza en vez de adivinarse. Los
+registros usan dos columnas con clave foránea (`application_id`/`resource_id`) y un CHECK
+que exige exactamente una; las referencias de historial son `ON DELETE RESTRICT`, así que
+nada puede borrar un sujeto y dejar evidencia huérfana (no existe aún ningún caso de uso de
+borrado). Las referencias inexistentes se rechazan antes de escribir y dentro de la misma
+transacción. Los tiempos se guardan en milisegundos UTC y viajan como RFC 3339; no se
+aceptan momentos futuros. La UI invoca esos casos de uso con contratos tipados. Se conserva la barra nativa de ventana. La CSP limita recursos y las
 capabilities no conceden permisos adicionales. No se implementan autenticación,
 cuentas, cloud, sync, telemetría, scanners, automation engine, Runner ni background service.
 
 ## Evolución prevista
 
-1. Observaciones, eventos e incidencias persistentes, distinguiendo salud desconocida,
-   observaciones caducadas y fallos observados.
-2. Una primera integración acotada y verificable. Solo después, añadir supervisión
-   cancelable, automatizaciones con resultado e historial, y seguridad con almacén
-   nativo de credenciales y evidencias contextualizadas.
+1. Una primera integración acotada y verificable que produzca observaciones con su propio
+   `source`, sin cambiar la semántica de vigencia.
+2. Solo después, supervisión cancelable, automatizaciones con resultado e historial, y
+   seguridad con almacén nativo de credenciales y evidencias contextualizadas.
 
 Estos son límites conceptuales, **no módulos vacíos ni integraciones implementadas**.
 La dirección es UI → IPC/casos de uso → dominio. SQLite conserva contexto; las credenciales no deben
@@ -107,4 +144,6 @@ vivir en componentes React, localStorage ni texto plano en SQLite.
 
 Las pruebas cubren navegación, tabs/teclado, filtros, rutas desconocidas, relaciones
 compartidas, cronología de la demo, salud desconocida, persistencia tras reapertura,
-rechazo de referencias inválidas y actualización de esquema.
+rechazo de referencias inválidas sin escrituras parciales, restricciones del esquema,
+migraciones v1/v2→v3, vigencia y sustitución de observaciones, orden de atención y
+errores de carga visibles y recuperables en la UI.

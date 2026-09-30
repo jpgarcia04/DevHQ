@@ -1,3 +1,4 @@
+use crate::records;
 use rusqlite::{params, Connection, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -12,13 +13,13 @@ pub struct ApiError {
 }
 
 impl ApiError {
-    fn invalid(message: impl Into<String>) -> Self {
+    pub(crate) fn invalid(message: impl Into<String>) -> Self {
         Self {
             code: "invalid_input",
             message: message.into(),
         }
     }
-    fn database(error: impl std::fmt::Display) -> Self {
+    pub(crate) fn database(error: impl std::fmt::Display) -> Self {
         Self {
             code: "database_error",
             message: format!("Inventory database error: {error}"),
@@ -86,14 +87,18 @@ pub struct ApplicationInput {
     pub components: Vec<ComponentInput>,
 }
 
+/// One consistent read of the local workspace: inventory plus its operational records.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Inventory {
     pub applications: Vec<Application>,
     pub resources: Vec<Resource>,
+    pub observations: Vec<records::Observation>,
+    pub incidents: Vec<records::Incident>,
+    pub events: Vec<records::Event>,
 }
 
-fn open(path: &Path) -> Result<Connection, ApiError> {
+pub(crate) fn open(path: &Path) -> Result<Connection, ApiError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(ApiError::database)?;
     }
@@ -114,7 +119,7 @@ fn migrate(db: &mut Connection) -> Result<(), ApiError> {
     let version: i64 = tx
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .map_err(ApiError::database)?;
-    if version > 2 {
+    if version > 3 {
         return Err(ApiError::database(format!(
             "unsupported inventory schema version {version}"
         )));
@@ -122,6 +127,7 @@ fn migrate(db: &mut Connection) -> Result<(), ApiError> {
     for (number, sql) in [
         (1, include_str!("../migrations/001_inventory.sql")),
         (2, include_str!("../migrations/002_inventory_details.sql")),
+        (3, include_str!("../migrations/003_operational_records.sql")),
     ] {
         if version < number {
             tx.execute_batch(sql).map_err(ApiError::database)?;
@@ -133,16 +139,20 @@ fn migrate(db: &mut Connection) -> Result<(), ApiError> {
     Ok(())
 }
 
-fn required_name(value: &str, label: &str) -> Result<String, ApiError> {
-    let name = value.trim();
-    if name.is_empty() {
-        Err(ApiError::invalid(format!("{label} name is required.")))
+pub(crate) fn required_text(value: &str, label: &str) -> Result<String, ApiError> {
+    let text = value.trim();
+    if text.is_empty() {
+        Err(ApiError::invalid(format!("{label} is required.")))
     } else {
-        Ok(name.to_owned())
+        Ok(text.to_owned())
     }
 }
 
-fn allowed(value: &str, choices: &[&str], label: &str) -> Result<(), ApiError> {
+fn required_name(value: &str, label: &str) -> Result<String, ApiError> {
+    required_text(value, &format!("{label} name"))
+}
+
+pub(crate) fn allowed(value: &str, choices: &[&str], label: &str) -> Result<(), ApiError> {
     if choices.contains(&value) {
         Ok(())
     } else {
@@ -205,10 +215,18 @@ pub fn list(path: &Path) -> Result<Inventory, ApiError> {
                 .map_err(ApiError::database)?;
         }
     }
+    let records::Records {
+        observations,
+        incidents,
+        events,
+    } = records::load(&tx)?;
     tx.commit().map_err(ApiError::database)?;
     Ok(Inventory {
         applications,
         resources,
+        observations,
+        incidents,
+        events,
     })
 }
 
@@ -457,8 +475,79 @@ mod tests {
         let version: i64 = db
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 2);
+        assert_eq!(version, 3);
         drop(db);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn upgrades_v2_inventory_to_operational_records() {
+        let path = path();
+        let db = Connection::open(&path).unwrap();
+        db.execute_batch(include_str!("../migrations/001_inventory.sql"))
+            .unwrap();
+        db.execute_batch(include_str!("../migrations/002_inventory_details.sql"))
+            .unwrap();
+        db.pragma_update(None, "user_version", 2).unwrap();
+        db.execute_batch(
+            "INSERT INTO resources (id, name, kind, description, operating_system) VALUES ('host', 'Host', 'server', 'Rack', 'Linux');
+             INSERT INTO applications (id, name, lifecycle, description, version) VALUES ('shop', 'Shop', 'production', 'Store', '2.0');
+             INSERT INTO components (id, application_id, name, kind, resource_id) VALUES ('api', 'shop', 'API', 'backend', 'host');",
+        )
+        .unwrap();
+        drop(db);
+        let upgraded = list(&path).unwrap();
+        assert_eq!(upgraded.resources[0].operating_system, "Linux");
+        assert_eq!(upgraded.applications[0].version.as_deref(), Some("2.0"));
+        assert_eq!(
+            upgraded.applications[0].components[0]
+                .resource_id
+                .as_deref(),
+            Some("host")
+        );
+        assert!(upgraded.observations.is_empty());
+        assert!(upgraded.incidents.is_empty());
+        assert!(upgraded.events.is_empty());
+        let db = Connection::open(&path).unwrap();
+        let version: i64 = db
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 3);
+        let violations = db
+            .prepare("PRAGMA foreign_key_check")
+            .unwrap()
+            .query_map([], |_| Ok(()))
+            .unwrap()
+            .count();
+        assert_eq!(violations, 0);
+        drop(db);
+        // Pre-existing inventory can receive records after the upgrade.
+        records::record_observation(
+            &path,
+            records::ObservationInput {
+                subject: records::Subject::Resource { id: "host".into() },
+                result: "degraded".into(),
+                summary: "Disk at 85%".into(),
+                observed_at: None,
+                valid_for_minutes: 60,
+            },
+        )
+        .unwrap();
+        assert_eq!(list(&path).unwrap().observations.len(), 1);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn refuses_a_newer_schema_instead_of_guessing() {
+        let path = path();
+        let db = Connection::open(&path).unwrap();
+        db.pragma_update(None, "user_version", 4).unwrap();
+        drop(db);
+        let error = list(&path).unwrap_err();
+        assert_eq!(error.code, "database_error");
+        assert!(error
+            .message
+            .contains("unsupported inventory schema version 4"));
         std::fs::remove_file(path).unwrap();
     }
 }

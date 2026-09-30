@@ -1,71 +1,254 @@
 import { useEffect, useState } from 'react'
-import { ArrowLeft, ArrowUpRight, Boxes, Layers3, Pencil, Plus, Search } from 'lucide-react'
+import {
+  ArrowLeft,
+  ArrowUpRight,
+  Boxes,
+  ChevronRight,
+  Layers3,
+  Pencil,
+  Plus,
+  Search,
+  Server,
+  ShieldCheck,
+} from 'lucide-react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { EmptyState } from '@/components/empty-state'
 import { PageHeader } from '@/components/page-header'
-import { HealthBadge, LifecycleBadge } from '@/components/status-badge'
+import { LifecycleBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import {
+  attentionItems,
+  concernsApplication,
+  evidenceCoverage,
+  subjectEvidence,
+  subjectKey,
+  subjectsOf,
+  workspaceStatus,
+  type Evidence,
+  type EvidenceState,
+} from '@/domain/evidence'
 import { lifecycleLabels } from '@/domain/labels'
+import type { EntityRef } from '@/domain/models'
+import { activeIncidents } from '@/domain/selectors'
+import { relativeTime } from '@/shared/time'
+import { cn } from '@/shared/utils'
 import { ApplicationForm } from './application-form'
+import {
+  EvidenceBadge,
+  EvidenceDetail,
+  ObservationHistory,
+  SubjectEvidence,
+  SubjectLink,
+} from './evidence'
+import type { InventoryApplication } from './inventory-api'
 import { useInventory } from './inventory-context'
 import { InventoryState } from './inventory-state'
+import { RecordActions } from './record-forms'
+import { AttentionList, EventRecordList, IncidentRecordList } from './record-lists'
 import { ResourceForm } from './resource-form'
 
+const resourceIdsOf = (app: InventoryApplication) => [
+  ...new Set(app.components.flatMap((part) => (part.resourceId ? [part.resourceId] : []))),
+]
+
+// Problems first, then missing or expired evidence, then current healthy results.
+const coverageOrder: EvidenceState[] = ['unhealthy', 'degraded', 'stale', 'unobserved', 'healthy']
+
+function coverageNote(evidence: Evidence, now: number) {
+  if (!evidence.latest) return 'Never observed'
+  if (evidence.state === 'stale')
+    return `Expired ${relativeTime(evidence.latest.validUntil, now).toLowerCase()}`
+  return `Observed ${relativeTime(evidence.latest.observedAt, now).toLowerCase()}`
+}
+
 export function RealOverviewPage() {
-  const { snapshot } = useInventory()
   return (
     <div className="page-stack">
       <PageHeader
-        eyebrow="Local inventory · no live observations"
+        eyebrow="Local inventory · manual evidence"
         title="Overview"
-        description="What needs attention starts with knowing what exists. Monitoring and incidents have not been connected."
+        description="What needs your attention, judged only from evidence recorded in DevHQ."
       />
       <InventoryState>
-        <div className="grid gap-5 min-[1050px]:grid-cols-3">
-          <Link
-            to="/applications"
-            className="panel flex items-center gap-4 p-5 hover:border-muted-foreground/40"
-          >
-            <Layers3 className="size-5 text-primary" />
-            <div>
-              <p className="text-2xl font-semibold">{snapshot?.applications.length ?? 0}</p>
-              <p className="text-xs text-muted-foreground">Applications</p>
-            </div>
-          </Link>
-          <Link
-            to="/infrastructure"
-            className="panel flex items-center gap-4 p-5 hover:border-muted-foreground/40"
-          >
-            <Boxes className="size-5 text-primary" />
-            <div>
-              <p className="text-2xl font-semibold">{snapshot?.resources.length ?? 0}</p>
-              <p className="text-xs text-muted-foreground">Resources</p>
-            </div>
-          </Link>
-          <div className="panel p-5">
-            <HealthBadge health="unknown" />
-            <p className="mt-3 text-xs leading-5 text-muted-foreground">
-              No checks or observations exist for real inventory yet. Lifecycle does not imply
-              health.
-            </p>
-          </div>
-        </div>
-        <section className="panel p-6">
-          <h2 className="section-heading">Needs attention</h2>
-          <p className="mt-3 text-xs leading-6 text-muted-foreground">
-            No real observation source is connected. DevHQ cannot determine whether these systems
-            need attention yet.
-          </p>
-        </section>
+        <OverviewContent />
       </InventoryState>
     </div>
   )
 }
 
+function OverviewContent() {
+  const { snapshot, now } = useInventory()
+  if (!snapshot) return null
+  const subjects = subjectsOf(snapshot)
+  const attention = attentionItems(subjects, snapshot.observations, snapshot.incidents, now)
+  const coverage = evidenceCoverage(subjects, snapshot.observations, now)
+  const status = workspaceStatus(attention, coverage)
+  const evidence = subjects
+    .map((subject) => ({ subject, evidence: subjectEvidence(snapshot.observations, subject, now) }))
+    .sort(
+      (a, b) => coverageOrder.indexOf(a.evidence.state) - coverageOrder.indexOf(b.evidence.state),
+    )
+  const summary = {
+    empty: [
+      'Nothing is registered yet.',
+      'Add applications and resources, then record what you observe.',
+    ],
+    attention: [
+      `${attention.length} ${attention.length === 1 ? 'item needs' : 'items need'} your attention.`,
+      'Open incidents, observed problems and expired evidence are listed below.',
+    ],
+    unobserved: [
+      'No recorded problems, but coverage is incomplete.',
+      `${coverage.unobserved} of ${subjects.length} systems have never been observed. DevHQ does not assume they are healthy.`,
+    ],
+    covered: [
+      'Every system has current healthy evidence.',
+      'Based on manual observations that are still within their validity.',
+    ],
+  }[status]
+  return (
+    <>
+      <section
+        aria-label="Ecosystem status"
+        className={cn(
+          'panel flex flex-wrap items-center justify-between gap-6 border-l-2 px-6 py-5',
+          status === 'attention'
+            ? 'border-l-amber-300/70'
+            : status === 'covered'
+              ? 'border-l-emerald-300/60'
+              : 'border-l-muted-foreground/50',
+        )}
+      >
+        <div className="min-w-0">
+          <p className="eyebrow mb-2.5">Ecosystem status</p>
+          <h2 className="text-lg font-medium tracking-tight">{summary[0]}</h2>
+          <p className="mt-1.5 text-xs text-muted-foreground">{summary[1]}</p>
+        </div>
+        <dl className="flex gap-6 text-xs">
+          {(
+            [
+              ['Current evidence', coverage.current],
+              ['Expired', coverage.stale],
+              ['Never observed', coverage.unobserved],
+            ] as const
+          ).map(([label, count]) => (
+            <div key={label}>
+              <dt className="text-[11px] text-muted-foreground">{label}</dt>
+              <dd className="mt-1 text-lg font-semibold">{count}</dd>
+            </div>
+          ))}
+        </dl>
+      </section>
+      <div className="grid gap-7 min-[1180px]:grid-cols-[minmax(0,1.6fr)_minmax(280px,1fr)]">
+        <div className="space-y-7">
+          <section aria-labelledby="attention-heading">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 id="attention-heading" className="section-heading">
+                Needs attention{' '}
+                <span className="ml-2 rounded bg-amber-300/10 px-1.5 py-0.5 font-mono text-[10px] text-amber-200">
+                  {attention.length}
+                </span>
+              </h2>
+              <Link className="quiet-link" to="/incidents">
+                All incidents <ChevronRight className="size-3" />
+              </Link>
+            </div>
+            <div className="panel overflow-hidden">
+              {attention.length ? (
+                <AttentionList items={attention} />
+              ) : (
+                <p className="px-5 py-8 text-center text-sm text-muted-foreground">
+                  No open incidents, observed problems or expired evidence.
+                  {coverage.unobserved > 0 &&
+                    ' Systems that were never observed are not included, so this is not a clean bill of health.'}
+                </p>
+              )}
+            </div>
+          </section>
+          <section aria-labelledby="coverage-heading">
+            <h2 id="coverage-heading" className="section-heading mb-3">
+              Evidence coverage
+            </h2>
+            {evidence.length ? (
+              <ul className="panel divide-y">
+                {evidence.map((item) => (
+                  <li
+                    key={subjectKey(item.subject)}
+                    className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3"
+                  >
+                    {item.subject.type === 'application' ? (
+                      <Layers3 className="size-4 text-muted-foreground" aria-hidden="true" />
+                    ) : (
+                      <Server className="size-4 text-muted-foreground" aria-hidden="true" />
+                    )}
+                    <SubjectLink
+                      subject={item.subject}
+                      className="min-w-0 flex-1 truncate text-[13px] text-foreground"
+                    />
+                    <span className="text-[11px] text-muted-foreground">
+                      {coverageNote(item.evidence, now)}
+                    </span>
+                    <EvidenceBadge state={item.evidence.state} compact />
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                No applications or resources are registered.
+              </p>
+            )}
+          </section>
+        </div>
+        <div className="space-y-7">
+          <section aria-labelledby="activity-heading">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 id="activity-heading" className="section-heading">
+                Recent activity
+              </h2>
+              <Link className="quiet-link" to="/activity">
+                Timeline <ChevronRight className="size-3" />
+              </Link>
+            </div>
+            <div className="panel p-5">
+              {snapshot.events.length ? (
+                <EventRecordList items={snapshot.events.slice(0, 5)} detailed={false} />
+              ) : (
+                <p className="text-xs text-muted-foreground">No activity recorded yet.</p>
+              )}
+            </div>
+          </section>
+          <div className="grid grid-cols-2 gap-4">
+            <Link
+              to="/applications"
+              className="panel flex items-center gap-3 p-4 hover:border-muted-foreground/40"
+            >
+              <Layers3 className="size-4 text-primary" aria-hidden="true" />
+              <span>
+                <span className="block text-xl font-semibold">{snapshot.applications.length}</span>
+                <span className="text-xs text-muted-foreground">Applications</span>
+              </span>
+            </Link>
+            <Link
+              to="/infrastructure"
+              className="panel flex items-center gap-3 p-4 hover:border-muted-foreground/40"
+            >
+              <Boxes className="size-4 text-primary" aria-hidden="true" />
+              <span>
+                <span className="block text-xl font-semibold">{snapshot.resources.length}</span>
+                <span className="text-xs text-muted-foreground">Resources</span>
+              </span>
+            </Link>
+          </div>
+        </div>
+      </div>
+    </>
+  )
+}
+
 export function RealApplicationsPage() {
-  const { snapshot } = useInventory()
+  const { snapshot, now } = useInventory()
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState('all')
   const [editing, setEditing] = useState(false)
@@ -75,6 +258,7 @@ export function RealApplicationsPage() {
         `${app.name} ${app.description}`.toLowerCase().includes(query.trim().toLowerCase()) &&
         (filter === 'all' || app.lifecycle === filter),
     ) ?? []
+  const open = activeIncidents(snapshot?.incidents ?? [])
   return (
     <div className="page-stack">
       <PageHeader
@@ -119,33 +303,48 @@ export function RealApplicationsPage() {
         </p>
         {apps.length ? (
           <div className="grid gap-5 min-[1060px]:grid-cols-2">
-            {apps.map((app) => (
-              <Link
-                to={`/applications/${app.id}`}
-                className="panel block p-5 hover:border-muted-foreground/40"
-                key={app.id}
-                aria-label={`Open ${app.name}`}
-              >
-                <div className="flex items-start justify-between gap-4">
-                  <div>
-                    <h2 className="text-lg font-semibold">{app.name}</h2>
-                    <p className="mt-2 text-xs text-muted-foreground">
-                      {app.description || 'No description'}
-                    </p>
+            {apps.map((app) => {
+              const resourceIds = resourceIdsOf(app)
+              const incidents = open.filter((item) =>
+                concernsApplication(item.subject, app.id, resourceIds),
+              ).length
+              const evidence = subjectEvidence(
+                snapshot?.observations ?? [],
+                { type: 'application', id: app.id },
+                now,
+              )
+              return (
+                <Link
+                  to={`/applications/${app.id}`}
+                  className="panel block p-5 hover:border-muted-foreground/40"
+                  key={app.id}
+                  aria-label={`Open ${app.name}`}
+                >
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <h2 className="text-lg font-semibold">{app.name}</h2>
+                      <p className="mt-2 text-xs text-muted-foreground">
+                        {app.description || 'No description'}
+                      </p>
+                    </div>
+                    <ArrowUpRight className="size-4 text-muted-foreground" />
                   </div>
-                  <ArrowUpRight className="size-4 text-muted-foreground" />
-                </div>
-                <div className="mt-4 flex flex-wrap gap-2">
-                  <LifecycleBadge lifecycle={app.lifecycle} />
-                  <HealthBadge health="unknown" compact />
-                </div>
-                <p className="mt-4 border-t pt-3 text-xs text-muted-foreground">
-                  {app.components.length} components ·{' '}
-                  {new Set(app.components.map((part) => part.resourceId).filter(Boolean)).size}{' '}
-                  linked resources
-                </p>
-              </Link>
-            ))}
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <LifecycleBadge lifecycle={app.lifecycle} />
+                    <EvidenceBadge state={evidence.state} compact />
+                  </div>
+                  <p className="mt-4 border-t pt-3 text-xs text-muted-foreground">
+                    {app.components.length} components · {resourceIds.length} linked resources
+                    {incidents > 0 && (
+                      <span className="text-amber-200">
+                        {' '}
+                        · {incidents} open {incidents === 1 ? 'incident' : 'incidents'}
+                      </span>
+                    )}
+                  </p>
+                </Link>
+              )
+            })}
           </div>
         ) : (
           <EmptyState
@@ -177,121 +376,21 @@ const tabs = [
   'Security',
   'Automations',
 ] as const
+const plannedTabs: Partial<Record<(typeof tabs)[number], string>> = {
+  Infrastructure:
+    'Component to resource links, with each resource’s evidence, are shown in Overview. More topology context is planned.',
+  Security: 'This area will be populated when security checks and integrations are implemented.',
+  Automations: 'This area will be populated when automations with verified results exist.',
+}
+
 export function RealApplicationDetailPage() {
   const { snapshot } = useInventory()
   const { applicationId } = useParams()
-  const [params, setParams] = useSearchParams()
-  const [editing, setEditing] = useState(false)
   const app = snapshot?.applications.find((item) => item.id === applicationId)
-  const tab = tabs.find((item) => item.toLowerCase() === params.get('tab')) ?? 'Overview'
   return (
     <InventoryState>
       {app ? (
-        <div className="page-stack">
-          <Link to="/applications" className="quiet-link">
-            <ArrowLeft className="size-3.5" /> All applications
-          </Link>
-          <header className="flex flex-wrap items-start justify-between gap-5">
-            <div>
-              <h1 className="text-[28px] font-semibold tracking-[-0.04em]">{app.name}</h1>
-              <p className="mt-1 text-xs text-muted-foreground">{app.description}</p>
-              <div className="mt-3 flex gap-3">
-                <LifecycleBadge lifecycle={app.lifecycle} />
-                <HealthBadge health="unknown" />
-              </div>
-            </div>
-            <Button variant="outline" onClick={() => setEditing(true)}>
-              <Pencil className="size-3.5" /> Edit application
-            </Button>
-          </header>
-          {editing && <ApplicationForm application={app} onDone={() => setEditing(false)} />}
-          <Tabs
-            value={tab.toLowerCase()}
-            onValueChange={(value) => setParams(value === 'overview' ? {} : { tab: value })}
-            className="gap-7"
-          >
-            <div className="overflow-x-auto border-b pb-1">
-              <TabsList variant="line" aria-label="Application sections" className="gap-4">
-                {tabs.map((item) => (
-                  <TabsTrigger
-                    value={item.toLowerCase()}
-                    key={item}
-                    className="px-1 pb-3 text-xs after:bg-primary"
-                  >
-                    {item}
-                  </TabsTrigger>
-                ))}
-              </TabsList>
-            </div>
-            <TabsContent value="overview">
-              <div className="grid gap-5 min-[1100px]:grid-cols-[1.5fr_1fr]">
-                <section className="panel p-5">
-                  <h2 className="section-heading">Components</h2>
-                  <div className="mt-4 divide-y">
-                    {app.components.map((part) => (
-                      <div
-                        className="flex flex-wrap items-center justify-between gap-2 py-3 text-xs"
-                        key={part.id}
-                      >
-                        <div>
-                          <p className="font-medium">
-                            {part.name} <span className="text-muted-foreground">· {part.kind}</span>
-                          </p>
-                          {part.resourceId && (
-                            <Link
-                              className="quiet-link mt-1"
-                              to={`/infrastructure?resource=${part.resourceId}`}
-                            >
-                              On{' '}
-                              {snapshot?.resources.find((item) => item.id === part.resourceId)
-                                ?.name ?? part.resourceId}{' '}
-                              <ArrowUpRight className="size-3" />
-                            </Link>
-                          )}
-                        </div>
-                        <HealthBadge health="unknown" compact />
-                      </div>
-                    ))}
-                    {app.components.length === 0 && (
-                      <p className="text-xs text-muted-foreground">No components registered.</p>
-                    )}
-                  </div>
-                </section>
-                <section className="panel p-5">
-                  <h2 className="section-heading">Operational context</h2>
-                  <dl className="mt-4 space-y-4 text-xs">
-                    <div>
-                      <dt className="text-muted-foreground">Lifecycle</dt>
-                      <dd className="mt-1">{lifecycleLabels[app.lifecycle]}</dd>
-                    </div>
-                    <div>
-                      <dt className="text-muted-foreground">Version</dt>
-                      <dd className="mt-1">{app.version || 'Not recorded'}</dd>
-                    </div>
-                    <div>
-                      <dt className="text-muted-foreground">Health</dt>
-                      <dd className="mt-1">Not observed. No checks have run.</dd>
-                    </div>
-                  </dl>
-                </section>
-              </div>
-            </TabsContent>
-            {tabs
-              .filter((item) => item !== 'Overview')
-              .map((item) => (
-                <TabsContent value={item.toLowerCase()} key={item}>
-                  <EmptyState
-                    title={`${item} has no real records yet`}
-                    description={
-                      item === 'Infrastructure'
-                        ? 'Component to resource links are shown in Overview. More topology context is planned.'
-                        : 'This area will be populated when real observations and integrations are implemented.'
-                    }
-                  />
-                </TabsContent>
-              ))}
-          </Tabs>
-        </div>
+        <ApplicationDetail app={app} />
       ) : (
         <EmptyState
           title="Application not found"
@@ -307,8 +406,218 @@ export function RealApplicationDetailPage() {
   )
 }
 
+function ApplicationDetail({ app }: { app: InventoryApplication }) {
+  const { snapshot, now } = useInventory()
+  const [params, setParams] = useSearchParams()
+  const [editing, setEditing] = useState(false)
+  const tab = tabs.find((item) => item.toLowerCase() === params.get('tab')) ?? 'Overview'
+  const subject: EntityRef = { type: 'application', id: app.id }
+  const resourceIds = resourceIdsOf(app)
+  const observations = snapshot?.observations ?? []
+  const evidence = subjectEvidence(observations, subject, now)
+  const resourceState = (id: string) =>
+    subjectEvidence(observations, { type: 'resource', id }, now).state
+  const incidents = activeIncidents(snapshot?.incidents ?? []).filter((item) =>
+    concernsApplication(item.subject, app.id, resourceIds),
+  )
+  const events = (snapshot?.events ?? []).filter((item) =>
+    concernsApplication(item.subject, app.id, resourceIds),
+  )
+  return (
+    <div className="page-stack">
+      <Link to="/applications" className="quiet-link">
+        <ArrowLeft className="size-3.5" /> All applications
+      </Link>
+      <header className="flex flex-wrap items-start justify-between gap-5">
+        <div>
+          <h1 className="text-[28px] font-semibold tracking-[-0.04em]">{app.name}</h1>
+          <p className="mt-1 text-xs text-muted-foreground">{app.description}</p>
+          <div className="mt-3 flex flex-wrap gap-3">
+            <LifecycleBadge lifecycle={app.lifecycle} />
+            <EvidenceBadge state={evidence.state} />
+          </div>
+        </div>
+        <Button variant="outline" onClick={() => setEditing(true)}>
+          <Pencil className="size-3.5" /> Edit application
+        </Button>
+      </header>
+      {editing && <ApplicationForm application={app} onDone={() => setEditing(false)} />}
+      <RecordActions subject={subject} name={app.name} />
+      <Tabs
+        value={tab.toLowerCase()}
+        onValueChange={(value) => setParams(value === 'overview' ? {} : { tab: value })}
+        className="gap-7"
+      >
+        <div className="overflow-x-auto border-b pb-1">
+          <TabsList variant="line" aria-label="Application sections" className="gap-4">
+            {tabs.map((item) => (
+              <TabsTrigger
+                value={item.toLowerCase()}
+                key={item}
+                className="px-1 pb-3 text-xs after:bg-primary"
+              >
+                {item}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </div>
+        <TabsContent value="overview">
+          <div className="grid gap-5 min-[1100px]:grid-cols-[1.5fr_1fr]">
+            <div className="space-y-5">
+              <section className="panel p-5">
+                <h2 className="section-heading mb-4">Current evidence</h2>
+                <SubjectEvidence subject={subject} />
+              </section>
+              <section className="panel p-5">
+                <h2 className="section-heading">Components</h2>
+                <p className="mt-1.5 text-xs text-muted-foreground">
+                  Evidence is recorded per application and resource. A linked resource shows its own
+                  state.
+                </p>
+                <div className="mt-4 divide-y">
+                  {app.components.map((part) => (
+                    <div className="py-3 text-xs" key={part.id}>
+                      <p className="font-medium">
+                        {part.name} <span className="text-muted-foreground">· {part.kind}</span>
+                      </p>
+                      {part.resourceId ? (
+                        <p className="mt-1 flex flex-wrap items-center gap-2">
+                          <Link
+                            className="quiet-link"
+                            to={`/infrastructure?resource=${part.resourceId}`}
+                          >
+                            On{' '}
+                            {snapshot?.resources.find((item) => item.id === part.resourceId)
+                              ?.name ?? part.resourceId}{' '}
+                            <ArrowUpRight className="size-3" />
+                          </Link>
+                          <EvidenceBadge state={resourceState(part.resourceId)} compact />
+                        </p>
+                      ) : (
+                        <p className="mt-1 text-[11px] text-muted-foreground">
+                          Not linked to a resource
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                  {app.components.length === 0 && (
+                    <p className="text-xs text-muted-foreground">No components registered.</p>
+                  )}
+                </div>
+              </section>
+            </div>
+            <div className="space-y-5">
+              <section className="panel p-5">
+                <h2 className="section-heading">Operational context</h2>
+                <dl className="mt-4 space-y-4 text-xs">
+                  <div>
+                    <dt className="text-muted-foreground">Lifecycle</dt>
+                    <dd className="mt-1">{lifecycleLabels[app.lifecycle]}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-muted-foreground">Version</dt>
+                    <dd className="mt-1">{app.version || 'Not recorded'}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-muted-foreground">Latest observation</dt>
+                    <dd className="mt-1">
+                      {evidence.latest
+                        ? `${relativeTime(evidence.latest.observedAt, now)} · manual entry`
+                        : 'None recorded'}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-muted-foreground">Open incidents</dt>
+                    <dd className="mt-1">
+                      {incidents.length} on this application or its linked resources
+                    </dd>
+                  </div>
+                </dl>
+              </section>
+              {incidents.length ? (
+                <section aria-labelledby="app-incidents-heading">
+                  <h2 id="app-incidents-heading" className="section-heading mb-3">
+                    Open incidents
+                  </h2>
+                  <div className="panel overflow-hidden">
+                    <IncidentRecordList items={incidents} />
+                  </div>
+                </section>
+              ) : (
+                <div className="flex gap-3 rounded-xl border border-dashed p-5">
+                  <ShieldCheck
+                    className="size-5 shrink-0 text-muted-foreground"
+                    aria-hidden="true"
+                  />
+                  <div>
+                    <h2 className="text-xs font-medium">No open incidents recorded</h2>
+                    <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                      Nothing is open for this application or its linked resources. That is not a
+                      health check.
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </TabsContent>
+        <TabsContent value="health">
+          <div className="grid gap-5 min-[1100px]:grid-cols-[1.5fr_1fr]">
+            <section className="panel p-5">
+              <h2 className="section-heading mb-4">Observation history</h2>
+              <ObservationHistory subject={subject} />
+            </section>
+            <section className="panel p-5">
+              <h2 className="section-heading">Linked resources</h2>
+              {resourceIds.length ? (
+                <ul className="mt-4 space-y-3">
+                  {resourceIds.map((id) => (
+                    <li
+                      key={id}
+                      className="flex flex-wrap items-center justify-between gap-2 text-xs"
+                    >
+                      <SubjectLink subject={{ type: 'resource', id }} />
+                      <EvidenceBadge state={resourceState(id)} compact />
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="mt-3 text-xs text-muted-foreground">
+                  No components are linked to a resource.
+                </p>
+              )}
+            </section>
+          </div>
+        </TabsContent>
+        <TabsContent value="activity">
+          <section className="panel p-5">
+            <h2 className="section-heading mb-5">{app.name} and its resources</h2>
+            {events.length ? (
+              <EventRecordList items={events} />
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                No activity recorded yet. Use Log event above to add one.
+              </p>
+            )}
+          </section>
+        </TabsContent>
+        {tabs
+          .filter((item) => item in plannedTabs)
+          .map((item) => (
+            <TabsContent value={item.toLowerCase()} key={item}>
+              <EmptyState
+                title={`${item} has no real records yet`}
+                description={plannedTabs[item]!}
+              />
+            </TabsContent>
+          ))}
+      </Tabs>
+    </div>
+  )
+}
+
 export function RealInfrastructurePage() {
-  const { snapshot } = useInventory()
+  const { snapshot, now } = useInventory()
   const [params] = useSearchParams()
   const selectedResource = params.get('resource')
   const [editing, setEditing] = useState<string | 'new' | null>(null)
@@ -338,6 +647,11 @@ export function RealInfrastructurePage() {
         {snapshot?.resources.length ? (
           <div className="space-y-5">
             {snapshot.resources.map((resource) => {
+              const subject: EntityRef = { type: 'resource', id: resource.id }
+              const evidence = subjectEvidence(snapshot.observations, subject, now)
+              const incidents = activeIncidents(snapshot.incidents).filter(
+                (item) => item.subject.type === 'resource' && item.subject.id === resource.id,
+              )
               const linked = snapshot.applications.filter((app) =>
                 app.components.some((part) => part.resourceId === resource.id),
               )
@@ -353,19 +667,18 @@ export function RealInfrastructurePage() {
                     <div>
                       <h2 className="text-base font-semibold">{resource.name}</h2>
                       <p className="mt-1 text-xs text-muted-foreground">
-                        {resource.description || resource.kind}
+                        {resource.description || resource.kind} ·{' '}
+                        {resource.operatingSystem || 'Operating system not recorded'}
                       </p>
                     </div>
                     <div className="flex items-center gap-3">
-                      <HealthBadge health="unknown" />
+                      <EvidenceBadge state={evidence.state} />
                       <Button variant="outline" onClick={() => setEditing(resource.id)}>
                         <Pencil className="size-3.5" /> Edit
                       </Button>
                     </div>
                   </div>
-                  <p className="mt-4 text-xs text-muted-foreground">
-                    {resource.operatingSystem || 'Operating system not recorded'} · No live checks
-                  </p>
+                  <EvidenceDetail evidence={evidence} now={now} />
                   <div className="mt-4 border-t pt-4">
                     <h3 className="eyebrow mb-3">Applications using this resource</h3>
                     {linked.length ? (
@@ -379,6 +692,15 @@ export function RealInfrastructurePage() {
                     ) : (
                       <p className="text-xs text-muted-foreground">No linked components.</p>
                     )}
+                  </div>
+                  {incidents.length > 0 && (
+                    <div className="-mx-5 mt-4 border-t">
+                      <h3 className="eyebrow px-5 pt-4">Open resource incidents</h3>
+                      <IncidentRecordList items={incidents} />
+                    </div>
+                  )}
+                  <div className="mt-4 border-t pt-4">
+                    <RecordActions subject={subject} name={resource.name} />
                   </div>
                   {editing === resource.id && (
                     <div className="mt-5">
@@ -430,13 +752,14 @@ export function RealSettingsPage() {
       <section className="panel max-w-3xl p-6">
         <h2 className="section-heading">Data source</h2>
         <p className="mt-4 text-xs leading-6 text-muted-foreground">
-          Applications, components and resources are stored in SQLite in the operating system’s
-          DevHQ application data directory. The demo is a separate, fixed example and is never
-          imported automatically.
+          Applications, components, resources, observations, incidents and events are stored in
+          SQLite in the operating system’s DevHQ application data directory. The demo is a separate,
+          fixed example and is never imported automatically.
         </p>
         <p className="mt-3 text-xs leading-6 text-muted-foreground">
-          Health is not observed. No external connections, checks, event collection or automation
-          execution are active.
+          Every observation, incident and event is a manual entry. No external connections, checks,
+          event collection or automation execution are active. An observation vouches for a result
+          only until its validity ends; after that it is shown as expired.
         </p>
       </section>
     </div>

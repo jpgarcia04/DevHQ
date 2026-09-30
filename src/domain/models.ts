@@ -63,6 +63,53 @@ export interface ActivityEvent {
   occurredAt: string
 }
 
+// Records kept by DevHQ for the real inventory. Every source is manual until an
+// integration exists; the field is explicit so a future source cannot be mistaken for one.
+export type RecordSource = 'manual'
+export type ObservationResult = Exclude<HealthStatus, 'unknown'>
+export type RecordedEventKind =
+  'observation' | 'incident' | 'deployment' | 'backup' | 'maintenance' | 'note'
+export type ManualEventKind = Exclude<RecordedEventKind, 'observation' | 'incident'>
+export type EventOutcome = 'success' | 'warning' | 'failure' | 'info'
+
+export interface Observation {
+  id: string
+  subject: EntityRef
+  result: ObservationResult
+  summary: string
+  source: RecordSource
+  observedAt: string
+  validUntil: string
+  recordedAt: string
+}
+
+export interface RecordedIncident {
+  id: string
+  subject: EntityRef
+  title: string
+  description: string
+  severity: IncidentSeverity
+  status: IncidentStatus
+  source: RecordSource
+  openedAt: string
+  updatedAt: string
+  resolvedAt: string | null
+}
+
+export interface RecordedEvent {
+  id: string
+  subject: EntityRef
+  kind: RecordedEventKind
+  outcome: EventOutcome
+  title: string
+  detail: string
+  source: RecordSource
+  observationId: string | null
+  incidentId: string | null
+  occurredAt: string
+  recordedAt: string
+}
+
 export interface Automation {
   id: string
   name: string

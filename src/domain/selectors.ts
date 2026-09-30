@@ -1,8 +1,15 @@
-import type { ActivityEvent, Application, HealthStatus, Incident, Resource } from './models'
+import type {
+  ActivityEvent,
+  Application,
+  HealthStatus,
+  Incident,
+  IncidentStatus,
+  Resource,
+} from './models'
 
 export const needsAttention = (health: HealthStatus) =>
   health === 'degraded' || health === 'unhealthy'
-export const activeIncidents = (items: Incident[]) =>
+export const activeIncidents = <T extends { status: IncidentStatus }>(items: T[]) =>
   items.filter((item) => item.status !== 'resolved')
 export const applicationIncidents = (items: Incident[], app: Application) =>
   items.filter((item) =>

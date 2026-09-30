@@ -8,32 +8,7 @@ import { ApplicationForm } from './application-form'
 import { RealInfrastructurePage, RealOverviewPage } from './real-pages'
 import { InventoryProvider } from './inventory-provider'
 import { inventoryApi } from './inventory-api'
-
-function context(overrides: Partial<InventoryContextValue> = {}): InventoryContextValue {
-  return {
-    mode: 'real',
-    nativeAvailable: true,
-    setMode: vi.fn(),
-    snapshot: {
-      applications: [],
-      resources: [
-        {
-          id: 'host-1',
-          name: 'Host One',
-          kind: 'server',
-          description: '',
-          operatingSystem: 'Linux',
-        },
-      ],
-    },
-    loadState: 'ready',
-    error: null,
-    reload: vi.fn(async () => true),
-    saveResource: vi.fn(async () => {}),
-    saveApplication: vi.fn(async () => {}),
-    ...overrides,
-  }
-}
+import { inventoryContext as context } from './test-context'
 
 function renderWithInventory(ui: ReactNode, value: InventoryContextValue) {
   return render(
@@ -102,7 +77,10 @@ describe('real inventory UI', () => {
       </main>,
       value,
     )
-    expect(within(screen.getByRole('main')).queryByText('Not observed')).toBeInTheDocument()
+    const main = within(screen.getByRole('main'))
+    expect(main.getByText('Not observed')).toBeInTheDocument()
+    expect(main.getByText('No recorded problems, but coverage is incomplete.')).toBeInTheDocument()
+    expect(main.queryByText('Healthy')).not.toBeInTheDocument()
   })
 
   it('focuses a linked resource in the real inventory', async () => {

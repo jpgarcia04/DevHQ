@@ -9,7 +9,7 @@ import { formatTime } from '@/shared/time'
 import { useInventory } from '@/features/inventory/inventory-context'
 
 export function Shell() {
-  const { mode, setMode, nativeAvailable, snapshot } = useInventory()
+  const { mode, setMode, nativeAvailable, snapshot, loadState } = useInventory()
   const { pathname } = useLocation()
   const mainRef = useRef<HTMLElement>(null)
   const previousPath = useRef(pathname)
@@ -21,6 +21,14 @@ export function Shell() {
   const app = (mode === 'demo' ? applications : (snapshot?.applications ?? [])).find(
     (item) => pathname === `/applications/${item.id}`,
   )
+  // Real counts appear only after a successful load; a failed load must not read as zero.
+  const activeCount =
+    mode === 'demo'
+      ? activeIncidents(incidents).length
+      : loadState === 'ready' && snapshot
+        ? activeIncidents(snapshot.incidents).length
+        : null
+  const unavailable = mode === 'real' && loadState === 'error'
   useEffect(() => {
     document.title = `${app?.name ?? section?.label ?? 'Not found'} · DevHQ`
     if (previousPath.current !== pathname) {
@@ -110,9 +118,9 @@ export function Shell() {
               >
                 <Icon className="size-4" strokeWidth={1.65} aria-hidden="true" />
                 {label}
-                {mode === 'demo' && path === '/incidents' && (
+                {path === '/incidents' && activeCount !== null && (
                   <span className="ml-auto rounded bg-amber-300/10 px-1.5 py-0.5 font-mono text-[10px] text-amber-200">
-                    {activeIncidents(incidents).length}
+                    {activeCount}
                   </span>
                 )}
               </NavLink>
@@ -158,9 +166,24 @@ export function Shell() {
               </>
             )}
           </div>
-          <span className="ml-4 flex shrink-0 items-center gap-2 rounded-full border px-2.5 py-1 text-[10px] text-muted-foreground">
-            <Circle className="size-1.5 fill-primary text-primary" aria-hidden="true" />
-            {mode === 'demo' ? 'Demo · example data' : 'Local inventory · no checks'}
+          <span
+            className={cn(
+              'ml-4 flex shrink-0 items-center gap-2 rounded-full border px-2.5 py-1 text-[10px]',
+              unavailable ? 'border-rose-300/30 text-rose-300' : 'text-muted-foreground',
+            )}
+          >
+            <Circle
+              className={cn(
+                'size-1.5',
+                unavailable ? 'fill-rose-300' : 'fill-primary text-primary',
+              )}
+              aria-hidden="true"
+            />
+            {mode === 'demo'
+              ? 'Demo · example data'
+              : unavailable
+                ? 'Local inventory · unavailable'
+                : 'Local inventory · manual evidence'}
           </span>
         </div>
         <main
@@ -176,7 +199,9 @@ export function Shell() {
         <footer className="flex h-7 shrink-0 items-center justify-between border-t px-5 font-mono text-[9px] text-muted-foreground">
           <span className="flex items-center gap-2">
             <span className="size-1 rounded-full bg-primary" />
-            {mode === 'demo' ? 'DEMO DATA · NO LIVE CONNECTIONS' : 'LOCAL INVENTORY · NOT OBSERVED'}
+            {mode === 'demo'
+              ? 'DEMO DATA · NO LIVE CONNECTIONS'
+              : 'LOCAL INVENTORY · MANUAL ENTRIES · NO AUTOMATED CHECKS'}
           </span>
           <span>
             {mode === 'demo'

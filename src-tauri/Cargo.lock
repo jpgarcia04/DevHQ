@@ -595,6 +595,7 @@ dependencies = [
  "serde",
  "tauri",
  "tauri-build",
+ "time",
  "uuid",
 ]
 

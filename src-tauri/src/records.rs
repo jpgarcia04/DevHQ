@@ -1,0 +1,888 @@
+use crate::inventory::{allowed, open, required_text, ApiError};
+use rusqlite::types::Type;
+use rusqlite::{params, OptionalExtension, Row, Transaction, TransactionBehavior};
+use serde::{Deserialize, Serialize};
+use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
+use time::format_description::well_known::Rfc3339;
+use time::OffsetDateTime;
+use uuid::Uuid;
+
+const OBSERVATION_RESULTS: &[&str] = &["healthy", "degraded", "unhealthy"];
+const SEVERITIES: &[&str] = &["info", "warning", "critical"];
+const INCIDENT_STATUSES: &[&str] = &["open", "investigating", "resolved"];
+// Observation and incident events are written by their own use cases, never by hand.
+const MANUAL_EVENT_KINDS: &[&str] = &["deployment", "backup", "maintenance", "note"];
+const EVENT_OUTCOMES: &[&str] = &["success", "warning", "failure", "info"];
+// Every record in this increment is entered by a person. Integrations will add their own sources.
+const MANUAL: &str = "manual";
+const MAX_VALIDITY_MINUTES: i64 = 30 * 24 * 60;
+// Tolerates small clock differences; anything later is a claim about the future.
+const CLOCK_SKEW_MS: i64 = 60_000;
+
+const OBSERVATION_SELECT: &str = "SELECT id, application_id, resource_id, result, summary, source, observed_at, valid_until, recorded_at FROM observations";
+const INCIDENT_SELECT: &str = "SELECT id, application_id, resource_id, title, description, severity, status, source, opened_at, updated_at, resolved_at FROM incidents";
+const EVENT_SELECT: &str = "SELECT id, application_id, resource_id, kind, outcome, title, detail, source, observation_id, incident_id, occurred_at, recorded_at FROM events";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum Subject {
+    Application { id: String },
+    Resource { id: String },
+}
+
+impl Subject {
+    fn columns(&self) -> (Option<&str>, Option<&str>) {
+        match self {
+            Subject::Application { id } => (Some(id), None),
+            Subject::Resource { id } => (None, Some(id)),
+        }
+    }
+
+    fn from_columns(
+        application_id: Option<String>,
+        resource_id: Option<String>,
+    ) -> rusqlite::Result<Self> {
+        match (application_id, resource_id) {
+            (Some(id), None) => Ok(Subject::Application { id }),
+            (None, Some(id)) => Ok(Subject::Resource { id }),
+            _ => Err(rusqlite::Error::FromSqlConversionFailure(
+                1,
+                Type::Null,
+                "a record must reference exactly one application or resource".into(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Observation {
+    pub id: String,
+    pub subject: Subject,
+    pub result: String,
+    pub summary: String,
+    pub source: String,
+    pub observed_at: String,
+    pub valid_until: String,
+    pub recorded_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ObservationInput {
+    pub subject: Subject,
+    pub result: String,
+    pub summary: String,
+    pub observed_at: Option<String>,
+    pub valid_for_minutes: i64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Incident {
+    pub id: String,
+    pub subject: Subject,
+    pub title: String,
+    pub description: String,
+    pub severity: String,
+    pub status: String,
+    pub source: String,
+    pub opened_at: String,
+    pub updated_at: String,
+    pub resolved_at: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IncidentInput {
+    pub subject: Subject,
+    pub title: String,
+    pub description: String,
+    pub severity: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IncidentStatusInput {
+    pub id: String,
+    pub status: String,
+    pub note: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Event {
+    pub id: String,
+    pub subject: Subject,
+    pub kind: String,
+    pub outcome: String,
+    pub title: String,
+    pub detail: String,
+    pub source: String,
+    pub observation_id: Option<String>,
+    pub incident_id: Option<String>,
+    pub occurred_at: String,
+    pub recorded_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventInput {
+    pub subject: Subject,
+    pub kind: String,
+    pub outcome: String,
+    pub title: String,
+    pub detail: String,
+    pub occurred_at: Option<String>,
+}
+
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX)
+        })
+}
+
+fn parse_time(value: &str, label: &str) -> Result<i64, ApiError> {
+    let parsed = OffsetDateTime::parse(value, &Rfc3339).map_err(|_| {
+        ApiError::invalid(format!(
+            "{label} must be an RFC 3339 timestamp with a time zone."
+        ))
+    })?;
+    i64::try_from(parsed.unix_timestamp_nanos() / 1_000_000)
+        .map_err(|_| ApiError::invalid(format!("{label} is out of range.")))
+}
+
+/// A person can report what already happened, not what has not happened yet.
+fn reported_time(value: &Option<String>, now: i64, label: &str) -> Result<i64, ApiError> {
+    let Some(value) = value else { return Ok(now) };
+    let time = parse_time(value, label)?;
+    if time > now + CLOCK_SKEW_MS {
+        return Err(ApiError::invalid(format!(
+            "{label} cannot be in the future."
+        )));
+    }
+    Ok(time)
+}
+
+fn format_time(ms: i64) -> Option<String> {
+    OffsetDateTime::from_unix_timestamp_nanos(i128::from(ms) * 1_000_000)
+        .ok()?
+        .format(&Rfc3339)
+        .ok()
+}
+
+fn time_at(row: &Row, index: usize) -> rusqlite::Result<String> {
+    let ms: i64 = row.get(index)?;
+    format_time(ms).ok_or(rusqlite::Error::IntegralValueOutOfRange(index, ms))
+}
+
+fn optional_time_at(row: &Row, index: usize) -> rusqlite::Result<Option<String>> {
+    match row.get::<_, Option<i64>>(index)? {
+        Some(_) => time_at(row, index).map(Some),
+        None => Ok(None),
+    }
+}
+
+fn observation_from_row(row: &Row) -> rusqlite::Result<Observation> {
+    Ok(Observation {
+        id: row.get(0)?,
+        subject: Subject::from_columns(row.get(1)?, row.get(2)?)?,
+        result: row.get(3)?,
+        summary: row.get(4)?,
+        source: row.get(5)?,
+        observed_at: time_at(row, 6)?,
+        valid_until: time_at(row, 7)?,
+        recorded_at: time_at(row, 8)?,
+    })
+}
+
+fn incident_from_row(row: &Row) -> rusqlite::Result<Incident> {
+    Ok(Incident {
+        id: row.get(0)?,
+        subject: Subject::from_columns(row.get(1)?, row.get(2)?)?,
+        title: row.get(3)?,
+        description: row.get(4)?,
+        severity: row.get(5)?,
+        status: row.get(6)?,
+        source: row.get(7)?,
+        opened_at: time_at(row, 8)?,
+        updated_at: time_at(row, 9)?,
+        resolved_at: optional_time_at(row, 10)?,
+    })
+}
+
+fn event_from_row(row: &Row) -> rusqlite::Result<Event> {
+    Ok(Event {
+        id: row.get(0)?,
+        subject: Subject::from_columns(row.get(1)?, row.get(2)?)?,
+        kind: row.get(3)?,
+        outcome: row.get(4)?,
+        title: row.get(5)?,
+        detail: row.get(6)?,
+        source: row.get(7)?,
+        observation_id: row.get(8)?,
+        incident_id: row.get(9)?,
+        occurred_at: time_at(row, 10)?,
+        recorded_at: time_at(row, 11)?,
+    })
+}
+
+fn query_all<T>(
+    tx: &Transaction,
+    sql: &str,
+    map: fn(&Row) -> rusqlite::Result<T>,
+) -> Result<Vec<T>, ApiError> {
+    let mut statement = tx.prepare(sql).map_err(ApiError::database)?;
+    let rows = statement
+        .query_map([], map)
+        .map_err(ApiError::database)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(ApiError::database);
+    rows
+}
+
+fn query_one<T>(
+    tx: &Transaction,
+    select: &str,
+    id: &str,
+    map: fn(&Row) -> rusqlite::Result<T>,
+) -> Result<Option<T>, ApiError> {
+    tx.query_row(&format!("{select} WHERE id = ?1"), [id], map)
+        .optional()
+        .map_err(ApiError::database)
+}
+
+pub(crate) struct Records {
+    pub observations: Vec<Observation>,
+    pub incidents: Vec<Incident>,
+    pub events: Vec<Event>,
+}
+
+/// Newest first. Reads inside the caller's transaction so the snapshot is consistent.
+pub(crate) fn load(tx: &Transaction) -> Result<Records, ApiError> {
+    Ok(Records {
+        observations: query_all(
+            tx,
+            &format!(
+                "{OBSERVATION_SELECT} ORDER BY observed_at DESC, recorded_at DESC, rowid DESC"
+            ),
+            observation_from_row,
+        )?,
+        incidents: query_all(
+            tx,
+            &format!("{INCIDENT_SELECT} ORDER BY opened_at DESC, rowid DESC"),
+            incident_from_row,
+        )?,
+        events: query_all(
+            tx,
+            &format!("{EVENT_SELECT} ORDER BY occurred_at DESC, recorded_at DESC, rowid DESC"),
+            event_from_row,
+        )?,
+    })
+}
+
+fn ensure_subject(tx: &Transaction, subject: &Subject) -> Result<(), ApiError> {
+    let (sql, id, label) = match subject {
+        Subject::Application { id } => (
+            "SELECT EXISTS(SELECT 1 FROM applications WHERE id = ?1)",
+            id,
+            "application",
+        ),
+        Subject::Resource { id } => (
+            "SELECT EXISTS(SELECT 1 FROM resources WHERE id = ?1)",
+            id,
+            "resource",
+        ),
+    };
+    let exists: bool = tx
+        .query_row(sql, [id], |row| row.get(0))
+        .map_err(ApiError::database)?;
+    if exists {
+        Ok(())
+    } else {
+        Err(ApiError::invalid(format!(
+            "The {label} {id} does not exist. Choose an existing {label}."
+        )))
+    }
+}
+
+struct NewEvent<'a> {
+    subject: &'a Subject,
+    kind: &'a str,
+    outcome: &'a str,
+    title: String,
+    detail: &'a str,
+    observation_id: Option<&'a str>,
+    incident_id: Option<&'a str>,
+    occurred_at: i64,
+    recorded_at: i64,
+}
+
+fn insert_event(tx: &Transaction, event: NewEvent) -> Result<String, ApiError> {
+    let id = Uuid::new_v4().to_string();
+    let (application_id, resource_id) = event.subject.columns();
+    tx.execute(
+        "INSERT INTO events (id, application_id, resource_id, kind, outcome, title, detail, source, observation_id, incident_id, occurred_at, recorded_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        params![id, application_id, resource_id, event.kind, event.outcome, event.title, event.detail, MANUAL, event.observation_id, event.incident_id, event.occurred_at, event.recorded_at],
+    )
+    .map_err(ApiError::database)?;
+    Ok(id)
+}
+
+fn result_label(result: &str) -> &'static str {
+    match result {
+        "healthy" => "Healthy",
+        "degraded" => "Attention required",
+        _ => "Unhealthy",
+    }
+}
+
+fn result_outcome(result: &str) -> &'static str {
+    match result {
+        "healthy" => "success",
+        "degraded" => "warning",
+        _ => "failure",
+    }
+}
+
+fn severity_outcome(severity: &str) -> &'static str {
+    match severity {
+        "critical" => "failure",
+        "warning" => "warning",
+        _ => "info",
+    }
+}
+
+/// Stores a manual observation and its timeline event atomically.
+pub fn record_observation(path: &Path, input: ObservationInput) -> Result<Observation, ApiError> {
+    allowed(&input.result, OBSERVATION_RESULTS, "observation result")?;
+    let summary = required_text(&input.summary, "Observation summary")?;
+    if !(1..=MAX_VALIDITY_MINUTES).contains(&input.valid_for_minutes) {
+        return Err(ApiError::invalid(
+            "Validity must be between 1 minute and 30 days.",
+        ));
+    }
+    let recorded_at = now_ms();
+    let observed_at = reported_time(&input.observed_at, recorded_at, "Observed time")?;
+    let valid_until = observed_at + input.valid_for_minutes * 60_000;
+    let mut db = open(path)?;
+    let tx = db
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(ApiError::database)?;
+    ensure_subject(&tx, &input.subject)?;
+    let id = Uuid::new_v4().to_string();
+    let (application_id, resource_id) = input.subject.columns();
+    tx.execute(
+        "INSERT INTO observations (id, application_id, resource_id, result, summary, source, observed_at, valid_until, recorded_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![id, application_id, resource_id, input.result, summary, MANUAL, observed_at, valid_until, recorded_at],
+    )
+    .map_err(ApiError::database)?;
+    insert_event(
+        &tx,
+        NewEvent {
+            subject: &input.subject,
+            kind: "observation",
+            outcome: result_outcome(&input.result),
+            title: format!("Observation: {}", result_label(&input.result)),
+            detail: &summary,
+            observation_id: Some(&id),
+            incident_id: None,
+            occurred_at: observed_at,
+            recorded_at,
+        },
+    )?;
+    let observation = query_one(&tx, OBSERVATION_SELECT, &id, observation_from_row)?
+        .ok_or_else(|| ApiError::database("Observation was not saved."))?;
+    tx.commit().map_err(ApiError::database)?;
+    Ok(observation)
+}
+
+/// Opens a manual incident and records the opening in the timeline atomically.
+pub fn open_incident(path: &Path, input: IncidentInput) -> Result<Incident, ApiError> {
+    let title = required_text(&input.title, "Incident title")?;
+    allowed(&input.severity, SEVERITIES, "incident severity")?;
+    let description = input.description.trim();
+    let now = now_ms();
+    let mut db = open(path)?;
+    let tx = db
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(ApiError::database)?;
+    ensure_subject(&tx, &input.subject)?;
+    let id = Uuid::new_v4().to_string();
+    let (application_id, resource_id) = input.subject.columns();
+    tx.execute(
+        "INSERT INTO incidents (id, application_id, resource_id, title, description, severity, status, source, opened_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'open', ?7, ?8, ?8)",
+        params![id, application_id, resource_id, title, description, input.severity, MANUAL, now],
+    )
+    .map_err(ApiError::database)?;
+    insert_event(
+        &tx,
+        NewEvent {
+            subject: &input.subject,
+            kind: "incident",
+            outcome: severity_outcome(&input.severity),
+            title: format!("Incident opened: {title}"),
+            detail: description,
+            observation_id: None,
+            incident_id: Some(&id),
+            occurred_at: now,
+            recorded_at: now,
+        },
+    )?;
+    let incident = query_one(&tx, INCIDENT_SELECT, &id, incident_from_row)?
+        .ok_or_else(|| ApiError::database("Incident was not saved."))?;
+    tx.commit().map_err(ApiError::database)?;
+    Ok(incident)
+}
+
+/// Moves an incident to another status and keeps the change, with its note, in the timeline.
+pub fn update_incident_status(
+    path: &Path,
+    input: IncidentStatusInput,
+) -> Result<Incident, ApiError> {
+    allowed(&input.status, INCIDENT_STATUSES, "incident status")?;
+    let now = now_ms();
+    let mut db = open(path)?;
+    let tx = db
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(ApiError::database)?;
+    let current = query_one(&tx, INCIDENT_SELECT, &input.id, incident_from_row)?
+        .ok_or_else(|| ApiError::invalid(format!("Incident {} does not exist.", input.id)))?;
+    if current.status == input.status {
+        return Err(ApiError::invalid(format!(
+            "The incident is already {}.",
+            input.status
+        )));
+    }
+    let resolved_at = (input.status == "resolved").then_some(now);
+    tx.execute(
+        "UPDATE incidents SET status = ?2, updated_at = ?3, resolved_at = ?4 WHERE id = ?1",
+        params![input.id, input.status, now, resolved_at],
+    )
+    .map_err(ApiError::database)?;
+    let (change, outcome) = match input.status.as_str() {
+        "resolved" => ("resolved", "success"),
+        "investigating" => ("under investigation", "info"),
+        _ => ("reopened", severity_outcome(&current.severity)),
+    };
+    insert_event(
+        &tx,
+        NewEvent {
+            subject: &current.subject,
+            kind: "incident",
+            outcome,
+            title: format!("Incident {change}: {}", current.title),
+            detail: input.note.trim(),
+            observation_id: None,
+            incident_id: Some(&input.id),
+            occurred_at: now,
+            recorded_at: now,
+        },
+    )?;
+    let incident = query_one(&tx, INCIDENT_SELECT, &input.id, incident_from_row)?
+        .ok_or_else(|| ApiError::database("Incident was not saved."))?;
+    tx.commit().map_err(ApiError::database)?;
+    Ok(incident)
+}
+
+/// Logs something that happened to an application or resource, as reported by a person.
+pub fn record_event(path: &Path, input: EventInput) -> Result<Event, ApiError> {
+    allowed(&input.kind, MANUAL_EVENT_KINDS, "event kind")?;
+    allowed(&input.outcome, EVENT_OUTCOMES, "event outcome")?;
+    let title = required_text(&input.title, "Event title")?;
+    let recorded_at = now_ms();
+    let occurred_at = reported_time(&input.occurred_at, recorded_at, "Event time")?;
+    let mut db = open(path)?;
+    let tx = db
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(ApiError::database)?;
+    ensure_subject(&tx, &input.subject)?;
+    let id = insert_event(
+        &tx,
+        NewEvent {
+            subject: &input.subject,
+            kind: &input.kind,
+            outcome: &input.outcome,
+            title,
+            detail: input.detail.trim(),
+            observation_id: None,
+            incident_id: None,
+            occurred_at,
+            recorded_at,
+        },
+    )?;
+    let event = query_one(&tx, EVENT_SELECT, &id, event_from_row)?
+        .ok_or_else(|| ApiError::database("Event was not saved."))?;
+    tx.commit().map_err(ApiError::database)?;
+    Ok(event)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::inventory::{
+        list, save_application, save_resource, ApplicationInput, ComponentInput, ResourceInput,
+    };
+
+    fn path() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("devhq-records-test-{}.sqlite3", Uuid::new_v4()))
+    }
+
+    /// An application whose API component runs on a resource. Returns (application, resource) IDs.
+    fn seed(path: &Path) -> (String, String) {
+        let resource = save_resource(
+            path,
+            ResourceInput {
+                id: None,
+                name: "Host".into(),
+                kind: "server".into(),
+                description: String::new(),
+                operating_system: "Linux".into(),
+            },
+        )
+        .unwrap();
+        let application = save_application(
+            path,
+            ApplicationInput {
+                id: None,
+                name: "Shop".into(),
+                description: String::new(),
+                lifecycle: "production".into(),
+                version: None,
+                components: vec![ComponentInput {
+                    id: None,
+                    name: "API".into(),
+                    kind: "backend".into(),
+                    resource_id: Some(resource.id.clone()),
+                }],
+            },
+        )
+        .unwrap();
+        (application.id, resource.id)
+    }
+
+    fn observation(subject: Subject) -> ObservationInput {
+        ObservationInput {
+            subject,
+            result: "healthy".into(),
+            summary: "Checked by hand".into(),
+            observed_at: None,
+            valid_for_minutes: 60,
+        }
+    }
+
+    fn incident(subject: Subject) -> IncidentInput {
+        IncidentInput {
+            subject,
+            title: "Checkout failing".into(),
+            description: "502 on /pay".into(),
+            severity: "critical".into(),
+        }
+    }
+
+    fn event(subject: Subject) -> EventInput {
+        EventInput {
+            subject,
+            kind: "deployment".into(),
+            outcome: "success".into(),
+            title: "Deployed 1.5".into(),
+            detail: String::new(),
+            occurred_at: None,
+        }
+    }
+
+    fn assert_no_records(path: &Path) {
+        let snapshot = list(path).unwrap();
+        assert!(snapshot.observations.is_empty());
+        assert!(snapshot.incidents.is_empty());
+        assert!(snapshot.events.is_empty());
+    }
+
+    #[test]
+    fn records_persist_with_context_across_reopen() {
+        let path = path();
+        let (application_id, resource_id) = seed(&path);
+        let application = Subject::Application {
+            id: application_id.clone(),
+        };
+        let resource = Subject::Resource {
+            id: resource_id.clone(),
+        };
+        let observed = record_observation(
+            &path,
+            ObservationInput {
+                result: "unhealthy".into(),
+                summary: "  Disk at 97%  ".into(),
+                observed_at: Some("2025-03-01T11:15:30+01:00".into()),
+                valid_for_minutes: 90,
+                ..observation(resource.clone())
+            },
+        )
+        .unwrap();
+        assert_eq!(observed.observed_at, "2025-03-01T10:15:30Z");
+        assert_eq!(observed.valid_until, "2025-03-01T11:45:30Z");
+        assert_eq!(observed.summary, "Disk at 97%");
+        assert_eq!(observed.source, "manual");
+        let opened = open_incident(&path, incident(application.clone())).unwrap();
+        assert_eq!((opened.status.as_str(), opened.resolved_at), ("open", None));
+        update_incident_status(
+            &path,
+            IncidentStatusInput {
+                id: opened.id.clone(),
+                status: "investigating".into(),
+                note: String::new(),
+            },
+        )
+        .unwrap();
+        let resolved = update_incident_status(
+            &path,
+            IncidentStatusInput {
+                id: opened.id.clone(),
+                status: "resolved".into(),
+                note: " Rolled back to 1.4 ".into(),
+            },
+        )
+        .unwrap();
+        assert!(resolved.resolved_at.is_some());
+        let logged = record_event(&path, event(application.clone())).unwrap();
+
+        // Every call opened and closed its own connection; this read is a fresh reopen.
+        let reopened = list(&path).unwrap();
+        assert_eq!(reopened.observations, vec![observed.clone()]);
+        assert_eq!(reopened.incidents, vec![resolved]);
+        assert_eq!(reopened.events.len(), 5);
+        assert_eq!(reopened.events[0], logged);
+        let observation_event = reopened.events.last().unwrap();
+        assert_eq!(observation_event.subject, resource);
+        assert_eq!(observation_event.kind, "observation");
+        assert_eq!(observation_event.outcome, "failure");
+        assert_eq!(observation_event.detail, "Disk at 97%");
+        assert_eq!(
+            observation_event.observation_id.as_deref(),
+            Some(observed.id.as_str())
+        );
+        assert_eq!(observation_event.occurred_at, observed.observed_at);
+        let incident_events: Vec<_> = reopened
+            .events
+            .iter()
+            .filter(|item| item.incident_id.as_deref() == Some(opened.id.as_str()))
+            .collect();
+        assert_eq!(
+            incident_events
+                .iter()
+                .map(|item| item.title.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "Incident resolved: Checkout failing",
+                "Incident under investigation: Checkout failing",
+                "Incident opened: Checkout failing",
+            ]
+        );
+        assert_eq!(incident_events[0].detail, "Rolled back to 1.4");
+        assert!(incident_events
+            .iter()
+            .all(|item| item.subject == application));
+        assert!(reopened.events.iter().all(|item| item.source == "manual"));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn rejects_invalid_references_without_partial_writes() {
+        let path = path();
+        let (application_id, resource_id) = seed(&path);
+        let missing = Subject::Resource { id: "ghost".into() };
+        let error = record_observation(&path, observation(missing.clone())).unwrap_err();
+        assert_eq!(error.code, "invalid_input");
+        assert!(error.message.contains("ghost"));
+        let missing_application = Subject::Application { id: "ghost".into() };
+        for error in [
+            open_incident(&path, incident(missing_application.clone())).unwrap_err(),
+            record_event(&path, event(missing)).unwrap_err(),
+            // The subject type matters: an application ID is not a resource.
+            record_observation(&path, observation(Subject::Resource { id: application_id }))
+                .unwrap_err(),
+            record_event(&path, event(Subject::Application { id: resource_id })).unwrap_err(),
+            update_incident_status(
+                &path,
+                IncidentStatusInput {
+                    id: "ghost".into(),
+                    status: "resolved".into(),
+                    note: String::new(),
+                },
+            )
+            .unwrap_err(),
+        ] {
+            assert_eq!(error.code, "invalid_input", "{}", error.message);
+        }
+        assert_no_records(&path);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn rejects_invalid_values_before_writing() {
+        let path = path();
+        let (application_id, _) = seed(&path);
+        let application = Subject::Application { id: application_id };
+        let future = format_time(now_ms() + 10 * 60_000).unwrap();
+        let invalid_observations = [
+            ObservationInput {
+                observed_at: Some(future.clone()),
+                ..observation(application.clone())
+            },
+            ObservationInput {
+                observed_at: Some("yesterday".into()),
+                ..observation(application.clone())
+            },
+            ObservationInput {
+                valid_for_minutes: 0,
+                ..observation(application.clone())
+            },
+            ObservationInput {
+                valid_for_minutes: MAX_VALIDITY_MINUTES + 1,
+                ..observation(application.clone())
+            },
+            ObservationInput {
+                result: "fine".into(),
+                ..observation(application.clone())
+            },
+            ObservationInput {
+                summary: "   ".into(),
+                ..observation(application.clone())
+            },
+        ];
+        for input in invalid_observations {
+            assert_eq!(
+                record_observation(&path, input).unwrap_err().code,
+                "invalid_input"
+            );
+        }
+        for input in [
+            EventInput {
+                kind: "observation".into(),
+                ..event(application.clone())
+            },
+            EventInput {
+                outcome: "great".into(),
+                ..event(application.clone())
+            },
+            EventInput {
+                occurred_at: Some(future),
+                ..event(application.clone())
+            },
+        ] {
+            assert_eq!(
+                record_event(&path, input).unwrap_err().code,
+                "invalid_input"
+            );
+        }
+        for input in [
+            IncidentInput {
+                severity: "urgent".into(),
+                ..incident(application.clone())
+            },
+            IncidentInput {
+                title: " ".into(),
+                ..incident(application.clone())
+            },
+        ] {
+            assert_eq!(
+                open_incident(&path, input).unwrap_err().code,
+                "invalid_input"
+            );
+        }
+        assert_no_records(&path);
+        let opened = open_incident(&path, incident(application)).unwrap();
+        let unchanged = update_incident_status(
+            &path,
+            IncidentStatusInput {
+                id: opened.id,
+                status: "open".into(),
+                note: String::new(),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(unchanged.code, "invalid_input");
+        let snapshot = list(&path).unwrap();
+        assert_eq!(snapshot.incidents[0].status, "open");
+        assert_eq!(
+            snapshot.incidents[0].updated_at,
+            snapshot.incidents[0].opened_at
+        );
+        assert_eq!(
+            snapshot.events.len(),
+            1,
+            "a rejected change writes no event"
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn schema_rejects_broken_relationships() {
+        let path = path();
+        let (application_id, resource_id) = seed(&path);
+        let db = open(&path).unwrap();
+        let observation = |application: Option<&str>, resource: Option<&str>, until: i64| {
+            db.execute(
+                "INSERT INTO observations (id, application_id, resource_id, result, summary, source, observed_at, valid_until, recorded_at)
+                 VALUES (?1, ?2, ?3, 'healthy', 'ok', 'manual', 10, ?4, 10)",
+                params![Uuid::new_v4().to_string(), application, resource, until],
+            )
+        };
+        let app = Some(application_id.as_str());
+        let res = Some(resource_id.as_str());
+        assert!(observation(app, res, 20).is_err(), "two subjects");
+        assert!(observation(None, None, 20).is_err(), "no subject");
+        assert!(
+            observation(Some("ghost"), None, 20).is_err(),
+            "missing application"
+        );
+        assert!(
+            observation(None, Some("ghost"), 20).is_err(),
+            "missing resource"
+        );
+        assert!(
+            observation(app, None, 10).is_err(),
+            "validity must end after the observation"
+        );
+        assert!(observation(app, None, 20).is_ok());
+        assert!(
+            db.execute(
+                "INSERT INTO events (id, application_id, kind, outcome, title, source, occurred_at, recorded_at)
+                 VALUES ('orphan', ?1, 'observation', 'success', 'Observed', 'manual', 1, 1)",
+                [&application_id],
+            )
+            .is_err(),
+            "an observation event must reference its observation"
+        );
+        assert!(
+            db.execute(
+                "INSERT INTO incidents (id, application_id, title, severity, status, source, opened_at, updated_at)
+                 VALUES ('closed', ?1, 'Done', 'info', 'resolved', 'manual', 1, 1)",
+                [&application_id],
+            )
+            .is_err(),
+            "a resolved incident needs its resolution time"
+        );
+        assert!(
+            db.execute(
+                "UPDATE observations SET source = 'docker' WHERE application_id = ?1",
+                [&application_id]
+            )
+            .is_err(),
+            "only manual sources exist in this schema version"
+        );
+        assert!(
+            db.execute("DELETE FROM applications WHERE id = ?1", [&application_id])
+                .is_err(),
+            "history keeps its subject"
+        );
+        drop(db);
+        std::fs::remove_file(path).unwrap();
+    }
+}

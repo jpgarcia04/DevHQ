@@ -22,6 +22,7 @@ import {
   RealUnavailablePage,
 } from '@/features/inventory/real-pages'
 import { InventoryState } from '@/features/inventory/inventory-state'
+import { RealActivityPage, RealIncidentsPage } from '@/features/inventory/records-pages'
 
 export function App() {
   return (
@@ -54,14 +55,8 @@ function AppRoutes() {
           path="automations"
           element={demo ? <AutomationsPage /> : <RealUnavailablePage title="Automations" />}
         />
-        <Route
-          path="incidents"
-          element={demo ? <IncidentsPage /> : <RealUnavailablePage title="Incidents" />}
-        />
-        <Route
-          path="activity"
-          element={demo ? <ActivityPage /> : <RealUnavailablePage title="Activity" />}
-        />
+        <Route path="incidents" element={demo ? <IncidentsPage /> : <RealIncidentsPage />} />
+        <Route path="activity" element={demo ? <ActivityPage /> : <RealActivityPage />} />
         <Route
           path="security"
           element={

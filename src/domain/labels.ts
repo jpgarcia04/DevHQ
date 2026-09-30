@@ -1,4 +1,12 @@
-import type { HealthStatus, IncidentSeverity, IncidentStatus, Lifecycle } from './models'
+import type {
+  EventOutcome,
+  HealthStatus,
+  IncidentSeverity,
+  IncidentStatus,
+  Lifecycle,
+  RecordSource,
+  RecordedEventKind,
+} from './models'
 
 export const healthLabels: Record<HealthStatus, string> = {
   healthy: 'Healthy',
@@ -21,4 +29,21 @@ export const incidentStatusLabels: Record<IncidentStatus, string> = {
   open: 'Open',
   investigating: 'Investigating',
   resolved: 'Resolved',
+}
+export const sourceLabels: Record<RecordSource, string> = {
+  manual: 'Manual entry',
+}
+export const eventKindLabels: Record<RecordedEventKind, string> = {
+  observation: 'Observation',
+  incident: 'Incident',
+  deployment: 'Deployment',
+  backup: 'Backup',
+  maintenance: 'Maintenance',
+  note: 'Note',
+}
+export const eventOutcomeLabels: Record<EventOutcome, string> = {
+  success: 'Success',
+  warning: 'Warning',
+  failure: 'Problem',
+  info: 'Info',
 }
