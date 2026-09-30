@@ -1,0 +1,12 @@
+node_modules/
+dist/
+*.local
+*.tsbuildinfo
+src-tauri/target/
+src-tauri/gen/schemas/
+test-results/
+playwright-report/
+.DS_Store
+.env
+.env.*
+!.env.example

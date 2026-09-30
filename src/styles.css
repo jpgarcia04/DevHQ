@@ -1,0 +1,149 @@
+@import 'tailwindcss';
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--foreground);
+  --color-popover: var(--card);
+  --color-popover-foreground: var(--foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: #181321;
+  --color-secondary: #23252e;
+  --color-secondary-foreground: var(--foreground);
+  --color-muted: #1c1f26;
+  --color-muted-foreground: #969ba8;
+  --color-accent: #272331;
+  --color-accent-foreground: #ddd2ff;
+  --color-destructive: #f29396;
+  --color-border: #2a2d36;
+  --color-input: #343742;
+  --color-ring: #b5a4f5;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 9px;
+  --radius-xl: 12px;
+  --font-sans: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: 'Cascadia Code', 'SFMono-Regular', Consolas, monospace;
+}
+
+:root {
+  color-scheme: dark;
+  --background: #101216;
+  --foreground: #ececf0;
+  --card: #17191f;
+  --primary: #c0aff5;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply m-0 overflow-hidden bg-background font-sans text-sm text-foreground;
+  }
+  button,
+  a,
+  input,
+  select,
+  summary {
+    -webkit-tap-highlight-color: transparent;
+  }
+  button:not(:disabled),
+  summary,
+  select {
+    cursor: pointer;
+  }
+  a,
+  button,
+  input,
+  select,
+  summary {
+    @apply outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-4 focus-visible:ring-offset-background;
+  }
+  ::selection {
+    background: #b5a4f540;
+  }
+  ::-webkit-scrollbar {
+    width: 7px;
+    height: 7px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #353844;
+    border-radius: 8px;
+  }
+}
+
+@layer components {
+  .panel {
+    @apply rounded-xl border bg-card;
+  }
+  .eyebrow {
+    @apply text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground;
+  }
+  .section-heading {
+    @apply text-[15px] font-semibold tracking-[-0.02em];
+  }
+  .quiet-link {
+    @apply inline-flex items-center gap-1.5 rounded-sm text-xs text-muted-foreground transition-colors hover:text-foreground;
+  }
+  .page-stack {
+    @apply space-y-7;
+  }
+  .filter-select {
+    @apply h-9 rounded-md border bg-card px-3 text-xs text-foreground;
+  }
+  .health-dot {
+    @apply inline-block size-1.5 shrink-0 rounded-full bg-current;
+  }
+  .art-guardian {
+    --art-color: #8fb9ad;
+    --art-bg: #1b2928;
+  }
+  .art-brain {
+    --art-color: #afa0d2;
+    --art-bg: #242131;
+  }
+  .art-rentia {
+    --art-color: #c5b28e;
+    --art-bg: #29261f;
+  }
+  .art-clipops {
+    --art-color: #a2b8cd;
+    --art-bg: #202731;
+  }
+  .app-art {
+    color: var(--art-color);
+    background: var(--art-bg);
+  }
+  .app-card {
+    @apply block overflow-hidden rounded-xl border bg-card transition-colors hover:border-[#555162];
+  }
+  .app-card:hover .app-card-arrow {
+    @apply translate-x-1 text-foreground;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+@media (max-height: 700px) {
+  .sidebar-preview {
+    display: none;
+  }
+  .sidebar-settings {
+    padding-top: 0.5rem;
+  }
+}

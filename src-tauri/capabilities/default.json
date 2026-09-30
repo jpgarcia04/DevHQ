@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The foundation has no native commands or privileged integrations.",
+  "windows": ["main"],
+  "permissions": []
+}
