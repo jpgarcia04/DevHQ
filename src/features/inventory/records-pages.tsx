@@ -168,7 +168,7 @@ export function RealActivityPage() {
         ) : (
           <EmptyState
             title="No activity recorded"
-            description="Record an observation, open an incident or log an event. DevHQ does not collect activity automatically yet."
+            description="Record an observation, run an HTTP check, open an incident or log an event. DevHQ does not collect activity in the background."
           />
         )}
       </InventoryState>

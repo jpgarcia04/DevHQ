@@ -1,10 +1,13 @@
 import { createContext, useContext } from 'react'
+import type { EntityRef, Observation } from '@/domain/models'
 import type {
   ApplicationInput,
   EventInput,
+  HttpCheckInput,
   IncidentInput,
   IncidentStatusInput,
   InventorySnapshot,
+  MonitorStatus,
   ObservationInput,
   ResourceInput,
 } from './inventory-api'
@@ -27,6 +30,17 @@ export interface InventoryContextValue {
   openIncident: (input: IncidentInput) => Promise<void>
   updateIncidentStatus: (input: IncidentStatusInput) => Promise<void>
   recordEvent: (input: EventInput) => Promise<void>
+  saveHttpCheck: (input: HttpCheckInput) => Promise<void>
+  removeHttpCheck: (subject: EntityRef) => Promise<void>
+  setHttpCheckPaused: (subject: EntityRef, paused: boolean) => Promise<void>
+  /** Runs the subject's HTTP check once; resolves with the observation it recorded. */
+  runHttpCheck: (subject: EntityRef) => Promise<Observation>
+  /** Subject keys whose HTTP check was asked to run from this window. */
+  checking: string[]
+  /** Supervision as the native process reports it; null until it first reports. */
+  monitor: MonitorStatus | null
+  /** The window could not receive supervision status. */
+  monitorError: string | null
 }
 
 export const InventoryContext = createContext<InventoryContextValue | null>(null)

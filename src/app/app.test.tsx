@@ -111,6 +111,15 @@ describe('workspace navigation', () => {
     expect(within(resource).getByText('Disk usage increased significantly')).toBeInTheDocument()
     expect(within(resource).getByText('Open resource incidents')).toBeInTheDocument()
   })
+  it('keeps the demo a labelled example that never offers or shows real checks', () => {
+    renderApp('/infrastructure')
+    expect(screen.getByText('Demo · example data')).toBeInTheDocument()
+    expect(screen.getByText('DEMO DATA · NO LIVE CONNECTIONS')).toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: /Run check|Configure HTTP check/ }),
+    ).not.toBeInTheDocument()
+    expect(screen.queryByText('Automated · HTTP check')).not.toBeInTheDocument()
+  })
   it.each([
     ['/missing', 'View not found'],
     ['/applications/missing', 'Application not found'],

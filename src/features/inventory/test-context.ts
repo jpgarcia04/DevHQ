@@ -27,6 +27,7 @@ export function inventoryContext(
       observations: [],
       incidents: [],
       events: [],
+      httpChecks: [],
     },
     loadState: 'ready',
     error: null,
@@ -38,6 +39,15 @@ export function inventoryContext(
     openIncident: vi.fn(async () => {}),
     updateIncidentStatus: vi.fn(async () => {}),
     recordEvent: vi.fn(async () => {}),
+    saveHttpCheck: vi.fn(async () => {}),
+    removeHttpCheck: vi.fn(async () => {}),
+    setHttpCheckPaused: vi.fn(async () => {}),
+    runHttpCheck: vi.fn(async () => {
+      throw new Error('runHttpCheck is not mocked in this test')
+    }),
+    checking: [],
+    monitor: { checks: [], error: null, recorded: 0 },
+    monitorError: null,
     ...overrides,
   }
 }

@@ -18,3 +18,14 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 time = { version = "0.3", features = ["formatting", "parsing"] }
 uuid = { version = "1", features = ["v4"] }
+# HTTP checks: the operating system's TLS stack and trust store, no proxy,
+# cookies, HTTP/2 or decompression.
+reqwest = { version = "0.13", default-features = false, features = ["native-tls"] }
+native-tls = "0.2"
+serde_json = "1"
+# The supervision loop runs on Tauri's own Tokio runtime.
+tokio = { version = "1", features = ["net", "time", "rt", "sync", "macros"] }
+
+[dev-dependencies]
+# Paused time: supervision is tested on a simulated clock, without real waits.
+tokio = { version = "1", features = ["test-util"] }

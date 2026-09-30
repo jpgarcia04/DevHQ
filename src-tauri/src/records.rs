@@ -14,17 +14,19 @@ const INCIDENT_STATUSES: &[&str] = &["open", "investigating", "resolved"];
 // Observation and incident events are written by their own use cases, never by hand.
 const MANUAL_EVENT_KINDS: &[&str] = &["deployment", "backup", "maintenance", "note"];
 const EVENT_OUTCOMES: &[&str] = &["success", "warning", "failure", "info"];
-// Every record in this increment is entered by a person. Integrations will add their own sources.
-const MANUAL: &str = "manual";
-const MAX_VALIDITY_MINUTES: i64 = 30 * 24 * 60;
+// Who produced a record: a person, or DevHQ running an HTTP check the person asked for.
+// Incidents and hand-logged events are always manual.
+pub(crate) const MANUAL: &str = "manual";
+pub(crate) const HTTP: &str = "http";
+pub(crate) const MAX_VALIDITY_MINUTES: i64 = 30 * 24 * 60;
 // Tolerates small clock differences; anything later is a claim about the future.
 const CLOCK_SKEW_MS: i64 = 60_000;
 
-const OBSERVATION_SELECT: &str = "SELECT id, application_id, resource_id, result, summary, source, observed_at, valid_until, recorded_at FROM observations";
+const OBSERVATION_SELECT: &str = "SELECT id, application_id, resource_id, result, summary, source, observed_at, valid_until, recorded_at, http_url, http_expected_status, http_status, http_latency_ms, http_error, http_redirects FROM observations";
 const INCIDENT_SELECT: &str = "SELECT id, application_id, resource_id, title, description, severity, status, source, opened_at, updated_at, resolved_at FROM incidents";
 const EVENT_SELECT: &str = "SELECT id, application_id, resource_id, kind, outcome, title, detail, source, observation_id, incident_id, occurred_at, recorded_at FROM events";
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum Subject {
     Application { id: String },
@@ -32,14 +34,21 @@ pub enum Subject {
 }
 
 impl Subject {
-    fn columns(&self) -> (Option<&str>, Option<&str>) {
+    pub(crate) fn columns(&self) -> (Option<&str>, Option<&str>) {
         match self {
             Subject::Application { id } => (Some(id), None),
             Subject::Resource { id } => (None, Some(id)),
         }
     }
 
-    fn from_columns(
+    pub(crate) fn label(&self) -> &'static str {
+        match self {
+            Subject::Application { .. } => "application",
+            Subject::Resource { .. } => "resource",
+        }
+    }
+
+    pub(crate) fn from_columns(
         application_id: Option<String>,
         resource_id: Option<String>,
     ) -> rusqlite::Result<Self> {
@@ -66,6 +75,40 @@ pub struct Observation {
     pub observed_at: String,
     pub valid_until: String,
     pub recorded_at: String,
+    /// Technical evidence of an HTTP check; absent for manual entries.
+    pub http: Option<HttpEvidence>,
+}
+
+/// What an HTTP check requested and what came back. `status` is the last status received
+/// (absent when no response arrived); `error` explains any failure of the checked system.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HttpEvidence {
+    pub url: String,
+    pub expected_status: i64,
+    pub status: Option<i64>,
+    pub latency_ms: i64,
+    pub error: Option<String>,
+    pub redirects: Vec<Redirect>,
+}
+
+/// One redirect that was followed: the status that sent it and where it pointed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Redirect {
+    pub status: i64,
+    pub location: String,
+}
+
+impl HttpEvidence {
+    /// Healthy exactly when the expected status arrived without error. The schema enforces it too.
+    pub(crate) fn result(&self) -> &'static str {
+        if self.error.is_none() && self.status == Some(self.expected_status) {
+            "healthy"
+        } else {
+            "unhealthy"
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -137,7 +180,7 @@ pub struct EventInput {
     pub occurred_at: Option<String>,
 }
 
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| {
@@ -167,14 +210,14 @@ fn reported_time(value: &Option<String>, now: i64, label: &str) -> Result<i64, A
     Ok(time)
 }
 
-fn format_time(ms: i64) -> Option<String> {
+pub(crate) fn format_time(ms: i64) -> Option<String> {
     OffsetDateTime::from_unix_timestamp_nanos(i128::from(ms) * 1_000_000)
         .ok()?
         .format(&Rfc3339)
         .ok()
 }
 
-fn time_at(row: &Row, index: usize) -> rusqlite::Result<String> {
+pub(crate) fn time_at(row: &Row, index: usize) -> rusqlite::Result<String> {
     let ms: i64 = row.get(index)?;
     format_time(ms).ok_or(rusqlite::Error::IntegralValueOutOfRange(index, ms))
 }
@@ -187,6 +230,22 @@ fn optional_time_at(row: &Row, index: usize) -> rusqlite::Result<Option<String>>
 }
 
 fn observation_from_row(row: &Row) -> rusqlite::Result<Observation> {
+    let http = match row.get::<_, Option<String>>(9)? {
+        Some(url) => {
+            let redirects: String = row.get(14)?;
+            Some(HttpEvidence {
+                url,
+                expected_status: row.get(10)?,
+                status: row.get(11)?,
+                latency_ms: row.get(12)?,
+                error: row.get(13)?,
+                redirects: serde_json::from_str(&redirects).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(14, Type::Text, Box::new(error))
+                })?,
+            })
+        }
+        None => None,
+    };
     Ok(Observation {
         id: row.get(0)?,
         subject: Subject::from_columns(row.get(1)?, row.get(2)?)?,
@@ -196,6 +255,7 @@ fn observation_from_row(row: &Row) -> rusqlite::Result<Observation> {
         observed_at: time_at(row, 6)?,
         valid_until: time_at(row, 7)?,
         recorded_at: time_at(row, 8)?,
+        http,
     })
 }
 
@@ -284,7 +344,7 @@ pub(crate) fn load(tx: &Transaction) -> Result<Records, ApiError> {
     })
 }
 
-fn ensure_subject(tx: &Transaction, subject: &Subject) -> Result<(), ApiError> {
+pub(crate) fn ensure_subject(tx: &Transaction, subject: &Subject) -> Result<(), ApiError> {
     let (sql, id, label) = match subject {
         Subject::Application { id } => (
             "SELECT EXISTS(SELECT 1 FROM applications WHERE id = ?1)",
@@ -311,6 +371,7 @@ fn ensure_subject(tx: &Transaction, subject: &Subject) -> Result<(), ApiError> {
 
 struct NewEvent<'a> {
     subject: &'a Subject,
+    source: &'a str,
     kind: &'a str,
     outcome: &'a str,
     title: String,
@@ -327,7 +388,7 @@ fn insert_event(tx: &Transaction, event: NewEvent) -> Result<String, ApiError> {
     tx.execute(
         "INSERT INTO events (id, application_id, resource_id, kind, outcome, title, detail, source, observation_id, incident_id, occurred_at, recorded_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-        params![id, application_id, resource_id, event.kind, event.outcome, event.title, event.detail, MANUAL, event.observation_id, event.incident_id, event.occurred_at, event.recorded_at],
+        params![id, application_id, resource_id, event.kind, event.outcome, event.title, event.detail, event.source, event.observation_id, event.incident_id, event.occurred_at, event.recorded_at],
     )
     .map_err(ApiError::database)?;
     Ok(id)
@@ -357,6 +418,96 @@ fn severity_outcome(severity: &str) -> &'static str {
     }
 }
 
+/// An observation ready to store. Both sources go through the same path, so every
+/// observation gets its timeline event in the same transaction.
+pub(crate) struct NewObservation<'a> {
+    pub subject: &'a Subject,
+    pub result: &'a str,
+    pub summary: &'a str,
+    pub observed_at: i64,
+    pub valid_for_minutes: i64,
+    pub recorded_at: i64,
+    pub http: Option<&'a HttpEvidence>,
+}
+
+pub(crate) fn store_observation(path: &Path, new: NewObservation) -> Result<Observation, ApiError> {
+    let valid_until = new.observed_at + new.valid_for_minutes * 60_000;
+    let (source, title) = match new.http {
+        Some(_) => (HTTP, "HTTP check"),
+        None => (MANUAL, "Observation"),
+    };
+    let redirects = new
+        .http
+        .map(|http| serde_json::to_string(&http.redirects))
+        .transpose()
+        .map_err(ApiError::database)?;
+    let mut db = open(path)?;
+    let tx = db
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(ApiError::database)?;
+    ensure_subject(&tx, new.subject)?;
+    let (application_id, resource_id) = new.subject.columns();
+    // Removing a check cancels its run in flight. If the removal commits first, this write is
+    // refused; SQLite orders the two, so a removed check never records a late result.
+    if new.http.is_some() {
+        let configured: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM http_checks WHERE application_id IS ?1 AND resource_id IS ?2)",
+                params![application_id, resource_id],
+                |row| row.get(0),
+            )
+            .map_err(ApiError::database)?;
+        if !configured {
+            return Err(ApiError::cancelled(
+                "The HTTP check was removed while it ran. Nothing was recorded.",
+            ));
+        }
+    }
+    let id = Uuid::new_v4().to_string();
+    tx.execute(
+        "INSERT INTO observations (id, application_id, resource_id, result, summary, source, observed_at, valid_until, recorded_at,
+                                   http_url, http_expected_status, http_status, http_latency_ms, http_error, http_redirects)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+        params![
+            id,
+            application_id,
+            resource_id,
+            new.result,
+            new.summary,
+            source,
+            new.observed_at,
+            valid_until,
+            new.recorded_at,
+            new.http.map(|http| &http.url),
+            new.http.map(|http| http.expected_status),
+            new.http.and_then(|http| http.status),
+            new.http.map(|http| http.latency_ms),
+            new.http.and_then(|http| http.error.as_ref()),
+            redirects,
+        ],
+    )
+    .map_err(ApiError::database)?;
+    insert_event(
+        &tx,
+        NewEvent {
+            subject: new.subject,
+            source,
+            kind: "observation",
+            outcome: result_outcome(new.result),
+            title: format!("{title}: {}", result_label(new.result)),
+            detail: new.summary,
+            observation_id: Some(&id),
+            incident_id: None,
+            occurred_at: new.observed_at,
+            recorded_at: new.recorded_at,
+        },
+    )?;
+    let observation = query_one(&tx, OBSERVATION_SELECT, &id, observation_from_row)?
+        .ok_or_else(|| ApiError::database("Observation was not saved."))?;
+    tx.commit().map_err(ApiError::database)?;
+    Ok(observation)
+}
+
 /// Stores a manual observation and its timeline event atomically.
 pub fn record_observation(path: &Path, input: ObservationInput) -> Result<Observation, ApiError> {
     allowed(&input.result, OBSERVATION_RESULTS, "observation result")?;
@@ -368,38 +519,18 @@ pub fn record_observation(path: &Path, input: ObservationInput) -> Result<Observ
     }
     let recorded_at = now_ms();
     let observed_at = reported_time(&input.observed_at, recorded_at, "Observed time")?;
-    let valid_until = observed_at + input.valid_for_minutes * 60_000;
-    let mut db = open(path)?;
-    let tx = db
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(ApiError::database)?;
-    ensure_subject(&tx, &input.subject)?;
-    let id = Uuid::new_v4().to_string();
-    let (application_id, resource_id) = input.subject.columns();
-    tx.execute(
-        "INSERT INTO observations (id, application_id, resource_id, result, summary, source, observed_at, valid_until, recorded_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-        params![id, application_id, resource_id, input.result, summary, MANUAL, observed_at, valid_until, recorded_at],
-    )
-    .map_err(ApiError::database)?;
-    insert_event(
-        &tx,
-        NewEvent {
+    store_observation(
+        path,
+        NewObservation {
             subject: &input.subject,
-            kind: "observation",
-            outcome: result_outcome(&input.result),
-            title: format!("Observation: {}", result_label(&input.result)),
-            detail: &summary,
-            observation_id: Some(&id),
-            incident_id: None,
-            occurred_at: observed_at,
+            result: &input.result,
+            summary: &summary,
+            observed_at,
+            valid_for_minutes: input.valid_for_minutes,
             recorded_at,
+            http: None,
         },
-    )?;
-    let observation = query_one(&tx, OBSERVATION_SELECT, &id, observation_from_row)?
-        .ok_or_else(|| ApiError::database("Observation was not saved."))?;
-    tx.commit().map_err(ApiError::database)?;
-    Ok(observation)
+    )
 }
 
 /// Opens a manual incident and records the opening in the timeline atomically.
@@ -425,6 +556,7 @@ pub fn open_incident(path: &Path, input: IncidentInput) -> Result<Incident, ApiE
         &tx,
         NewEvent {
             subject: &input.subject,
+            source: MANUAL,
             kind: "incident",
             outcome: severity_outcome(&input.severity),
             title: format!("Incident opened: {title}"),
@@ -475,6 +607,7 @@ pub fn update_incident_status(
         &tx,
         NewEvent {
             subject: &current.subject,
+            source: MANUAL,
             kind: "incident",
             outcome,
             title: format!("Incident {change}: {}", current.title),
@@ -507,6 +640,7 @@ pub fn record_event(path: &Path, input: EventInput) -> Result<Event, ApiError> {
         &tx,
         NewEvent {
             subject: &input.subject,
+            source: MANUAL,
             kind: &input.kind,
             outcome: &input.outcome,
             title,

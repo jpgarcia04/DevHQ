@@ -183,7 +183,7 @@ export function Shell() {
               ? 'Demo · example data'
               : unavailable
                 ? 'Local inventory · unavailable'
-                : 'Local inventory · manual evidence'}
+                : 'Local inventory · recorded evidence'}
           </span>
         </div>
         <main
@@ -201,7 +201,7 @@ export function Shell() {
             <span className="size-1 rounded-full bg-primary" />
             {mode === 'demo'
               ? 'DEMO DATA · NO LIVE CONNECTIONS'
-              : 'LOCAL INVENTORY · MANUAL ENTRIES · NO AUTOMATED CHECKS'}
+              : 'LOCAL INVENTORY · MANUAL ENTRIES · HTTP CHECKS ONLY ON REQUEST'}
           </span>
           <span>
             {mode === 'demo'

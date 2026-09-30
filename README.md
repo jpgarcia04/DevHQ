@@ -9,8 +9,8 @@ recordar eventos, relacionar infraestructura y verificar resultados de automatiz
 > completo, sí puede pertenecer.
 
 DevHQ no reemplaza VS Code, una terminal, GitHub Desktop, Docker Desktop, Codex ni
-Claude Code. Ya conserva inventario local y la evidencia que registras a mano, pero **aún
-no observa ni opera sistemas reales**.
+Claude Code. Conserva inventario local, la evidencia que registras a mano y la de
+comprobaciones HTTP(S) que lanzas tú. **No supervisa en segundo plano ni opera sistemas.**
 
 ## Qué incluye
 
@@ -22,6 +22,8 @@ no observa ni opera sistemas reales**.
 - Incidents con severidad, estado, contexto desplegable y filtros; Activity global.
 - En Mi inventario: observaciones, incidencias y eventos manuales persistentes, con
   procedencia, hora y vigencia visibles.
+- Una comprobación HTTP(S) de solo lectura por aplicación o recurso, que se ejecuta solo
+  a petición y registra una observación automática con su evidencia técnica.
 - Previews de Automations (Trigger → Condition → Action → Verification), Security
   y Settings informativos.
 
@@ -47,8 +49,17 @@ de escribir la aplicación. Un fallo de SQLite/IPC muestra un error y permite re
 
 ### Observaciones, incidencias y eventos
 
-Todo registro real apunta por ID a **una** aplicación o **un** recurso y lleva
-`source = manual`: DevHQ guarda lo que tú informas y nunca lo presenta como un check.
+Todo registro real apunta por ID a **una** aplicación o **un** recurso y declara su
+origen (`source`), siempre visible:
+
+| `source` | Etiqueta               | Quién lo produce                                   |
+| -------- | ---------------------- | -------------------------------------------------- |
+| `manual` | Manual entry           | Tú. Incidencias y eventos registrados a mano       |
+| `http`   | Automated · HTTP check | DevHQ, al ejecutar la comprobación que tú lanzaste |
+
+Solo las observaciones (y el evento que las acompaña) pueden ser `http`; el esquema lo
+impone con CHECK. Una observación automática sigue exactamente la misma semántica de
+vigencia, sustitución y atención que una manual.
 
 - **Observación**: resultado (healthy/degraded/unhealthy), qué se vio, momento observado,
   momento registrado y vigencia (1 h–30 días). Es inmutable; se corrige registrando otra.
@@ -75,11 +86,44 @@ de un recurso aparece también en las aplicaciones que lo usan. Lifecycle sigue 
 independiente de health. La vigencia se reevalúa al cargar y cada 30 s con la ventana
 abierta; ese reloj no lee datos ni ejecuta comprobaciones.
 
+### Comprobación HTTP(S) a petición
+
+Cada aplicación o recurso admite **como máximo un** endpoint: URL http/https, estado
+esperado (200–599, nunca 3xx porque los redirects se siguen), tiempo máximo (1–10 s) y
+vigencia del resultado (1 min–30 días). **Run check** lo ejecuta una vez; no hay
+programación, reintentos, supervisión en segundo plano ni credenciales.
+
+- La petición sale del proceso Rust (reqwest con el TLS y el almacén de certificados del
+  sistema), nunca del WebView: no se abre la CSP ni se expone un plugin HTTP. Es un `GET`
+  directo, sin proxy, cookies, cabeceras propias ni cuerpo. La verificación TLS nunca se
+  desactiva. Un único plazo cubre DNS, conexión, TLS y redirects, así que no puede quedar
+  colgada; el comando es asíncrono y la ventana sigue utilizable.
+- Se siguen hasta 5 redirects a mano y cada salto (estado y destino) queda registrado.
+- Evidencia guardada: URL solicitada, estado esperado, último estado recibido, latencia
+  (hasta la respuesta o el fallo), error y redirects. **Nunca** cuerpo ni cabeceras.
+  Healthy exactamente cuando llega el estado esperado sin error; si no, Unhealthy.
+- **Fallo del sistema comprobado** (DNS, conexión rechazada, TLS, tiempo agotado, estado
+  inesperado, demasiados redirects) = evidencia: observación Unhealthy con su detalle.
+- **Fallo de DevHQ** (URL o configuración inválida o ausente, SQLite, IPC) = error visible
+  y recuperable. Nunca produce observación: la observación y su evento se escriben en una
+  sola transacción, y solo entonces responde el comando.
+- La configuración es contexto, no historial. Guardarla reemplaza la anterior del mismo
+  sujeto; su sujeto no cambia (para moverla, quítala y créala en el otro). Cada
+  observación copia la URL y el estado esperado, así que editar o quitar la configuración
+  nunca reescribe evidencia; si la URL cambió desde la última ejecución, la UI lo avisa.
+  Si algún día se borra un sujeto, su configuración se va con él (`CASCADE`), pero su
+  evidencia sigue impidiendo el borrado (`RESTRICT`).
+- La URL se guarda en texto plano: no pongas secretos en ella. Se rechazan URLs con
+  usuario o contraseña.
+
 ## Ejecutar
 
 Requisitos: Node.js 24 LTS, npm, Rust estable y los
 [prerrequisitos de Tauri 2](https://v2.tauri.app/start/prerequisites/).
-En Windows: Visual Studio Build Tools con C++ y Windows SDK, además de WebView2.
+En Windows: Visual Studio Build Tools con C++ y Windows SDK, además de WebView2. Las
+comprobaciones HTTP usan el TLS del sistema: SChannel en Windows, Security.framework en
+macOS y OpenSSL (con sus cabeceras de desarrollo) en Linux. Las pruebas de red usan un
+servidor en `127.0.0.1` y el dominio reservado `.invalid`; no contactan servidores externos.
 
 ```sh
 npm ci
@@ -91,6 +135,10 @@ cargo fmt --manifest-path src-tauri/Cargo.toml --check
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 npm run tauri build       # ejecutable e instalador NSIS para Windows
 ```
+
+Si DevHQ no termina tras cerrar su ventana, antes de matar el proceso ejecuta
+`powershell -NoProfile -File scripts/dump-stacks.ps1 -ProcessId <pid>`: vuelca la pila de
+cada hilo con `dbghelp.dll` de Windows y el PDB de release, sin instalar nada.
 
 El instalador se genera en `src-tauri/target/release/bundle/nsis/`. El target de
 empaquetado está configurado para Windows; otros sistemas necesitan sus prerrequisitos
@@ -117,11 +165,16 @@ de Tauri. No hay servidor HTTP de aplicación, store global ni capa de repositor
 artificial. Los selectores de dominio no dependen de React ni de los mocks. Las vistas
 consumen explícitamente el escenario durante esta etapa.
 
-Rust expone `list_inventory` (una lectura consistente de inventario y registros),
-`save_application`, `save_resource`, `record_observation`, `open_incident`,
-`update_incident_status` y `record_event`. Abre `inventory.sqlite3` en el directorio de
-datos de la aplicación que proporciona Tauri; las migraciones transaccionales v1→v3 usan
-`PRAGMA user_version` y una versión más nueva se rechaza en vez de adivinarse. Los
+Rust expone `list_inventory` (una lectura consistente de inventario, registros y
+`httpChecks`), `save_application`, `save_resource`, `record_observation`, `open_incident`,
+`update_incident_status`, `record_event`, `save_http_check`, `remove_http_check` y
+`run_http_check` (asíncrono). Abre `inventory.sqlite3` en el directorio de datos de la
+aplicación que proporciona Tauri; las migraciones transaccionales v1→v4 usan
+`PRAGMA user_version` y una versión más nueva se rechaza en vez de adivinarse. La v4
+reconstruye `observations` y `events` (SQLite no cambia un CHECK con ALTER) conservando
+filas, IDs, `rowid` (desempate de orden), claves foráneas, índices y los vínculos
+evento → observación; se ejecuta con las claves foráneas desactivadas y solo se confirma
+si `PRAGMA foreign_key_check` no encuentra relaciones rotas. Los
 registros usan dos columnas con clave foránea (`application_id`/`resource_id`) y un CHECK
 que exige exactamente una; las referencias de historial son `ON DELETE RESTRICT`, así que
 nada puede borrar un sujeto y dejar evidencia huérfana (no existe aún ningún caso de uso de
@@ -133,9 +186,9 @@ cuentas, cloud, sync, telemetría, scanners, automation engine, Runner ni backgr
 
 ## Evolución prevista
 
-1. Una primera integración acotada y verificable que produzca observaciones con su propio
-   `source`, sin cambiar la semántica de vigencia.
-2. Solo después, supervisión cancelable, automatizaciones con resultado e historial, y
+1. Hecho: una comprobación HTTP(S) a petición con su propio `source`, sin cambiar la
+   semántica de vigencia.
+2. Después, supervisión cancelable, automatizaciones con resultado e historial, y
    seguridad con almacén nativo de credenciales y evidencias contextualizadas.
 
 Estos son límites conceptuales, **no módulos vacíos ni integraciones implementadas**.
@@ -145,5 +198,9 @@ vivir en componentes React, localStorage ni texto plano en SQLite.
 Las pruebas cubren navegación, tabs/teclado, filtros, rutas desconocidas, relaciones
 compartidas, cronología de la demo, salud desconocida, persistencia tras reapertura,
 rechazo de referencias inválidas sin escrituras parciales, restricciones del esquema,
-migraciones v1/v2→v3, vigencia y sustitución de observaciones, orden de atención y
-errores de carga visibles y recuperables en la UI.
+migraciones v1/v2→v3 y v3→v4 (incluida la negativa a confirmar relaciones rotas),
+vigencia y sustitución de observaciones de ambos orígenes, orden de atención, errores de
+carga visibles y recuperables, comprobaciones contra un servidor local (estado esperado,
+500, redirect, bucle de redirects, tiempo agotado, conexión rechazada, dominio `.invalid`
+y fallo TLS), configuraciones inválidas sin escrituras parciales, errores de DevHQ que
+no producen observación y la distinción de origen en cada vista real.

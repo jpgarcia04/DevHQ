@@ -1,7 +1,7 @@
-import { CircleDashed, History, PenLine, type LucideIcon } from 'lucide-react'
+import { CircleDashed, History, PenLine, Radar, type LucideIcon } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { healthLabels, sourceLabels } from '@/domain/labels'
-import type { EntityRef, Observation, RecordSource } from '@/domain/models'
+import type { EntityRef, HttpEvidence, Observation, RecordSource } from '@/domain/models'
 import {
   isCurrent,
   subjectEvidence,
@@ -50,12 +50,73 @@ export function EvidenceBadge({
   )
 }
 
+// Who produced a record. Each source has its own words, icon and outline, and neither uses
+// a health colour, so provenance can never be read as a result.
+const sourceStyles: Record<RecordSource, { icon: LucideIcon; className: string }> = {
+  manual: { icon: PenLine, className: 'border-dashed text-muted-foreground' },
+  http: { icon: Radar, className: 'border-sky-300/30 bg-sky-300/5 text-sky-200' },
+}
+
 export function SourceTag({ source }: { source: RecordSource }) {
+  const { icon: Icon, className } = sourceStyles[source]
   return (
-    <span className="inline-flex items-center gap-1 rounded border border-dashed px-1.5 py-0.5 text-[10px] text-muted-foreground">
-      <PenLine className="size-2.5" aria-hidden="true" />
+    <span
+      className={cn(
+        'inline-flex shrink-0 items-center gap-1 rounded border px-1.5 py-0.5 text-[10px]',
+        className,
+      )}
+    >
+      <Icon className="size-2.5" aria-hidden="true" />
       {sourceLabels[source]}
     </span>
+  )
+}
+
+const milliseconds = new Intl.NumberFormat('en-GB')
+
+/** What an HTTP check requested and what came back. Bodies and headers are never kept. */
+export function HttpEvidenceDetail({ evidence }: { evidence: HttpEvidence }) {
+  const answered = evidence.status !== null && evidence.error === null
+  return (
+    <dl
+      aria-label="HTTP check evidence"
+      className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 rounded-md border border-sky-300/10 bg-sky-300/[0.03] px-3 py-2 text-[11px] text-muted-foreground"
+    >
+      <dt>Request</dt>
+      <dd className="break-all font-mono text-foreground/85">GET {evidence.url}</dd>
+      <dt>Status</dt>
+      <dd>
+        <span className="text-foreground/85">
+          {evidence.status === null ? 'No response' : `HTTP ${evidence.status}`}
+        </span>{' '}
+        · expected {evidence.expectedStatus}
+      </dd>
+      <dt>Time</dt>
+      <dd>
+        {answered ? '' : 'failed after '}
+        {milliseconds.format(evidence.latencyMs)} ms
+      </dd>
+      {evidence.error && (
+        <>
+          <dt>Error</dt>
+          <dd className="break-words text-rose-200/90">{evidence.error}</dd>
+        </>
+      )}
+      {evidence.redirects.length > 0 && (
+        <>
+          <dt>Redirects</dt>
+          <dd>
+            <ol className="space-y-0.5">
+              {evidence.redirects.map((hop, index) => (
+                <li key={index} className="break-all font-mono">
+                  {hop.status} → {hop.location}
+                </li>
+              ))}
+            </ol>
+          </dd>
+        </>
+      )}
+    </dl>
   )
 }
 
@@ -63,8 +124,20 @@ function Moment({ value }: { value: string }) {
   return <time dateTime={value}>{formatDateTime(value)}</time>
 }
 
-/** Provenance of an observation: who reported it, when it was seen and how long it holds. */
+/**
+ * Provenance of an observation: who or what produced it, when it was seen, how long it
+ * holds and, for an HTTP check, the technical evidence.
+ */
 function ObservationMeta({ observation, now }: { observation: Observation; now: number }) {
+  return (
+    <>
+      <ObservationTimes observation={observation} now={now} />
+      {observation.http && <HttpEvidenceDetail evidence={observation.http} />}
+    </>
+  )
+}
+
+function ObservationTimes({ observation, now }: { observation: Observation; now: number }) {
   return (
     <p className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
       <SourceTag source={observation.source} />
@@ -173,7 +246,7 @@ export function ObservationHistory({ subject }: { subject: EntityRef }) {
   if (!history.length)
     return (
       <p className="text-xs leading-5 text-muted-foreground">
-        No observations recorded. Use Record observation to add what you have checked.
+        No observations recorded. Record what you have checked, or run this system’s HTTP check.
       </p>
     )
   return (

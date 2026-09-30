@@ -28,6 +28,7 @@ function observation(
     observedAt: minutesFromNow(-observedMinutesAgo),
     validUntil: minutesFromNow(validUntilMinutes),
     recordedAt: minutesFromNow(-observedMinutesAgo),
+    http: null,
   }
 }
 
@@ -98,6 +99,7 @@ const snapshot: InventorySnapshot = {
   ],
   incidents: [],
   events: [],
+  httpChecks: [],
 }
 
 function renderWith(ui: ReactNode, value: InventoryContextValue, path = '/') {

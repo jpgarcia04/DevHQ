@@ -63,9 +63,9 @@ export interface ActivityEvent {
   occurredAt: string
 }
 
-// Records kept by DevHQ for the real inventory. Every source is manual until an
-// integration exists; the field is explicit so a future source cannot be mistaken for one.
-export type RecordSource = 'manual'
+// Records kept by DevHQ for the real inventory. A person types manual entries; an HTTP
+// check the person runs produces automated observations. Incidents are always manual.
+export type RecordSource = 'manual' | 'http'
 export type ObservationResult = Exclude<HealthStatus, 'unknown'>
 export type RecordedEventKind =
   'observation' | 'incident' | 'deployment' | 'backup' | 'maintenance' | 'note'
@@ -81,6 +81,28 @@ export interface Observation {
   observedAt: string
   validUntil: string
   recordedAt: string
+  /** Technical evidence of an HTTP check; null for manual entries. */
+  http: HttpEvidence | null
+}
+
+/** A redirect the check followed: the status that sent it and where it pointed. */
+export interface HttpRedirect {
+  status: number
+  location: string
+}
+
+/**
+ * What an HTTP check requested and what came back. `status` is the last status received
+ * (null when no response arrived); `error` explains a failure of the checked system;
+ * `latencyMs` is the time until the answer or the failure.
+ */
+export interface HttpEvidence {
+  url: string
+  expectedStatus: number
+  status: number | null
+  latencyMs: number
+  error: string | null
+  redirects: HttpRedirect[]
 }
 
 export interface RecordedIncident {
@@ -90,7 +112,7 @@ export interface RecordedIncident {
   description: string
   severity: IncidentSeverity
   status: IncidentStatus
-  source: RecordSource
+  source: 'manual'
   openedAt: string
   updatedAt: string
   resolvedAt: string | null

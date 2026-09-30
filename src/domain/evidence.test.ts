@@ -29,6 +29,30 @@ function observation(
     observedAt: at(-observedMinutesAgo),
     validUntil: at(validMinutes - observedMinutesAgo),
     recordedAt: at(-observedMinutesAgo),
+    http: null,
+  }
+}
+
+function httpCheck(
+  subject: EntityRef,
+  status: number | null,
+  observedMinutesAgo: number,
+  validMinutes: number,
+): Observation {
+  const healthy = status === 200
+  return {
+    ...observation(subject, healthy ? 'healthy' : 'unhealthy', observedMinutesAgo, validMinutes),
+    id: `${subject.id}-http-${observedMinutesAgo}`,
+    source: 'http',
+    summary: healthy ? 'HTTP 200 as expected, in 40 ms' : 'Connection refused after 12 ms',
+    http: {
+      url: 'https://example.com/health',
+      expectedStatus: 200,
+      status,
+      latencyMs: healthy ? 40 : 12,
+      error: healthy ? null : 'Connection refused: target refused it',
+      redirects: [],
+    },
   }
 }
 
@@ -77,6 +101,29 @@ describe('evidence validity', () => {
       state: 'stale',
       latest: expiredHealthy,
     })
+  })
+
+  it('judges automated HTTP evidence with exactly the same validity as manual evidence', () => {
+    const checked = httpCheck(host, 200, 30, 60)
+    expect(subjectEvidence([checked], host, now)).toEqual({ state: 'healthy', latest: checked })
+    // At the end of its validity an automated result is expired, never still healthy.
+    expect(subjectEvidence([checked], host, now + 30 * 60_000)).toEqual({
+      state: 'stale',
+      latest: checked,
+    })
+    // The newest observation wins whatever its source.
+    const manualFailure = observation(host, 'unhealthy', 5, 60)
+    expect(subjectEvidence([checked, manualFailure], host, now).latest).toBe(manualFailure)
+    const refused = httpCheck(host, null, 2, 60)
+    expect(subjectEvidence([manualFailure, refused], host, now)).toEqual({
+      state: 'unhealthy',
+      latest: refused,
+    })
+    expect(
+      attentionItems([host], [httpCheck(host, 200, 200, 60)], [], now).map(
+        (item) => item.kind === 'evidence' && item.evidence.state,
+      ),
+    ).toEqual(['stale'])
   })
 
   it('never borrows evidence from another subject', () => {

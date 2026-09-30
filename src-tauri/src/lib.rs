@@ -1,8 +1,12 @@
+mod http_check;
 mod inventory;
+mod monitor;
 mod records;
 
+use monitor::{Monitor, MonitorStatus};
 use std::path::PathBuf;
-use tauri::Manager;
+use tauri::ipc::Channel;
+use tauri::{Manager, RunEvent};
 
 struct InventoryPath(PathBuf);
 
@@ -61,11 +65,69 @@ fn record_event(
     records::record_event(&path.0, input)
 }
 
+// Commands that change a check tell supervision right away, so pausing, resuming and removing
+// take effect before they return. They are async to keep that work off the main thread.
+
+#[tauri::command]
+async fn save_http_check(
+    path: tauri::State<'_, InventoryPath>,
+    monitor: tauri::State<'_, Monitor>,
+    input: http_check::HttpCheckInput,
+) -> Result<http_check::HttpCheck, inventory::ApiError> {
+    let check = http_check::save_http_check(&path.0, input)?;
+    monitor.refresh();
+    Ok(check)
+}
+
+#[tauri::command]
+async fn set_http_check_paused(
+    path: tauri::State<'_, InventoryPath>,
+    monitor: tauri::State<'_, Monitor>,
+    subject: records::Subject,
+    paused: bool,
+) -> Result<http_check::HttpCheck, inventory::ApiError> {
+    let check = http_check::set_http_check_paused(&path.0, &subject, paused)?;
+    monitor.refresh();
+    Ok(check)
+}
+
+/// Also cancels the check's run in flight; nothing more is recorded for it.
+#[tauri::command]
+async fn remove_http_check(
+    path: tauri::State<'_, InventoryPath>,
+    monitor: tauri::State<'_, Monitor>,
+    subject: records::Subject,
+) -> Result<(), inventory::ApiError> {
+    http_check::remove_http_check(&path.0, subject)?;
+    monitor.refresh();
+    Ok(())
+}
+
+/// Runs the check now, or waits for the run already in flight, so asking never duplicates
+/// evidence. Async, so the request runs off the main thread and the window stays responsive.
+#[tauri::command]
+async fn run_http_check(
+    monitor: tauri::State<'_, Monitor>,
+    subject: records::Subject,
+) -> Result<records::Observation, inventory::ApiError> {
+    monitor.run_now(subject).await
+}
+
+/// Streams supervision status to the window: now, and after every change.
+#[tauri::command]
+fn watch_http_monitor(monitor: tauri::State<'_, Monitor>, channel: Channel<MonitorStatus>) {
+    monitor.watch(move |status| channel.send(status).is_ok());
+}
+
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
-            let directory = app.path().app_data_dir()?;
-            app.manage(InventoryPath(directory.join("inventory.sqlite3")));
+            let path = app.path().app_data_dir()?.join("inventory.sqlite3");
+            // Supervision lives only as long as this process: no service, no system task.
+            let monitor = Monitor::new(path.clone());
+            tauri::async_runtime::spawn(monitor.clone().run());
+            app.manage(InventoryPath(path));
+            app.manage(monitor);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -75,8 +137,21 @@ pub fn run() {
             record_observation,
             open_incident,
             update_incident_status,
-            record_event
+            record_event,
+            save_http_check,
+            set_http_check_paused,
+            remove_http_check,
+            run_http_check,
+            watch_http_monitor
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running DevHQ");
+        .build(tauri::generate_context!())
+        .expect("error while building DevHQ")
+        .run(|app, event| {
+            // Closing the window ends supervision: runs in flight are cancelled, none start.
+            if let RunEvent::ExitRequested { .. } | RunEvent::Exit = event {
+                if let Some(monitor) = app.try_state::<Monitor>() {
+                    monitor.shutdown();
+                }
+            }
+        });
 }

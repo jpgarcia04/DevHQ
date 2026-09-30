@@ -39,15 +39,18 @@ import {
   EvidenceBadge,
   EvidenceDetail,
   ObservationHistory,
+  SourceTag,
   SubjectEvidence,
   SubjectLink,
 } from './evidence'
+import { HttpCheckPanel } from './http-check'
 import type { InventoryApplication } from './inventory-api'
 import { useInventory } from './inventory-context'
 import { InventoryState } from './inventory-state'
 import { RecordActions } from './record-forms'
 import { AttentionList, EventRecordList, IncidentRecordList } from './record-lists'
 import { ResourceForm } from './resource-form'
+import { SupervisionOverview } from './supervision-overview'
 
 const resourceIdsOf = (app: InventoryApplication) => [
   ...new Set(app.components.flatMap((part) => (part.resourceId ? [part.resourceId] : []))),
@@ -67,7 +70,7 @@ export function RealOverviewPage() {
   return (
     <div className="page-stack">
       <PageHeader
-        eyebrow="Local inventory · manual evidence"
+        eyebrow="Local inventory · recorded evidence"
         title="Overview"
         description="What needs your attention, judged only from evidence recorded in DevHQ."
       />
@@ -105,7 +108,7 @@ function OverviewContent() {
     ],
     covered: [
       'Every system has current healthy evidence.',
-      'Based on manual observations that are still within their validity.',
+      'Based on manual entries and HTTP checks that are still within their validity.',
     ],
   }[status]
   return (
@@ -190,6 +193,7 @@ function OverviewContent() {
                     <span className="text-[11px] text-muted-foreground">
                       {coverageNote(item.evidence, now)}
                     </span>
+                    {item.evidence.latest && <SourceTag source={item.evidence.latest.source} />}
                     <EvidenceBadge state={item.evidence.state} compact />
                   </li>
                 ))}
@@ -202,6 +206,7 @@ function OverviewContent() {
           </section>
         </div>
         <div className="space-y-7">
+          <SupervisionOverview />
           <section aria-labelledby="activity-heading">
             <div className="mb-3 flex items-center justify-between">
               <h2 id="activity-heading" className="section-heading">
@@ -467,6 +472,9 @@ function ApplicationDetail({ app }: { app: InventoryApplication }) {
               <section className="panel p-5">
                 <h2 className="section-heading mb-4">Current evidence</h2>
                 <SubjectEvidence subject={subject} />
+                <div className="mt-5 border-t pt-4">
+                  <HttpCheckPanel subject={subject} name={app.name} />
+                </div>
               </section>
               <section className="panel p-5">
                 <h2 className="section-heading">Components</h2>
@@ -520,10 +528,15 @@ function ApplicationDetail({ app }: { app: InventoryApplication }) {
                   </div>
                   <div>
                     <dt className="text-muted-foreground">Latest observation</dt>
-                    <dd className="mt-1">
-                      {evidence.latest
-                        ? `${relativeTime(evidence.latest.observedAt, now)} · manual entry`
-                        : 'None recorded'}
+                    <dd className="mt-1 flex flex-wrap items-center gap-2">
+                      {evidence.latest ? (
+                        <>
+                          {relativeTime(evidence.latest.observedAt, now)}
+                          <SourceTag source={evidence.latest.source} />
+                        </>
+                      ) : (
+                        'None recorded'
+                      )}
                     </dd>
                   </div>
                   <div>
@@ -680,6 +693,9 @@ export function RealInfrastructurePage() {
                   </div>
                   <EvidenceDetail evidence={evidence} now={now} />
                   <div className="mt-4 border-t pt-4">
+                    <HttpCheckPanel subject={subject} name={resource.name} />
+                  </div>
+                  <div className="mt-4 border-t pt-4">
                     <h3 className="eyebrow mb-3">Applications using this resource</h3>
                     {linked.length ? (
                       <div className="flex flex-wrap gap-3">
@@ -757,9 +773,37 @@ export function RealSettingsPage() {
           fixed example and is never imported automatically.
         </p>
         <p className="mt-3 text-xs leading-6 text-muted-foreground">
-          Every observation, incident and event is a manual entry. No external connections, checks,
-          event collection or automation execution are active. An observation vouches for a result
-          only until its validity ends; after that it is shown as expired.
+          Observations come from two sources, always labelled: manual entries you type, and HTTP
+          checks that DevHQ runs when you press Run check or, if you turn supervision on, on a
+          schedule while DevHQ is open. There is no background service, retry, event collection or
+          automation execution. Incidents and events are manual entries. An observation vouches for
+          a result only until its validity ends; after that it is shown as expired, whatever its
+          source.
+        </p>
+      </section>
+      <section className="panel max-w-3xl p-6">
+        <h2 className="section-heading">HTTP checks</h2>
+        <p className="mt-4 text-xs leading-6 text-muted-foreground">
+          Each application or resource can have one check: a single GET sent by DevHQ’s native
+          process, never by this window, straight to the URL without a proxy. Certificates are
+          verified by the operating system, at most 5 redirects are followed and recorded, and the
+          whole request gives up after at most 10 seconds. No credentials, custom headers or body
+          are sent. Only the status, timing, redirects and error are stored, never the response body
+          or headers.
+        </p>
+        <p className="mt-3 text-xs leading-6 text-muted-foreground">
+          If the checked system fails (DNS, refused connection, TLS, timeout or an unexpected
+          status), that is evidence and is recorded as Unhealthy. If DevHQ fails (invalid or missing
+          configuration, database), you see an error and nothing is recorded.
+        </p>
+        <p className="mt-3 text-xs leading-6 text-muted-foreground">
+          Supervision runs a check every 5 to 60 minutes, only while this window is open: closing
+          DevHQ stops it, and nothing runs in the background or with the app closed. A check never
+          runs twice at once and failures are not retried; the next run comes one interval after the
+          last one ended. When DevHQ opens again, an overdue check runs once, not once per missed
+          interval. Each result must stay valid for longer than the interval, so supervised evidence
+          does not lapse between runs. Pausing lets a run in progress finish; removing a check
+          cancels it and records nothing.
         </p>
       </section>
     </div>
