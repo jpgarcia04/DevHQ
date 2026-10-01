@@ -35,6 +35,7 @@ import { activeIncidents } from '@/domain/selectors'
 import { relativeTime } from '@/shared/time'
 import { cn } from '@/shared/utils'
 import { ApplicationForm } from './application-form'
+import { ApplicationInfrastructure } from './application-infrastructure'
 import {
   AutomatedWindowNote,
   EvidenceBadge,
@@ -384,8 +385,6 @@ const tabs = [
   'Automations',
 ] as const
 const plannedTabs: Partial<Record<(typeof tabs)[number], string>> = {
-  Infrastructure:
-    'Component to resource links, with each resource’s evidence, are shown in Overview. More topology context is planned.',
   Security: 'This area will be populated when security checks and integrations are implemented.',
   Automations: 'This area will be populated when automations with verified results exist.',
 }
@@ -609,6 +608,9 @@ function ApplicationDetail({ app }: { app: InventoryApplication }) {
               )}
             </section>
           </div>
+        </TabsContent>
+        <TabsContent value="infrastructure">
+          <ApplicationInfrastructure app={app} />
         </TabsContent>
         <TabsContent value="activity">
           <section className="panel p-5">
