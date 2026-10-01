@@ -49,7 +49,7 @@ import {
 } from './evidence'
 import { automatedSince } from './history'
 import { HttpCheckPanel } from './http-check'
-import type { InventoryApplication } from './inventory-api'
+import { inventoryError, type DataLocation, type InventoryApplication } from './inventory-api'
 import { useInventory } from './inventory-context'
 import { InventoryState } from './inventory-state'
 import { RecordActions } from './record-forms'
@@ -811,6 +811,78 @@ export function RealUnavailablePage({ title }: { title: string }) {
   )
 }
 
+/**
+ * The inventory's file on this device and how to back it up. It asks the native process only
+ * where the file is, so it still answers when the inventory cannot be read: then above all.
+ */
+function DatabaseFile() {
+  const { dataLocation } = useInventory()
+  const [location, setLocation] = useState<DataLocation | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [copied, setCopied] = useState<boolean | null>(null)
+  useEffect(() => {
+    let current = true
+    dataLocation().then(
+      (value) => current && setLocation(value),
+      (cause) => current && setError(inventoryError(cause)),
+    )
+    return () => {
+      current = false
+    }
+  }, [dataLocation])
+  const copy = async (path: string) => {
+    try {
+      await navigator.clipboard.writeText(path)
+      setCopied(true)
+    } catch {
+      setCopied(false)
+    }
+  }
+  return (
+    <section className="panel max-w-3xl p-6" aria-labelledby="database-file-heading">
+      <h2 id="database-file-heading" className="section-heading">
+        Database file
+      </h2>
+      {location ? (
+        <>
+          <p className="mt-4 select-all break-all rounded-md border bg-background/40 px-3 py-2 font-mono text-[11px] text-foreground/90">
+            {location.database}
+          </p>
+          <div className="mt-3 flex flex-wrap items-center gap-3">
+            <Button size="sm" variant="outline" onClick={() => void copy(location.database)}>
+              Copy path
+            </Button>
+            <p role="status" className="text-[11px] text-muted-foreground">
+              {copied === true && 'Path copied.'}
+              {copied === false && 'The path could not be copied: select it and copy it.'}
+            </p>
+          </div>
+          <p className="mt-4 text-xs leading-6 text-muted-foreground">
+            To back it up, close DevHQ and copy this file. While DevHQ is open, its latest changes
+            can still be in{' '}
+            <span className="whitespace-nowrap font-mono">inventory.sqlite3-wal</span> in the same
+            folder; DevHQ folds them into the file when it closes.
+          </p>
+          <p className="mt-3 text-xs leading-6 text-muted-foreground">
+            To restore a copy, close DevHQ, put the copy in place of this file and delete{' '}
+            <span className="whitespace-nowrap font-mono">inventory.sqlite3-wal</span> and{' '}
+            <span className="whitespace-nowrap font-mono">inventory.sqlite3-shm</span> if they are
+            there, so that no log of the replaced file is applied to the copy.
+          </p>
+        </>
+      ) : error ? (
+        <p role="alert" className="mt-4 text-xs text-rose-300">
+          DevHQ could not say where its database file is. {error}
+        </p>
+      ) : (
+        <p role="status" className="mt-4 text-xs text-muted-foreground">
+          Locating the database file…
+        </p>
+      )}
+    </section>
+  )
+}
+
 export function RealSettingsPage() {
   return (
     <div className="page-stack">
@@ -819,6 +891,7 @@ export function RealSettingsPage() {
         title="Settings"
         description="Your data is stored locally on this device."
       />
+      <DatabaseFile />
       <section className="panel max-w-3xl p-6">
         <h2 className="section-heading">Data source</h2>
         <p className="mt-4 text-xs leading-6 text-muted-foreground">

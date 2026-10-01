@@ -2,6 +2,7 @@ import { createContext, useContext } from 'react'
 import type { EntityRef, Observation } from '@/domain/models'
 import type {
   ApplicationInput,
+  DataLocation,
   EventInput,
   EventPage,
   HttpCheckInput,
@@ -26,6 +27,8 @@ export interface InventoryContextValue {
   /** Clock used to judge validity. Refreshed on load and periodically while open. */
   now: number
   reload: () => Promise<boolean>
+  /** Where the database file is; it reads nothing from it, so it works when loading fails. */
+  dataLocation: () => Promise<DataLocation>
   saveResource: (input: ResourceInput) => Promise<void>
   saveApplication: (input: ApplicationInput) => Promise<void>
   deleteApplication: (id: string) => Promise<void>

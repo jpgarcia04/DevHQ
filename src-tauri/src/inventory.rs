@@ -115,6 +115,28 @@ pub struct Inventory {
     pub automated_history: records::AutomatedHistory,
 }
 
+/// Where the inventory lives on this device, so that a person can back it up.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DataLocation {
+    /// The SQLite file. Once DevHQ is closed it holds everything on its own.
+    pub database: String,
+    /// The folder it is in, which also holds its write-ahead log while DevHQ has it open.
+    pub directory: String,
+}
+
+impl DataLocation {
+    pub fn of(path: &Path) -> Self {
+        Self {
+            database: path.display().to_string(),
+            directory: path
+                .parent()
+                .map(|folder| folder.display().to_string())
+                .unwrap_or_default(),
+        }
+    }
+}
+
 const SCHEMA_VERSION: i64 = 6;
 const MIGRATIONS: [(i64, &str); 6] = [
     (1, include_str!("../migrations/001_inventory.sql")),
@@ -1170,6 +1192,18 @@ mod tests {
             error.message
         );
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn says_where_the_database_file_is() {
+        let folder = std::env::temp_dir().join("com.devhq.desktop");
+        assert_eq!(
+            DataLocation::of(&folder.join("inventory.sqlite3")),
+            DataLocation {
+                database: folder.join("inventory.sqlite3").display().to_string(),
+                directory: folder.display().to_string(),
+            }
+        );
     }
 
     #[test]

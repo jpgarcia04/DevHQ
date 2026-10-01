@@ -113,6 +113,14 @@ export interface InventorySnapshot {
   automatedHistory: AutomatedHistory
 }
 
+/** Where the inventory lives on this device, so that it can be backed up. */
+export interface DataLocation {
+  /** The SQLite file. Once DevHQ is closed it holds everything on its own. */
+  database: string
+  /** The folder it is in, which also holds its write-ahead log while DevHQ has it open. */
+  directory: string
+}
+
 export type ResourceInput = Omit<InventoryResource, 'id'> & { id?: string }
 export type ApplicationInput = Omit<InventoryApplication, 'id' | 'components'> & {
   id?: string
@@ -152,6 +160,7 @@ export interface EventInput {
 
 export const inventoryApi = {
   list: () => invoke<InventorySnapshot>('list_inventory'),
+  dataLocation: () => invoke<DataLocation>('data_location'),
   saveResource: (input: ResourceInput) => invoke<InventoryResource>('save_resource', { input }),
   saveApplication: (input: ApplicationInput) =>
     invoke<InventoryApplication>('save_application', { input }),

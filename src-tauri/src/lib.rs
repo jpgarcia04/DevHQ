@@ -17,6 +17,12 @@ fn list_inventory(
     inventory::list(&path.0)
 }
 
+/// Where the inventory file is, so that it can be backed up. It reads nothing from it.
+#[tauri::command]
+fn data_location(path: tauri::State<'_, InventoryPath>) -> inventory::DataLocation {
+    inventory::DataLocation::of(&path.0)
+}
+
 #[tauri::command]
 fn save_resource(
     path: tauri::State<'_, InventoryPath>,
@@ -175,6 +181,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             list_inventory,
+            data_location,
             save_resource,
             save_application,
             delete_application,

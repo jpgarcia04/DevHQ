@@ -34,6 +34,10 @@ export function inventoryContext(
     error: null,
     now: testNow,
     reload: vi.fn(async () => true),
+    dataLocation: vi.fn(async () => ({
+      database: '/home/you/.local/share/com.devhq.desktop/inventory.sqlite3',
+      directory: '/home/you/.local/share/com.devhq.desktop',
+    })),
     saveResource: vi.fn(async () => {}),
     saveApplication: vi.fn(async () => {}),
     deleteApplication: vi.fn(async () => {}),

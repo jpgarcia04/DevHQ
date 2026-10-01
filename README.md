@@ -33,8 +33,9 @@ abierta**. **No funciona en segundo plano ni opera sistemas.**
   registra una observación automática con su evidencia técnica.
 - Un panel de Supervision en Overview: qué comprueba DevHQ por su cuenta, cuándo toca la
   siguiente ejecución, qué falló dentro de DevHQ y qué no está supervisado.
-- Previews de Automations (Trigger → Condition → Action → Verification), Security
-  y Settings informativos.
+- Previews de Automations (Trigger → Condition → Action → Verification) y Security
+  informativos. En Mi inventario, Settings muestra la ruta del archivo SQLite y cómo
+  respaldarlo y restaurarlo.
 
 El modo **Demo** utiliza un escenario local fijo del **24/09/2026, 16:40 Europe/Madrid**.
 Los tiempos relativos se calculan frente a ese instante, no frente al reloj real.
@@ -260,7 +261,7 @@ artificial. Los selectores de dominio no dependen de React ni de los mocks. Las 
 consumen explícitamente el escenario durante esta etapa.
 
 Rust expone `list_inventory` (una lectura consistente de inventario, registros y
-`httpChecks`), `save_application`, `save_resource`, `delete_application`,
+`httpChecks`), `data_location`, `save_application`, `save_resource`, `delete_application`,
 `delete_resource`, `record_observation`, `older_observations`, `older_events`, `open_incident`,
 `update_incident_status`, `record_event`, `save_http_check`, `set_http_check_paused`,
 `remove_http_check`, `run_http_check` y `watch_http_monitor`. Los comandos de
@@ -280,7 +281,11 @@ archivo y `synchronous` sigue en FULL, así que cada evidencia llega al disco an
 comando responda. Al cerrarse la última conexión SQLite vuelca el log en `inventory.sqlite3`,
 que queda completo por sí solo. Una base anterior se convierte en la primera apertura que la
 tiene para sí; si otra conexión la está usando en ese momento (SQLite no espera para esto),
-sigue con su journal de rollback, igual de correcta, hasta la siguiente. La v4 reconstruye `observations` y `events` (SQLite no cambia
+sigue con su journal de rollback, igual de correcta, hasta la siguiente. Settings muestra la
+ruta exacta del archivo (`data_location` no abre la base, así que responde aunque no se pueda
+leer): para respaldarlo basta copiarlo con DevHQ cerrado; para restaurar una copia, con DevHQ
+cerrado se reemplaza el archivo y se borran `-wal` y `-shm` si quedaron, para que ningún log del
+archivo anterior se aplique a la copia. La v4 reconstruye `observations` y `events` (SQLite no cambia
 un CHECK con ALTER) conservando filas, IDs, `rowid` (desempate de orden), claves foráneas,
 índices y los vínculos evento → observación. La v5 solo reconstruye `http_checks` (nada la
 referencia) para añadir el estado y el intervalo de supervisión con sus CHECK, conservando

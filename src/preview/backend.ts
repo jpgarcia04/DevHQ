@@ -144,6 +144,11 @@ export function previewBackend(database: PreviewDatabase) {
     switch (command) {
       case 'list_inventory':
         return list()
+      case 'data_location':
+        return {
+          database: 'C:\\Users\\you\\AppData\\Roaming\\com.devhq.desktop\\inventory.sqlite3',
+          directory: 'C:\\Users\\you\\AppData\\Roaming\\com.devhq.desktop',
+        }
       case 'older_observations':
         return olderObservations(args.subject as EntityRef, args.before as string)
       case 'older_events':
