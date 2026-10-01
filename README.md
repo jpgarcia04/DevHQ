@@ -228,6 +228,9 @@ de ningún sistema.
   su nombre final, con un enlace que el sistema de archivos rechaza si ese nombre ya existe, y
   borra el `.partial`. Así nunca reemplaza un archivo, y un nombre final siempre es una copia que
   estaba completa y verificada al hacerse. DevHQ nunca borra ni reescribe un respaldo terminado.
+  La carpeta de datos suele estar en el disco del sistema (NTFS, APFS, ext4…), que admite enlaces; en un
+  sistema de archivos que no los admita, como FAT32 o exFAT, el respaldo fallaría al nombrar la
+  copia, con un error recuperable y sin dejar archivos.
 - Si algo falla, borra el `.partial` y la ventana muestra un error recuperable; el inventario no
   cambia. Al terminar, muestra la hora, el tamaño, la verificación y cuántas filas de cada tabla
   tiene la copia.
