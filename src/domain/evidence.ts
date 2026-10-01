@@ -41,6 +41,11 @@ export const subjectsOf = (inventory: {
   ...inventory.resources.map(({ id }) => ({ type: 'resource' as const, id })),
 ]
 
+/** The resources an application's components run on, each once. */
+export const resourceIdsOf = (application: { components: { resourceId: string | null }[] }) => [
+  ...new Set(application.components.flatMap((part) => (part.resourceId ? [part.resourceId] : []))),
+]
+
 /** Records about the application itself or about a resource its components run on. */
 export const concernsApplication = (
   subject: EntityRef,

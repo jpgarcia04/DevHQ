@@ -4,7 +4,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import type { Observation, RecordedIncident } from '@/domain/models'
 import type { InventorySnapshot } from './inventory-api'
 import { InventoryContext } from './inventory-context'
-import { RealApplicationDetailPage } from './real-pages'
+import { RealApplicationDetailPage } from './real-application-detail-page'
 import { inventoryContext, minutesFromNow } from './test-context'
 
 function observation(

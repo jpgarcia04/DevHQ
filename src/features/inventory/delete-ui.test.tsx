@@ -8,7 +8,7 @@ import { ApplicationForm } from './application-form'
 import { deletionBlocker } from './deletion'
 import type { InventorySnapshot } from './inventory-api'
 import { InventoryContext, type InventoryContextValue } from './inventory-context'
-import { RealApplicationDetailPage } from './real-pages'
+import { RealApplicationDetailPage } from './real-application-detail-page'
 import { ResourceForm } from './resource-form'
 import { inventoryContext, minutesFromNow } from './test-context'
 

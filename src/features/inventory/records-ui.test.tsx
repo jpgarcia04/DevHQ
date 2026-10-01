@@ -7,7 +7,7 @@ import type { Observation, RecordedEvent, RecordedIncident } from '@/domain/mode
 import { inventoryApi, type InventorySnapshot } from './inventory-api'
 import { InventoryContext, useInventory, type InventoryContextValue } from './inventory-context'
 import { InventoryProvider } from './inventory-provider'
-import { RealOverviewPage } from './real-pages'
+import { RealOverviewPage } from './real-overview-page'
 import { IncidentForm, ObservationForm } from './record-forms'
 import { IncidentRecordList } from './record-lists'
 import { RealActivityPage, RealIncidentsPage } from './records-pages'

@@ -3,7 +3,7 @@ import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { InventoryContext, type InventoryContextValue } from './inventory-context'
-import { RealSettingsPage } from './real-pages'
+import { RealSettingsPage } from './real-settings-page'
 import { inventoryContext } from './test-context'
 
 const database = 'C:\\Users\\jp\\AppData\\Roaming\\com.devhq.desktop\\inventory.sqlite3'
