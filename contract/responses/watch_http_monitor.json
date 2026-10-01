@@ -1,0 +1,16 @@
+{
+  "checks": [
+    {
+      "subject": { "type": "resource", "id": "host" },
+      "running": false,
+      "lastRunAt": "2026-01-01T10:05:00Z",
+      "nextRunAt": "2026-01-01T10:10:00Z",
+      "lastError": {
+        "message": "Inventory database error: disk I/O error",
+        "at": "2026-01-01T09:55:00Z"
+      }
+    }
+  ],
+  "error": null,
+  "recorded": 3
+}

@@ -1,0 +1,10 @@
+{
+  "input": {
+    "subject": { "type": "application", "id": "shop" },
+    "url": "https://shop.example/health",
+    "expectedStatus": 204,
+    "timeoutSeconds": 5,
+    "validForMinutes": 30,
+    "monitorIntervalMinutes": 15
+  }
+}

@@ -123,6 +123,8 @@ impl HttpEvidence {
 }
 
 #[derive(Debug, Deserialize)]
+// Serialized only by tests: ipc_contract finds the fixture keys Rust never reads.
+#[cfg_attr(test, derive(Serialize))]
 #[serde(rename_all = "camelCase")]
 pub struct ObservationInput {
     pub subject: Subject,
@@ -148,6 +150,8 @@ pub struct Incident {
 }
 
 #[derive(Debug, Deserialize)]
+// Serialized only by tests: ipc_contract finds the fixture keys Rust never reads.
+#[cfg_attr(test, derive(Serialize))]
 #[serde(rename_all = "camelCase")]
 pub struct IncidentInput {
     pub subject: Subject,
@@ -157,6 +161,8 @@ pub struct IncidentInput {
 }
 
 #[derive(Debug, Deserialize)]
+// Serialized only by tests: ipc_contract finds the fixture keys Rust never reads.
+#[cfg_attr(test, derive(Serialize))]
 #[serde(rename_all = "camelCase")]
 pub struct IncidentStatusInput {
     pub id: String,
@@ -181,6 +187,8 @@ pub struct Event {
 }
 
 #[derive(Debug, Deserialize)]
+// Serialized only by tests: ipc_contract finds the fixture keys Rust never reads.
+#[cfg_attr(test, derive(Serialize))]
 #[serde(rename_all = "camelCase")]
 pub struct EventInput {
     pub subject: Subject,

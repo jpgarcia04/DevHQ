@@ -268,6 +268,7 @@ src/
   shared/          Utilidades de estilos y tiempo
   test/            Configuración de pruebas
 src-tauri/         Host Rust/Tauri 2, SQLite, migraciones, IPC, ventana y CSP
+contract/          Argumentos y respuestas del IPC que comprueban los tests de ambos lados
 ```
 
 React + TypeScript estricto + Vite + Tailwind CSS 4. El estado de filtros es local;
@@ -316,7 +317,18 @@ que exige exactamente una; las referencias de historial son `ON DELETE RESTRICT`
 nada puede borrar un sujeto y dejar evidencia huérfana; los casos de uso de borrado lo
 comprueban antes y explican qué lo impide. Las referencias inexistentes se rechazan antes de escribir y dentro de la misma
 transacción. Los tiempos se guardan en milisegundos UTC y viajan como RFC 3339; no se
-aceptan momentos futuros. La UI invoca esos casos de uso con contratos tipados. Se conserva la barra nativa de ventana. La CSP limita recursos y las
+aceptan momentos futuros. La UI invoca esos casos de uso con contratos tipados, y unos fixtures JSON
+compartidos los atan a Rust: `contract/commands/` guarda, por comando, los argumentos exactos que
+envía `inventoryApi`, y `contract/responses/` lo que Rust responde, incluidos el mensaje del `Channel`
+de supervisión y un rechazo. Vitest comprueba con `mockIPC` que `inventoryApi` envía exactamente esos
+argumentos, con valores que el compilador ata a los tipos de la ventana, y que un valor de cada tipo
+que espera la ventana es igual a su respuesta. Rust pasa cada fixture por el manejador real de
+comandos, sobre el runtime simulado de Tauri y contra una base sembrada: el comando debe existir,
+aceptar esos nombres de argumentos y esos valores (los de los enums pasan su validación) y terminar
+bien, y cada argumento debe leerse entero, porque serde ignora una clave que no conoce y leería como
+ausente un campo opcional renombrado (una edición se volvería un alta). Su serialización de cada
+respuesta debe ser igual al fixture. Renombrar un campo, un argumento, un comando o un valor en
+cualquiera de los dos lados rompe un test. Se conserva la barra nativa de ventana. La CSP limita recursos y las
 capabilities no conceden permisos adicionales. No se implementan autenticación,
 cuentas, cloud, sync, telemetría, scanners, automation engine, Runner ni background service.
 
@@ -340,7 +352,7 @@ vigencia y sustitución de observaciones de ambos orígenes, orden de atención,
 carga visibles y recuperables, comprobaciones contra un servidor local (estado esperado,
 500, redirect, bucle de redirects, tiempo agotado, conexión rechazada, dominio `.invalid`
 y fallo TLS), configuraciones inválidas sin escrituras parciales, errores de DevHQ que
-no producen observación, la distinción de origen en cada vista real y el borrado (qué lo
+no producen observación, la distinción de origen en cada vista real, el contrato IPC de cada comando y el borrado (qué lo
 impide, la confirmación y que un resultado tardío de un sujeto borrado no se registra). La supervisión se
 prueba sobre un reloj simulado de Tokio, sin esperas reales: ritmo por intervalo,
 continuidad tras reabrir, una sola ejecución por atraso, sin solapes, Run check que se une

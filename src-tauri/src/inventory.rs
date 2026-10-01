@@ -52,6 +52,8 @@ pub struct Resource {
 }
 
 #[derive(Debug, Deserialize)]
+// Serialized only by tests: ipc_contract finds the fixture keys Rust never reads.
+#[cfg_attr(test, derive(Serialize))]
 #[serde(rename_all = "camelCase")]
 pub struct ResourceInput {
     pub id: Option<String>,
@@ -71,6 +73,8 @@ pub struct Component {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+// Serialized only by tests: ipc_contract finds the fixture keys Rust never reads.
+#[cfg_attr(test, derive(Serialize))]
 #[serde(rename_all = "camelCase")]
 pub struct ComponentInput {
     pub id: Option<String>,
@@ -91,6 +95,8 @@ pub struct Application {
 }
 
 #[derive(Debug, Deserialize)]
+// Serialized only by tests: ipc_contract finds the fixture keys Rust never reads.
+#[cfg_attr(test, derive(Serialize))]
 #[serde(rename_all = "camelCase")]
 pub struct ApplicationInput {
     pub id: Option<String>,

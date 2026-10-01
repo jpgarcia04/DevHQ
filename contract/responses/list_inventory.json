@@ -1,0 +1,115 @@
+{
+  "applications": [
+    {
+      "id": "shop",
+      "name": "Shop",
+      "description": "Store front",
+      "lifecycle": "production",
+      "version": "2.0",
+      "components": [
+        { "id": "api", "name": "API", "kind": "backend", "resourceId": "host" },
+        { "id": "db", "name": "Database", "kind": "database", "resourceId": null }
+      ]
+    }
+  ],
+  "resources": [
+    {
+      "id": "host",
+      "name": "Host",
+      "kind": "server",
+      "description": "Rack 2",
+      "operatingSystem": "Debian 13"
+    }
+  ],
+  "observations": [
+    {
+      "id": "obs-http",
+      "subject": { "type": "resource", "id": "host" },
+      "result": "healthy",
+      "summary": "HTTP 200 as expected, in 42 ms",
+      "source": "http",
+      "observedAt": "2026-01-01T10:05:00Z",
+      "validUntil": "2026-01-01T10:20:00Z",
+      "recordedAt": "2026-01-01T10:05:00Z",
+      "http": {
+        "url": "http://host.example/health",
+        "expectedStatus": 200,
+        "status": 200,
+        "latencyMs": 42,
+        "error": null,
+        "redirects": [{ "status": 301, "location": "https://host.example/health" }]
+      }
+    },
+    {
+      "id": "obs-manual",
+      "subject": { "type": "application", "id": "shop" },
+      "result": "degraded",
+      "summary": "Checkout is slow",
+      "source": "manual",
+      "observedAt": "2026-01-01T09:30:00Z",
+      "validUntil": "2026-01-01T10:30:00Z",
+      "recordedAt": "2026-01-01T09:45:00Z",
+      "http": null
+    }
+  ],
+  "incidents": [
+    {
+      "id": "incident-1",
+      "subject": { "type": "application", "id": "shop" },
+      "title": "Checkout fails",
+      "description": "Payments time out",
+      "severity": "critical",
+      "status": "resolved",
+      "source": "manual",
+      "openedAt": "2026-01-01T09:00:00Z",
+      "updatedAt": "2026-01-01T09:50:00Z",
+      "resolvedAt": "2026-01-01T09:50:00Z"
+    }
+  ],
+  "events": [
+    {
+      "id": "evt-http",
+      "subject": { "type": "resource", "id": "host" },
+      "kind": "observation",
+      "outcome": "success",
+      "title": "HTTP check: Healthy",
+      "detail": "HTTP 200 as expected, in 42 ms",
+      "source": "http",
+      "observationId": "obs-http",
+      "incidentId": null,
+      "occurredAt": "2026-01-01T10:05:00Z",
+      "recordedAt": "2026-01-01T10:05:00Z"
+    },
+    {
+      "id": "evt-incident",
+      "subject": { "type": "application", "id": "shop" },
+      "kind": "incident",
+      "outcome": "success",
+      "title": "Incident resolved: Checkout fails",
+      "detail": "Rolled back",
+      "source": "manual",
+      "observationId": null,
+      "incidentId": "incident-1",
+      "occurredAt": "2026-01-01T09:50:00Z",
+      "recordedAt": "2026-01-01T09:50:00Z"
+    }
+  ],
+  "httpChecks": [
+    {
+      "subject": { "type": "resource", "id": "host" },
+      "url": "http://host.example/health",
+      "expectedStatus": 200,
+      "timeoutSeconds": 5,
+      "validForMinutes": 15,
+      "updatedAt": "2026-01-01T08:00:00Z",
+      "monitor": "active",
+      "monitorIntervalMinutes": 5
+    }
+  ],
+  "automatedHistory": {
+    "limit": 200,
+    "truncated": [
+      { "subject": { "type": "resource", "id": "host" }, "since": "2026-01-01T10:05:00Z" }
+    ]
+  }
+}

@@ -64,6 +64,15 @@ Rust windowing and paging rules (`src/preview/backend.test.ts`); every write is 
 To look at the UI: `npx vite --host 127.0.0.1 --port 1420`, then open
 `http://127.0.0.1:1420/preview.html#/...` with the global Playwright (`npm root -g`).
 
+## IPC
+
+- `contract/commands/<command>.json` holds the exact arguments `inventoryApi` sends and
+  `contract/responses/` what Rust answers. `src/features/inventory/ipc-contract.test.ts` and
+  `src-tauri/src/ipc_contract.rs` check each side against them. A new command or argument
+  needs its fixture, its call in the TS test and its readers in `arguments()` in Rust.
+- Tauri runs a synchronous command on the thread that received the request: the main thread,
+  which has no Tokio runtime. A command that spawns a task or waits must be `async`.
+
 ## Schema
 
 A schema change is a new migration (`src-tauri/migrations/00N_*.sql`, next `user_version`)

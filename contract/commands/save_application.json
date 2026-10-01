@@ -1,0 +1,13 @@
+{
+  "input": {
+    "id": "shop",
+    "name": "Shop",
+    "description": "Store front",
+    "lifecycle": "testing",
+    "version": "2.1",
+    "components": [
+      { "id": "api", "name": "API", "kind": "backend", "resourceId": "host" },
+      { "name": "Database", "kind": "database", "resourceId": null }
+    ]
+  }
+}

@@ -43,6 +43,8 @@ pub struct HttpCheck {
 }
 
 #[derive(Debug, Deserialize)]
+// Serialized only by tests: ipc_contract finds the fixture keys Rust never reads.
+#[cfg_attr(test, derive(Serialize))]
 #[serde(rename_all = "camelCase")]
 pub struct HttpCheckInput {
     pub subject: Subject,
