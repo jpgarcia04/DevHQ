@@ -252,7 +252,9 @@ que pausar, reanudar, quitar o borrar surten efecto de inmediato; `run_http_chec
 no duplicar una ejecución en vuelo y `watch_http_monitor` abre el `Channel` de estado. Abre
 `inventory.sqlite3` en el directorio de datos de la aplicación que proporciona Tauri; las
 migraciones transaccionales v1→v6 usan `PRAGMA user_version` y una versión más nueva se
-rechaza en vez de adivinarse. La v4 reconstruye `observations` y `events` (SQLite no cambia
+rechaza en vez de adivinarse. Cada apertura solo lee esa versión: únicamente una base antigua
+toma el lock de escritura para migrar, y dentro vuelve a leerla por si otra conexión ya lo
+hizo. La v4 reconstruye `observations` y `events` (SQLite no cambia
 un CHECK con ALTER) conservando filas, IDs, `rowid` (desempate de orden), claves foráneas,
 índices y los vínculos evento → observación. La v5 solo reconstruye `http_checks` (nada la
 referencia) para añadir el estado y el intervalo de supervisión con sus CHECK, conservando
@@ -299,4 +301,5 @@ de historial se prueba por su límite exacto, los eventos que acompañan a cada 
 aviso de lo omitido en cada vista, la paginación de observaciones y de eventos de varios
 sistemas a la vez (sin huecos ni duplicados, con empates al mismo milisegundo y resultados
 nuevos entre páginas) y los planes de consulta, que nunca recorren el historial automático
-completo.
+completo. Una lectura no espera a una escritura en curso y dos primeras aperturas simultáneas
+migran una sola vez.

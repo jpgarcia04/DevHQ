@@ -125,6 +125,7 @@ const MIGRATIONS: [(i64, &str); 6] = [
     (6, include_str!("../migrations/006_history_window.sql")),
 ];
 
+/// Opens the inventory, upgrading its schema first if it is older than this build's.
 pub(crate) fn open(path: &Path) -> Result<Connection, ApiError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(ApiError::database)?;
@@ -132,22 +133,23 @@ pub(crate) fn open(path: &Path) -> Result<Connection, ApiError> {
     let mut db = Connection::open(path).map_err(ApiError::database)?;
     db.busy_timeout(Duration::from_secs(5))
         .map_err(ApiError::database)?;
-    // Upgrades rebuild tables, which SQLite only allows safely with enforcement off.
-    // migrate() verifies every relationship before committing; from then on it is on.
-    db.pragma_update(None, "foreign_keys", "OFF")
-        .map_err(ApiError::database)?;
-    migrate(&mut db)?;
+    // Only an upgrade takes the write lock; an up-to-date database is just read.
+    if schema_version(&db)? < SCHEMA_VERSION {
+        // Upgrades rebuild tables, which SQLite only allows safely with enforcement off.
+        // migrate() verifies every relationship before committing; from then on it is on.
+        db.pragma_update(None, "foreign_keys", "OFF")
+            .map_err(ApiError::database)?;
+        migrate(&mut db)?;
+    }
     db.pragma_update(None, "foreign_keys", "ON")
         .map_err(ApiError::database)?;
     Ok(db)
 }
 
-fn migrate(db: &mut Connection) -> Result<(), ApiError> {
-    // Serialize first launch: two WebView requests may reach this path together.
-    let tx = db
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(ApiError::database)?;
-    let version: i64 = tx
+/// The schema version stored in the file. A newer one than this build knows is refused
+/// rather than guessed at.
+fn schema_version(db: &Connection) -> Result<i64, ApiError> {
+    let version: i64 = db
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .map_err(ApiError::database)?;
     if version > SCHEMA_VERSION {
@@ -155,6 +157,16 @@ fn migrate(db: &mut Connection) -> Result<(), ApiError> {
             "unsupported inventory schema version {version}"
         )));
     }
+    Ok(version)
+}
+
+fn migrate(db: &mut Connection) -> Result<(), ApiError> {
+    // Serialize first launch: two WebView requests may reach this path together. Whoever
+    // gets the lock second finds the schema already upgraded.
+    let tx = db
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(ApiError::database)?;
+    let version = schema_version(&tx)?;
     if version == SCHEMA_VERSION {
         return Ok(());
     }
@@ -1149,8 +1161,59 @@ mod tests {
         let second = path.clone();
         let one = std::thread::spawn(move || list(&first));
         let two = std::thread::spawn(move || list(&second));
-        assert!(one.join().unwrap().is_ok());
-        assert!(two.join().unwrap().is_ok());
+        let (one, two) = (one.join().unwrap(), two.join().unwrap());
+        assert!(
+            one.is_ok() && two.is_ok(),
+            "{:?} {:?}",
+            one.err(),
+            two.err()
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    /// Runs `work` on its own connection in another thread and waits until it holds what it
+    /// took; the thread lets go when the returned sender is dropped or used.
+    fn holding<T: Send + 'static>(
+        path: &Path,
+        work: impl FnOnce(&Path, &dyn Fn()) -> T + Send + 'static,
+    ) -> (std::sync::mpsc::Sender<()>, std::thread::JoinHandle<T>) {
+        let (held, wait_held) = std::sync::mpsc::channel();
+        let (release, wait_release) = std::sync::mpsc::channel::<()>();
+        let path = path.to_path_buf();
+        let thread = std::thread::spawn(move || {
+            work(&path, &|| {
+                held.send(()).unwrap();
+                // Far longer than anything here would wait before giving up.
+                let _ = wait_release.recv_timeout(Duration::from_secs(30));
+            })
+        });
+        wait_held.recv().unwrap();
+        (release, thread)
+    }
+
+    #[test]
+    fn an_up_to_date_database_is_read_without_waiting_for_a_write_in_progress() {
+        let path = path();
+        let host = resource(&path, "Host");
+        let id = host.id.clone();
+        let (release, writer) = holding(&path, move |path, hold| {
+            let mut db = Connection::open(path).unwrap();
+            let tx = db
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .unwrap();
+            tx.execute("UPDATE resources SET name = 'Renamed' WHERE id = ?1", [&id])
+                .unwrap();
+            hold();
+            tx.commit().unwrap();
+        });
+        // Every open used to take the write lock just to check the schema version, so this
+        // waited for the writer and gave up after five seconds.
+        let snapshot = list(&path);
+        release.send(()).unwrap();
+        writer.join().unwrap();
+        // The last committed state, then the new one.
+        assert_eq!(snapshot.unwrap().resources, vec![host]);
+        assert_eq!(list(&path).unwrap().resources[0].name, "Renamed");
         std::fs::remove_file(path).unwrap();
     }
 
