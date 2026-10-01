@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   ArrowLeft,
   ArrowUpRight,
@@ -11,7 +11,7 @@ import {
   Server,
   ShieldCheck,
 } from 'lucide-react'
-import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { EmptyState } from '@/components/empty-state'
 import { PageHeader } from '@/components/page-header'
 import { LifecycleBadge } from '@/components/status-badge'
@@ -660,17 +660,23 @@ function ApplicationDetail({ app }: { app: InventoryApplication }) {
 export function RealInfrastructurePage() {
   const { snapshot, now } = useInventory()
   const [params] = useSearchParams()
+  const { key: navigation } = useLocation()
   const selectedResource = params.get('resource')
   const [editing, setEditing] = useState<string | 'new' | null>(null)
+  const focusedFor = useRef<string | null>(null)
   useEffect(() => {
-    if (!selectedResource) return
+    // Once per navigation, as soon as the linked resource is shown. A later snapshot (a save,
+    // a supervised run) must not pull focus away and scroll back to it.
+    if (!selectedResource || focusedFor.current === navigation) return
     const timeout = window.setTimeout(() => {
       const element = document.getElementById(`resource-${selectedResource}`)
-      element?.focus({ preventScroll: true })
-      element?.scrollIntoView?.({ block: 'start' })
+      if (!element) return
+      focusedFor.current = navigation
+      element.focus({ preventScroll: true })
+      element.scrollIntoView?.({ block: 'start' })
     }, 0)
     return () => window.clearTimeout(timeout)
-  }, [selectedResource, snapshot])
+  }, [navigation, selectedResource, snapshot])
   return (
     <div className="page-stack">
       <PageHeader

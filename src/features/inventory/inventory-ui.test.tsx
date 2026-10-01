@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import type { ReactNode } from 'react'
@@ -92,5 +92,39 @@ describe('real inventory UI', () => {
       </MemoryRouter>,
     )
     await waitFor(() => expect(screen.getByRole('region', { name: 'Host One' })).toHaveFocus())
+  })
+
+  it('never pulls focus back to the linked resource when a newer snapshot arrives', async () => {
+    const value = context()
+    const snapshot = {
+      ...value.snapshot!,
+      resources: [
+        ...value.snapshot!.resources,
+        {
+          id: 'host-2',
+          name: 'Host Two',
+          kind: 'server' as const,
+          description: '',
+          operatingSystem: '',
+        },
+      ],
+    }
+    const view = (current: InventoryContextValue) => (
+      <MemoryRouter initialEntries={['/infrastructure?resource=host-1']}>
+        <InventoryContext.Provider value={current}>
+          <RealInfrastructurePage />
+        </InventoryContext.Provider>
+      </MemoryRouter>
+    )
+    const { rerender } = render(view(context({ snapshot })))
+    await waitFor(() => expect(screen.getByRole('region', { name: 'Host One' })).toHaveFocus())
+    const elsewhere = within(screen.getByRole('region', { name: 'Host Two' })).getByRole('button', {
+      name: 'Edit',
+    })
+    act(() => elsewhere.focus())
+    // A save or a supervised run brings a new snapshot while the person works elsewhere.
+    rerender(view(context({ snapshot: { ...snapshot } })))
+    await act(() => new Promise((resolve) => window.setTimeout(resolve, 20)))
+    expect(elsewhere).toHaveFocus()
   })
 })
