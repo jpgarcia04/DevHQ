@@ -201,7 +201,7 @@ export function Shell() {
             <span className="size-1 rounded-full bg-primary" />
             {mode === 'demo'
               ? 'DEMO DATA · NO LIVE CONNECTIONS'
-              : 'LOCAL INVENTORY · MANUAL ENTRIES · HTTP CHECKS ONLY ON REQUEST'}
+              : 'LOCAL INVENTORY · MANUAL ENTRIES · HTTP CHECKS ONLY WHILE OPEN'}
           </span>
           <span>
             {mode === 'demo'
