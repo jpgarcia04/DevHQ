@@ -398,28 +398,46 @@ const plannedTabs: Partial<Record<(typeof tabs)[number], string>> = {
   Automations: 'This area will be populated when automations with verified results exist.',
 }
 
+function AllApplications() {
+  return (
+    <Link to="/applications" className="quiet-link">
+      <ArrowLeft className="size-3.5" /> All applications
+    </Link>
+  )
+}
+
 export function RealApplicationDetailPage() {
   const { snapshot } = useInventory()
   const { applicationId } = useParams()
-  const app = snapshot?.applications.find((item) => item.id === applicationId)
-  return (
-    <InventoryState>
-      {app ? (
-        <ApplicationDetail app={app} />
-      ) : (
-        <EmptyState
-          page
-          title="Application not found"
-          description="This application is not in the local inventory."
-          action={
-            <Button asChild variant="outline">
-              <Link to="/applications">Back to applications</Link>
-            </Button>
-          }
+  // Until the inventory loads, or when it cannot be read (which clears the snapshot), which
+  // application this is stays unknown. The page is still titled, with the way back.
+  if (!snapshot)
+    return (
+      <div className="page-stack">
+        <AllApplications />
+        <PageHeader
+          eyebrow="Local inventory"
+          title="Application"
+          description="Its evidence, infrastructure and activity, as recorded in DevHQ."
         />
-      )}
-    </InventoryState>
-  )
+        <InventoryState>{null}</InventoryState>
+      </div>
+    )
+  const app = snapshot.applications.find((item) => item.id === applicationId)
+  if (!app)
+    return (
+      <EmptyState
+        page
+        title="Application not found"
+        description="This application is not in the local inventory."
+        action={
+          <Button asChild variant="outline">
+            <Link to="/applications">Back to applications</Link>
+          </Button>
+        }
+      />
+    )
+  return <ApplicationDetail app={app} />
 }
 
 function ApplicationDetail({ app }: { app: InventoryApplication }) {
@@ -444,9 +462,7 @@ function ApplicationDetail({ app }: { app: InventoryApplication }) {
   ])
   return (
     <div className="page-stack">
-      <Link to="/applications" className="quiet-link">
-        <ArrowLeft className="size-3.5" /> All applications
-      </Link>
+      <AllApplications />
       <header className="flex flex-wrap items-start justify-between gap-5">
         <div>
           <h1 className="text-[28px] font-semibold tracking-[-0.04em]">{app.name}</h1>

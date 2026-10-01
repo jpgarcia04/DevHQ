@@ -65,7 +65,9 @@ aplicación. Rust guarda los textos sin espacios alrededor y rechaza (nunca reco
 superan sus límites, los mismos que impone la UI y contados igual (unidades UTF-16): nombres
 120, títulos 160, resúmenes y notas 500, descripciones y detalles 1000, versión 60; una
 versión en blanco es ninguna. El texto ya guardado se acepta sin cambios aunque supere un
-límite posterior, así que siempre se puede volver a guardar (o archivar) lo existente. Un fallo de SQLite/IPC muestra un error y permite reintentar.
+límite posterior, así que siempre se puede volver a guardar (o archivar) lo existente. Un fallo
+de SQLite/IPC muestra un error y permite reintentar; mientras carga o si falla, el detalle de una
+aplicación, que aún no sabe cuál es, se titula «Application» y conserva el enlace de vuelta.
 
 ### Observaciones, incidencias y eventos
 

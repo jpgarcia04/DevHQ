@@ -11,6 +11,10 @@ const pages: { name: string; path: string; open?: string }[] = [
   { name: 'applications', path: '/preview.html#/applications' },
   { name: 'new application form', path: '/preview.html#/applications', open: 'New application' },
   { name: 'application', path: '/preview.html#/applications/shop' },
+  {
+    name: 'application, inventory unavailable',
+    path: '/preview.html?scenario=unavailable#/applications/shop',
+  },
   { name: 'application health', path: '/preview.html#/applications/shop?tab=health' },
   {
     name: 'application infrastructure',

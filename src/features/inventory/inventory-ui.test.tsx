@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
 import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import type { ReactNode } from 'react'
 import { InventoryContext, useInventory, type InventoryContextValue } from './inventory-context'
 import { ApplicationForm } from './application-form'
-import { RealInfrastructurePage, RealOverviewPage } from './real-pages'
+import { RealApplicationDetailPage, RealInfrastructurePage, RealOverviewPage } from './real-pages'
 import { InventoryProvider } from './inventory-provider'
 import { inventoryApi } from './inventory-api'
 import { inventoryContext as context } from './test-context'
@@ -67,6 +67,36 @@ describe('real inventory UI', () => {
     await user.click(screen.getByRole('button', { name: 'Retry' }))
     expect(list).toHaveBeenCalledTimes(2)
     list.mockRestore()
+  })
+
+  it('titles an application’s page while the inventory loads and when it cannot be read', () => {
+    const view = (value: InventoryContextValue) => (
+      <MemoryRouter initialEntries={['/applications/shop']}>
+        <InventoryContext.Provider value={value}>
+          <Routes>
+            <Route path="/applications/:applicationId" element={<RealApplicationDetailPage />} />
+          </Routes>
+        </InventoryContext.Provider>
+      </MemoryRouter>
+    )
+    const { rerender } = render(view(context({ snapshot: null, loadState: 'loading' })))
+    expect(screen.getByRole('heading', { level: 1, name: 'Application' })).toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('Loading local inventory…')
+    expect(screen.getByRole('link', { name: 'All applications' })).toHaveAttribute(
+      'href',
+      '/applications',
+    )
+
+    const reload = vi.fn(async () => false)
+    rerender(
+      view(context({ snapshot: null, loadState: 'error', error: 'Disk unavailable', reload })),
+    )
+    expect(screen.getByRole('heading', { level: 1, name: 'Application' })).toBeInTheDocument()
+    expect(
+      screen.getByRole('heading', { level: 2, name: 'Inventory unavailable' }),
+    ).toBeInTheDocument()
+    expect(screen.getByText('Disk unavailable')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
   })
 
   it('shows no observed health for real inventory', () => {
