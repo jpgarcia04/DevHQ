@@ -1,6 +1,39 @@
 import { sameSubject } from '@/domain/evidence'
-import type { EntityRef, RecordSource } from '@/domain/models'
+import type { EntityRef, RecordedEvent, RecordSource } from '@/domain/models'
 import type { AutomatedHistory } from './inventory-api'
+
+/** One timeline row: an event, or consecutive automated results that said the same thing. */
+export type TimelineRow =
+  | { kind: 'event'; event: RecordedEvent }
+  | { kind: 'repeats'; events: RecordedEvent[] }
+
+/** Fewer repeats than this are clearer one by one. */
+export const minimumRepeats = 3
+
+const repeats = (a: RecordedEvent, b: RecordedEvent) =>
+  a.source === 'http' &&
+  b.source === 'http' &&
+  sameSubject(a.subject, b.subject) &&
+  a.title === b.title
+
+/**
+ * Folds runs of identical automated results of one system into a single row, so supervision
+ * cannot bury what changed. Only adjacent events fold: anything in between, from any system,
+ * ends the run, so the timeline keeps its order.
+ */
+export function timelineRows(events: RecordedEvent[]): TimelineRow[] {
+  const runs: RecordedEvent[][] = []
+  for (const event of events) {
+    const run = runs.at(-1)
+    if (run && repeats(run[0]!, event)) run.push(event)
+    else runs.push([event])
+  }
+  return runs.flatMap((run): TimelineRow[] =>
+    run.length >= minimumRepeats
+      ? [{ kind: 'repeats', events: run }]
+      : run.map((event) => ({ kind: 'event', event })),
+  )
+}
 
 /**
  * The moment from which the automated results of every given subject are loaded, or null if

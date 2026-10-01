@@ -18,7 +18,9 @@ abierta**. **No funciona en segundo plano ni opera sistemas.**
 - Overview centrado en atención, incidencias, actividad y contexto operativo.
 - Applications con búsqueda, filtros, identidad visual y detalle con seis tabs. En la
   demo solo Overview tiene contenido completo; en Mi inventario también Health (historial
-  de observaciones) y Activity. Las restantes explican su futura función.
+  de observaciones), Infrastructure (cada recurso en que corre, con su evidencia, su
+  comprobación, sus incidencias y las demás aplicaciones que lo comparten) y Activity. Las
+  restantes explican su futura función.
 - Infrastructure compartida con enlaces a las aplicaciones que dependen de ella,
   incidencias del recurso y enlaces desde los componentes de cada aplicación.
 - Incidents con severidad, estado, contexto desplegable y filtros; Activity global.
@@ -159,7 +161,10 @@ ejecución, que es idéntica a la de Run check y sigue la misma semántica de vi
   UI lo dice: una nota indica desde cuándo los resultados automáticos están completos y una
   línea marca dónde una lista pasa a tener solo registros manuales. Una vista que mezcla
   sistemas (Activity) solo muestra resultados automáticos desde el momento en que los de
-  todos están completos, para no sugerir que uno no tuvo resultados. Cada consulta sigue un
+  todos están completos, para no sugerir que uno no tuvo resultados. En las líneas de
+  tiempo, tres o más resultados automáticos seguidos e idénticos de un mismo sistema se
+  pliegan en una fila desplegable; cualquier otro registro entre medias corta el pliegue,
+  así que el orden se conserva y lo que cambió no queda enterrado. Cada consulta sigue un
   índice, así que su coste depende de lo que se carga y no del historial acumulado: con 5
   comprobaciones cada 5 min durante 90 días, una recarga pasó de 86 MB y 0.5 s a 0.7 MB y
   5 ms.

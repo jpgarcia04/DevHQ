@@ -621,7 +621,7 @@ function ApplicationDetail({ app }: { app: InventoryApplication }) {
               </div>
             )}
             {events.length ? (
-              <EventRecordList items={events} automatedSince={since} />
+              <EventRecordList foldRepeats items={events} automatedSince={since} />
             ) : (
               <p className="text-xs text-muted-foreground">
                 No activity recorded yet. Use Log event above to add one.

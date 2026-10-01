@@ -6,10 +6,11 @@ import type { ReactNode } from 'react'
 import type { EntityRef, Observation, RecordedEvent, RecordSource } from '@/domain/models'
 import { formatDate, formatDateTime } from '@/shared/time'
 import { ObservationHistory } from './evidence'
-import { automatedSince, withinWindow } from './history'
+import { automatedSince, timelineRows, withinWindow } from './history'
 import type { InventorySnapshot } from './inventory-api'
 import { InventoryContext, type InventoryContextValue } from './inventory-context'
 import { RealApplicationDetailPage } from './real-pages'
+import { EventRecordList } from './record-lists'
 import { RealActivityPage } from './records-pages'
 import { inventoryContext, minutesFromNow } from './test-context'
 
@@ -209,5 +210,78 @@ describe('the automated history window', () => {
     expect(within(panel).getByText(theNote)).toBeInTheDocument()
     expect(within(panel).getByText(theBoundary)).toBeInTheDocument()
     expect(within(panel).getByText('Web note at -90')).toBeInTheDocument()
+  })
+})
+
+describe('repeated automated results', () => {
+  const run = (subject: EntityRef, minutesAgo: number, title = 'HTTP check: Healthy') => ({
+    ...event(subject, 'http', minutesAgo, title),
+    detail: `HTTP 200 as expected, run ${minutesAgo} min ago`,
+  })
+  const shape = (events: RecordedEvent[]) =>
+    timelineRows(events).map((row) =>
+      row.kind === 'event' ? row.event.id : row.events.map((item) => item.id),
+    )
+
+  it('fold only when three or more adjacent results of one system say the same', () => {
+    const deployment = event(web, 'manual', 22, 'Deployed 2.0')
+    expect(
+      shape([
+        run(web, 5),
+        run(web, 10),
+        run(web, 15),
+        run(web, 20),
+        deployment,
+        run(web, 25),
+        run(web, 30),
+        run(db, 35),
+        run(db, 40),
+        run(db, 45, 'HTTP check: Unhealthy'),
+        run(db, 50),
+        run(db, 55),
+        run(db, 60),
+      ]),
+    ).toEqual([
+      ['evt-web-host-5', 'evt-web-host-10', 'evt-web-host-15', 'evt-web-host-20'],
+      // Anything in between ends a run: the order of the timeline is kept.
+      'evt-web-host-22',
+      'evt-web-host-25',
+      'evt-web-host-30',
+      'evt-db-host-35',
+      'evt-db-host-40',
+      'evt-db-host-45',
+      ['evt-db-host-50', 'evt-db-host-55', 'evt-db-host-60'],
+    ])
+    // Manual records never fold, however alike.
+    expect(
+      shape([
+        event(web, 'manual', 1, 'Note'),
+        event(web, 'manual', 2, 'Note'),
+        event(web, 'manual', 3, 'Note'),
+      ]),
+    ).toHaveLength(3)
+  })
+
+  it('shows a folded run as one row that opens to every result', async () => {
+    const user = userEvent.setup()
+    const events = [run(web, 5), run(web, 10), run(web, 15), run(web, 20)]
+    renderWith(
+      <EventRecordList foldRepeats timeOnly items={events} />,
+      inventoryContext({ snapshot }),
+    )
+    const timeline = screen.getAllByRole('list')[0]!
+    expect(within(timeline).getAllByRole('listitem')).toHaveLength(1)
+    expect(screen.getByText('4 consecutive results')).toBeInTheDocument()
+    expect(screen.getByText('Latest: HTTP 200 as expected, run 5 min ago')).toBeInTheDocument()
+    expect(screen.queryByText('HTTP 200 as expected, run 20 min ago')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Show all 4' }))
+    const all = screen.getByRole('list', { name: '4 consecutive results' })
+    expect(within(all).getAllByRole('listitem')).toHaveLength(4)
+    expect(within(all).getByText('HTTP 200 as expected, run 20 min ago')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Hide them' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    )
   })
 })

@@ -170,7 +170,7 @@ export function RealActivityPage() {
                       {manualOnly && ' · manual records only'}
                     </h2>
                     <div className="panel px-5 py-5">
-                      <EventRecordList timeOnly items={items} automatedSince={since} />
+                      <EventRecordList timeOnly foldRepeats items={items} automatedSince={since} />
                     </div>
                   </section>
                 )
