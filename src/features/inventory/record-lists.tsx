@@ -266,13 +266,7 @@ function RepeatedResults({
           <span aria-hidden="true">·</span>
           <span>{events.length} consecutive results</span>
           <SourceTag source={latest.source} />
-          <Button
-            size="sm"
-            variant="ghost"
-            className="h-6 px-2 text-[11px]"
-            aria-expanded={open}
-            onClick={() => setOpen(!open)}
-          >
+          <Button size="xs" variant="ghost" aria-expanded={open} onClick={() => setOpen(!open)}>
             {open ? 'Hide them' : `Show all ${events.length}`}
           </Button>
         </p>

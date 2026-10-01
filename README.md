@@ -50,8 +50,12 @@ aparecen como **no observados**; lifecycle no expresa health.
 Desde Mi inventario se crean y editan recursos y aplicaciones. Cada aplicación
 contiene componentes que pueden apuntar a un recurso existente. Al guardar una
 aplicación se reemplaza su lista de componentes de forma atómica: quitar un
-componente también quita su vínculo. La eliminación de aplicaciones o recursos
-completos queda fuera de este incremento. Un recurso inexistente se rechaza antes
+componente también quita su vínculo. Desde su formulario de edición, y tras confirmarlo,
+se puede borrar una aplicación o un recurso **sin historial**: con sus componentes y su
+comprobación HTTP. Lo que tiene observaciones, incidencias o eventos se conserva (una
+aplicación puede pasar a Archived), y un recurso en el que corre algún componente también,
+hasta desenlazarlo; la UI explica el motivo y Rust lo vuelve a comprobar, dentro de la
+misma transacción, antes de borrar nada. Un recurso inexistente se rechaza antes
 de escribir la aplicación, igual que un componente repetido o que pertenece a otra
 aplicación. Rust guarda los textos sin espacios alrededor y rechaza (nunca recorta) los que
 superan sus límites, los mismos que impone la UI: nombres 120 caracteres, títulos 160,
@@ -123,8 +127,9 @@ app cerrada.
   sujeto; su sujeto no cambia (para moverla, quítala y créala en el otro). Cada
   observación copia la URL y el estado esperado, así que editar o quitar la configuración
   nunca reescribe evidencia; si la URL cambió desde la última ejecución, la UI lo avisa.
-  Si algún día se borra un sujeto, su configuración se va con él (`CASCADE`), pero su
-  evidencia sigue impidiendo el borrado (`RESTRICT`).
+  Al borrar un sujeto sin historial, su configuración se va con él (`CASCADE`) y la
+  supervisión lo olvida al instante; una ejecución en vuelo ya no puede registrar nada.
+  Su evidencia, si la hubiera, impediría el borrado (`RESTRICT`).
 - La URL se guarda en texto plano: no pongas secretos en ella. Se rechazan URLs con
   usuario o contraseña.
 
@@ -227,11 +232,12 @@ artificial. Los selectores de dominio no dependen de React ni de los mocks. Las 
 consumen explícitamente el escenario durante esta etapa.
 
 Rust expone `list_inventory` (una lectura consistente de inventario, registros y
-`httpChecks`), `save_application`, `save_resource`, `record_observation`, `open_incident`,
+`httpChecks`), `save_application`, `save_resource`, `delete_application`,
+`delete_resource`, `record_observation`, `open_incident`,
 `update_incident_status`, `record_event`, `save_http_check`, `set_http_check_paused`,
 `remove_http_check`, `run_http_check` y `watch_http_monitor`. Los comandos de
-comprobaciones son asíncronos y avisan a la supervisión antes de responder, así que pausar,
-reanudar o quitar surten efecto de inmediato; `run_http_check` pasa por la supervisión para
+comprobaciones y de borrado son asíncronos y avisan a la supervisión antes de responder, así
+que pausar, reanudar, quitar o borrar surten efecto de inmediato; `run_http_check` pasa por la supervisión para
 no duplicar una ejecución en vuelo y `watch_http_monitor` abre el `Channel` de estado. Abre
 `inventory.sqlite3` en el directorio de datos de la aplicación que proporciona Tauri; las
 migraciones transaccionales v1→v6 usan `PRAGMA user_version` y una versión más nueva se
@@ -244,8 +250,8 @@ solo se confirman si `PRAGMA foreign_key_check` no encuentra relaciones rotas. L
 añade dos índices parciales sobre los registros manuales; ninguna fila cambia. Los
 registros usan dos columnas con clave foránea (`application_id`/`resource_id`) y un CHECK
 que exige exactamente una; las referencias de historial son `ON DELETE RESTRICT`, así que
-nada puede borrar un sujeto y dejar evidencia huérfana (no existe aún ningún caso de uso de
-borrado). Las referencias inexistentes se rechazan antes de escribir y dentro de la misma
+nada puede borrar un sujeto y dejar evidencia huérfana; los casos de uso de borrado lo
+comprueban antes y explican qué lo impide. Las referencias inexistentes se rechazan antes de escribir y dentro de la misma
 transacción. Los tiempos se guardan en milisegundos UTC y viajan como RFC 3339; no se
 aceptan momentos futuros. La UI invoca esos casos de uso con contratos tipados. Se conserva la barra nativa de ventana. La CSP limita recursos y las
 capabilities no conceden permisos adicionales. No se implementan autenticación,
@@ -271,7 +277,8 @@ vigencia y sustitución de observaciones de ambos orígenes, orden de atención,
 carga visibles y recuperables, comprobaciones contra un servidor local (estado esperado,
 500, redirect, bucle de redirects, tiempo agotado, conexión rechazada, dominio `.invalid`
 y fallo TLS), configuraciones inválidas sin escrituras parciales, errores de DevHQ que
-no producen observación y la distinción de origen en cada vista real. La supervisión se
+no producen observación, la distinción de origen en cada vista real y el borrado (qué lo
+impide, la confirmación y que un resultado tardío de un sujeto borrado no se registra). La supervisión se
 prueba sobre un reloj simulado de Tokio, sin esperas reales: ritmo por intervalo,
 continuidad tras reabrir, una sola ejecución por atraso, sin solapes, Run check que se une
 a la ejecución en vuelo, pausa, cancelación al quitar o cerrar, fallos de DevHQ visibles

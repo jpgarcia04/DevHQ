@@ -1236,7 +1236,7 @@ pub(crate) mod tests {
         };
         save_http_check(&path, input(&host, "http://127.0.0.1:9/")).unwrap();
         let db = open(&path).unwrap();
-        // No use case deletes subjects yet; this documents what the schema does when one does.
+        // What deleting a subject relies on: its configuration goes with it.
         db.execute("DELETE FROM resources WHERE id = ?1", [id])
             .unwrap();
         let remaining: i64 = db

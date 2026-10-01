@@ -11,7 +11,7 @@ import {
   Server,
   ShieldCheck,
 } from 'lucide-react'
-import { Link, useParams, useSearchParams } from 'react-router-dom'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { EmptyState } from '@/components/empty-state'
 import { PageHeader } from '@/components/page-header'
 import { LifecycleBadge } from '@/components/status-badge'
@@ -415,6 +415,7 @@ export function RealApplicationDetailPage() {
 function ApplicationDetail({ app }: { app: InventoryApplication }) {
   const { snapshot, now } = useInventory()
   const [params, setParams] = useSearchParams()
+  const navigate = useNavigate()
   const [editing, setEditing] = useState(false)
   const tab = tabs.find((item) => item.toLowerCase() === params.get('tab')) ?? 'Overview'
   const subject: EntityRef = { type: 'application', id: app.id }
@@ -453,7 +454,13 @@ function ApplicationDetail({ app }: { app: InventoryApplication }) {
           <Pencil className="size-3.5" /> Edit application
         </Button>
       </header>
-      {editing && <ApplicationForm application={app} onDone={() => setEditing(false)} />}
+      {editing && (
+        <ApplicationForm
+          application={app}
+          onDone={() => setEditing(false)}
+          onDeleted={() => navigate('/applications')}
+        />
+      )}
       <RecordActions subject={subject} name={app.name} />
       <Tabs
         value={tab.toLowerCase()}

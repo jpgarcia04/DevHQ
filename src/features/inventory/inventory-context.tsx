@@ -26,6 +26,8 @@ export interface InventoryContextValue {
   reload: () => Promise<boolean>
   saveResource: (input: ResourceInput) => Promise<void>
   saveApplication: (input: ApplicationInput) => Promise<void>
+  deleteApplication: (id: string) => Promise<void>
+  deleteResource: (id: string) => Promise<void>
   recordObservation: (input: ObservationInput) => Promise<void>
   openIncident: (input: IncidentInput) => Promise<void>
   updateIncidentStatus: (input: IncidentStatusInput) => Promise<void>

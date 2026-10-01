@@ -36,6 +36,8 @@ export function inventoryContext(
     reload: vi.fn(async () => true),
     saveResource: vi.fn(async () => {}),
     saveApplication: vi.fn(async () => {}),
+    deleteApplication: vi.fn(async () => {}),
+    deleteResource: vi.fn(async () => {}),
     recordObservation: vi.fn(async () => {}),
     openIncident: vi.fn(async () => {}),
     updateIncidentStatus: vi.fn(async () => {}),

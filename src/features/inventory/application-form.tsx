@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { lifecycleLabels } from '@/domain/labels'
 import type { ComponentKind, Lifecycle } from '@/domain/models'
+import { DeleteSubject } from './delete-subject'
 import { inventoryError, type ApplicationInput, type InventoryApplication } from './inventory-api'
 import { useInventory } from './inventory-context'
 
@@ -11,9 +12,12 @@ type DraftComponent = ApplicationInput['components'][number]
 export function ApplicationForm({
   application,
   onDone,
+  onDeleted = onDone,
 }: {
   application?: InventoryApplication
   onDone: () => void
+  /** After a successful deletion; the application no longer exists. */
+  onDeleted?: () => void
 }) {
   const { snapshot, saveApplication } = useInventory()
   const [name, setName] = useState(application?.name ?? '')
@@ -186,6 +190,13 @@ export function ApplicationForm({
           Cancel
         </Button>
       </div>
+      {application && (
+        <DeleteSubject
+          subject={{ type: 'application', id: application.id }}
+          name={application.name}
+          onDeleted={onDeleted}
+        />
+      )}
     </form>
   )
 }

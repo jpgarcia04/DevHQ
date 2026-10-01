@@ -141,6 +141,10 @@ export const inventoryApi = {
   saveResource: (input: ResourceInput) => invoke<InventoryResource>('save_resource', { input }),
   saveApplication: (input: ApplicationInput) =>
     invoke<InventoryApplication>('save_application', { input }),
+  /** Refused while it has records: DevHQ never erases history. */
+  deleteApplication: (id: string) => invoke<null>('delete_application', { id }),
+  /** Refused while it has records or a component runs on it. */
+  deleteResource: (id: string) => invoke<null>('delete_resource', { id }),
   recordObservation: (input: ObservationInput) =>
     invoke<Observation>('record_observation', { input }),
   openIncident: (input: IncidentInput) => invoke<RecordedIncident>('open_incident', { input }),

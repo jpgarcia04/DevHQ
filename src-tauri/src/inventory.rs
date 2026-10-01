@@ -1,5 +1,5 @@
 use crate::{http_check, records};
-use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::time::Duration;
@@ -431,6 +431,117 @@ pub fn save_application(path: &Path, input: ApplicationInput) -> Result<Applicat
     })
 }
 
+fn count(tx: &Transaction, sql: &str, id: &str) -> Result<i64, ApiError> {
+    tx.query_row(sql, [id], |row| row.get(0))
+        .map_err(ApiError::database)
+}
+
+fn plural(count: i64, noun: &str) -> String {
+    format!("{count} {noun}{}", if count == 1 { "" } else { "s" })
+}
+
+/// Records that reference a subject. History is never deleted, so they keep it in place.
+fn history_of(tx: &Transaction, column: &str, id: &str) -> Result<Vec<String>, ApiError> {
+    let mut found = Vec::new();
+    for (table, noun) in [
+        ("observations", "observation"),
+        ("incidents", "incident"),
+        ("events", "event"),
+    ] {
+        let total = count(
+            tx,
+            &format!("SELECT count(*) FROM {table} WHERE {column} = ?1"),
+            id,
+        )?;
+        if total > 0 {
+            found.push(plural(total, noun));
+        }
+    }
+    Ok(found)
+}
+
+fn listed(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+/// Deletes an application that has no records, with its components and HTTP check. One with
+/// observations, incidents or events is kept: DevHQ never erases history. Archive it instead.
+pub fn delete_application(path: &Path, id: &str) -> Result<(), ApiError> {
+    let mut db = open(path)?;
+    let tx = db
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(ApiError::database)?;
+    let name: String = tx
+        .query_row("SELECT name FROM applications WHERE id = ?1", [id], |row| {
+            row.get(0)
+        })
+        .optional()
+        .map_err(ApiError::database)?
+        .ok_or_else(|| ApiError::invalid(format!("The application {id} does not exist.")))?;
+    let history = history_of(&tx, "application_id", id)?;
+    if !history.is_empty() {
+        return Err(ApiError::invalid(format!(
+            "{name} has {}. DevHQ keeps history, so it cannot be deleted; set its lifecycle to Archived instead.",
+            listed(&history)
+        )));
+    }
+    // Its components and its HTTP check go with it (ON DELETE CASCADE).
+    tx.execute("DELETE FROM applications WHERE id = ?1", [id])
+        .map_err(ApiError::database)?;
+    tx.commit().map_err(ApiError::database)
+}
+
+/// Deletes a resource that no component runs on and that has no records, with its HTTP check.
+pub fn delete_resource(path: &Path, id: &str) -> Result<(), ApiError> {
+    let mut db = open(path)?;
+    let tx = db
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(ApiError::database)?;
+    let name: String = tx
+        .query_row("SELECT name FROM resources WHERE id = ?1", [id], |row| {
+            row.get(0)
+        })
+        .optional()
+        .map_err(ApiError::database)?
+        .ok_or_else(|| ApiError::invalid(format!("The resource {id} does not exist.")))?;
+    let users = {
+        let mut statement = tx
+            .prepare(
+                "SELECT a.name || ' (' || c.name || ')' FROM components c
+                 JOIN applications a ON a.id = c.application_id
+                 WHERE c.resource_id = ?1 ORDER BY a.name COLLATE NOCASE, c.rowid",
+            )
+            .map_err(ApiError::database)?;
+        let rows = statement
+            .query_map([id], |row| row.get::<_, String>(0))
+            .map_err(ApiError::database)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(ApiError::database)?;
+        rows
+    };
+    if !users.is_empty() {
+        return Err(ApiError::invalid(format!(
+            "{name} is used by {}. Link those components to another resource, or leave them unlinked, first.",
+            listed(&users)
+        )));
+    }
+    let history = history_of(&tx, "resource_id", id)?;
+    if !history.is_empty() {
+        return Err(ApiError::invalid(format!(
+            "{name} has {}. DevHQ keeps history, so it cannot be deleted.",
+            listed(&history)
+        )));
+    }
+    // Its HTTP check goes with it (ON DELETE CASCADE).
+    tx.execute("DELETE FROM resources WHERE id = ?1", [id])
+        .map_err(ApiError::database)?;
+    tx.commit().map_err(ApiError::database)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -684,6 +795,195 @@ mod tests {
         assert!(snapshot.applications.contains(&original));
         assert!(snapshot.applications.contains(&other));
         assert_eq!(snapshot.resources.len(), 1);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    fn resource(path: &Path, name: &str) -> Resource {
+        save_resource(
+            path,
+            ResourceInput {
+                id: None,
+                name: name.into(),
+                kind: "server".into(),
+                description: String::new(),
+                operating_system: String::new(),
+            },
+        )
+        .unwrap()
+    }
+
+    fn http_check(subject: records::Subject) -> http_check::HttpCheckInput {
+        http_check::HttpCheckInput {
+            subject,
+            url: "https://example.com/health".into(),
+            expected_status: 200,
+            timeout_seconds: 5,
+            valid_for_minutes: 60,
+            monitor_interval_minutes: Some(5),
+        }
+    }
+
+    #[test]
+    fn deletes_what_has_no_history_with_its_components_and_check() {
+        let path = path();
+        let host = resource(&path, "Host");
+        let spare = resource(&path, "Spare");
+        let shop = save_application(&path, app(Some(host.id.clone()))).unwrap();
+        let kept = save_application(&path, app(Some(host.id.clone()))).unwrap();
+        http_check::save_http_check(
+            &path,
+            http_check(records::Subject::Application {
+                id: shop.id.clone(),
+            }),
+        )
+        .unwrap();
+        http_check::save_http_check(
+            &path,
+            http_check(records::Subject::Resource {
+                id: spare.id.clone(),
+            }),
+        )
+        .unwrap();
+
+        delete_application(&path, &shop.id).unwrap();
+        delete_resource(&path, &spare.id).unwrap();
+        let snapshot = list(&path).unwrap();
+        assert_eq!(snapshot.applications, vec![kept]);
+        assert_eq!(snapshot.resources, vec![host]);
+        assert!(snapshot.http_checks.is_empty());
+        let db = open(&path).unwrap();
+        let components: i64 = db
+            .query_row(
+                "SELECT count(*) FROM components WHERE application_id = ?1",
+                [&shop.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(components, 0);
+        drop(db);
+        let missing = delete_application(&path, &shop.id).unwrap_err();
+        assert_eq!(missing.code, "invalid_input");
+        assert!(missing.message.contains("does not exist"));
+        assert_eq!(
+            delete_resource(&path, "ghost").unwrap_err().code,
+            "invalid_input"
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn keeps_anything_with_history_or_in_use_and_says_why() {
+        let path = path();
+        let host = resource(&path, "Host");
+        let shop = save_application(&path, app(Some(host.id.clone()))).unwrap();
+        let application = records::Subject::Application {
+            id: shop.id.clone(),
+        };
+        let used = delete_resource(&path, &host.id).unwrap_err();
+        assert_eq!(used.code, "invalid_input");
+        assert!(
+            used.message
+                .contains("Host is used by Example (API). Link those components"),
+            "{}",
+            used.message
+        );
+
+        records::open_incident(
+            &path,
+            records::IncidentInput {
+                subject: application.clone(),
+                title: "Down".into(),
+                description: String::new(),
+                severity: "critical".into(),
+            },
+        )
+        .unwrap();
+        records::record_event(
+            &path,
+            records::EventInput {
+                subject: application.clone(),
+                kind: "note".into(),
+                outcome: "info".into(),
+                title: "Noted".into(),
+                detail: String::new(),
+                occurred_at: None,
+            },
+        )
+        .unwrap();
+        let error = delete_application(&path, &shop.id).unwrap_err();
+        assert_eq!(error.code, "invalid_input");
+        assert_eq!(
+            error.message,
+            "Example has 1 incident and 2 events. DevHQ keeps history, so it cannot be deleted; set its lifecycle to Archived instead."
+        );
+
+        // Unlinked, the resource is still kept by its own history.
+        save_application(
+            &path,
+            ApplicationInput {
+                id: Some(shop.id.clone()),
+                components: vec![],
+                ..app(None)
+            },
+        )
+        .unwrap();
+        records::record_observation(
+            &path,
+            records::ObservationInput {
+                subject: records::Subject::Resource {
+                    id: host.id.clone(),
+                },
+                result: "healthy".into(),
+                summary: "Fine".into(),
+                observed_at: None,
+                valid_for_minutes: 60,
+            },
+        )
+        .unwrap();
+        let error = delete_resource(&path, &host.id).unwrap_err();
+        assert_eq!(
+            error.message,
+            "Host has 1 observation and 1 event. DevHQ keeps history, so it cannot be deleted."
+        );
+        let snapshot = list(&path).unwrap();
+        assert_eq!(snapshot.applications.len(), 1);
+        assert_eq!(snapshot.resources.len(), 1);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn a_result_arriving_after_its_subject_was_deleted_is_not_recorded() {
+        let path = path();
+        let host = resource(&path, "Host");
+        let subject = records::Subject::Resource {
+            id: host.id.clone(),
+        };
+        http_check::save_http_check(&path, http_check(subject.clone())).unwrap();
+        // A run started before the deletion finishes after it.
+        delete_resource(&path, &host.id).unwrap();
+        let late = records::store_observation(
+            &path,
+            records::NewObservation {
+                subject: &subject,
+                result: "healthy",
+                summary: "HTTP 200 as expected",
+                observed_at: records::now_ms(),
+                valid_for_minutes: 60,
+                recorded_at: records::now_ms(),
+                http: Some(&records::HttpEvidence {
+                    url: "https://example.com/health".into(),
+                    expected_status: 200,
+                    status: Some(200),
+                    latency_ms: 5,
+                    error: None,
+                    redirects: vec![],
+                }),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(late.code, "invalid_input");
+        let snapshot = list(&path).unwrap();
+        assert!(snapshot.observations.is_empty() && snapshot.resources.is_empty());
         std::fs::remove_file(path).unwrap();
     }
 

@@ -33,6 +33,29 @@ fn save_application(
     inventory::save_application(&path.0, input)
 }
 
+/// Deleting a subject takes its HTTP check with it, so supervision forgets it at once.
+#[tauri::command]
+async fn delete_application(
+    path: tauri::State<'_, InventoryPath>,
+    monitor: tauri::State<'_, Monitor>,
+    id: String,
+) -> Result<(), inventory::ApiError> {
+    inventory::delete_application(&path.0, &id)?;
+    monitor.refresh();
+    Ok(())
+}
+
+#[tauri::command]
+async fn delete_resource(
+    path: tauri::State<'_, InventoryPath>,
+    monitor: tauri::State<'_, Monitor>,
+    id: String,
+) -> Result<(), inventory::ApiError> {
+    inventory::delete_resource(&path.0, &id)?;
+    monitor.refresh();
+    Ok(())
+}
+
 #[tauri::command]
 fn record_observation(
     path: tauri::State<'_, InventoryPath>,
@@ -134,6 +157,8 @@ pub fn run() {
             list_inventory,
             save_resource,
             save_application,
+            delete_application,
+            delete_resource,
             record_observation,
             open_incident,
             update_incident_status,

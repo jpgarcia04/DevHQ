@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { DeleteSubject } from './delete-subject'
 import { inventoryError, type InventoryResource, type ResourceInput } from './inventory-api'
 import { useInventory } from './inventory-context'
 
@@ -87,6 +88,13 @@ export function ResourceForm({
           Cancel
         </Button>
       </div>
+      {resource && (
+        <DeleteSubject
+          subject={{ type: 'resource', id: resource.id }}
+          name={resource.name}
+          onDeleted={onDone}
+        />
+      )}
     </form>
   )
 }
