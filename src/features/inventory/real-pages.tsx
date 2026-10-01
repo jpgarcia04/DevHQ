@@ -42,6 +42,7 @@ import {
   EvidenceDetail,
   ObservationHistory,
   ObservationHistoryToggle,
+  OlderResults,
   SourceTag,
   SubjectEvidence,
   SubjectLink,
@@ -55,6 +56,7 @@ import { RecordActions } from './record-forms'
 import { AttentionList, EventRecordList, IncidentRecordList } from './record-lists'
 import { ResourceForm } from './resource-form'
 import { SupervisionOverview } from './supervision-overview'
+import { useTimeline } from './timeline'
 
 const resourceIdsOf = (app: InventoryApplication) => [
   ...new Set(app.components.flatMap((part) => (part.resourceId ? [part.resourceId] : []))),
@@ -434,15 +436,11 @@ function ApplicationDetail({ app }: { app: InventoryApplication }) {
   const incidents = activeIncidents(snapshot?.incidents ?? []).filter((item) =>
     concernsApplication(item.subject, app.id, resourceIds),
   )
-  const events = (snapshot?.events ?? []).filter((item) =>
-    concernsApplication(item.subject, app.id, resourceIds),
-  )
-  const since = snapshot
-    ? automatedSince(snapshot.automatedHistory, [
-        subject,
-        ...resourceIds.map((id) => ({ type: 'resource' as const, id })),
-      ])
-    : null
+  // Its own records and those of every resource it runs on, older automated ones on demand.
+  const timeline = useTimeline(`${app.id}:${resourceIds.join(',')}`, [
+    subject,
+    ...resourceIds.map((id) => ({ type: 'resource' as const, id })),
+  ])
   return (
     <div className="page-stack">
       <Link to="/applications" className="quiet-link">
@@ -629,18 +627,33 @@ function ApplicationDetail({ app }: { app: InventoryApplication }) {
         <TabsContent value="activity">
           <section className="panel p-5">
             <h2 className="section-heading mb-5">{app.name} and its resources</h2>
-            {since && snapshot && (
+            {timeline.since && (
               <div className="mb-5">
-                <AutomatedWindowNote since={since} limit={snapshot.automatedHistory.limit} />
+                <AutomatedWindowNote since={timeline.since} limit={timeline.limit} />
               </div>
             )}
-            {events.length ? (
-              <EventRecordList foldRepeats items={events} automatedSince={since} />
+            {timeline.events.length ? (
+              <EventRecordList
+                foldRepeats
+                items={timeline.events}
+                automatedSince={timeline.since}
+              />
             ) : (
               <p className="text-xs text-muted-foreground">
                 No activity recorded yet. Use Log event above to add one.
               </p>
             )}
+            <div className="mt-5 space-y-3 empty:hidden">
+              <OlderResults
+                limit={timeline.limit}
+                offered={timeline.since !== null}
+                loading={timeline.loading}
+                error={timeline.error}
+                complete={timeline.complete}
+                scope="these systems"
+                onLoad={() => void timeline.loadOlder()}
+              />
+            </div>
           </section>
         </TabsContent>
         {tabs

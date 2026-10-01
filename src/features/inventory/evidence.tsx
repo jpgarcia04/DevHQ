@@ -378,16 +378,51 @@ function SubjectObservationHistory({ subject }: { subject: EntityRef }) {
           )
         })}
       </ol>
-      {since && (
-        <Button size="sm" variant="outline" disabled={loading} onClick={() => void loadOlder()}>
-          {loading
-            ? 'Loading older results…'
-            : `Show ${snapshot.automatedHistory.limit} older automated results`}
+      <OlderResults
+        limit={snapshot.automatedHistory.limit}
+        offered={since !== null}
+        loading={loading}
+        error={error}
+        complete={older.length > 0 && !more}
+        scope="this system"
+        onLoad={() => void loadOlder()}
+      />
+    </div>
+  )
+}
+
+/**
+ * Offers the automated results a view left out, a page at a time, and says when none is left.
+ * A failed read is reported and leaves what is shown as it was.
+ */
+export function OlderResults({
+  limit,
+  offered,
+  loading,
+  error,
+  complete,
+  scope,
+  onLoad,
+}: {
+  limit: number
+  offered: boolean
+  loading: boolean
+  error: string | null
+  complete: boolean
+  /** Whose results: "this system", "these systems". */
+  scope: string
+  onLoad: () => void
+}) {
+  return (
+    <>
+      {offered && (
+        <Button size="sm" variant="outline" disabled={loading} onClick={onLoad}>
+          {loading ? 'Loading older results…' : `Show ${limit} older automated results`}
         </Button>
       )}
-      {older.length > 0 && !more && (
+      {complete && (
         <p className="text-[11px] text-muted-foreground">
-          Every automated result of this system is shown.
+          Every automated result of {scope} is shown.
         </p>
       )}
       {error && (
@@ -395,6 +430,6 @@ function SubjectObservationHistory({ subject }: { subject: EntityRef }) {
           {error}
         </p>
       )}
-    </div>
+    </>
   )
 }

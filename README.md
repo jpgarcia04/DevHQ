@@ -175,7 +175,12 @@ ejecución, que es idéntica a la de Run check y sigue la misma semántica de vi
   observaciones de un sistema, los anteriores se cargan bajo demanda, de 200 en 200, anclados
   al más antiguo ya mostrado para que los resultados nuevos no causen saltos ni duplicados. Una vista que mezcla
   sistemas (Activity) solo muestra resultados automáticos desde el momento en que los de
-  todos están completos, para no sugerir que uno no tuvo resultados. En las líneas de
+  todos están completos, para no sugerir que uno no tuvo resultados. Activity y la Activity
+  de una aplicación también cargan los anteriores bajo demanda: Rust lee, por cada sistema
+  recortado y siguiendo su índice, los que preceden al evento del corte, los mezcla y
+  devuelve los 200 siguientes en el orden de la línea de tiempo. Así la vista queda completa
+  hasta el más antiguo de la página sin saltarse ningún sistema, y lo que ya mostraba se
+  conserva aunque un snapshot más nuevo lo deje fuera de su ventana. En las líneas de
   tiempo, tres o más resultados automáticos seguidos de un mismo sistema que dijeron lo mismo
   (el mismo estado o el mismo fallo, sin importar la latencia) se pliegan en una fila
   desplegable, marcada «N+» si llega al punto donde la vista deja de estar completa; cualquier otro registro entre medias corta el pliegue,
@@ -239,7 +244,7 @@ consumen explícitamente el escenario durante esta etapa.
 
 Rust expone `list_inventory` (una lectura consistente de inventario, registros y
 `httpChecks`), `save_application`, `save_resource`, `delete_application`,
-`delete_resource`, `record_observation`, `older_observations`, `open_incident`,
+`delete_resource`, `record_observation`, `older_observations`, `older_events`, `open_incident`,
 `update_incident_status`, `record_event`, `save_http_check`, `set_http_check_paused`,
 `remove_http_check`, `run_http_check` y `watch_http_monitor`. Los comandos de
 comprobaciones y de borrado son asíncronos y avisan a la supervisión antes de responder, así
@@ -291,5 +296,7 @@ a la ejecución en vuelo, pausa, cancelación al quitar o cerrar, fallos de DevH
 que no detienen al resto y configuración ilegible que se reintenta; y, con peticiones
 reales a un servidor local, que la evidencia programada es idéntica a la manual. La ventana
 de historial se prueba por su límite exacto, los eventos que acompañan a cada resultado, el
-aviso de lo omitido en cada vista y los planes de consulta, que nunca recorren el historial
-automático completo.
+aviso de lo omitido en cada vista, la paginación de observaciones y de eventos de varios
+sistemas a la vez (sin huecos ni duplicados, con empates al mismo milisegundo y resultados
+nuevos entre páginas) y los planes de consulta, que nunca recorren el historial automático
+completo.

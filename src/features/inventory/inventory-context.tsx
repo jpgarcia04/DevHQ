@@ -3,6 +3,7 @@ import type { EntityRef, Observation } from '@/domain/models'
 import type {
   ApplicationInput,
   EventInput,
+  EventPage,
   HttpCheckInput,
   IncidentInput,
   IncidentStatusInput,
@@ -32,6 +33,8 @@ export interface InventoryContextValue {
   recordObservation: (input: ObservationInput) => Promise<void>
   /** Reads automated observations the snapshot left out; it writes nothing. */
   olderObservations: (subject: EntityRef, before: string) => Promise<ObservationPage>
+  /** Reads automated events a timeline left out; it writes nothing. */
+  olderEvents: (subjects: EntityRef[], before: string) => Promise<EventPage>
   openIncident: (input: IncidentInput) => Promise<void>
   updateIncidentStatus: (input: IncidentStatusInput) => Promise<void>
   recordEvent: (input: EventInput) => Promise<void>

@@ -40,6 +40,7 @@ export function inventoryContext(
     deleteResource: vi.fn(async () => {}),
     recordObservation: vi.fn(async () => {}),
     olderObservations: vi.fn(async () => ({ observations: [], more: false })),
+    olderEvents: vi.fn(async () => ({ events: [], more: false })),
     openIncident: vi.fn(async () => {}),
     updateIncidentStatus: vi.fn(async () => {}),
     recordEvent: vi.fn(async () => {}),

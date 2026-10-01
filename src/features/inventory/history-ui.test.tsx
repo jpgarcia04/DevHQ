@@ -6,7 +6,7 @@ import type { ReactNode } from 'react'
 import type { EntityRef, Observation, RecordedEvent, RecordSource } from '@/domain/models'
 import { formatDate, formatDateTime } from '@/shared/time'
 import { ObservationHistory } from './evidence'
-import { automatedSince, timelineRows, withinWindow } from './history'
+import { automatedSince, mergeTimeline, timelineRows, windowCut, withinWindow } from './history'
 import type { InventorySnapshot } from './inventory-api'
 import { InventoryContext, type InventoryContextValue } from './inventory-context'
 import { RealApplicationDetailPage, RealInfrastructurePage, RealOverviewPage } from './real-pages'
@@ -498,5 +498,165 @@ describe('a resource’s observation history', () => {
     await user.click(panel.getByRole('button', { name: 'Show observation history' }))
     const history = screen.getByRole('region', { name: 'Observation history of Web host' })
     expect(within(history).getByText('Checked by hand at -90')).toBeInTheDocument()
+  })
+})
+
+describe('older automated events in a timeline', () => {
+  const page = (events: RecordedEvent[], more: boolean) => ({ events, more })
+  const today = () => screen.getByRole('region', { name: formatDate(minutesFromNow(-10)) })
+  const boundaryAt = (minutesAgo: number) =>
+    `Before ${formatDateTime(minutesFromNow(-minutesAgo))} · manual records only`
+
+  it('start where the systems stop being complete and merge them without gaps', () => {
+    const second = { ...snapshot.automatedHistory.truncated[0]!, subject: db }
+    const history = { limit: 200, truncated: [{ subject: web, since }, second] }
+    const events = snapshot.events
+    // Database host was cut earlier, so Web host's oldest loaded result is the cut.
+    expect(windowCut(events, history, [web, db])?.id).toBe('evt-web-host-60')
+    expect(windowCut(events, history, [db])?.id).toBe('evt-db-host-3500')
+    expect(windowCut(events, history, [shop])).toBeNull()
+    const merged = mergeTimeline(
+      [events[0]!, events[3]!],
+      [events[3]!, events[1]!, event(web, 'http', 20, 'Between')],
+    )
+    expect(merged.map((item) => item.id)).toEqual([
+      'evt-web-host-10',
+      'evt-web-host-20',
+      'evt-web-host-30',
+      'evt-web-host-90',
+    ])
+  })
+
+  it('load on demand in Activity, page after page, until every result is shown', async () => {
+    const user = userEvent.setup()
+    const olderEvents = vi
+      .fn()
+      .mockResolvedValueOnce(
+        page(
+          [event(web, 'http', 65, 'Web run at -65'), event(web, 'http', 130, 'Web run at -130')],
+          true,
+        ),
+      )
+      .mockResolvedValueOnce(page([event(web, 'http', 3600, 'Web run long ago')], false))
+    renderWith(<RealActivityPage />, inventoryContext({ snapshot, olderEvents }))
+    await user.click(screen.getByRole('button', { name: 'Show 200 older automated results' }))
+    // Only the systems that were cut have results to read, from the cut on.
+    expect(olderEvents).toHaveBeenCalledWith([web], 'evt-web-host-60')
+    let items = itemTexts(today())
+    const position = (text: string) => items.findIndex((item) => item.includes(text))
+    expect(position('Web run at -65')).toBeGreaterThan(position('Web run at -60'))
+    // Database host's result was loaded but hidden: merged, it is complete now.
+    expect(position('Database run at -120')).toBeGreaterThan(position('Web note at -90'))
+    expect(position('Web run at -130')).toBeGreaterThan(position('Database run at -120'))
+    expect(items[position('Web run at -130') + 1]).toBe(boundaryAt(130))
+    expect(position('Database note at -200')).toBe(items.length - 1)
+    expect(
+      screen.getByText(whole('P', new RegExp(`before ${formatDateTime(minutesFromNow(-130))}`))),
+    ).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Show 200 older automated results' }))
+    expect(olderEvents).toHaveBeenLastCalledWith([web], 'evt-web-host-130')
+    items = itemTexts(today())
+    expect(items.some((item) => item.includes('manual records only'))).toBe(false)
+    expect(screen.queryByText(/kept in the local database but not loaded/)).not.toBeInTheDocument()
+    expect(screen.getByText('Database run two days before')).toBeInTheDocument()
+    expect(screen.getByText('Web run long ago')).toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: /older automated results/ }),
+    ).not.toBeInTheDocument()
+    expect(
+      screen.getByText('Every automated result of these systems is shown.'),
+    ).toBeInTheDocument()
+  })
+
+  it('keep what was shown when a newer snapshot moves its window', async () => {
+    const user = userEvent.setup()
+    const olderEvents = vi
+      .fn()
+      .mockResolvedValue(page([event(web, 'http', 130, 'Web run at -130')], true))
+    const value = inventoryContext({ snapshot, olderEvents })
+    const view = (current: InventoryContextValue) => (
+      <MemoryRouter>
+        <InventoryContext.Provider value={current}>
+          <RealActivityPage />
+        </InventoryContext.Provider>
+      </MemoryRouter>
+    )
+    const { rerender } = render(view(value))
+    await user.click(screen.getByRole('button', { name: 'Show 200 older automated results' }))
+    // A supervised run recorded a result: the snapshot keeps the latest ones and drops -60.
+    const moved: InventorySnapshot = {
+      ...snapshot,
+      events: [
+        event(web, 'http', 5, 'Web run at -5'),
+        ...snapshot.events.filter((item) => item.id !== 'evt-web-host-60'),
+      ],
+      automatedHistory: { limit: 200, truncated: [{ subject: web, since: minutesFromNow(-30) }] },
+    }
+    rerender(view({ ...value, snapshot: moved }))
+    const items = itemTexts(today())
+    expect(items[0]).toContain('Web run at -5')
+    expect(items.some((item) => item.includes('Web run at -60'))).toBe(true)
+    expect(items.at(-2)).toBe(boundaryAt(130))
+  })
+
+  it('report a failed read, keep what is shown and start over for another system', async () => {
+    const user = userEvent.setup()
+    const olderEvents = vi
+      .fn()
+      .mockRejectedValueOnce({
+        code: 'database_error',
+        message: 'Inventory database error: locked',
+      })
+      .mockResolvedValueOnce(page([event(web, 'http', 130, 'Web run at -130')], true))
+    renderWith(<RealActivityPage />, inventoryContext({ snapshot, olderEvents }))
+    const before = itemTexts(today())
+    await user.click(screen.getByRole('button', { name: 'Show 200 older automated results' }))
+    expect(screen.getByRole('alert')).toHaveTextContent('Inventory database error: locked')
+    expect(itemTexts(today())).toEqual(before)
+    await user.click(screen.getByRole('button', { name: 'Show 200 older automated results' }))
+    expect(screen.getByText('Web run at -130')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+
+    // What was loaded for every system does not carry over to one of them.
+    await user.selectOptions(
+      screen.getByLabelText('Filter activity by system'),
+      'resource:web-host',
+    )
+    expect(screen.queryByText('Web run at -130')).not.toBeInTheDocument()
+    expect(screen.getByText(theNote)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Show 200 older automated results' })).toBeEnabled()
+  })
+
+  it('load in an application’s activity through the resources it runs on', async () => {
+    const user = userEvent.setup()
+    const olderEvents = vi
+      .fn()
+      .mockResolvedValue(page([event(web, 'http', 130, 'Web run at -130')], false))
+    renderWith(
+      <Routes>
+        <Route path="/applications/:applicationId" element={<RealApplicationDetailPage />} />
+      </Routes>,
+      inventoryContext({ snapshot, olderEvents }),
+      '/applications/shop?tab=activity',
+    )
+    const panel = within(screen.getByRole('tabpanel'))
+    await user.click(panel.getByRole('button', { name: 'Show 200 older automated results' }))
+    expect(olderEvents).toHaveBeenCalledWith([web], 'evt-web-host-60')
+    expect(panel.getByText('Web run at -130')).toBeInTheDocument()
+    expect(panel.queryByText(theBoundary)).not.toBeInTheDocument()
+    expect(panel.getByText('Every automated result of these systems is shown.')).toBeInTheDocument()
+  })
+
+  it('are not offered when every system’s results are loaded', () => {
+    renderWith(
+      <RealActivityPage />,
+      inventoryContext({
+        snapshot: { ...snapshot, automatedHistory: { limit: 200, truncated: [] } },
+      }),
+    )
+    expect(
+      screen.queryByRole('button', { name: /older automated results/ }),
+    ).not.toBeInTheDocument()
   })
 })

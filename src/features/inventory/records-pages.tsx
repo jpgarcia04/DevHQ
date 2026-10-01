@@ -4,16 +4,17 @@ import { useSearchParams } from 'react-router-dom'
 import { EmptyState } from '@/components/empty-state'
 import { PageHeader } from '@/components/page-header'
 import { Button } from '@/components/ui/button'
-import { subjectFromKey, subjectKey, subjectsOf } from '@/domain/evidence'
+import { subjectFromKey, subjectsOf } from '@/domain/evidence'
 import { incidentStatusLabels, severityLabels } from '@/domain/labels'
 import { activeIncidents } from '@/domain/selectors'
 import { deviceTimeZone, formatDate } from '@/shared/time'
-import { AutomatedWindowNote, SubjectOptions } from './evidence'
-import { automatedSince, beforeWindow, withinWindow } from './history'
+import { AutomatedWindowNote, OlderResults, SubjectOptions } from './evidence'
+import { beforeWindow, withinWindow } from './history'
 import { useInventory } from './inventory-context'
 import { InventoryState } from './inventory-state'
 import { EventForm, IncidentForm } from './record-forms'
 import { EventRecordList, IncidentRecordList } from './record-lists'
+import { useTimeline } from './timeline'
 
 export function RealIncidentsPage() {
   const { snapshot, loadState } = useInventory()
@@ -115,13 +116,10 @@ export function RealActivityPage() {
   const [subject, setSubject] = useState('all')
   const [creating, setCreating] = useState(false)
   const chosen = subjectFromKey(subject)
-  const since = snapshot
-    ? automatedSince(snapshot.automatedHistory, chosen ? [chosen] : subjectsOf(snapshot))
-    : null
-  const events = (snapshot?.events ?? []).filter(
-    (event) =>
-      (subject === 'all' || subjectKey(event.subject) === subject) &&
-      withinWindow(event.source, event.occurredAt, since),
+  const timeline = useTimeline(subject, chosen ? [chosen] : snapshot ? subjectsOf(snapshot) : [])
+  const since = timeline.since
+  const events = timeline.events.filter((event) =>
+    withinWindow(event.source, event.occurredAt, since),
   )
   const days = [...new Set(events.map((event) => formatDate(event.occurredAt)))]
   const today = formatDate(new Date(now).toISOString())
@@ -178,6 +176,17 @@ export function RealActivityPage() {
               {!events.length && (
                 <p className="py-10 text-muted-foreground">No activity recorded for this system.</p>
               )}
+              <div className="space-y-3 empty:hidden">
+                <OlderResults
+                  limit={timeline.limit}
+                  offered={since !== null}
+                  loading={timeline.loading}
+                  error={timeline.error}
+                  complete={timeline.complete}
+                  scope={chosen ? 'this system' : 'these systems'}
+                  onLoad={() => void timeline.loadOlder()}
+                />
+              </div>
             </div>
           </>
         ) : (

@@ -677,6 +677,130 @@ pub fn older_observations(
     Ok(ObservationPage { observations, more })
 }
 
+// A subject's automated events older than a position in the timeline, newest first: only
+// their positions, which merge across subjects. As for observations, the plain bound on
+// occurred_at lets the subject index find the start (current SQLite also derives it from the
+// row value, but the plan does not depend on that); the row value breaks ties exactly.
+const OLDER_AUTOMATED_EVENTS: [&str; 2] = [
+    "SELECT occurred_at, recorded_at, rowid FROM events
+     WHERE application_id = ?1 AND source = 'http' AND occurred_at <= ?2
+       AND (occurred_at, recorded_at, rowid) < (?2, ?3, ?4)
+     ORDER BY occurred_at DESC, recorded_at DESC, rowid DESC LIMIT ?5",
+    "SELECT occurred_at, recorded_at, rowid FROM events
+     WHERE resource_id = ?1 AND source = 'http' AND occurred_at <= ?2
+       AND (occurred_at, recorded_at, rowid) < (?2, ?3, ?4)
+     ORDER BY occurred_at DESC, recorded_at DESC, rowid DESC LIMIT ?5",
+];
+// The events chosen above (a JSON array of rowids), in timeline order.
+const EVENTS_BY_ROWID: &str = "WHERE rowid IN (SELECT value FROM json_each(?1))
+     ORDER BY occurred_at DESC, recorded_at DESC, rowid DESC";
+
+/// Automated events a snapshot left out of a timeline, a page at a time.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventPage {
+    pub events: Vec<Event>,
+    /// Older automated events of these subjects remain after this page.
+    pub more: bool,
+}
+
+/// The automated events of every given subject older than `before`, one of their events already
+/// shown, newest first across all of them and at most `AUTOMATED_HISTORY_LIMIT` in total. A
+/// timeline that merges several systems pages through them together: after a page it is
+/// complete down to the page's oldest event, so pages never leave a gap between systems.
+/// Anchoring on a shown event, rather than counting, keeps pages exact while new results
+/// arrive. Each subject's read follows its own index, so a page costs what it returns per
+/// subject, never the whole automated history.
+pub fn older_events(
+    path: &Path,
+    subjects: &[Subject],
+    before: &str,
+) -> Result<EventPage, ApiError> {
+    let mut subjects = subjects.to_vec();
+    subjects.sort_by(|a, b| a.per_type().cmp(&b.per_type()));
+    subjects.dedup();
+    if subjects.is_empty() {
+        return Err(ApiError::invalid(
+            "Choose at least one application or resource.",
+        ));
+    }
+    let mut db = open(path)?;
+    let tx = db.transaction().map_err(ApiError::database)?;
+    for subject in &subjects {
+        ensure_subject(&tx, subject)?;
+    }
+    let cursor = tx
+        .query_row(
+            "SELECT application_id, resource_id, occurred_at, recorded_at, rowid FROM events WHERE id = ?1",
+            [before],
+            |row| {
+                Ok((
+                    Subject::from_columns(row.get(0)?, row.get(1)?)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(ApiError::database)?;
+    // The anchor must be one of these subjects' own events.
+    let Some((_, occurred_at, recorded_at, rowid)) =
+        cursor.filter(|(owner, ..)| subjects.contains(owner))
+    else {
+        return Err(ApiError::invalid(format!(
+            "Event {before} is not one of these systems' events."
+        )));
+    };
+    // One more than the page from each subject tells whether anything older remains.
+    let mut positions = Vec::new();
+    {
+        let prepare = |sql| tx.prepare(sql).map_err(ApiError::database);
+        let mut older = [
+            prepare(OLDER_AUTOMATED_EVENTS[0])?,
+            prepare(OLDER_AUTOMATED_EVENTS[1])?,
+        ];
+        for subject in &subjects {
+            let (kind, id) = subject.per_type();
+            let rows = older[kind]
+                .query_map(
+                    params![
+                        id,
+                        occurred_at,
+                        recorded_at,
+                        rowid,
+                        AUTOMATED_HISTORY_LIMIT + 1
+                    ],
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, i64>(2)?,
+                        ))
+                    },
+                )
+                .map_err(ApiError::database)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(ApiError::database)?;
+            positions.extend(rows);
+        }
+    }
+    // Newest first across subjects, exactly as the timeline orders them.
+    positions.sort_unstable_by(|a, b| b.cmp(a));
+    let limit = usize::try_from(AUTOMATED_HISTORY_LIMIT).map_err(ApiError::database)?;
+    let more = positions.len() > limit;
+    positions.truncate(limit);
+    let chosen: Vec<i64> = positions.iter().map(|&(_, _, rowid)| rowid).collect();
+    let events = query_all(
+        &tx,
+        &format!("{EVENT_SELECT} {EVENTS_BY_ROWID}"),
+        [serde_json::to_string(&chosen).map_err(ApiError::database)?],
+        event_from_row,
+    )?;
+    tx.commit().map_err(ApiError::database)?;
+    Ok(EventPage { events, more })
+}
+
 /// Stores a manual observation and its timeline event atomically.
 pub fn record_observation(path: &Path, input: ObservationInput) -> Result<Observation, ApiError> {
     allowed(&input.result, OBSERVATION_RESULTS, "observation result")?;
@@ -1480,6 +1604,117 @@ mod tests {
         std::fs::remove_file(path).unwrap();
     }
 
+    /// Every automated event of these subjects with its time, in timeline order: what pages
+    /// must add up to.
+    fn automated_timeline(path: &Path, subjects: &[&Subject]) -> Vec<(String, i64)> {
+        let db = open(path).unwrap();
+        let mut statement = db
+            .prepare(
+                "SELECT id, application_id, resource_id, occurred_at FROM events WHERE source = 'http'
+                 ORDER BY occurred_at DESC, recorded_at DESC, rowid DESC",
+            )
+            .unwrap();
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    Subject::from_columns(row.get(1)?, row.get(2)?)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        rows.into_iter()
+            .filter(|(_, subject, _)| subjects.contains(&subject))
+            .map(|(id, _, at)| (id, at))
+            .collect()
+    }
+
+    #[test]
+    fn older_automated_events_page_through_several_systems_without_gaps() {
+        let path = path();
+        let (application_id, resource_id) = seed(&path);
+        let shop = Subject::Application { id: application_id };
+        let host = Subject::Resource { id: resource_id };
+        let (other_application, _) = seed(&path);
+        let other = Subject::Application {
+            id: other_application,
+        };
+        let first = now_ms() - 10 * 24 * 60 * 60_000;
+        // Both systems ran at the same instants, so only the rowid orders each pair; one of them
+        // also ran in between.
+        automated(&path, &shop, first, 150);
+        automated(&path, &host, first, 150);
+        automated(&path, &host, first + 60_000, 100);
+        // Neither another system's results nor manual records belong in these pages.
+        automated(&path, &other, first, 50);
+        record_event(
+            &path,
+            EventInput {
+                occurred_at: format_time(first + 7 * 60_000),
+                ..event(host.clone())
+            },
+        )
+        .unwrap();
+        let timeline = automated_timeline(&path, &[&shop, &host]);
+        let ids: Vec<_> = timeline.iter().map(|(id, _)| id.clone()).collect();
+        assert_eq!(ids.len(), 400);
+        let limit = usize::try_from(AUTOMATED_HISTORY_LIMIT).unwrap();
+        // Anchored on one of two results at the same instant: the other, ordered after it, is
+        // the first of the page.
+        let anchor = 36;
+        assert_eq!(timeline[anchor].1, timeline[anchor + 1].1);
+        let both = [shop.clone(), host.clone()];
+        let page = older_events(&path, &both, &ids[anchor]).unwrap();
+        assert!(page.more);
+        let shown: Vec<_> = page.events.iter().map(|item| item.id.clone()).collect();
+        assert_eq!(shown, ids[anchor + 1..anchor + 1 + limit]);
+        assert!(page.events.iter().all(|item| item.source == HTTP));
+
+        // A new result meanwhile changes nothing for the next page: it is anchored, not counted.
+        // Repeating a subject changes nothing either.
+        automated(&path, &host, now_ms() - 60_000, 1);
+        let rest = older_events(
+            &path,
+            &[host.clone(), shop.clone(), host.clone()],
+            shown.last().unwrap(),
+        )
+        .unwrap();
+        assert!(!rest.more);
+        assert_eq!(
+            rest.events
+                .iter()
+                .map(|item| item.id.clone())
+                .collect::<Vec<_>>(),
+            ids[anchor + 1 + limit..]
+        );
+        let none = older_events(&path, &both, ids.last().unwrap()).unwrap();
+        assert!(none.events.is_empty() && !none.more);
+        // Exactly a page left is the last page; one more is not.
+        let exact = older_events(&path, &both, &ids[ids.len() - limit - 1]).unwrap();
+        assert_eq!((exact.events.len(), exact.more), (limit, false));
+        let over = older_events(&path, &both, &ids[ids.len() - limit - 2]).unwrap();
+        assert_eq!((over.events.len(), over.more), (limit, true));
+
+        // The anchor must be one of these systems' own events, and every system must exist.
+        let other_event = &automated_timeline(&path, &[&other])[0].0;
+        let shop_event = &automated_timeline(&path, &[&shop])[0].0;
+        for (subjects, before) in [
+            (vec![], shop_event.as_str()),
+            (vec![shop.clone()], other_event.as_str()),
+            (vec![shop.clone()], "ghost"),
+            (
+                vec![shop.clone(), Subject::Resource { id: "ghost".into() }],
+                shop_event.as_str(),
+            ),
+        ] {
+            let error = older_events(&path, &subjects, before).unwrap_err();
+            assert_eq!(error.code, "invalid_input", "{}", error.message);
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+
     #[test]
     fn snapshot_reads_follow_indexes_instead_of_scanning_history() {
         let path = path();
@@ -1495,7 +1730,8 @@ mod tests {
         let observations = format!("{OBSERVATION_SELECT} {WINDOWED_OBSERVATIONS}");
         let events = format!("{EVENT_SELECT} {WINDOWED_EVENTS}");
         let older = OLDER_AUTOMATED.map(|filter| format!("{OBSERVATION_SELECT} {filter}"));
-        let cases: [(&str, &[&dyn rusqlite::ToSql], &str); 7] = [
+        let page_events = format!("{EVENT_SELECT} {EVENTS_BY_ROWID}");
+        let cases: [(&str, &[&dyn rusqlite::ToSql], &str); 10] = [
             (
                 LATEST_AUTOMATED[0],
                 &[&"app", &1],
@@ -1511,6 +1747,17 @@ mod tests {
             (&events, &[&"[]"], "events_manual"),
             (&older[0], &[&"app", &9, &9, &9, &1], "observed_at<"),
             (&older[1], &[&"host", &9, &9, &9, &1], "observed_at<"),
+            (
+                OLDER_AUTOMATED_EVENTS[0],
+                &[&"app", &9, &9, &9, &1],
+                "events_application_id (application_id=? AND occurred_at<?)",
+            ),
+            (
+                OLDER_AUTOMATED_EVENTS[1],
+                &[&"host", &9, &9, &9, &1],
+                "events_resource_id (resource_id=? AND occurred_at<?)",
+            ),
+            (&page_events, &[&"[]"], "INTEGER PRIMARY KEY"),
         ];
         for (sql, params, index) in cases {
             let steps = plan(sql, params);

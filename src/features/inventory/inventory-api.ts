@@ -95,6 +95,13 @@ export interface ObservationPage {
   more: boolean
 }
 
+/** Automated events a snapshot left out of a timeline, a page at a time, newest first. */
+export interface EventPage {
+  events: RecordedEvent[]
+  /** Older automated events of these systems remain after this page. */
+  more: boolean
+}
+
 /** One consistent read of SQLite. Records are newest first; times are UTC RFC 3339. */
 export interface InventorySnapshot {
   applications: InventoryApplication[]
@@ -157,6 +164,12 @@ export const inventoryApi = {
   /** The subject's automated observations older than `before`, one of its own already shown. */
   olderObservations: (subject: EntityRef, before: string) =>
     invoke<ObservationPage>('older_observations', { subject, before }),
+  /**
+   * The automated events of every given subject older than `before`, one of their own already
+   * shown, newest first across all of them: a merged timeline pages through them together.
+   */
+  olderEvents: (subjects: EntityRef[], before: string) =>
+    invoke<EventPage>('older_events', { subjects, before }),
   openIncident: (input: IncidentInput) => invoke<RecordedIncident>('open_incident', { input }),
   updateIncidentStatus: (input: IncidentStatusInput) =>
     invoke<RecordedIncident>('update_incident_status', { input }),

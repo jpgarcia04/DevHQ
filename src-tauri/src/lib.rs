@@ -74,6 +74,16 @@ fn older_observations(
     records::older_observations(&path.0, &subject, &before)
 }
 
+/// Automated events older than a timeline's snapshot carries, for several systems at once.
+#[tauri::command]
+fn older_events(
+    path: tauri::State<'_, InventoryPath>,
+    subjects: Vec<records::Subject>,
+    before: String,
+) -> Result<records::EventPage, inventory::ApiError> {
+    records::older_events(&path.0, &subjects, &before)
+}
+
 #[tauri::command]
 fn open_incident(
     path: tauri::State<'_, InventoryPath>,
@@ -171,6 +181,7 @@ pub fn run() {
             delete_resource,
             record_observation,
             older_observations,
+            older_events,
             open_incident,
             update_incident_status,
             record_event,
