@@ -15,6 +15,7 @@ import {
 } from './inventory-api'
 import { useInventory } from './inventory-context'
 import { monitorStatusOf, nextRunText } from './supervision'
+import { textLimits } from './limits'
 
 const timeoutOptions = [1, 2, 5, 10]
 const validityOptions = [15, 60, 4 * 60, 24 * 60, 7 * 24 * 60]
@@ -288,7 +289,7 @@ export function HttpCheckForm({
           <Input
             required
             type="url"
-            maxLength={2048}
+            maxLength={textLimits.url}
             placeholder="https://example.com/health"
             value={url}
             onChange={(event) => setUrl(event.target.value)}

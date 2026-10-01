@@ -20,8 +20,13 @@ if ! pkg-config --exists webkit2gtk-4.1 openssl 2>/dev/null; then
     libayatana-appindicator3-dev librsvg2-dev build-essential >/dev/null
 fi
 
-# npm ci never rewrites the lockfile (an older npm in the container would drop fields).
-npm ci --no-audit --no-fund
+# npm ci never rewrites the lockfile (an older npm in the container would drop fields). It
+# reinstalls from scratch, so it runs only when the lockfile changed since the last install.
+stamp=node_modules/.devhq-lock.sha256
+if ! sha256sum --check --status "$stamp" 2>/dev/null; then
+  npm ci --no-audit --no-fund
+  sha256sum package-lock.json > "$stamp"
+fi
 
 if command -v cargo >/dev/null; then
   cargo fetch --manifest-path src-tauri/Cargo.toml --locked

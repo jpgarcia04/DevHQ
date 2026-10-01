@@ -276,7 +276,11 @@ function SubjectObservationHistory({ subject }: { subject: EntityRef }) {
   const [more, setMore] = useState(true)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const history = subjectObservations(byId([...(snapshot?.observations ?? []), ...older]), subject)
+  // The subject's own observations first: the merge never touches other systems' records.
+  const history = subjectObservations(
+    byId([...subjectObservations(snapshot?.observations ?? [], subject), ...older]),
+    subject,
+  )
   if (!snapshot || !history.length)
     return (
       <p className="text-xs leading-5 text-muted-foreground">

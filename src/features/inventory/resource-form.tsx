@@ -4,6 +4,7 @@ import { Input } from '@/components/ui/input'
 import { DeleteSubject } from './delete-subject'
 import { inventoryError, type InventoryResource, type ResourceInput } from './inventory-api'
 import { useInventory } from './inventory-context'
+import { textLimits } from './limits'
 
 export function ResourceForm({
   resource,
@@ -42,7 +43,7 @@ export function ResourceForm({
           Name{' '}
           <Input
             required
-            maxLength={120}
+            maxLength={textLimits.name}
             value={name}
             onChange={(event) => setName(event.target.value)}
           />
@@ -61,7 +62,7 @@ export function ResourceForm({
         <label className="space-y-1.5 text-xs">
           Description{' '}
           <Input
-            maxLength={1000}
+            maxLength={textLimits.description}
             value={description}
             onChange={(event) => setDescription(event.target.value)}
           />
@@ -69,7 +70,7 @@ export function ResourceForm({
         <label className="space-y-1.5 text-xs">
           Operating system{' '}
           <Input
-            maxLength={120}
+            maxLength={textLimits.name}
             value={operatingSystem}
             onChange={(event) => setOperatingSystem(event.target.value)}
           />

@@ -221,7 +221,13 @@ function OverviewContent() {
             </div>
             <div className="panel p-5">
               {snapshot.events.length ? (
-                <EventRecordList items={snapshot.events} foldRepeats maxRows={5} detailed={false} />
+                <EventRecordList
+                  items={snapshot.events}
+                  foldRepeats
+                  maxRows={5}
+                  detailed={false}
+                  automatedSince={automatedSince(snapshot.automatedHistory, subjects)}
+                />
               ) : (
                 <p className="text-xs text-muted-foreground">No activity recorded yet.</p>
               )}

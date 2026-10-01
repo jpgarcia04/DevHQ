@@ -9,15 +9,21 @@ export type TimelineRow =
 /** Fewer repeats than this are clearer one by one. */
 export const minimumRepeats = 3
 
+// What a result said, without how long it took: "HTTP 500, expected 200, in 112 ms" and
+// "Timed out after 1003 ms" become "HTTP 500, expected 200" and "Timed out".
+const withoutTiming = (detail: string) => detail.replace(/(?:,? in| after) \d+ ms$/, '')
+
 const repeats = (a: RecordedEvent, b: RecordedEvent) =>
   a.source === 'http' &&
   b.source === 'http' &&
   sameSubject(a.subject, b.subject) &&
-  a.title === b.title
+  a.title === b.title &&
+  withoutTiming(a.detail) === withoutTiming(b.detail)
 
 /**
- * Folds runs of identical automated results of one system into a single row, so supervision
- * cannot bury what changed. Only adjacent events fold: anything in between, from any system,
+ * Folds runs of automated results of one system that said the same thing (the same status or
+ * the same failure, whatever their timing) into a single row, so supervision cannot bury what
+ * changed. Only adjacent events fold: anything in between, from any system,
  * ends the run, so the timeline keeps its order.
  */
 export function timelineRows(events: RecordedEvent[]): TimelineRow[] {

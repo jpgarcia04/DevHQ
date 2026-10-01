@@ -6,6 +6,7 @@ import type { ComponentKind, Lifecycle } from '@/domain/models'
 import { DeleteSubject } from './delete-subject'
 import { inventoryError, type ApplicationInput, type InventoryApplication } from './inventory-api'
 import { useInventory } from './inventory-context'
+import { textLimits } from './limits'
 
 type DraftComponent = ApplicationInput['components'][number]
 
@@ -61,7 +62,7 @@ export function ApplicationForm({
           Name{' '}
           <Input
             required
-            maxLength={120}
+            maxLength={textLimits.name}
             value={name}
             onChange={(event) => setName(event.target.value)}
           />
@@ -83,7 +84,7 @@ export function ApplicationForm({
         <label className="space-y-1.5 text-xs">
           Description{' '}
           <Input
-            maxLength={1000}
+            maxLength={textLimits.description}
             value={description}
             onChange={(event) => setDescription(event.target.value)}
           />
@@ -91,7 +92,7 @@ export function ApplicationForm({
         <label className="space-y-1.5 text-xs">
           Version{' '}
           <Input
-            maxLength={60}
+            maxLength={textLimits.version}
             value={version}
             onChange={(event) => setVersion(event.target.value)}
           />
@@ -127,7 +128,7 @@ export function ApplicationForm({
               Component name{' '}
               <Input
                 required
-                maxLength={120}
+                maxLength={textLimits.name}
                 value={component.name}
                 onChange={(event) => updateComponent(index, { name: event.target.value })}
               />

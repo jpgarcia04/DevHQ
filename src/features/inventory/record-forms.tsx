@@ -15,6 +15,7 @@ import { toDateTimeLocal } from '@/shared/time'
 import { SubjectOptions } from './evidence'
 import { inventoryError } from './inventory-api'
 import { useInventory } from './inventory-context'
+import { textLimits } from './limits'
 
 const validityOptions = [
   { minutes: 60, label: '1 hour' },
@@ -170,7 +171,7 @@ export function ObservationForm({ subject, onDone }: { subject?: EntityRef; onDo
         What did you observe?
         <Input
           required
-          maxLength={500}
+          maxLength={textLimits.summary}
           placeholder="e.g. Login page responds; disk at 71%"
           value={summary}
           onChange={(event) => setSummary(event.target.value)}
@@ -229,7 +230,7 @@ export function IncidentForm({ subject, onDone }: { subject?: EntityRef; onDone:
         Title
         <Input
           required
-          maxLength={160}
+          maxLength={textLimits.title}
           value={title}
           onChange={(event) => setTitle(event.target.value)}
         />
@@ -251,7 +252,7 @@ export function IncidentForm({ subject, onDone }: { subject?: EntityRef; onDone:
       <label className="space-y-1.5 text-xs min-[1100px]:col-span-2">
         Description
         <Input
-          maxLength={1000}
+          maxLength={textLimits.description}
           value={description}
           onChange={(event) => setDescription(event.target.value)}
         />
@@ -322,7 +323,7 @@ export function EventForm({ subject, onDone }: { subject?: EntityRef; onDone: ()
         Title
         <Input
           required
-          maxLength={160}
+          maxLength={textLimits.title}
           value={title}
           onChange={(event) => setTitle(event.target.value)}
         />
@@ -340,7 +341,7 @@ export function EventForm({ subject, onDone }: { subject?: EntityRef; onDone: ()
       <label className="space-y-1.5 text-xs min-[1100px]:col-span-2">
         Details
         <Input
-          maxLength={1000}
+          maxLength={textLimits.description}
           value={detail}
           onChange={(event) => setDetail(event.target.value)}
         />

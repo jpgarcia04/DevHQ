@@ -216,7 +216,8 @@ describe('the automated history window', () => {
 describe('repeated automated results', () => {
   const run = (subject: EntityRef, minutesAgo: number, title = 'HTTP check: Healthy') => ({
     ...event(subject, 'http', minutesAgo, title),
-    detail: `HTTP 200 as expected, run ${minutesAgo} min ago`,
+    // Only the timing differs between results that said the same.
+    detail: `HTTP 200 as expected, in ${minutesAgo} ms`,
   })
   const shape = (events: RecordedEvent[]) =>
     timelineRows(events).map((row) =>
@@ -252,6 +253,24 @@ describe('repeated automated results', () => {
       'evt-db-host-45',
       ['evt-db-host-50', 'evt-db-host-55', 'evt-db-host-60'],
     ])
+    // Failures fold only when they failed the same way.
+    const failure = (minutesAgo: number, detail: string) => ({
+      ...event(db, 'http', minutesAgo, 'HTTP check: Unhealthy'),
+      detail,
+    })
+    expect(
+      shape([
+        failure(1, 'HTTP 503, expected 200, in 40 ms'),
+        failure(2, 'DNS lookup failed after 3 ms'),
+        failure(3, 'Timed out after 5004 ms'),
+        failure(4, 'Timed out after 5001 ms'),
+        failure(5, 'Timed out after 5012 ms'),
+      ]),
+    ).toEqual([
+      'evt-db-host-1',
+      'evt-db-host-2',
+      ['evt-db-host-3', 'evt-db-host-4', 'evt-db-host-5'],
+    ])
     // Manual records never fold, however alike.
     expect(
       shape([
@@ -272,17 +291,65 @@ describe('repeated automated results', () => {
     const timeline = screen.getAllByRole('list')[0]!
     expect(within(timeline).getAllByRole('listitem')).toHaveLength(1)
     expect(screen.getByText('4 consecutive results')).toBeInTheDocument()
-    expect(screen.getByText('Latest: HTTP 200 as expected, run 5 min ago')).toBeInTheDocument()
-    expect(screen.queryByText('HTTP 200 as expected, run 20 min ago')).not.toBeInTheDocument()
+    expect(screen.getByText('Latest: HTTP 200 as expected, in 5 ms')).toBeInTheDocument()
+    expect(screen.queryByText('HTTP 200 as expected, in 20 ms')).not.toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Show all 4' }))
     const all = screen.getByRole('list', { name: '4 consecutive results' })
     expect(within(all).getAllByRole('listitem')).toHaveLength(4)
-    expect(within(all).getByText('HTTP 200 as expected, run 20 min ago')).toBeInTheDocument()
+    expect(within(all).getByText('HTTP 200 as expected, in 20 ms')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Hide them' })).toHaveAttribute(
       'aria-expanded',
       'true',
     )
+  })
+
+  it('stay open while new results join the run', async () => {
+    const user = userEvent.setup()
+    const value = inventoryContext({ snapshot })
+    const list = (events: RecordedEvent[]) => (
+      <MemoryRouter>
+        <InventoryContext.Provider value={value}>
+          <EventRecordList foldRepeats items={events} />
+        </InventoryContext.Provider>
+      </MemoryRouter>
+    )
+    const runs = [10, 15, 20, 25].map((minutesAgo) => run(web, minutesAgo))
+    const { rerender } = render(list(runs))
+    await user.click(screen.getByRole('button', { name: 'Show all 4' }))
+    // Supervision records another identical result: the run grows and stays open.
+    rerender(list([run(web, 5), ...runs]))
+    expect(screen.getByText('5 consecutive results')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Hide them' })).toBeInTheDocument()
+    expect(
+      within(screen.getByRole('list', { name: '5 consecutive results' })).getAllByRole('listitem'),
+    ).toHaveLength(5)
+  })
+
+  it('in the overview, stop where the loaded activity stops being complete', () => {
+    const runs = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60].map((minutesAgo) =>
+      run(web, minutesAgo),
+    )
+    renderWith(
+      <RealOverviewPage />,
+      inventoryContext({
+        snapshot: {
+          ...snapshot,
+          events: [
+            ...runs,
+            // Older than web-host's window: loaded, but merged it would suggest a gap.
+            event(db, 'http', 80, 'Database run at -80'),
+            event(web, 'manual', 100, 'Deployed 2.0'),
+          ],
+        },
+      }),
+    )
+    const recent = within(screen.getByRole('region', { name: 'Recent activity' }))
+    // The run reaches the cut, so it may go on before it.
+    expect(recent.getByText('12+ consecutive results')).toBeInTheDocument()
+    expect(recent.getByText(theBoundary)).toBeInTheDocument()
+    expect(recent.getByText('Deployed 2.0')).toBeInTheDocument()
+    expect(recent.queryByText('Database run at -80')).not.toBeInTheDocument()
   })
 
   it('keep what changed among the overview’s recent activity', () => {

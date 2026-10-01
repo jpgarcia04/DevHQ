@@ -58,9 +58,10 @@ hasta desenlazarlo; la UI explica el motivo y Rust lo vuelve a comprobar, dentro
 misma transacción, antes de borrar nada. Un recurso inexistente se rechaza antes
 de escribir la aplicación, igual que un componente repetido o que pertenece a otra
 aplicación. Rust guarda los textos sin espacios alrededor y rechaza (nunca recorta) los que
-superan sus límites, los mismos que impone la UI: nombres 120 caracteres, títulos 160,
-resúmenes y notas 500, descripciones y detalles 1000, versión 60; una versión en blanco es
-ninguna. Un fallo de SQLite/IPC muestra un error y permite reintentar.
+superan sus límites, los mismos que impone la UI y contados igual (unidades UTF-16): nombres
+120, títulos 160, resúmenes y notas 500, descripciones y detalles 1000, versión 60; una
+versión en blanco es ninguna. El texto ya guardado se acepta sin cambios aunque supere un
+límite posterior, así que siempre se puede volver a guardar (o archivar) lo existente. Un fallo de SQLite/IPC muestra un error y permite reintentar.
 
 ### Observaciones, incidencias y eventos
 
@@ -173,8 +174,9 @@ ejecución, que es idéntica a la de Run check y sigue la misma semántica de vi
   al más antiguo ya mostrado para que los resultados nuevos no causen saltos ni duplicados. Una vista que mezcla
   sistemas (Activity) solo muestra resultados automáticos desde el momento en que los de
   todos están completos, para no sugerir que uno no tuvo resultados. En las líneas de
-  tiempo, tres o más resultados automáticos seguidos e idénticos de un mismo sistema se
-  pliegan en una fila desplegable; cualquier otro registro entre medias corta el pliegue,
+  tiempo, tres o más resultados automáticos seguidos de un mismo sistema que dijeron lo mismo
+  (el mismo estado o el mismo fallo, sin importar la latencia) se pliegan en una fila
+  desplegable, marcada «N+» si llega al punto donde la vista deja de estar completa; cualquier otro registro entre medias corta el pliegue,
   así que el orden se conserva y lo que cambió no queda enterrado. Cada consulta sigue un
   índice, así que su coste depende de lo que se carga y no del historial acumulado: con 5
   comprobaciones cada 5 min durante 90 días, una recarga pasó de 86 MB y 0.5 s a 0.7 MB y

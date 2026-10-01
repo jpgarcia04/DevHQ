@@ -28,6 +28,7 @@ import { EvidenceBadge, EvidenceDetail, SourceTag, SubjectLink, WindowBoundary }
 import { beforeWindow, timelineRows, withinWindow, type TimelineRow } from './history'
 import { inventoryError } from './inventory-api'
 import { useInventory } from './inventory-context'
+import { textLimits } from './limits'
 
 const severityBar: Record<IncidentSeverity, string> = {
   critical: 'bg-rose-300/75',
@@ -65,7 +66,11 @@ function IncidentStatusControl({ incident }: { incident: RecordedIncident }) {
     <div className="flex flex-wrap items-end gap-2">
       <label className="min-w-52 flex-1 space-y-1.5 text-xs">
         Status note (optional)
-        <Input maxLength={500} value={note} onChange={(event) => setNote(event.target.value)} />
+        <Input
+          maxLength={textLimits.summary}
+          value={note}
+          onChange={(event) => setNote(event.target.value)}
+        />
       </label>
       {nextStatuses[incident.status].map(({ status, label }) => (
         <Button key={status} variant="outline" disabled={busy} onClick={() => void change(status)}>
@@ -241,10 +246,13 @@ function RepeatedResults({
   events,
   timeOnly,
   detailed,
+  continues,
 }: {
   events: RecordedEvent[]
   timeOnly: boolean
   detailed: boolean
+  /** The run reaches where the view stops being complete, so it may go on before. */
+  continues: boolean
 }) {
   const [open, setOpen] = useState(false)
   const latest = events[0]!
@@ -264,7 +272,10 @@ function RepeatedResults({
         <p className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-muted-foreground">
           <SubjectLink subject={latest.subject} />
           <span aria-hidden="true">·</span>
-          <span>{events.length} consecutive results</span>
+          <span>
+            {events.length}
+            {continues && '+'} consecutive results
+          </span>
           <SourceTag source={latest.source} />
           <Button size="xs" variant="ghost" aria-expanded={open} onClick={() => setOpen(!open)}>
             {open ? 'Hide them' : `Show all ${events.length}`}
@@ -311,22 +322,31 @@ export function EventRecordList({
   const shown = items.filter((event) =>
     withinWindow(event.source, event.occurredAt, automatedSince),
   )
-  const rows: TimelineRow[] = (
-    foldRepeats ? timelineRows(shown) : shown.map((event) => ({ kind: 'event' as const, event }))
-  ).slice(0, maxRows)
+  const all: TimelineRow[] = foldRepeats
+    ? timelineRows(shown)
+    : shown.map((event) => ({ kind: 'event', event }))
   const first = (row: TimelineRow) => (row.kind === 'event' ? row.event : row.events[0]!)
-  const boundary = rows.findIndex((row) => beforeWindow(first(row).occurredAt, automatedSince))
+  const boundary = all.findIndex((row) => beforeWindow(first(row).occurredAt, automatedSince))
+  // A run that ends where the view stops being complete may have older results not shown.
+  const lastComplete = boundary === -1 ? all.length - 1 : boundary - 1
+  const rows = all.slice(0, maxRows)
   return (
     <ol className="divide-y divide-border/65">
       {rows.map((row, index) => (
-        <Fragment key={first(row).id}>
+        // A run keeps its oldest result as new ones arrive, so an expanded run stays open.
+        <Fragment key={row.kind === 'event' ? row.event.id : row.events.at(-1)!.id}>
           {automatedSince && index === boundary && index > 0 && (
             <WindowBoundary since={automatedSince} />
           )}
           {row.kind === 'event' ? (
             <EventItem event={row.event} timeOnly={timeOnly} detailed={detailed} />
           ) : (
-            <RepeatedResults events={row.events} timeOnly={timeOnly} detailed={detailed} />
+            <RepeatedResults
+              events={row.events}
+              timeOnly={timeOnly}
+              detailed={detailed}
+              continues={automatedSince !== null && index === lastComplete}
+            />
           )}
         </Fragment>
       ))}
