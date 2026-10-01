@@ -296,6 +296,7 @@ export function EventRecordList({
   detailed = true,
   automatedSince = null,
   foldRepeats = false,
+  maxRows,
 }: {
   items: RecordedEvent[]
   timeOnly?: boolean
@@ -304,13 +305,15 @@ export function EventRecordList({
   automatedSince?: string | null
   /** Folds runs of identical automated results of one system into a single row. */
   foldRepeats?: boolean
+  /** Shows only the newest rows, counted after folding. */
+  maxRows?: number
 }) {
   const shown = items.filter((event) =>
     withinWindow(event.source, event.occurredAt, automatedSince),
   )
-  const rows: TimelineRow[] = foldRepeats
-    ? timelineRows(shown)
-    : shown.map((event) => ({ kind: 'event', event }))
+  const rows: TimelineRow[] = (
+    foldRepeats ? timelineRows(shown) : shown.map((event) => ({ kind: 'event' as const, event }))
+  ).slice(0, maxRows)
   const first = (row: TimelineRow) => (row.kind === 'event' ? row.event : row.events[0]!)
   const boundary = rows.findIndex((row) => beforeWindow(first(row).occurredAt, automatedSince))
   return (

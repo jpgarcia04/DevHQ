@@ -39,7 +39,7 @@ export function RealIncidentsPage() {
         description="Problems you have recorded, connected to the systems they affect."
         action={
           <div className="flex items-center gap-4">
-            {loadState === 'ready' && (
+            {snapshot && loadState !== 'error' && (
               <span className="text-xs text-amber-200">
                 {active} active {active === 1 ? 'incident' : 'incidents'}
               </span>

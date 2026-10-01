@@ -21,11 +21,12 @@ export function Shell() {
   const app = (mode === 'demo' ? applications : (snapshot?.applications ?? [])).find(
     (item) => pathname === `/applications/${item.id}`,
   )
-  // Real counts appear only after a successful load; a failed load must not read as zero.
+  // Real counts appear only after a successful load; a failed load must not read as zero. A
+  // reload keeps the last snapshot, so the count stays visible while it runs.
   const activeCount =
     mode === 'demo'
       ? activeIncidents(incidents).length
-      : loadState === 'ready' && snapshot
+      : loadState !== 'error' && snapshot
         ? activeIncidents(snapshot.incidents).length
         : null
   const unavailable = mode === 'real' && loadState === 'error'

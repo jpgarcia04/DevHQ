@@ -9,7 +9,7 @@ import { ObservationHistory } from './evidence'
 import { automatedSince, timelineRows, withinWindow } from './history'
 import type { InventorySnapshot } from './inventory-api'
 import { InventoryContext, type InventoryContextValue } from './inventory-context'
-import { RealApplicationDetailPage } from './real-pages'
+import { RealApplicationDetailPage, RealOverviewPage } from './real-pages'
 import { EventRecordList } from './record-lists'
 import { RealActivityPage } from './records-pages'
 import { inventoryContext, minutesFromNow } from './test-context'
@@ -283,5 +283,27 @@ describe('repeated automated results', () => {
       'aria-expanded',
       'true',
     )
+  })
+
+  it('keep what changed among the overview’s recent activity', () => {
+    const runs = [5, 10, 15, 20, 25, 30].map((minutesAgo) => run(web, minutesAgo))
+    renderWith(
+      <RealOverviewPage />,
+      inventoryContext({
+        snapshot: {
+          ...snapshot,
+          events: [
+            ...runs,
+            event(web, 'manual', 40, 'Deployed 2.0'),
+            event(db, 'manual', 50, 'Old'),
+          ],
+          automatedHistory: { limit: 200, truncated: [] },
+        },
+      }),
+    )
+    const recent = within(screen.getByRole('region', { name: 'Recent activity' }))
+    expect(recent.getByText('6 consecutive results')).toBeInTheDocument()
+    expect(recent.getByText('Deployed 2.0')).toBeInTheDocument()
+    expect(recent.getByText('Old')).toBeInTheDocument()
   })
 })
