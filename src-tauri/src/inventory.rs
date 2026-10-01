@@ -192,10 +192,11 @@ pub(crate) const MAX_SUMMARY: usize = 500;
 pub(crate) const MAX_DESCRIPTION: usize = 1000;
 const MAX_VERSION: usize = 60;
 
-/// What a person typed, without surrounding whitespace, and no longer than `max` characters.
+/// What a person typed, without surrounding whitespace, and no longer than `max` characters,
+/// counted as the window counts them (UTF-16 code units), so both agree on every text.
 pub(crate) fn bounded_text(value: &str, max: usize, label: &str) -> Result<String, ApiError> {
     let text = value.trim();
-    if text.chars().count() > max {
+    if text.encode_utf16().count() > max {
         return Err(ApiError::invalid(format!(
             "{label} is longer than {max} characters."
         )));
@@ -212,8 +213,23 @@ pub(crate) fn required_text(value: &str, max: usize, label: &str) -> Result<Stri
     }
 }
 
-fn required_name(value: &str, label: &str) -> Result<String, ApiError> {
-    required_text(value, MAX_NAME, &format!("{label} name"))
+/// Like `bounded_text`, but the text already stored is always accepted unchanged: limits apply
+/// to what is typed, so something saved before a limit existed can still be saved.
+fn bounded_or_kept(value: &str, kept: &str, max: usize, label: &str) -> Result<String, ApiError> {
+    let text = value.trim();
+    if !text.is_empty() && text == kept.trim() {
+        return Ok(text.to_owned());
+    }
+    bounded_text(value, max, label)
+}
+
+fn required_or_kept(value: &str, kept: &str, max: usize, label: &str) -> Result<String, ApiError> {
+    let text = bounded_or_kept(value, kept, max, label)?;
+    if text.is_empty() {
+        Err(ApiError::invalid(format!("{label} is required.")))
+    } else {
+        Ok(text)
+    }
 }
 
 pub(crate) fn allowed(value: &str, choices: &[&str], label: &str) -> Result<(), ApiError> {
@@ -306,20 +322,44 @@ pub fn list(path: &Path) -> Result<Inventory, ApiError> {
 }
 
 pub fn save_resource(path: &Path, input: ResourceInput) -> Result<Resource, ApiError> {
-    let name = required_name(&input.name, "Resource")?;
     allowed(&input.kind, &["server", "workstation"], "resource kind")?;
-    let description = bounded_text(&input.description, MAX_DESCRIPTION, "Resource description")?;
-    let operating_system = bounded_text(&input.operating_system, MAX_NAME, "Operating system")?;
-    let db = open(path)?;
     let id = input.id.unwrap_or_else(|| Uuid::new_v4().to_string());
     if id.is_empty() {
         return Err(ApiError::invalid("Resource ID is required."));
     }
-    if db.execute(
+    let mut db = open(path)?;
+    let tx = db
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(ApiError::database)?;
+    let (kept_name, kept_description, kept_system): (String, String, String) = tx
+        .query_row(
+            "SELECT name, description, operating_system FROM resources WHERE id = ?1",
+            [&id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()
+        .map_err(ApiError::database)?
+        .unwrap_or_default();
+    let name = required_or_kept(&input.name, &kept_name, MAX_NAME, "Resource name")?;
+    let description = bounded_or_kept(
+        &input.description,
+        &kept_description,
+        MAX_DESCRIPTION,
+        "Resource description",
+    )?;
+    let operating_system = bounded_or_kept(
+        &input.operating_system,
+        &kept_system,
+        MAX_NAME,
+        "Operating system",
+    )?;
+    tx.execute(
         "INSERT INTO resources (id, name, kind, description, operating_system) VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT(id) DO UPDATE SET name=excluded.name, kind=excluded.kind, description=excluded.description, operating_system=excluded.operating_system",
         params![id, name, input.kind, description, operating_system],
-    ).map_err(ApiError::database)? == 0 { return Err(ApiError::database("Resource was not saved.")); }
+    )
+    .map_err(ApiError::database)?;
+    tx.commit().map_err(ApiError::database)?;
     Ok(Resource {
         id,
         name,
@@ -330,57 +370,94 @@ pub fn save_resource(path: &Path, input: ResourceInput) -> Result<Resource, ApiE
 }
 
 pub fn save_application(path: &Path, input: ApplicationInput) -> Result<Application, ApiError> {
-    let name = required_name(&input.name, "Application")?;
     allowed(
         &input.lifecycle,
         &["development", "testing", "production", "archived"],
         "lifecycle",
     )?;
-    let description = bounded_text(
-        &input.description,
-        MAX_DESCRIPTION,
-        "Application description",
-    )?;
-    // A blank version is no version.
-    let version = match &input.version {
-        Some(version) => Some(bounded_text(version, MAX_VERSION, "Version")?),
-        None => None,
+    let id = input.id.unwrap_or_else(|| Uuid::new_v4().to_string());
+    if id.is_empty() {
+        return Err(ApiError::invalid("Application ID is required."));
     }
-    .filter(|version| !version.is_empty());
-    let mut components = Vec::with_capacity(input.components.len());
-    for component in input.components {
-        let name = required_name(&component.name, "Component")?;
+    let mut parts: Vec<ComponentInput> = Vec::with_capacity(input.components.len());
+    for mut component in input.components {
         allowed(
             &component.kind,
             &["backend", "database", "docker", "frontend"],
             "component kind",
         )?;
-        let id = component.id.unwrap_or_else(|| Uuid::new_v4().to_string());
-        if id.is_empty() {
+        let component_id = component
+            .id
+            .take()
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
+        if component_id.is_empty() {
             return Err(ApiError::invalid("Component ID is required."));
         }
-        if components.iter().any(|item: &Component| item.id == id) {
+        if parts
+            .iter()
+            .any(|item| item.id.as_deref() == Some(component_id.as_str()))
+        {
             return Err(ApiError::invalid(format!(
-                "Component {id} appears twice. Each component can be listed once."
+                "Component {component_id} appears twice. Each component can be listed once."
             )));
         }
-        components.push(Component {
-            id,
-            name,
-            kind: component.kind,
-            resource_id: component.resource_id,
-        });
-    }
-    let id = input.id.unwrap_or_else(|| Uuid::new_v4().to_string());
-    if id.is_empty() {
-        return Err(ApiError::invalid("Application ID is required."));
+        component.id = Some(component_id);
+        parts.push(component);
     }
     let mut db = open(path)?;
     let tx = db
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(ApiError::database)?;
-    for component in &components {
-        if let Some(resource_id) = &component.resource_id {
+    let (kept_name, kept_description, kept_version): (String, String, Option<String>) = tx
+        .query_row(
+            "SELECT name, description, version FROM applications WHERE id = ?1",
+            [&id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()
+        .map_err(ApiError::database)?
+        .unwrap_or_default();
+    let name = required_or_kept(&input.name, &kept_name, MAX_NAME, "Application name")?;
+    let description = bounded_or_kept(
+        &input.description,
+        &kept_description,
+        MAX_DESCRIPTION,
+        "Application description",
+    )?;
+    // A blank version is no version.
+    let version = match &input.version {
+        Some(version) => Some(bounded_or_kept(
+            version,
+            kept_version.as_deref().unwrap_or_default(),
+            MAX_VERSION,
+            "Version",
+        )?),
+        None => None,
+    }
+    .filter(|version| !version.is_empty());
+    let mut components = Vec::with_capacity(parts.len());
+    for part in parts {
+        let component_id = part.id.unwrap_or_default();
+        // A component belongs to one application; reusing its ID elsewhere would move it.
+        let stored: Option<(String, String)> = tx
+            .query_row(
+                "SELECT application_id, name FROM components WHERE id = ?1",
+                [&component_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(ApiError::database)?;
+        let kept = match stored {
+            Some((owner, _)) if owner != id => {
+                return Err(ApiError::invalid(format!(
+                    "Component {component_id} belongs to another application."
+                )))
+            }
+            Some((_, kept)) => kept,
+            None => String::new(),
+        };
+        let name = required_or_kept(&part.name, &kept, MAX_NAME, "Component name")?;
+        if let Some(resource_id) = &part.resource_id {
             let exists: bool = tx
                 .query_row(
                     "SELECT EXISTS(SELECT 1 FROM resources WHERE id = ?1)",
@@ -392,21 +469,12 @@ pub fn save_application(path: &Path, input: ApplicationInput) -> Result<Applicat
                 return Err(ApiError::invalid(format!("Resource {resource_id} does not exist. Choose an existing resource or leave the component unlinked.")));
             }
         }
-        // A component belongs to one application; reusing its ID elsewhere would move it.
-        let owner: Option<String> = tx
-            .query_row(
-                "SELECT application_id FROM components WHERE id = ?1",
-                [&component.id],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(ApiError::database)?;
-        if owner.is_some_and(|owner| owner != id) {
-            return Err(ApiError::invalid(format!(
-                "Component {} belongs to another application.",
-                component.id
-            )));
-        }
+        components.push(Component {
+            id: component_id,
+            name,
+            kind: part.kind,
+            resource_id: part.resource_id,
+        });
     }
     tx.execute(
         "INSERT INTO applications (id, name, lifecycle, description, version) VALUES (?1, ?2, ?3, ?4, ?5)
@@ -431,30 +499,20 @@ pub fn save_application(path: &Path, input: ApplicationInput) -> Result<Applicat
     })
 }
 
-fn count(tx: &Transaction, sql: &str, id: &str) -> Result<i64, ApiError> {
-    tx.query_row(sql, [id], |row| row.get(0))
-        .map_err(ApiError::database)
-}
-
-fn plural(count: i64, noun: &str) -> String {
-    format!("{count} {noun}{}", if count == 1 { "" } else { "s" })
-}
-
-/// Records that reference a subject. History is never deleted, so they keep it in place.
+/// Which kinds of record reference a subject. History is never deleted, so any keeps it.
 fn history_of(tx: &Transaction, column: &str, id: &str) -> Result<Vec<String>, ApiError> {
     let mut found = Vec::new();
-    for (table, noun) in [
-        ("observations", "observation"),
-        ("incidents", "incident"),
-        ("events", "event"),
-    ] {
-        let total = count(
-            tx,
-            &format!("SELECT count(*) FROM {table} WHERE {column} = ?1"),
-            id,
-        )?;
-        if total > 0 {
-            found.push(plural(total, noun));
+    for table in ["observations", "incidents", "events"] {
+        // EXISTS stops at the first one: a long supervised history costs no more than one.
+        let exists: bool = tx
+            .query_row(
+                &format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE {column} = ?1)"),
+                [id],
+                |row| row.get(0),
+            )
+            .map_err(ApiError::database)?;
+        if exists {
+            found.push(table.to_owned());
         }
     }
     Ok(found)
@@ -485,7 +543,7 @@ pub fn delete_application(path: &Path, id: &str) -> Result<(), ApiError> {
     let history = history_of(&tx, "application_id", id)?;
     if !history.is_empty() {
         return Err(ApiError::invalid(format!(
-            "{name} has {}. DevHQ keeps history, so it cannot be deleted; set its lifecycle to Archived instead.",
+            "{name} has recorded {}. DevHQ keeps history, so it cannot be deleted; set its lifecycle to Archived instead.",
             listed(&history)
         )));
     }
@@ -532,7 +590,7 @@ pub fn delete_resource(path: &Path, id: &str) -> Result<(), ApiError> {
     let history = history_of(&tx, "resource_id", id)?;
     if !history.is_empty() {
         return Err(ApiError::invalid(format!(
-            "{name} has {}. DevHQ keeps history, so it cannot be deleted.",
+            "{name} has recorded {}. DevHQ keeps history, so it cannot be deleted.",
             listed(&history)
         )));
     }
@@ -914,7 +972,7 @@ mod tests {
         assert_eq!(error.code, "invalid_input");
         assert_eq!(
             error.message,
-            "Example has 1 incident and 2 events. DevHQ keeps history, so it cannot be deleted; set its lifecycle to Archived instead."
+            "Example has recorded incidents and events. DevHQ keeps history, so it cannot be deleted; set its lifecycle to Archived instead."
         );
 
         // Unlinked, the resource is still kept by its own history.
@@ -943,7 +1001,7 @@ mod tests {
         let error = delete_resource(&path, &host.id).unwrap_err();
         assert_eq!(
             error.message,
-            "Host has 1 observation and 1 event. DevHQ keeps history, so it cannot be deleted."
+            "Host has recorded observations and events. DevHQ keeps history, so it cannot be deleted."
         );
         let snapshot = list(&path).unwrap();
         assert_eq!(snapshot.applications.len(), 1);
@@ -984,6 +1042,103 @@ mod tests {
         assert_eq!(late.code, "invalid_input");
         let snapshot = list(&path).unwrap();
         assert!(snapshot.observations.is_empty() && snapshot.resources.is_empty());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn text_saved_before_the_limits_can_still_be_saved_unchanged() {
+        let path = path();
+        let long = |count: usize| "a".repeat(count);
+        // As a version without limits could have left them.
+        let db = open(&path).unwrap();
+        db.execute(
+            "INSERT INTO resources (id, name, kind, description, operating_system) VALUES ('host', 'Host', 'server', ?1, ?2)",
+            params![long(1500), long(200)],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO applications (id, name, lifecycle, description, version) VALUES ('shop', ?1, 'production', ?2, ?3)",
+            params![long(130), long(1500), long(80)],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO components (id, application_id, name, kind, resource_id) VALUES ('api', 'shop', ?1, 'docker', 'host')",
+            [long(150)],
+        )
+        .unwrap();
+        drop(db);
+        let stored = list(&path).unwrap();
+        let shop = &stored.applications[0];
+        let archive = |description: String| ApplicationInput {
+            id: Some(shop.id.clone()),
+            name: shop.name.clone(),
+            description,
+            lifecycle: "archived".into(),
+            version: shop.version.clone(),
+            components: vec![ComponentInput {
+                id: Some("api".into()),
+                name: shop.components[0].name.clone(),
+                kind: "docker".into(),
+                resource_id: Some("host".into()),
+            }],
+        };
+        // Archiving, as a refused deletion suggests, keeps working.
+        let archived = save_application(&path, archive(shop.description.clone())).unwrap();
+        assert_eq!(archived.lifecycle, "archived");
+        assert_eq!(archived.description.len(), 1500);
+        let host = &stored.resources[0];
+        assert!(save_resource(
+            &path,
+            ResourceInput {
+                id: Some(host.id.clone()),
+                name: "Renamed host".into(),
+                kind: "server".into(),
+                description: host.description.clone(),
+                operating_system: host.operating_system.clone(),
+            },
+        )
+        .is_ok());
+        // New text, though, must fit.
+        let error = save_application(&path, archive(long(1400))).unwrap_err();
+        assert!(
+            error.message.contains("longer than 1000"),
+            "{}",
+            error.message
+        );
+        // A component's kept name is its own: another component cannot borrow it.
+        let mut borrowed = archive(shop.description.clone());
+        borrowed.components.push(ComponentInput {
+            id: None,
+            ..borrowed.components[0].clone()
+        });
+        let error = save_application(&path, borrowed).unwrap_err();
+        assert!(
+            error.message.contains("Component name is longer than 120"),
+            "{}",
+            error.message
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn counts_length_as_the_window_does() {
+        let path = path();
+        // Outside the Basic Multilingual Plane: one character, two UTF-16 code units.
+        let emoji = |count: usize| "🛰".repeat(count);
+        let named = |name: String| ResourceInput {
+            id: None,
+            name,
+            kind: "server".into(),
+            description: String::new(),
+            operating_system: String::new(),
+        };
+        assert!(save_resource(&path, named(emoji(60))).is_ok());
+        let error = save_resource(&path, named(emoji(61))).unwrap_err();
+        assert!(
+            error.message.contains("longer than 120"),
+            "{}",
+            error.message
+        );
         std::fs::remove_file(path).unwrap();
     }
 
