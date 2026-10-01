@@ -28,6 +28,12 @@ if ! sha256sum --check --status "$stamp" 2>/dev/null; then
   sha256sum package-lock.json > "$stamp"
 fi
 
+# npm run e2e never downloads a browser: point it at the Chromium the session already has.
+chromium=$(ls -d /opt/pw-browsers/chromium-*/chrome-linux/chrome 2>/dev/null | sort -V | tail -1 || true)
+if [ -n "$chromium" ] && [ -n "${CLAUDE_ENV_FILE:-}" ]; then
+  echo "export DEVHQ_CHROMIUM=$chromium" >> "$CLAUDE_ENV_FILE"
+fi
+
 if command -v cargo >/dev/null; then
   cargo fetch --manifest-path src-tauri/Cargo.toml --locked
 fi

@@ -1,4 +1,5 @@
-# The same checks as `npm run check`, cargo fmt, clippy and the Rust tests, on Linux.
+# The same checks as `npm run check`, cargo fmt, clippy and the Rust tests, on Linux, and
+# end-to-end tests of the window over a simulated native process.
 # The HTTP tests only talk to a server on 127.0.0.1 and the reserved `.invalid` domain.
 name: CI
 
@@ -31,6 +32,19 @@ jobs:
       - run: npm run lint
       - run: npm run test
       - run: npm run build
+
+  e2e:
+    name: End to end · preview in Chrome
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      # Drives the Chrome the runner already has: no browser is downloaded.
+      - run: npm run e2e
 
   rust:
     name: Rust · fmt, clippy, tests

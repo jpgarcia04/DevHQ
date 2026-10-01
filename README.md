@@ -45,7 +45,8 @@ La copia de ejemplo ocurre a las 08:40 y se verifica a las 08:45; los resultados
 de automatización son parte del escenario, no ejecuciones de DevHQ. Los logos y
 thumbnails pueden sustituirse mediante campos del modelo. En Tauri se abre por defecto
 **Mi inventario**, que usa SQLite; la demo se elige explícitamente en la barra lateral.
-La preview web solo muestra la demo porque no dispone de IPC nativo. Los mocks nunca
+La preview web solo muestra la demo porque no dispone de IPC nativo; para desarrollo,
+`preview.html` simula ese IPC con datos de ejemplo (ver [Ejecutar](#ejecutar)). Los mocks nunca
 se importan a SQLite. En el inventario real, aplicaciones, componentes y recursos
 aparecen como **no observados**; lifecycle no expresa health.
 
@@ -206,12 +207,25 @@ servidor en `127.0.0.1` y el dominio reservado `.invalid`; no contactan servidor
 npm ci
 npm run tauri dev          # escritorio nativo
 npm run dev               # preview web: http://127.0.0.1:1420
+                          # Mi inventario simulado: http://127.0.0.1:1420/preview.html
 npm run check             # ESLint, tests, TypeScript, Vite y cargo check
+npm run e2e               # Playwright sobre preview.html (Chrome del sistema)
 cargo test --manifest-path src-tauri/Cargo.toml --lib # persistencia y migraciones
 cargo fmt --manifest-path src-tauri/Cargo.toml --check
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 npm run tauri build       # ejecutable e instalador NSIS para Windows
 ```
+
+`preview.html` existe solo en desarrollo: carga la ventana real sobre un proceso nativo
+simulado con `@tauri-apps/api/mocks` y datos de ejemplo relativos al reloj, con un recurso
+supervisado que tiene más resultados de los que lleva un snapshot. Los comandos de lectura
+siguen las mismas reglas de ventana y paginación que Rust (lo prueba
+`src/preview/backend.test.ts`), toda escritura se rechaza sin guardar nada y un aviso fijo en
+pantalla dice que son datos de ejemplo. `?scenario=empty` y `?scenario=unavailable` muestran
+un inventario vacío o ilegible. El bundle de producción se construye desde `index.html` y no
+contiene nada de esto. `npm run e2e` usa el Chrome instalado (en CI, el del runner) o el
+ejecutable que indique `DEVHQ_CHROMIUM`; nunca descarga navegadores, y reutiliza un `npm run dev`
+en marcha.
 
 Si DevHQ no termina tras cerrar su ventana, antes de matar el proceso ejecuta
 `powershell -NoProfile -File scripts/dump-stacks.ps1 -ProcessId <pid>`: vuelca la pila de

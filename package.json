@@ -10,6 +10,7 @@
     "typecheck": "tsc -b",
     "lint": "eslint .",
     "test": "vitest run",
+    "e2e": "playwright test",
     "tauri": "tauri",
     "check:rust": "cargo check --manifest-path src-tauri/Cargo.toml",
     "check": "npm run lint && npm run test && npm run build && npm run check:rust"
@@ -27,6 +28,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.63.0",
     "@tailwindcss/vite": "^4.3.3",
     "@tauri-apps/cli": "^2.11.5",
     "@testing-library/jest-dom": "^7.0.1",
