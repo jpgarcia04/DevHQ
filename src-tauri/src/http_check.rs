@@ -237,6 +237,15 @@ pub fn set_http_check_paused(
     Ok(check)
 }
 
+// When a subject's check last recorded an observation, following the subject's index from its
+// newest entry, so the cost does not grow with history. One statement per subject type.
+const LAST_RUN: [&str; 2] = [
+    "SELECT observed_at FROM observations WHERE application_id = ?1 AND source = 'http'
+     ORDER BY observed_at DESC LIMIT 1",
+    "SELECT observed_at FROM observations WHERE resource_id = ?1 AND source = 'http'
+     ORDER BY observed_at DESC LIMIT 1",
+];
+
 /// What supervision needs to plan: every check, and when each subject's check last recorded
 /// an observation, so that a relaunch keeps the rhythm instead of starting over.
 pub(crate) fn supervision(
@@ -245,25 +254,24 @@ pub(crate) fn supervision(
     let mut db = open(path)?;
     let tx = db.transaction().map_err(ApiError::database)?;
     let checks = load(&tx)?;
-    let last_runs = {
-        let mut statement = tx
-            .prepare(
-                "SELECT application_id, resource_id, max(observed_at) FROM observations
-                 WHERE source = 'http' GROUP BY application_id, resource_id",
-            )
-            .map_err(ApiError::database)?;
-        let rows = statement
-            .query_map([], |row| {
-                Ok((
-                    Subject::from_columns(row.get(0)?, row.get(1)?)?,
-                    row.get(2)?,
-                ))
-            })
-            .map_err(ApiError::database)?
-            .collect::<Result<HashMap<_, _>, _>>()
-            .map_err(ApiError::database);
-        rows?
-    };
+    let mut last_runs = HashMap::new();
+    {
+        let prepare = |sql| tx.prepare(sql).map_err(ApiError::database);
+        let mut last_run = [prepare(LAST_RUN[0])?, prepare(LAST_RUN[1])?];
+        for check in &checks {
+            let (kind, id) = match &check.subject {
+                Subject::Application { id } => (0, id),
+                Subject::Resource { id } => (1, id),
+            };
+            let at: Option<i64> = last_run[kind]
+                .query_row([id], |row| row.get(0))
+                .optional()
+                .map_err(ApiError::database)?;
+            if let Some(at) = at {
+                last_runs.insert(check.subject.clone(), at);
+            }
+        }
+    }
     tx.commit().map_err(ApiError::database)?;
     Ok((checks, last_runs))
 }
@@ -1190,6 +1198,31 @@ pub(crate) mod tests {
                 .is_err(),
             "evidence keeps its subject"
         );
+        drop(db);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn finding_the_last_run_follows_the_subject_index() {
+        let path = path();
+        let db = open(&path).unwrap();
+        for (sql, index) in LAST_RUN
+            .iter()
+            .zip(["observations_application_id", "observations_resource_id"])
+        {
+            let steps: Vec<String> = db
+                .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+                .unwrap()
+                .query_map(["subject"], |row| row.get(3))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            assert_eq!(steps.len(), 1, "{steps:?}");
+            assert!(
+                steps[0].starts_with("SEARCH observations USING INDEX") && steps[0].contains(index),
+                "{steps:?}"
+            );
+        }
         drop(db);
         std::fs::remove_file(path).unwrap();
     }
