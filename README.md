@@ -254,7 +254,16 @@ no duplicar una ejecución en vuelo y `watch_http_monitor` abre el `Channel` de 
 migraciones transaccionales v1→v6 usan `PRAGMA user_version` y una versión más nueva se
 rechaza en vez de adivinarse. Cada apertura solo lee esa versión: únicamente una base antigua
 toma el lock de escritura para migrar, y dentro vuelve a leerla por si otra conexión ya lo
-hizo. La v4 reconstruye `observations` y `events` (SQLite no cambia
+hizo. La base usa write-ahead logging (WAL): un lector trabaja sobre el último estado
+confirmado sin esperar a nadie y un escritor no espera a los lectores; solo los escritores se
+turnan. Importa porque la supervisión escribe desde el runtime asíncrono mientras la ventana
+lee, y los comandos síncronos corren en el hilo principal: con el journal de rollback, una
+lectura podía congelar la ventana detrás de un commit en curso. El modo queda guardado en el
+archivo y `synchronous` sigue en FULL, así que cada evidencia llega al disco antes de que el
+comando responda. Al cerrarse la última conexión SQLite vuelca el log en `inventory.sqlite3`,
+que queda completo por sí solo. Una base anterior se convierte en la primera apertura que la
+tiene para sí; si otra conexión la está usando en ese momento (SQLite no espera para esto),
+sigue con su journal de rollback, igual de correcta, hasta la siguiente. La v4 reconstruye `observations` y `events` (SQLite no cambia
 un CHECK con ALTER) conservando filas, IDs, `rowid` (desempate de orden), claves foráneas,
 índices y los vínculos evento → observación. La v5 solo reconstruye `http_checks` (nada la
 referencia) para añadir el estado y el intervalo de supervisión con sus CHECK, conservando
@@ -301,5 +310,8 @@ de historial se prueba por su límite exacto, los eventos que acompañan a cada 
 aviso de lo omitido en cada vista, la paginación de observaciones y de eventos de varios
 sistemas a la vez (sin huecos ni duplicados, con empates al mismo milisegundo y resultados
 nuevos entre páginas) y los planes de consulta, que nunca recorren el historial automático
-completo. Una lectura no espera a una escritura en curso y dos primeras aperturas simultáneas
-migran una sola vez.
+completo. La concurrencia de SQLite se prueba sin esperas medidas: una lectura no espera a una
+escritura en curso, una escritura no espera a una lectura abierta (que conserva su estado), dos
+primeras aperturas simultáneas migran una sola vez, una base antigua ocupada se abre sin
+convertirse y se convierte en la siguiente apertura, y al cerrar queda un único archivo
+completo.

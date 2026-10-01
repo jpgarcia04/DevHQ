@@ -126,6 +126,13 @@ const MIGRATIONS: [(i64, &str); 6] = [
 ];
 
 /// Opens the inventory, upgrading its schema first if it is older than this build's.
+///
+/// The database uses write-ahead logging: a reader works on the last committed state and
+/// never waits for a writer, and a writer never waits for readers. Supervision writes from
+/// the async runtime while the window reads, and some commands run on the main thread, so
+/// with a rollback journal a reader could stall the window behind a commit in progress.
+/// Writers still take turns. The mode is stored in the file, so setting it again is a no-op;
+/// when the last connection closes SQLite folds the log back into `inventory.sqlite3`.
 pub(crate) fn open(path: &Path) -> Result<Connection, ApiError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(ApiError::database)?;
@@ -133,6 +140,17 @@ pub(crate) fn open(path: &Path) -> Result<Connection, ApiError> {
     let mut db = Connection::open(path).map_err(ApiError::database)?;
     db.busy_timeout(Duration::from_secs(5))
         .map_err(ApiError::database)?;
+    // Switching an older file needs it to itself, and SQLite does not wait for that: when
+    // another connection holds a lock (two requests at first launch), a later open switches
+    // it. Until then, and where the file system cannot share memory between connections, the
+    // rollback journal stays: just as correct, only readers and writers wait for each other.
+    match db.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get::<_, String>(0)) {
+        Err(rusqlite::Error::SqliteFailure(error, _))
+            if error.code == rusqlite::ErrorCode::DatabaseBusy => {}
+        result => {
+            result.map_err(ApiError::database)?;
+        }
+    }
     // Only an upgrade takes the write lock; an up-to-date database is just read.
     if schema_version(&db)? < SCHEMA_VERSION {
         // Upgrades rebuild tables, which SQLite only allows safely with enforcement off.
@@ -1214,6 +1232,90 @@ mod tests {
         // The last committed state, then the new one.
         assert_eq!(snapshot.unwrap().resources, vec![host]);
         assert_eq!(list(&path).unwrap().resources[0].name, "Renamed");
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn a_write_never_waits_for_a_read_in_progress() {
+        let path = path();
+        resource(&path, "Host");
+        let (release, reader) = holding(&path, |path, hold| {
+            let mut db = open(path).unwrap();
+            let tx = db.transaction().unwrap();
+            let count = || -> i64 {
+                tx.query_row("SELECT count(*) FROM resources", [], |row| row.get(0))
+                    .unwrap()
+            };
+            let before = count();
+            hold();
+            (before, count())
+        });
+        // With a rollback journal a commit needs every reader gone, so this waited for the
+        // reader and gave up after five seconds.
+        let saved = save_resource(
+            &path,
+            ResourceInput {
+                id: None,
+                name: "Spare".into(),
+                kind: "server".into(),
+                description: String::new(),
+                operating_system: String::new(),
+            },
+        );
+        release.send(()).unwrap();
+        // The reader kept the state it started from.
+        assert_eq!(reader.join().unwrap(), (1, 1));
+        assert!(saved.is_ok(), "{saved:?}");
+        assert_eq!(list(&path).unwrap().resources.len(), 2);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn writes_ahead_and_leaves_one_complete_file_once_closed() {
+        let path = path();
+        // As earlier releases left it: a rollback journal.
+        let db = Connection::open(&path).unwrap();
+        db.pragma_update(None, "foreign_keys", "OFF").unwrap();
+        for (_, sql) in &MIGRATIONS {
+            db.execute_batch(sql).unwrap();
+        }
+        db.pragma_update(None, "user_version", SCHEMA_VERSION)
+            .unwrap();
+        let mode = |db: &Connection| -> String {
+            db.query_row("PRAGMA journal_mode", [], |row| row.get(0))
+                .unwrap()
+        };
+        assert_eq!(mode(&db), "delete");
+        drop(db);
+        // Switching needs the file to itself and SQLite does not wait for it: while another
+        // connection writes, DevHQ still opens it, in the mode it has.
+        let (release, writer) = holding(&path, |path, hold| {
+            let mut db = Connection::open(path).unwrap();
+            let tx = db
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .unwrap();
+            hold();
+            tx.commit().unwrap();
+        });
+        let contended = list(&path);
+        release.send(()).unwrap();
+        writer.join().unwrap();
+        assert!(contended.is_ok(), "{:?}", contended.err());
+        assert_eq!(mode(&Connection::open(&path).unwrap()), "delete");
+        // The next open has it to itself and switches it.
+        resource(&path, "Host");
+        resource(&path, "Spare");
+        // The mode is stored in the file, for every later connection.
+        let db = Connection::open(&path).unwrap();
+        assert_eq!(mode(&db), "wal");
+        drop(db);
+        // Every connection is closed: the log was folded back into the database file, which
+        // alone holds everything, so a copy of it is a complete backup.
+        assert!(!path.with_extension("sqlite3-wal").exists());
+        let copy = path.with_extension("copy.sqlite3");
+        std::fs::copy(&path, &copy).unwrap();
+        assert_eq!(list(&copy).unwrap().resources.len(), 2);
+        std::fs::remove_file(copy).unwrap();
         std::fs::remove_file(path).unwrap();
     }
 
