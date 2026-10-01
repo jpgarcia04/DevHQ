@@ -4,8 +4,7 @@ import type { AutomatedHistory } from './inventory-api'
 
 /** One timeline row: an event, or consecutive automated results that said the same thing. */
 export type TimelineRow =
-  | { kind: 'event'; event: RecordedEvent }
-  | { kind: 'repeats'; events: RecordedEvent[] }
+  { kind: 'event'; event: RecordedEvent } | { kind: 'repeats'; events: RecordedEvent[] }
 
 /** Fewer repeats than this are clearer one by one. */
 export const minimumRepeats = 3
