@@ -41,6 +41,7 @@ import {
   EvidenceBadge,
   EvidenceDetail,
   ObservationHistory,
+  ObservationHistoryToggle,
   SourceTag,
   SubjectEvidence,
   SubjectLink,
@@ -726,6 +727,11 @@ export function RealInfrastructurePage() {
                     </div>
                   </div>
                   <EvidenceDetail evidence={evidence} now={now} />
+                  {evidence.latest && (
+                    <div className="mt-3">
+                      <ObservationHistoryToggle subject={subject} name={resource.name} />
+                    </div>
+                  )}
                   <div className="mt-4 border-t pt-4">
                     <HttpCheckPanel subject={subject} name={resource.name} />
                   </div>

@@ -1,5 +1,5 @@
-import { Fragment, useState } from 'react'
-import { CircleDashed, History, PenLine, Radar, type LucideIcon } from 'lucide-react'
+import { Fragment, useId, useState } from 'react'
+import { ChevronDown, CircleDashed, History, PenLine, Radar, type LucideIcon } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { healthLabels, sourceLabels } from '@/domain/labels'
 import type { EntityRef, HttpEvidence, Observation, RecordSource } from '@/domain/models'
@@ -266,6 +266,42 @@ export function SubjectEvidence({ subject }: { subject: EntityRef }) {
 export function ObservationHistory({ subject }: { subject: EntityRef }) {
   // Older results loaded for one system never carry over to another.
   return <SubjectObservationHistory key={subjectKey(subject)} subject={subject} />
+}
+
+/**
+ * A system's whole observation history behind a toggle, for places that show only its latest
+ * evidence. Closed, it reads nothing; closing it forgets the older results it loaded.
+ */
+export function ObservationHistoryToggle({ subject, name }: { subject: EntityRef; name: string }) {
+  const [open, setOpen] = useState(false)
+  const region = useId()
+  return (
+    <div>
+      <Button
+        size="sm"
+        variant="ghost"
+        className="-ml-2"
+        aria-expanded={open}
+        aria-controls={region}
+        onClick={() => setOpen(!open)}
+      >
+        <ChevronDown
+          className={cn('size-3.5 transition-transform', open && 'rotate-180')}
+          aria-hidden="true"
+        />
+        {open ? 'Hide observation history' : 'Show observation history'}
+      </Button>
+      <div
+        id={region}
+        role="region"
+        aria-label={`Observation history of ${name}`}
+        hidden={!open}
+        className="mt-3"
+      >
+        {open && <ObservationHistory subject={subject} />}
+      </div>
+    </div>
+  )
 }
 
 const byId = (items: Observation[]) => [...new Map(items.map((item) => [item.id, item])).values()]

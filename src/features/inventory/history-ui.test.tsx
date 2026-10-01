@@ -9,7 +9,7 @@ import { ObservationHistory } from './evidence'
 import { automatedSince, timelineRows, withinWindow } from './history'
 import type { InventorySnapshot } from './inventory-api'
 import { InventoryContext, type InventoryContextValue } from './inventory-context'
-import { RealApplicationDetailPage, RealOverviewPage } from './real-pages'
+import { RealApplicationDetailPage, RealInfrastructurePage, RealOverviewPage } from './real-pages'
 import { EventRecordList } from './record-lists'
 import { RealActivityPage } from './records-pages'
 import { inventoryContext, minutesFromNow } from './test-context'
@@ -441,5 +441,62 @@ describe('older automated results', () => {
     expect(
       screen.queryByRole('button', { name: /older automated results/ }),
     ).not.toBeInTheDocument()
+  })
+})
+
+describe('a resource’s observation history', () => {
+  it('opens from Infrastructure and loads older automated results on demand', async () => {
+    const user = userEvent.setup()
+    const olderObservations = vi.fn().mockResolvedValue({
+      observations: [observation(web, 'http', 65, 'Run at -65')],
+      more: false,
+    })
+    renderWith(<RealInfrastructurePage />, inventoryContext({ snapshot, olderObservations }))
+    const host = within(screen.getByRole('region', { name: 'Web host' }))
+    // Nothing to show for a resource that was never observed.
+    expect(
+      within(screen.getByRole('region', { name: 'Database host' })).queryByRole('button', {
+        name: 'Show observation history',
+      }),
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('region', { name: 'Observation history of Web host' }),
+    ).not.toBeInTheDocument()
+
+    await user.click(host.getByRole('button', { name: 'Show observation history' }))
+    const history = screen.getByRole('region', { name: 'Observation history of Web host' })
+    expect(within(history).getByText(theNote)).toBeInTheDocument()
+    const items = itemTexts(within(history).getByRole('list'))
+    expect(items).toHaveLength(5)
+    expect(items[3]).toBe(boundaryText)
+    await user.click(
+      within(history).getByRole('button', { name: 'Show 200 older automated results' }),
+    )
+    expect(olderObservations).toHaveBeenCalledWith(web, 'obs-web-host-60')
+    expect(within(history).getByText('Run at -65')).toBeInTheDocument()
+
+    await user.click(host.getByRole('button', { name: 'Hide observation history' }))
+    expect(
+      screen.queryByRole('region', { name: 'Observation history of Web host' }),
+    ).not.toBeInTheDocument()
+    expect(host.getByRole('button', { name: 'Show observation history' })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    )
+  })
+
+  it('opens from the resources an application runs on', async () => {
+    const user = userEvent.setup()
+    renderWith(
+      <Routes>
+        <Route path="/applications/:applicationId" element={<RealApplicationDetailPage />} />
+      </Routes>,
+      inventoryContext({ snapshot }),
+      '/applications/shop?tab=infrastructure',
+    )
+    const panel = within(screen.getByRole('tabpanel'))
+    await user.click(panel.getByRole('button', { name: 'Show observation history' }))
+    const history = screen.getByRole('region', { name: 'Observation history of Web host' })
+    expect(within(history).getByText('Checked by hand at -90')).toBeInTheDocument()
   })
 })

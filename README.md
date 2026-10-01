@@ -19,10 +19,12 @@ abierta**. **No funciona en segundo plano ni opera sistemas.**
 - Applications con búsqueda, filtros, identidad visual y detalle con seis tabs. En la
   demo solo Overview tiene contenido completo; en Mi inventario también Health (historial
   de observaciones), Infrastructure (cada recurso en que corre, con su evidencia, su
-  comprobación, sus incidencias y las demás aplicaciones que lo comparten) y Activity. Las
-  restantes explican su futura función.
+  historial, su comprobación, sus incidencias y las demás aplicaciones que lo comparten) y
+  Activity. Las restantes explican su futura función.
 - Infrastructure compartida con enlaces a las aplicaciones que dependen de ella,
-  incidencias del recurso y enlaces desde los componentes de cada aplicación.
+  incidencias del recurso y enlaces desde los componentes de cada aplicación. En Mi
+  inventario, cada recurso observado despliega su historial de observaciones completo, con
+  los mismos avisos de ventana y la misma carga bajo demanda que el Health tab de una app.
 - Incidents con severidad, estado, contexto desplegable y filtros; Activity global.
 - En Mi inventario: observaciones, incidencias y eventos manuales persistentes, con
   procedencia, hora y vigencia visibles.

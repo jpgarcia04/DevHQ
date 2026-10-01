@@ -4,7 +4,7 @@ import { EmptyState } from '@/components/empty-state'
 import { sameSubject, subjectEvidence } from '@/domain/evidence'
 import type { EntityRef } from '@/domain/models'
 import { activeIncidents } from '@/domain/selectors'
-import { EvidenceBadge, EvidenceDetail } from './evidence'
+import { EvidenceBadge, EvidenceDetail, ObservationHistoryToggle } from './evidence'
 import { SupervisionTag } from './http-check'
 import type { InventoryApplication, InventoryComponent } from './inventory-api'
 import { useInventory } from './inventory-context'
@@ -111,6 +111,11 @@ export function ApplicationInfrastructure({ app }: { app: InventoryApplication }
             <div className="mt-4 border-t pt-4">
               <h3 className="eyebrow">Latest evidence</h3>
               <EvidenceDetail evidence={evidence} now={now} />
+              {evidence.latest && (
+                <div className="mt-3">
+                  <ObservationHistoryToggle subject={subject} name={resource.name} />
+                </div>
+              )}
             </div>
             {open.length > 0 && (
               <div className="-mx-5 mt-4 border-t">
