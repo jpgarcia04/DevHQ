@@ -12,13 +12,18 @@ const scenario: Scenario = scenarios.find((item) => item === requested) ?? 'hist
 const backend = previewBackend(sampleDatabase(scenario, Date.now()))
 mockIPC((command, args) => backend(command, args as Record<string, unknown> | undefined))
 
-// Sample data must never pass for a real inventory.
+// Sample data must never pass for a real inventory. The notice is a strip of its own above the
+// window rather than floating over it, so it never covers what scrolls beneath; the window,
+// which fills the viewport (h-dvh), fills what the strip leaves instead. Inline styles, so
+// that no class used only here reaches the production stylesheet.
+const strip = 24
 const notice = document.createElement('aside')
 notice.setAttribute('aria-label', 'Preview')
-// Inline, so that no class used only here reaches the production stylesheet.
-notice.style.cssText =
-  'position:fixed;bottom:36px;right:16px;z-index:50;padding:6px 12px;border:1px dashed #fcd34d66;border-radius:6px;background:#101216f2;color:#fde68a;font:11px system-ui,sans-serif'
+notice.style.cssText = `box-sizing:border-box;height:${strip}px;display:flex;align-items:center;justify-content:center;padding:0 16px;border-bottom:1px dashed #fcd34d66;background:#101216;color:#fde68a;font:11px system-ui,sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis`
 notice.textContent = `Preview · sample data (${scenario}) · simulated native process · nothing is saved`
-document.body.append(notice)
+document.body.prepend(notice)
+const fit = document.createElement('style')
+fit.textContent = `#root{height:calc(100dvh - ${strip}px)}#root>div{height:100%}`
+document.head.append(fit)
 
 await import('@/main')

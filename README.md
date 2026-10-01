@@ -230,14 +230,15 @@ npm run tauri build       # ejecutable e instalador NSIS para Windows
 simulado con `@tauri-apps/api/mocks` y datos de ejemplo relativos al reloj, con un recurso
 supervisado que tiene más resultados de los que lleva un snapshot. Los comandos de lectura
 siguen las mismas reglas de ventana y paginación que Rust (lo prueba
-`src/preview/backend.test.ts`), toda escritura se rechaza sin guardar nada y un aviso fijo en
-pantalla dice que son datos de ejemplo. `?scenario=empty` y `?scenario=unavailable` muestran
-un inventario vacío o ilegible. El bundle de producción se construye desde `index.html` y no
-contiene nada de esto. `npm run e2e` usa el Chrome instalado (en CI, el del runner) o el
-ejecutable que indique `DEVHQ_CHROMIUM`; nunca descarga navegadores, y reutiliza un `npm run dev`
-en marcha. Además de recorrer el historial, audita con axe-core (reglas WCAG A/AA y buenas
-prácticas) cada página real de la preview, algunos formularios abiertos y la demo: landmarks,
-orden de encabezados, nombres accesibles y contraste. Solo se excluye el rótulo decorativo de
+`src/preview/backend.test.ts`), toda escritura se rechaza sin guardar nada y una franja propia
+sobre la ventana dice que son datos de ejemplo; la ventana ocupa el resto, así que el aviso no
+tapa nada al desplazarse. `?scenario=empty` y `?scenario=unavailable` muestran un inventario
+vacío o ilegible. El bundle de producción se construye desde `index.html` y no contiene nada de
+esto. `npm run e2e` usa el Chrome instalado (en CI, el del runner) o el ejecutable que indique
+`DEVHQ_CHROMIUM`; nunca descarga navegadores, y reutiliza un `npm run dev` en marcha. Además de
+recorrer el historial y comprobar que el aviso no tapa la ventana, audita con axe-core (reglas
+WCAG A/AA y buenas prácticas) cada página real de la preview, algunos formularios abiertos y la
+demo: landmarks, orden de encabezados, nombres accesibles y contraste. Solo se excluye el rótulo decorativo de
 las miniaturas de la demo, oculto a tecnologías de asistencia y exento de contraste.
 
 Si DevHQ no termina tras cerrar su ventana, antes de matar el proceso ejecuta
