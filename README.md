@@ -240,8 +240,8 @@ empaquetado está configurado para Windows; otros sistemas necesitan sus prerreq
 y seleccionar un target de bundle apropiado. Los lockfiles de npm y Cargo se versionan. El
 de npm lo escribe npm 11: npm 10 borra los campos `libc` de los paquetes de cada plataforma
 cada vez que lo reescribe. En las sesiones de Claude Code en la web,
-`.claude/hooks/session-start.sh` prepara el contenedor: WebKitGTK, npm 11, dependencias,
-crates y `DEVHQ_CHROMIUM`.
+`.claude/hooks/session-start.sh` prepara el contenedor (WebKitGTK, npm 11, dependencias,
+crates y `DEVHQ_CHROMIUM`) y `CLAUDE.md` resume las reglas de trabajo del repositorio.
 
 ## Arquitectura
 
