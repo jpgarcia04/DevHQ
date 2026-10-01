@@ -1,0 +1,17 @@
+{
+  "directory": "C:\\Users\\Juan Pablo\\AppData\\Roaming\\com.devhq.desktop\\backups",
+  "files": [
+    {
+      "name": "inventory-20260101T100500.123Z.sqlite3",
+      "sizeBytes": 2097152,
+      "modifiedAt": "2026-01-01T10:05:01Z",
+      "partial": false
+    },
+    {
+      "name": "inventory-20260101T090000.000Z.sqlite3.partial",
+      "sizeBytes": 1048576,
+      "modifiedAt": null,
+      "partial": true
+    }
+  ]
+}

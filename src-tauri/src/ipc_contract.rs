@@ -12,13 +12,14 @@
 //!   message for `watch_http_monitor`, and any refusal for `error`). Here Rust's serialization
 //!   must equal it; Vitest checks that a value of the type the window expects equals it too.
 
-use super::{commands, InventoryPath};
+use super::{commands, manage};
+use crate::backup::{Backup, BackupCounts, BackupFile, BackupFolder};
 use crate::http_check::{HttpCheck, HttpCheckInput};
 use crate::inventory::{
     self, Application, ApplicationInput, Component, DataLocation, Inventory, Resource,
     ResourceInput,
 };
-use crate::monitor::{CheckStatus, Monitor, MonitorStatus, RunError};
+use crate::monitor::{CheckStatus, MonitorStatus, RunError};
 use crate::records::{
     AutomatedHistory, Event, EventInput, EventPage, HttpEvidence, Incident, IncidentInput,
     IncidentStatusInput, Observation, ObservationInput, ObservationPage, Redirect, Subject,
@@ -34,18 +35,17 @@ use tauri::test::{
     get_ipc_response, mock_builder, mock_context, noop_assets, MockRuntime, INVOKE_KEY,
 };
 use tauri::webview::InvokeRequest;
-use tauri::{App, Manager, WebviewWindow, WebviewWindowBuilder};
+use tauri::{App, WebviewWindow, WebviewWindowBuilder};
 
+/// An inventory path in a folder of its own, which also holds its log and its backups.
 fn path() -> PathBuf {
-    std::env::temp_dir().join(format!("devhq-ipc-test-{}.sqlite3", uuid::Uuid::new_v4()))
+    let folder = std::env::temp_dir().join(format!("devhq-ipc-test-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&folder).unwrap();
+    folder.join("inventory.sqlite3")
 }
 
 fn remove(path: &Path) {
-    for suffix in ["", "-wal", "-shm"] {
-        let mut file = path.as_os_str().to_owned();
-        file.push(suffix);
-        let _ = std::fs::remove_file(file);
-    }
+    std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
 
 /// DevHQ's commands and state over the database at `path`, as `run` registers them, without
@@ -55,8 +55,7 @@ fn devhq(path: &Path) -> (App<MockRuntime>, WebviewWindow<MockRuntime>) {
         .invoke_handler(commands())
         .build(mock_context(noop_assets()))
         .unwrap();
-    app.manage(InventoryPath(path.to_path_buf()));
-    app.manage(Monitor::new(path.to_path_buf()));
+    manage(&app, path.to_path_buf());
     let window = WebviewWindowBuilder::new(&app, "main", Default::default())
         .build()
         .unwrap();
@@ -160,7 +159,7 @@ fn arguments(command: &str) -> Vec<(&'static str, Reader)> {
     let subject: Reader = read_completely::<Subject>;
     let text: Reader = read_completely::<String>;
     match command {
-        "list_inventory" | "data_location" => vec![],
+        "list_inventory" | "data_location" | "backup_inventory" | "list_backups" => vec![],
         "save_resource" => vec![("input", read_completely::<ResourceInput>)],
         "save_application" => vec![("input", read_completely::<ApplicationInput>)],
         "delete_application" | "delete_resource" => vec![("id", text)],
@@ -456,6 +455,46 @@ fn every_answer_has_the_shape_the_window_expects() {
             }),
         ),
         ("watch_http_monitor".to_owned(), value(&supervision)),
+        (
+            "backup_inventory".to_owned(),
+            value(&Backup {
+                name: "inventory-20260101T100500.123Z.sqlite3".into(),
+                path: format!(r"{folder}\backups\inventory-20260101T100500.123Z.sqlite3"),
+                taken_at: "2026-01-01T10:05:00.123Z".into(),
+                size_bytes: 2_097_152,
+                quick_check: "ok".into(),
+                schema_version: 6,
+                counts: BackupCounts {
+                    applications: 1,
+                    components: 2,
+                    resources: 1,
+                    observations: 2,
+                    incidents: 1,
+                    events: 2,
+                    http_checks: 1,
+                },
+            }),
+        ),
+        (
+            "list_backups".to_owned(),
+            value(&BackupFolder {
+                directory: format!(r"{folder}\backups"),
+                files: vec![
+                    BackupFile {
+                        name: "inventory-20260101T100500.123Z.sqlite3".into(),
+                        size_bytes: 2_097_152,
+                        modified_at: Some("2026-01-01T10:05:01Z".into()),
+                        partial: false,
+                    },
+                    BackupFile {
+                        name: "inventory-20260101T090000.000Z.sqlite3.partial".into(),
+                        size_bytes: 1_048_576,
+                        modified_at: None,
+                        partial: true,
+                    },
+                ],
+            }),
+        ),
         ("error".to_owned(), refused),
     ]);
     let fixtures = fixtures("responses");

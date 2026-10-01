@@ -1,0 +1,17 @@
+{
+  "name": "inventory-20260101T100500.123Z.sqlite3",
+  "path": "C:\\Users\\Juan Pablo\\AppData\\Roaming\\com.devhq.desktop\\backups\\inventory-20260101T100500.123Z.sqlite3",
+  "takenAt": "2026-01-01T10:05:00.123Z",
+  "sizeBytes": 2097152,
+  "quickCheck": "ok",
+  "schemaVersion": 6,
+  "counts": {
+    "applications": 1,
+    "components": 2,
+    "resources": 1,
+    "observations": 2,
+    "incidents": 1,
+    "events": 2,
+    "httpChecks": 1
+  }
+}

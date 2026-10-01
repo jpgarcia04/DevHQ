@@ -38,6 +38,13 @@ export function inventoryContext(
       database: '/home/you/.local/share/com.devhq.desktop/inventory.sqlite3',
       directory: '/home/you/.local/share/com.devhq.desktop',
     })),
+    backupInventory: vi.fn(async () => {
+      throw new Error('backupInventory is not mocked in this test')
+    }),
+    listBackups: vi.fn(async () => ({
+      directory: '/home/you/.local/share/com.devhq.desktop/backups',
+      files: [],
+    })),
     saveResource: vi.fn(async () => {}),
     saveApplication: vi.fn(async () => {}),
     deleteApplication: vi.fn(async () => {}),

@@ -7,6 +7,7 @@ import type {
   RecordedIncident,
 } from '@/domain/models'
 import type {
+  BackupFile,
   HttpCheck,
   InventoryApplication,
   InventoryResource,
@@ -24,6 +25,8 @@ export interface PreviewDatabase {
   incidents: RecordedIncident[]
   events: RecordedEvent[]
   httpChecks: HttpCheck[]
+  /** The files in the backups folder, newest first. */
+  backups: BackupFile[]
   /** Reading fails, as it would with an unreadable database. */
   unavailable: boolean
 }
@@ -59,14 +62,31 @@ function nothing(): PreviewDatabase {
     incidents: [],
     events: [],
     httpChecks: [],
+    backups: [],
     unavailable: false,
   }
+}
+
+/** The name a backup taken at `time` gets: its UTC moment in ISO 8601's basic format. */
+const backupName = (time: string) => `inventory-${time.replace(/[-:]/g, '')}.sqlite3`
+
+/** Two backups and the `.partial` an interrupted one left behind. */
+function sampleBackups(now: number): BackupFile[] {
+  const file = (minutesAgo: number, sizeBytes: number, partial = false): BackupFile => ({
+    name: backupName(at(now, minutesAgo)) + (partial ? '.partial' : ''),
+    sizeBytes,
+    modifiedAt: at(now, minutesAgo),
+    partial,
+  })
+  return [file(90, 1_843_200), file(3 * 24 * 60, 655_360, true), file(9 * 24 * 60, 1_572_864)]
 }
 
 /** Sample records relative to `now`, the preview's clock, so validity reads as it would. */
 export function sampleDatabase(scenario: Scenario, now: number): PreviewDatabase {
   if (scenario === 'empty') return nothing()
-  if (scenario === 'unavailable') return { ...nothing(), unavailable: true }
+  // The backups folder can be read even when the inventory cannot.
+  if (scenario === 'unavailable')
+    return { ...nothing(), backups: sampleBackups(now), unavailable: true }
   const time = (minutesAgo: number) => at(now, minutesAgo)
   const observations: Observation[] = []
   const events: RecordedEvent[] = []
@@ -316,6 +336,7 @@ export function sampleDatabase(scenario: Scenario, now: number): PreviewDatabase
         monitorIntervalMinutes: null,
       },
     ],
+    backups: sampleBackups(now),
     unavailable: false,
   }
 }

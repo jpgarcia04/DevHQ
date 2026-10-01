@@ -34,8 +34,8 @@ abierta**. **No funciona en segundo plano ni opera sistemas.**
 - Un panel de Supervision en Overview: qué comprueba DevHQ por su cuenta, cuándo toca la
   siguiente ejecución, qué falló dentro de DevHQ y qué no está supervisado.
 - Previews de Automations (Trigger → Condition → Action → Verification) y Security
-  informativos. En Mi inventario, Settings muestra la ruta del archivo SQLite y cómo
-  respaldarlo y restaurarlo.
+  informativos. En Mi inventario, Settings muestra la ruta del archivo SQLite, cómo
+  respaldarlo y restaurarlo, y **Back up now**, que lo copia y verifica con DevHQ abierto.
 
 El modo **Demo** utiliza un escenario local fijo del **24/09/2026, 16:40 Europe/Madrid**.
 Los tiempos relativos se calculan frente a ese instante, no frente al reloj real.
@@ -204,6 +204,37 @@ ejecución, que es idéntica a la de Run check y sigue la misma semántica de vi
   registra evidencia, la ventana relee el inventario sin estado de carga, así que los
   formularios abiertos y los registros desplegados se conservan.
 
+### Respaldo
+
+**Back up now**, en Settings › Database file, copia el inventario con DevHQ abierto. Es el
+comando `backup_inventory`, sin argumentos, que corre fuera del hilo principal y de uno en uno:
+mientras se hace un respaldo, la ventana desactiva el botón y Rust rechaza otro. No necesita
+plugins ni permisos, no cambia el esquema y no se registra en la línea de tiempo: no es evidencia
+de ningún sistema.
+
+- SQLite copia con `VACUUM INTO`, que lee el último estado confirmado como cualquier lector en
+  WAL: no espera a ningún escritor (la supervisión sigue registrando) y no incluye nada sin
+  confirmar. La copia es un único archivo en modo journal de rollback, completo por sí solo.
+- Se escribe en `backups/` junto a `inventory.sqlite3`, primero como
+  `inventory-<UTC>.sqlite3.partial`, donde `<UTC>` es el momento en el formato básico de ISO 8601,
+  con milisegundos y sin `:` (por ejemplo `inventory-20261001T120320.450Z.sqlite3`). El propio
+  respaldo crea ese `.partial`; si ya existe, falla sin tocarlo.
+- Después la abre aparte, en solo lectura: `PRAGMA quick_check` debe responder `ok` y
+  `user_version` debe ser la versión del esquema. Luego la fuerza a disco y solo entonces le da
+  su nombre final, con un enlace que el sistema de archivos rechaza si ese nombre ya existe, y
+  borra el `.partial`. Así nunca reemplaza un archivo, y un nombre final siempre es una copia que
+  estaba completa y verificada al hacerse. DevHQ nunca borra ni reescribe un respaldo terminado.
+- Si algo falla, borra el `.partial` y la ventana muestra un error recuperable; el inventario no
+  cambia. Al terminar, muestra la hora, el tamaño, la verificación y cuántas filas de cada tabla
+  tiene la copia.
+- Debajo, `list_backups` lista los archivos de la carpeta tal como están, con su fecha de
+  modificación y su tamaño, sin presentarlos como sanos: DevHQ verificó cada respaldo una vez, al
+  hacerlo, y no ha vuelto a mirarlos. Un `.partial` se marca como incompleto, no como respaldo.
+- Los respaldos están en el mismo disco que el inventario y dentro de la carpeta de datos de
+  DevHQ, que el desinstalador puede borrar; la ventana avisa de copiarlos a otro sitio.
+- Se restauran como cualquier copia (ver [Arquitectura](#arquitectura)). La preview rechaza el
+  respaldo como toda escritura y muestra una carpeta de ejemplo.
+
 ## Ejecutar
 
 Requisitos: Node.js 24 LTS con npm 11 (el que trae), Rust estable y los
@@ -278,7 +309,7 @@ artificial. Los selectores de dominio no dependen de React ni de los mocks. Las 
 consumen explícitamente el escenario durante esta etapa.
 
 Rust expone `list_inventory` (una lectura consistente de inventario, registros y
-`httpChecks`), `data_location`, `save_application`, `save_resource`, `delete_application`,
+`httpChecks`), `data_location`, `backup_inventory`, `list_backups`, `save_application`, `save_resource`, `delete_application`,
 `delete_resource`, `record_observation`, `older_observations`, `older_events`, `open_incident`,
 `update_incident_status`, `record_event`, `save_http_check`, `set_http_check_paused`,
 `remove_http_check`, `run_http_check` y `watch_http_monitor`. Los comandos de
@@ -303,9 +334,10 @@ que queda completo por sí solo. Una base anterior se convierte en la primera ap
 tiene para sí; si otra conexión la está usando en ese momento (SQLite no espera para esto),
 sigue con su journal de rollback, igual de correcta, hasta la siguiente. Settings muestra la
 ruta exacta del archivo (`data_location` no abre la base, así que responde aunque no se pueda
-leer): para respaldarlo basta copiarlo con DevHQ cerrado; para restaurar una copia, con DevHQ
-cerrado se reemplaza el archivo y se borran `-wal` y `-shm` si quedaron, para que ningún log del
-archivo anterior se aplique a la copia. La v4 reconstruye `observations` y `events` (SQLite no cambia
+leer): con DevHQ abierto se respalda con Back up now (ver [Respaldo](#respaldo)); con DevHQ
+cerrado también basta copiarlo. Para restaurar un respaldo o una copia, con DevHQ cerrado se pone
+en lugar del archivo, con el nombre `inventory.sqlite3`, y se borran `-wal` y `-shm` si quedaron,
+para que ningún log del archivo anterior se aplique a la copia. La v4 reconstruye `observations` y `events` (SQLite no cambia
 un CHECK con ALTER) conservando filas, IDs, `rowid` (desempate de orden), claves foráneas,
 índices y los vínculos evento → observación. La v5 solo reconstruye `http_checks` (nada la
 referencia) para añadir el estado y el intervalo de supervisión con sus CHECK, conservando
@@ -352,7 +384,10 @@ vigencia y sustitución de observaciones de ambos orígenes, orden de atención,
 carga visibles y recuperables, comprobaciones contra un servidor local (estado esperado,
 500, redirect, bucle de redirects, tiempo agotado, conexión rechazada, dominio `.invalid`
 y fallo TLS), configuraciones inválidas sin escrituras parciales, errores de DevHQ que
-no producen observación, la distinción de origen en cada vista real, el contrato IPC de cada comando y el borrado (qué lo
+no producen observación, la distinción de origen en cada vista real, el contrato IPC de cada comando, el respaldo
+(las mismas filas que el origen comparadas una a una, sin lo no confirmado y sin esperar a un escritor,
+sin reemplazar ni borrar un archivo ajeno, uno a la vez, y una copia dañada que se descarta sin nombre
+final) y el borrado (qué lo
 impide, la confirmación y que un resultado tardío de un sujeto borrado no se registra). La supervisión se
 prueba sobre un reloj simulado de Tokio, sin esperas reales: ritmo por intervalo,
 continuidad tras reabrir, una sola ejecución por atraso, sin solapes, Run check que se une

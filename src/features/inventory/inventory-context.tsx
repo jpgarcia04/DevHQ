@@ -2,6 +2,8 @@ import { createContext, useContext } from 'react'
 import type { EntityRef, Observation } from '@/domain/models'
 import type {
   ApplicationInput,
+  Backup,
+  BackupFolder,
   DataLocation,
   EventInput,
   EventPage,
@@ -29,6 +31,10 @@ export interface InventoryContextValue {
   reload: () => Promise<boolean>
   /** Where the database file is; it reads nothing from it, so it works when loading fails. */
   dataLocation: () => Promise<DataLocation>
+  /** Copies the inventory into its backups folder; it changes nothing in the inventory. */
+  backupInventory: () => Promise<Backup>
+  /** The files in the backups folder; it reads none of them. */
+  listBackups: () => Promise<BackupFolder>
   saveResource: (input: ResourceInput) => Promise<void>
   saveApplication: (input: ApplicationInput) => Promise<void>
   deleteApplication: (id: string) => Promise<void>

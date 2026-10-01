@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { sameSubject } from '@/domain/evidence'
 import type { EntityRef } from '@/domain/models'
 import type {
+  BackupFolder,
   EventPage,
   InventorySnapshot,
   MonitorStatus,
@@ -82,6 +83,25 @@ describe('the preview’s simulated native process', () => {
     expect(() => backend('older_events', { subjects: [], before: 'evt-web-1' })).toThrow()
     for (const command of ['save_resource', 'record_observation', 'run_http_check'])
       expect(() => backend(command, {})).toThrow(expect.objectContaining(readOnly))
+  })
+
+  it('refuses to back up, like every write, but lists a backups folder', () => {
+    const { backend } = preview()
+    expect(() => backend('backup_inventory')).toThrow(expect.objectContaining(readOnly))
+    const folder = backend('list_backups') as BackupFolder
+    expect(folder.directory).toBe('C:\\Users\\you\\AppData\\Roaming\\com.devhq.desktop\\backups')
+    // Named as the native process names them, newest first, with an interrupted one.
+    expect(folder.files.map((file) => [file.name, file.partial])).toEqual([
+      ['inventory-20260930T103000.000Z.sqlite3', false],
+      ['inventory-20260927T120000.000Z.sqlite3.partial', true],
+      ['inventory-20260921T120000.000Z.sqlite3', false],
+    ])
+    // The folder can be read even when the inventory cannot.
+    expect(previewBackend(sampleDatabase('unavailable', now))('list_backups')).toEqual(folder)
+    expect(previewBackend(sampleDatabase('empty', now))('list_backups')).toEqual({
+      ...folder,
+      files: [],
+    })
   })
 
   it('reports supervision through the window’s channel', () => {

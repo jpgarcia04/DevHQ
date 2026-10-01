@@ -1,12 +1,14 @@
 import { useEffect, useState } from 'react'
 import { PageHeader } from '@/components/page-header'
 import { Button } from '@/components/ui/button'
+import { Backups } from './backups'
 import { inventoryError, type DataLocation } from './inventory-api'
 import { useInventory } from './inventory-context'
 
 /**
  * The inventory's file on this device and how to back it up. It asks the native process only
- * where the file is, so it still answers when the inventory cannot be read: then above all.
+ * where the file is and what its backups folder holds, so it still answers when the inventory
+ * cannot be read: then above all.
  */
 function DatabaseFile() {
   const { dataLocation } = useInventory()
@@ -50,18 +52,6 @@ function DatabaseFile() {
               {copied === false && 'The path could not be copied: select it and copy it.'}
             </p>
           </div>
-          <p className="mt-4 text-xs leading-6 text-muted-foreground">
-            To back it up, close DevHQ and copy this file. While DevHQ is open, its latest changes
-            can still be in{' '}
-            <span className="whitespace-nowrap font-mono">inventory.sqlite3-wal</span> in the same
-            folder; DevHQ folds them into the file when it closes.
-          </p>
-          <p className="mt-3 text-xs leading-6 text-muted-foreground">
-            To restore a copy, close DevHQ, put the copy in place of this file and delete{' '}
-            <span className="whitespace-nowrap font-mono">inventory.sqlite3-wal</span> and{' '}
-            <span className="whitespace-nowrap font-mono">inventory.sqlite3-shm</span> if they are
-            there, so that no log of the replaced file is applied to the copy.
-          </p>
         </>
       ) : error ? (
         <p role="alert" className="mt-4 text-xs text-rose-300">
@@ -72,6 +62,23 @@ function DatabaseFile() {
           Locating the database file…
         </p>
       )}
+      <Backups />
+      <div className="mt-6 border-t pt-5">
+        <h3 className="text-[13px] font-semibold">By hand</h3>
+        <p className="mt-2 text-xs leading-6 text-muted-foreground">
+          With DevHQ closed, a copy of the database file is also a complete backup. While DevHQ is
+          open, its latest changes can still be in{' '}
+          <span className="whitespace-nowrap font-mono">inventory.sqlite3-wal</span> in the same
+          folder, which a plain copy would miss; DevHQ folds them into the file when it closes.
+        </p>
+        <p className="mt-3 text-xs leading-6 text-muted-foreground">
+          To restore a backup or a copy, close DevHQ, put it in place of the database file under the
+          name <span className="whitespace-nowrap font-mono">inventory.sqlite3</span> and delete{' '}
+          <span className="whitespace-nowrap font-mono">inventory.sqlite3-wal</span> and{' '}
+          <span className="whitespace-nowrap font-mono">inventory.sqlite3-shm</span> if they are
+          there, so that no log of the replaced file is applied to it.
+        </p>
+      </div>
     </section>
   )
 }

@@ -31,6 +31,8 @@ const shop: EntityRef = { type: 'application', id: 'shop' }
 const calls: Record<keyof typeof inventoryApi, () => Promise<unknown>> = {
   list: () => inventoryApi.list(),
   dataLocation: () => inventoryApi.dataLocation(),
+  backupInventory: () => inventoryApi.backupInventory(),
+  listBackups: () => inventoryApi.listBackups(),
   saveResource: () =>
     inventoryApi.saveResource({
       id: 'host',
@@ -303,6 +305,42 @@ const dataLocation: Answer<'dataLocation'> = {
   directory: folder,
 }
 
+const backup: Answer<'backupInventory'> = {
+  name: 'inventory-20260101T100500.123Z.sqlite3',
+  path: `${folder}\\backups\\inventory-20260101T100500.123Z.sqlite3`,
+  takenAt: '2026-01-01T10:05:00.123Z',
+  sizeBytes: 2_097_152,
+  quickCheck: 'ok',
+  schemaVersion: 6,
+  counts: {
+    applications: 1,
+    components: 2,
+    resources: 1,
+    observations: 2,
+    incidents: 1,
+    events: 2,
+    httpChecks: 1,
+  },
+}
+
+const backups: Answer<'listBackups'> = {
+  directory: `${folder}\\backups`,
+  files: [
+    {
+      name: 'inventory-20260101T100500.123Z.sqlite3',
+      sizeBytes: 2_097_152,
+      modifiedAt: '2026-01-01T10:05:01Z',
+      partial: false,
+    },
+    {
+      name: 'inventory-20260101T090000.000Z.sqlite3.partial',
+      sizeBytes: 1_048_576,
+      modifiedAt: null,
+      partial: true,
+    },
+  ],
+}
+
 /** What the supervision channel of `watch_http_monitor` delivers. */
 const supervision: MonitorStatus = {
   checks: [
@@ -323,6 +361,8 @@ const answers: Record<string, unknown> = {
   older_observations: olderObservations,
   older_events: olderEvents,
   data_location: dataLocation,
+  backup_inventory: backup,
+  list_backups: backups,
   watch_http_monitor: supervision,
 }
 

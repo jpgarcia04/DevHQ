@@ -121,6 +121,50 @@ export interface DataLocation {
   directory: string
 }
 
+/** Rows in a backup, by table. */
+export interface BackupCounts {
+  applications: number
+  components: number
+  resources: number
+  observations: number
+  incidents: number
+  events: number
+  httpChecks: number
+}
+
+/** A finished backup, as it was verified once written. */
+export interface Backup {
+  name: string
+  /** Where the file is, to copy it somewhere safer. */
+  path: string
+  /** When the copy was taken (UTC), as its name says. */
+  takenAt: string
+  sizeBytes: number
+  /** What SQLite's quick_check said of the copy. Only an "ok" copy gets its final name. */
+  quickCheck: string
+  schemaVersion: number
+  counts: BackupCounts
+}
+
+/**
+ * A file in the backups folder, as found there. DevHQ vouches for none of them: a backup is
+ * verified once, when it is made, and anything can happen to the file afterwards.
+ */
+export interface BackupFile {
+  name: string
+  sizeBytes: number
+  /** When the file was last written, if the system says. */
+  modifiedAt: string | null
+  /** A copy that a backup was still writing, or that an interrupted one left behind. */
+  partial: boolean
+}
+
+export interface BackupFolder {
+  directory: string
+  /** Newest first. */
+  files: BackupFile[]
+}
+
 export type ResourceInput = Omit<InventoryResource, 'id'> & { id?: string }
 export type ApplicationInput = Omit<InventoryApplication, 'id' | 'components'> & {
   id?: string
@@ -161,6 +205,13 @@ export interface EventInput {
 export const inventoryApi = {
   list: () => invoke<InventorySnapshot>('list_inventory'),
   dataLocation: () => invoke<DataLocation>('data_location'),
+  /**
+   * Copies the inventory into the backups folder next to it, verifies the copy and only then
+   * names it. Writes nothing to the inventory. One at a time: a second request is refused.
+   */
+  backupInventory: () => invoke<Backup>('backup_inventory'),
+  /** The files in the backups folder, as found there; it reads none of them. */
+  listBackups: () => invoke<BackupFolder>('list_backups'),
   saveResource: (input: ResourceInput) => invoke<InventoryResource>('save_resource', { input }),
   saveApplication: (input: ApplicationInput) =>
     invoke<InventoryApplication>('save_application', { input }),

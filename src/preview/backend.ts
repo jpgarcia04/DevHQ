@@ -2,6 +2,7 @@ import type { Channel } from '@tauri-apps/api/core'
 import { sameSubject, subjectsOf } from '@/domain/evidence'
 import type { EntityRef, Observation, RecordedEvent } from '@/domain/models'
 import type {
+  BackupFolder,
   EventPage,
   InventorySnapshot,
   MonitorStatus,
@@ -11,6 +12,9 @@ import type { PreviewDatabase } from './sample'
 
 /** As in the native process: automated results per system in a snapshot, and per page. */
 const limit = 200
+
+/** Where the native process would keep the inventory, on Windows. */
+const folder = 'C:\\Users\\you\\AppData\\Roaming\\com.devhq.desktop'
 
 /** Answers every write: the preview has nothing to write to. */
 export const readOnly = {
@@ -146,9 +150,12 @@ export function previewBackend(database: PreviewDatabase) {
         return list()
       case 'data_location':
         return {
-          database: 'C:\\Users\\you\\AppData\\Roaming\\com.devhq.desktop\\inventory.sqlite3',
-          directory: 'C:\\Users\\you\\AppData\\Roaming\\com.devhq.desktop',
+          database: `${folder}\\inventory.sqlite3`,
+          directory: folder,
         }
+      // Listing reads the folder, not the inventory. Backing up writes, so it is refused.
+      case 'list_backups':
+        return { directory: `${folder}\\backups`, files: database.backups } satisfies BackupFolder
       case 'older_observations':
         return olderObservations(args.subject as EntityRef, args.before as string)
       case 'older_events':

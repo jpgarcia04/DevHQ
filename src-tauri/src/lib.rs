@@ -1,3 +1,4 @@
+mod backup;
 mod http_check;
 mod inventory;
 #[cfg(test)]
@@ -23,6 +24,24 @@ fn list_inventory(
 #[tauri::command]
 fn data_location(path: tauri::State<'_, InventoryPath>) -> inventory::DataLocation {
     inventory::DataLocation::of(&path.0)
+}
+
+/// Copies the inventory into its backups folder while DevHQ stays open, one backup at a time and
+/// off the main thread: the copy reads the whole file.
+#[tauri::command]
+async fn backup_inventory(
+    path: tauri::State<'_, InventoryPath>,
+    backups: tauri::State<'_, backup::Backups>,
+) -> Result<backup::Backup, inventory::ApiError> {
+    backups.back_up(path.0.clone()).await
+}
+
+/// The files in the backups folder, as found there. Async: a folder can be slow to read.
+#[tauri::command]
+async fn list_backups(
+    path: tauri::State<'_, InventoryPath>,
+) -> Result<backup::BackupFolder, inventory::ApiError> {
+    backup::list(&path.0)
 }
 
 #[tauri::command]
@@ -182,6 +201,8 @@ fn commands<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Sen
     tauri::generate_handler![
         list_inventory,
         data_location,
+        backup_inventory,
+        list_backups,
         save_resource,
         save_application,
         delete_application,
@@ -200,15 +221,22 @@ fn commands<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Sen
     ]
 }
 
+/// The state the commands find, over the inventory at `path`. The app and the IPC contract tests
+/// manage this same state. Returns supervision, whose loop is left to the caller.
+fn manage<R: tauri::Runtime>(app: &impl Manager<R>, path: PathBuf) -> Monitor {
+    let monitor = Monitor::new(path.clone());
+    app.manage(InventoryPath(path));
+    app.manage(monitor.clone());
+    app.manage(backup::Backups::default());
+    monitor
+}
+
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             let path = app.path().app_data_dir()?.join("inventory.sqlite3");
             // Supervision lives only as long as this process: no service, no system task.
-            let monitor = Monitor::new(path.clone());
-            tauri::async_runtime::spawn(monitor.clone().run());
-            app.manage(InventoryPath(path));
-            app.manage(monitor);
+            tauri::async_runtime::spawn(manage(app, path).run());
             Ok(())
         })
         .invoke_handler(commands())

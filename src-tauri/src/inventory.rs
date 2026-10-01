@@ -39,6 +39,13 @@ impl ApiError {
             message: message.into(),
         }
     }
+    /// No backup was made, or one is already being made. The inventory itself is untouched.
+    pub(crate) fn backup(message: impl Into<String>) -> Self {
+        Self {
+            code: "backup_error",
+            message: message.into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -143,7 +150,7 @@ impl DataLocation {
     }
 }
 
-const SCHEMA_VERSION: i64 = 6;
+pub(crate) const SCHEMA_VERSION: i64 = 6;
 const MIGRATIONS: [(i64, &str); 6] = [
     (1, include_str!("../migrations/001_inventory.sql")),
     (2, include_str!("../migrations/002_inventory_details.sql")),
@@ -659,7 +666,7 @@ pub fn delete_resource(path: &Path, id: &str) -> Result<(), ApiError> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn path() -> std::path::PathBuf {
@@ -1231,7 +1238,7 @@ mod tests {
 
     /// Runs `work` on its own connection in another thread and waits until it holds what it
     /// took; the thread lets go when the returned sender is dropped or used.
-    fn holding<T: Send + 'static>(
+    pub(crate) fn holding<T: Send + 'static>(
         path: &Path,
         work: impl FnOnce(&Path, &dyn Fn()) -> T + Send + 'static,
     ) -> (std::sync::mpsc::Sender<()>, std::thread::JoinHandle<T>) {
@@ -1616,7 +1623,7 @@ mod tests {
     }
 
     /// Every row of a table, rowid first, as text: a lossless picture to compare across upgrades.
-    fn dump(db: &Connection, table: &str) -> Vec<String> {
+    pub(crate) fn dump(db: &Connection, table: &str) -> Vec<String> {
         let mut statement = db
             .prepare(&format!("SELECT rowid, * FROM {table} ORDER BY rowid"))
             .unwrap();
