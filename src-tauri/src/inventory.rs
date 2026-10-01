@@ -1,5 +1,5 @@
 use crate::{http_check, records};
-use rusqlite::{params, Connection, TransactionBehavior};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::time::Duration;
@@ -70,7 +70,7 @@ pub struct Component {
     pub resource_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ComponentInput {
     pub id: Option<String>,
@@ -185,17 +185,35 @@ fn migrate(db: &mut Connection) -> Result<(), ApiError> {
     Ok(())
 }
 
-pub(crate) fn required_text(value: &str, label: &str) -> Result<String, ApiError> {
+/// Longest texts DevHQ accepts. The window enforces the same limits as you type.
+pub(crate) const MAX_NAME: usize = 120;
+pub(crate) const MAX_TITLE: usize = 160;
+pub(crate) const MAX_SUMMARY: usize = 500;
+pub(crate) const MAX_DESCRIPTION: usize = 1000;
+const MAX_VERSION: usize = 60;
+
+/// What a person typed, without surrounding whitespace, and no longer than `max` characters.
+pub(crate) fn bounded_text(value: &str, max: usize, label: &str) -> Result<String, ApiError> {
     let text = value.trim();
+    if text.chars().count() > max {
+        return Err(ApiError::invalid(format!(
+            "{label} is longer than {max} characters."
+        )));
+    }
+    Ok(text.to_owned())
+}
+
+pub(crate) fn required_text(value: &str, max: usize, label: &str) -> Result<String, ApiError> {
+    let text = bounded_text(value, max, label)?;
     if text.is_empty() {
         Err(ApiError::invalid(format!("{label} is required.")))
     } else {
-        Ok(text.to_owned())
+        Ok(text)
     }
 }
 
 fn required_name(value: &str, label: &str) -> Result<String, ApiError> {
-    required_text(value, &format!("{label} name"))
+    required_text(value, MAX_NAME, &format!("{label} name"))
 }
 
 pub(crate) fn allowed(value: &str, choices: &[&str], label: &str) -> Result<(), ApiError> {
@@ -290,6 +308,8 @@ pub fn list(path: &Path) -> Result<Inventory, ApiError> {
 pub fn save_resource(path: &Path, input: ResourceInput) -> Result<Resource, ApiError> {
     let name = required_name(&input.name, "Resource")?;
     allowed(&input.kind, &["server", "workstation"], "resource kind")?;
+    let description = bounded_text(&input.description, MAX_DESCRIPTION, "Resource description")?;
+    let operating_system = bounded_text(&input.operating_system, MAX_NAME, "Operating system")?;
     let db = open(path)?;
     let id = input.id.unwrap_or_else(|| Uuid::new_v4().to_string());
     if id.is_empty() {
@@ -298,14 +318,14 @@ pub fn save_resource(path: &Path, input: ResourceInput) -> Result<Resource, ApiE
     if db.execute(
         "INSERT INTO resources (id, name, kind, description, operating_system) VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT(id) DO UPDATE SET name=excluded.name, kind=excluded.kind, description=excluded.description, operating_system=excluded.operating_system",
-        params![id, name, input.kind, input.description, input.operating_system],
+        params![id, name, input.kind, description, operating_system],
     ).map_err(ApiError::database)? == 0 { return Err(ApiError::database("Resource was not saved.")); }
     Ok(Resource {
         id,
         name,
         kind: input.kind,
-        description: input.description,
-        operating_system: input.operating_system,
+        description,
+        operating_system,
     })
 }
 
@@ -316,17 +336,50 @@ pub fn save_application(path: &Path, input: ApplicationInput) -> Result<Applicat
         &["development", "testing", "production", "archived"],
         "lifecycle",
     )?;
-    for component in &input.components {
-        required_name(&component.name, "Component")?;
+    let description = bounded_text(
+        &input.description,
+        MAX_DESCRIPTION,
+        "Application description",
+    )?;
+    // A blank version is no version.
+    let version = match &input.version {
+        Some(version) => Some(bounded_text(version, MAX_VERSION, "Version")?),
+        None => None,
+    }
+    .filter(|version| !version.is_empty());
+    let mut components = Vec::with_capacity(input.components.len());
+    for component in input.components {
+        let name = required_name(&component.name, "Component")?;
         allowed(
             &component.kind,
             &["backend", "database", "docker", "frontend"],
             "component kind",
         )?;
+        let id = component.id.unwrap_or_else(|| Uuid::new_v4().to_string());
+        if id.is_empty() {
+            return Err(ApiError::invalid("Component ID is required."));
+        }
+        if components.iter().any(|item: &Component| item.id == id) {
+            return Err(ApiError::invalid(format!(
+                "Component {id} appears twice. Each component can be listed once."
+            )));
+        }
+        components.push(Component {
+            id,
+            name,
+            kind: component.kind,
+            resource_id: component.resource_id,
+        });
+    }
+    let id = input.id.unwrap_or_else(|| Uuid::new_v4().to_string());
+    if id.is_empty() {
+        return Err(ApiError::invalid("Application ID is required."));
     }
     let mut db = open(path)?;
-    let tx = db.transaction().map_err(ApiError::database)?;
-    for component in &input.components {
+    let tx = db
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(ApiError::database)?;
+    for component in &components {
         if let Some(resource_id) = &component.resource_id {
             let exists: bool = tx
                 .query_row(
@@ -339,42 +392,41 @@ pub fn save_application(path: &Path, input: ApplicationInput) -> Result<Applicat
                 return Err(ApiError::invalid(format!("Resource {resource_id} does not exist. Choose an existing resource or leave the component unlinked.")));
             }
         }
-    }
-    let id = input.id.unwrap_or_else(|| Uuid::new_v4().to_string());
-    if id.is_empty() {
-        return Err(ApiError::invalid("Application ID is required."));
+        // A component belongs to one application; reusing its ID elsewhere would move it.
+        let owner: Option<String> = tx
+            .query_row(
+                "SELECT application_id FROM components WHERE id = ?1",
+                [&component.id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(ApiError::database)?;
+        if owner.is_some_and(|owner| owner != id) {
+            return Err(ApiError::invalid(format!(
+                "Component {} belongs to another application.",
+                component.id
+            )));
+        }
     }
     tx.execute(
         "INSERT INTO applications (id, name, lifecycle, description, version) VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT(id) DO UPDATE SET name=excluded.name, lifecycle=excluded.lifecycle, description=excluded.description, version=excluded.version",
-        params![id, name, input.lifecycle, input.description, input.version],
+        params![id, name, input.lifecycle, description, version],
     ).map_err(ApiError::database)?;
     // The submitted component list is the complete set. Omitted components are removed atomically.
     tx.execute("DELETE FROM components WHERE application_id = ?1", [&id])
         .map_err(ApiError::database)?;
-    let mut components = Vec::with_capacity(input.components.len());
-    for component in input.components {
-        let component_id = component.id.unwrap_or_else(|| Uuid::new_v4().to_string());
-        if component_id.is_empty() {
-            return Err(ApiError::invalid("Component ID is required."));
-        }
-        let component_name = component.name.trim().to_owned();
+    for component in &components {
         tx.execute("INSERT INTO components (id, application_id, name, kind, resource_id) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![component_id, id, component_name, component.kind, component.resource_id]).map_err(ApiError::database)?;
-        components.push(Component {
-            id: component_id,
-            name: component_name,
-            kind: component.kind,
-            resource_id: component.resource_id,
-        });
+            params![component.id, id, component.name, component.kind, component.resource_id]).map_err(ApiError::database)?;
     }
     tx.commit().map_err(ApiError::database)?;
     Ok(Application {
         id,
         name,
-        description: input.description,
+        description,
         lifecycle: input.lifecycle,
-        version: input.version,
+        version,
         components,
     })
 }
@@ -386,6 +438,7 @@ mod tests {
     fn path() -> std::path::PathBuf {
         std::env::temp_dir().join(format!("devhq-test-{}.sqlite3", Uuid::new_v4()))
     }
+
     fn app(resource_id: Option<String>) -> ApplicationInput {
         ApplicationInput {
             id: None,
@@ -501,6 +554,136 @@ mod tests {
         .unwrap_err();
         assert_eq!(error.code, "invalid_input");
         assert_eq!(list(&path).unwrap().applications, vec![original]);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn stores_text_as_typed_without_surrounding_whitespace() {
+        let path = path();
+        let resource = save_resource(
+            &path,
+            ResourceInput {
+                id: None,
+                name: "  Host  ".into(),
+                kind: "server".into(),
+                description: "  Rack 2 \n".into(),
+                operating_system: " Debian 13 ".into(),
+            },
+        )
+        .unwrap();
+        let saved = save_application(
+            &path,
+            ApplicationInput {
+                description: "  Store  ".into(),
+                // A blank version is no version.
+                version: Some("   ".into()),
+                ..app(Some(resource.id.clone()))
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                resource.name.as_str(),
+                resource.description.as_str(),
+                resource.operating_system.as_str()
+            ),
+            ("Host", "Rack 2", "Debian 13")
+        );
+        assert_eq!(
+            (saved.description.as_str(), saved.version.as_deref()),
+            ("Store", None)
+        );
+        let reopened = list(&path).unwrap();
+        assert_eq!(reopened.resources, vec![resource]);
+        assert_eq!(reopened.applications, vec![saved]);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn rejects_oversized_or_conflicting_input_without_partial_writes() {
+        let path = path();
+        let original = save_application(&path, app(None)).unwrap();
+        let other = save_application(&path, app(None)).unwrap();
+        let long = |count: usize| "é".repeat(count);
+        let component = |id: Option<&str>| ComponentInput {
+            id: id.map(Into::into),
+            name: "API".into(),
+            kind: "backend".into(),
+            resource_id: None,
+        };
+        let edit = |change: fn(&mut ApplicationInput)| {
+            let mut input = ApplicationInput {
+                id: Some(original.id.clone()),
+                ..app(None)
+            };
+            input.components = vec![component(Some(&original.components[0].id))];
+            change(&mut input);
+            input
+        };
+        let attempts = [
+            (
+                edit(|input| input.name = "é".repeat(121)),
+                "longer than 120",
+            ),
+            (
+                edit(|input| input.description = "é".repeat(1001)),
+                "longer than 1000",
+            ),
+            (
+                edit(|input| input.version = Some("1".repeat(61))),
+                "longer than 60",
+            ),
+            (
+                edit(|input| input.components[0].name = "é".repeat(121)),
+                "Component name is longer",
+            ),
+            (
+                edit(|input| input.components.push(input.components[0].clone())),
+                "appears twice",
+            ),
+        ];
+        for (attempt, message) in attempts {
+            let error = save_application(&path, attempt).unwrap_err();
+            assert_eq!(error.code, "invalid_input");
+            assert!(error.message.contains(message), "{}", error.message);
+        }
+        // Reusing another application's component would move it; it is refused instead.
+        let mut stolen = edit(|_| {});
+        stolen.components = vec![component(Some(&other.components[0].id))];
+        let error = save_application(&path, stolen).unwrap_err();
+        assert_eq!(error.code, "invalid_input");
+        assert!(error.message.contains("belongs to another application"));
+        // Exactly at the limits is fine, counted in characters rather than bytes.
+        assert!(save_resource(
+            &path,
+            ResourceInput {
+                id: None,
+                name: long(120),
+                kind: "server".into(),
+                description: long(1000),
+                operating_system: long(120),
+            },
+        )
+        .is_ok());
+        let error = save_resource(
+            &path,
+            ResourceInput {
+                id: None,
+                name: "Host".into(),
+                kind: "server".into(),
+                description: String::new(),
+                operating_system: long(121),
+            },
+        )
+        .unwrap_err();
+        assert!(error
+            .message
+            .contains("Operating system is longer than 120"));
+        let snapshot = list(&path).unwrap();
+        assert_eq!(snapshot.applications.len(), 2);
+        assert!(snapshot.applications.contains(&original));
+        assert!(snapshot.applications.contains(&other));
+        assert_eq!(snapshot.resources.len(), 1);
         std::fs::remove_file(path).unwrap();
     }
 

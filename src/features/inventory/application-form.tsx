@@ -78,10 +78,19 @@ export function ApplicationForm({
         </label>
         <label className="space-y-1.5 text-xs">
           Description{' '}
-          <Input value={description} onChange={(event) => setDescription(event.target.value)} />
+          <Input
+            maxLength={1000}
+            value={description}
+            onChange={(event) => setDescription(event.target.value)}
+          />
         </label>
         <label className="space-y-1.5 text-xs">
-          Version <Input value={version} onChange={(event) => setVersion(event.target.value)} />
+          Version{' '}
+          <Input
+            maxLength={60}
+            value={version}
+            onChange={(event) => setVersion(event.target.value)}
+          />
         </label>
       </div>
       <div className="space-y-3 border-t pt-5">
@@ -114,6 +123,7 @@ export function ApplicationForm({
               Component name{' '}
               <Input
                 required
+                maxLength={120}
                 value={component.name}
                 onChange={(event) => updateComponent(index, { name: event.target.value })}
               />

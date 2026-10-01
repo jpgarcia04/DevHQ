@@ -1,4 +1,6 @@
-use crate::inventory::{allowed, open, required_text, ApiError};
+use crate::inventory::{
+    allowed, bounded_text, open, required_text, ApiError, MAX_DESCRIPTION, MAX_SUMMARY, MAX_TITLE,
+};
 use rusqlite::types::Type;
 use rusqlite::{params, OptionalExtension, Row, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
@@ -624,7 +626,7 @@ pub(crate) fn store_observation(path: &Path, new: NewObservation) -> Result<Obse
 /// Stores a manual observation and its timeline event atomically.
 pub fn record_observation(path: &Path, input: ObservationInput) -> Result<Observation, ApiError> {
     allowed(&input.result, OBSERVATION_RESULTS, "observation result")?;
-    let summary = required_text(&input.summary, "Observation summary")?;
+    let summary = required_text(&input.summary, MAX_SUMMARY, "Observation summary")?;
     if !(1..=MAX_VALIDITY_MINUTES).contains(&input.valid_for_minutes) {
         return Err(ApiError::invalid(
             "Validity must be between 1 minute and 30 days.",
@@ -648,9 +650,9 @@ pub fn record_observation(path: &Path, input: ObservationInput) -> Result<Observ
 
 /// Opens a manual incident and records the opening in the timeline atomically.
 pub fn open_incident(path: &Path, input: IncidentInput) -> Result<Incident, ApiError> {
-    let title = required_text(&input.title, "Incident title")?;
+    let title = required_text(&input.title, MAX_TITLE, "Incident title")?;
     allowed(&input.severity, SEVERITIES, "incident severity")?;
-    let description = input.description.trim();
+    let description = bounded_text(&input.description, MAX_DESCRIPTION, "Incident description")?;
     let now = now_ms();
     let mut db = open(path)?;
     let tx = db
@@ -673,7 +675,7 @@ pub fn open_incident(path: &Path, input: IncidentInput) -> Result<Incident, ApiE
             kind: "incident",
             outcome: severity_outcome(&input.severity),
             title: format!("Incident opened: {title}"),
-            detail: description,
+            detail: &description,
             observation_id: None,
             incident_id: Some(&id),
             occurred_at: now,
@@ -692,6 +694,7 @@ pub fn update_incident_status(
     input: IncidentStatusInput,
 ) -> Result<Incident, ApiError> {
     allowed(&input.status, INCIDENT_STATUSES, "incident status")?;
+    let note = bounded_text(&input.note, MAX_SUMMARY, "Status note")?;
     let now = now_ms();
     let mut db = open(path)?;
     let tx = db
@@ -724,7 +727,7 @@ pub fn update_incident_status(
             kind: "incident",
             outcome,
             title: format!("Incident {change}: {}", current.title),
-            detail: input.note.trim(),
+            detail: &note,
             observation_id: None,
             incident_id: Some(&input.id),
             occurred_at: now,
@@ -741,7 +744,8 @@ pub fn update_incident_status(
 pub fn record_event(path: &Path, input: EventInput) -> Result<Event, ApiError> {
     allowed(&input.kind, MANUAL_EVENT_KINDS, "event kind")?;
     allowed(&input.outcome, EVENT_OUTCOMES, "event outcome")?;
-    let title = required_text(&input.title, "Event title")?;
+    let title = required_text(&input.title, MAX_TITLE, "Event title")?;
+    let detail = bounded_text(&input.detail, MAX_DESCRIPTION, "Event details")?;
     let recorded_at = now_ms();
     let occurred_at = reported_time(&input.occurred_at, recorded_at, "Event time")?;
     let mut db = open(path)?;
@@ -757,7 +761,7 @@ pub fn record_event(path: &Path, input: EventInput) -> Result<Event, ApiError> {
             kind: &input.kind,
             outcome: &input.outcome,
             title,
-            detail: input.detail.trim(),
+            detail: &detail,
             observation_id: None,
             incident_id: None,
             occurred_at,
@@ -1043,8 +1047,60 @@ mod tests {
                 "invalid_input"
             );
         }
+        // Longer than the window lets anyone type: refused, never truncated.
+        let long = |count: usize| "x".repeat(count);
+        assert!(record_observation(
+            &path,
+            ObservationInput {
+                summary: long(501),
+                ..observation(application.clone())
+            },
+        )
+        .unwrap_err()
+        .message
+        .contains("Observation summary is longer than 500"));
+        for input in [
+            IncidentInput {
+                title: long(161),
+                ..incident(application.clone())
+            },
+            IncidentInput {
+                description: long(1001),
+                ..incident(application.clone())
+            },
+        ] {
+            assert_eq!(
+                open_incident(&path, input).unwrap_err().code,
+                "invalid_input"
+            );
+        }
+        for input in [
+            EventInput {
+                title: long(161),
+                ..event(application.clone())
+            },
+            EventInput {
+                detail: long(1001),
+                ..event(application.clone())
+            },
+        ] {
+            assert_eq!(
+                record_event(&path, input).unwrap_err().code,
+                "invalid_input"
+            );
+        }
         assert_no_records(&path);
         let opened = open_incident(&path, incident(application)).unwrap();
+        let long_note = update_incident_status(
+            &path,
+            IncidentStatusInput {
+                id: opened.id.clone(),
+                status: "resolved".into(),
+                note: long(501),
+            },
+        )
+        .unwrap_err();
+        assert!(long_note.message.contains("Status note is longer than 500"));
         let unchanged = update_incident_status(
             &path,
             IncidentStatusInput {

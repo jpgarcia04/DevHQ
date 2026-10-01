@@ -59,11 +59,16 @@ export function ResourceForm({
         </label>
         <label className="space-y-1.5 text-xs">
           Description{' '}
-          <Input value={description} onChange={(event) => setDescription(event.target.value)} />
+          <Input
+            maxLength={1000}
+            value={description}
+            onChange={(event) => setDescription(event.target.value)}
+          />
         </label>
         <label className="space-y-1.5 text-xs">
           Operating system{' '}
           <Input
+            maxLength={120}
             value={operatingSystem}
             onChange={(event) => setOperatingSystem(event.target.value)}
           />

@@ -52,7 +52,11 @@ contiene componentes que pueden apuntar a un recurso existente. Al guardar una
 aplicación se reemplaza su lista de componentes de forma atómica: quitar un
 componente también quita su vínculo. La eliminación de aplicaciones o recursos
 completos queda fuera de este incremento. Un recurso inexistente se rechaza antes
-de escribir la aplicación. Un fallo de SQLite/IPC muestra un error y permite reintentar.
+de escribir la aplicación, igual que un componente repetido o que pertenece a otra
+aplicación. Rust guarda los textos sin espacios alrededor y rechaza (nunca recorta) los que
+superan sus límites, los mismos que impone la UI: nombres 120 caracteres, títulos 160,
+resúmenes y notas 500, descripciones y detalles 1000, versión 60; una versión en blanco es
+ninguna. Un fallo de SQLite/IPC muestra un error y permite reintentar.
 
 ### Observaciones, incidencias y eventos
 
