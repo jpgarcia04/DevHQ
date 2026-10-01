@@ -111,15 +111,18 @@ pub struct Inventory {
     pub incidents: Vec<records::Incident>,
     pub events: Vec<records::Event>,
     pub http_checks: Vec<http_check::HttpCheck>,
+    /// Which automated results the snapshot leaves out. Manual records are always complete.
+    pub automated_history: records::AutomatedHistory,
 }
 
-const SCHEMA_VERSION: i64 = 5;
-const MIGRATIONS: [(i64, &str); 5] = [
+const SCHEMA_VERSION: i64 = 6;
+const MIGRATIONS: [(i64, &str); 6] = [
     (1, include_str!("../migrations/001_inventory.sql")),
     (2, include_str!("../migrations/002_inventory_details.sql")),
     (3, include_str!("../migrations/003_operational_records.sql")),
     (4, include_str!("../migrations/004_http_checks.sql")),
     (5, include_str!("../migrations/005_http_monitoring.sql")),
+    (6, include_str!("../migrations/006_history_window.sql")),
 ];
 
 pub(crate) fn open(path: &Path) -> Result<Connection, ApiError> {
@@ -258,11 +261,19 @@ pub fn list(path: &Path) -> Result<Inventory, ApiError> {
                 .map_err(ApiError::database)?;
         }
     }
+    let subjects: Vec<_> = applications
+        .iter()
+        .map(|app| records::Subject::Application { id: app.id.clone() })
+        .chain(resources.iter().map(|resource| records::Subject::Resource {
+            id: resource.id.clone(),
+        }))
+        .collect();
     let records::Records {
         observations,
         incidents,
         events,
-    } = records::load(&tx)?;
+        automated_history,
+    } = records::load(&tx, &subjects)?;
     let http_checks = http_check::load(&tx)?;
     tx.commit().map_err(ApiError::database)?;
     Ok(Inventory {
@@ -272,6 +283,7 @@ pub fn list(path: &Path) -> Result<Inventory, ApiError> {
         incidents,
         events,
         http_checks,
+        automated_history,
     })
 }
 
@@ -689,11 +701,13 @@ mod tests {
                 "components_resource_id",
                 "events_application_id",
                 "events_incident_id",
+                "events_manual",
                 "events_observation_id",
                 "events_resource_id",
                 "incidents_application_id",
                 "incidents_resource_id",
                 "observations_application_id",
+                "observations_manual",
                 "observations_resource_id",
             ]
         );
@@ -846,7 +860,7 @@ mod tests {
         let version: i64 = db
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 5);
+        assert_eq!(version, SCHEMA_VERSION);
         for (table, rows) in unchanged.iter().zip(&before) {
             assert_eq!(&dump(&db, table), rows, "{table}");
         }
@@ -946,6 +960,77 @@ mod tests {
             "SELECT name FROM pragma_table_info('http_checks') WHERE name = 'monitor'"
         )
         .is_empty());
+        drop(db);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn upgrades_v5_with_history_indexes_without_changing_any_row() {
+        let path = path();
+        let db = Connection::open(&path).unwrap();
+        db.pragma_update(None, "foreign_keys", "OFF").unwrap();
+        for (_, sql) in &MIGRATIONS[..5] {
+            db.execute_batch(sql).unwrap();
+        }
+        db.pragma_update(None, "user_version", 5).unwrap();
+        db.execute_batch(
+            "INSERT INTO resources (id, name, kind, description, operating_system) VALUES ('host', 'Host', 'server', '', 'Linux');
+             INSERT INTO applications (id, name, lifecycle, description, version) VALUES ('shop', 'Shop', 'production', 'Store', '2.0');
+             INSERT INTO components (id, application_id, name, kind, resource_id) VALUES ('api', 'shop', 'API', 'backend', 'host');
+             INSERT INTO observations (id, resource_id, result, summary, source, observed_at, valid_until, recorded_at)
+               VALUES ('obs-manual', 'host', 'degraded', 'Slow', 'manual', 500, 900, 600);
+             INSERT INTO observations (id, resource_id, result, summary, source, observed_at, valid_until, recorded_at,
+                                       http_url, http_expected_status, http_status, http_latency_ms, http_error, http_redirects)
+               VALUES ('obs-http', 'host', 'healthy', 'HTTP 200 as expected', 'http', 1000, 2000, 1000,
+                       'http://host/health', 200, 200, 9, NULL, '[]');
+             INSERT INTO incidents (id, application_id, title, description, severity, status, source, opened_at, updated_at)
+               VALUES ('inc', 'shop', 'Down', 'Checkout', 'critical', 'open', 'manual', 700, 700);
+             INSERT INTO events (id, resource_id, kind, outcome, title, detail, source, observation_id, occurred_at, recorded_at)
+               VALUES ('evt-http', 'host', 'observation', 'success', 'HTTP check: Healthy', '', 'http', 'obs-http', 1000, 1000),
+                      ('evt-manual', 'host', 'observation', 'warning', 'Observation: Attention required', 'Slow', 'manual', 'obs-manual', 500, 600);
+             INSERT INTO events (id, application_id, kind, outcome, title, source, incident_id, occurred_at, recorded_at)
+               VALUES ('evt-inc', 'shop', 'incident', 'failure', 'Incident opened: Down', 'manual', 'inc', 700, 700);
+             INSERT INTO http_checks (resource_id, url, expected_status, timeout_seconds, valid_for_minutes, updated_at, monitor, monitor_interval_minutes)
+               VALUES ('host', 'http://host/health', 200, 5, 15, 800, 'active', 5);",
+        )
+        .unwrap();
+        let tables = [
+            "resources",
+            "applications",
+            "components",
+            "observations",
+            "incidents",
+            "events",
+            "http_checks",
+        ];
+        let before: Vec<_> = tables.iter().map(|table| dump(&db, table)).collect();
+        drop(db);
+
+        let upgraded = list(&path).unwrap();
+        assert_eq!(upgraded.observations.len(), 2);
+        assert_eq!(upgraded.events.len(), 3);
+        assert_eq!(upgraded.http_checks[0].monitor, "active");
+        assert!(upgraded.automated_history.truncated.is_empty());
+
+        let db = Connection::open(&path).unwrap();
+        let version: i64 = db
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 6);
+        for (table, rows) in tables.iter().zip(&before) {
+            assert_eq!(&dump(&db, table), rows, "{table}");
+        }
+        // Partial: they hold only the manual records.
+        assert_eq!(
+            strings(
+                &db,
+                "SELECT name || ': ' || substr(sql, instr(sql, 'WHERE')) FROM sqlite_master WHERE name LIKE '%_manual' ORDER BY name"
+            ),
+            [
+                "events_manual: WHERE source = 'manual'",
+                "observations_manual: WHERE source = 'manual'",
+            ]
+        );
         drop(db);
         std::fs::remove_file(path).unwrap();
     }

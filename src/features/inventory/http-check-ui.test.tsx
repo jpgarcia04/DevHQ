@@ -111,6 +111,7 @@ const snapshot: InventorySnapshot = {
   ],
   // The web check's URL changed after its last run.
   httpChecks: [check(web), check(shop, 'https://shop.example/health')],
+  automatedHistory: { limit: 200, truncated: [] },
 }
 
 function renderWith(ui: ReactNode, value: InventoryContextValue, path = '/') {

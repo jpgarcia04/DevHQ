@@ -71,6 +71,7 @@ const snapshot: InventorySnapshot = {
     check(web),
     check(db, { url: 'https://db.example/ready', monitor: 'paused', monitorIntervalMinutes: 30 }),
   ],
+  automatedHistory: { limit: 200, truncated: [] },
 }
 
 const monitor = (checks: MonitorCheckStatus[], recorded = 0): MonitorStatus => ({

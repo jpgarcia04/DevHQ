@@ -36,6 +36,7 @@ import { relativeTime } from '@/shared/time'
 import { cn } from '@/shared/utils'
 import { ApplicationForm } from './application-form'
 import {
+  AutomatedWindowNote,
   EvidenceBadge,
   EvidenceDetail,
   ObservationHistory,
@@ -43,6 +44,7 @@ import {
   SubjectEvidence,
   SubjectLink,
 } from './evidence'
+import { automatedSince } from './history'
 import { HttpCheckPanel } from './http-check'
 import type { InventoryApplication } from './inventory-api'
 import { useInventory } from './inventory-context'
@@ -428,6 +430,12 @@ function ApplicationDetail({ app }: { app: InventoryApplication }) {
   const events = (snapshot?.events ?? []).filter((item) =>
     concernsApplication(item.subject, app.id, resourceIds),
   )
+  const since = snapshot
+    ? automatedSince(snapshot.automatedHistory, [
+        subject,
+        ...resourceIds.map((id) => ({ type: 'resource' as const, id })),
+      ])
+    : null
   return (
     <div className="page-stack">
       <Link to="/applications" className="quiet-link">
@@ -605,8 +613,13 @@ function ApplicationDetail({ app }: { app: InventoryApplication }) {
         <TabsContent value="activity">
           <section className="panel p-5">
             <h2 className="section-heading mb-5">{app.name} and its resources</h2>
+            {since && snapshot && (
+              <div className="mb-5">
+                <AutomatedWindowNote since={since} limit={snapshot.automatedHistory.limit} />
+              </div>
+            )}
             {events.length ? (
-              <EventRecordList items={events} />
+              <EventRecordList items={events} automatedSince={since} />
             ) : (
               <p className="text-xs text-muted-foreground">
                 No activity recorded yet. Use Log event above to add one.

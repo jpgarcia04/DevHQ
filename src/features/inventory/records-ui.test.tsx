@@ -100,6 +100,7 @@ const snapshot: InventorySnapshot = {
   incidents: [],
   events: [],
   httpChecks: [],
+  automatedHistory: { limit: 200, truncated: [] },
 }
 
 function renderWith(ui: ReactNode, value: InventoryContextValue, path = '/') {

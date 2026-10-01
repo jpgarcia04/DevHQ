@@ -74,6 +74,20 @@ export interface MonitorStatus {
   recorded: number
 }
 
+/**
+ * Supervision can add an automated result every 5 minutes, so a snapshot carries only the
+ * latest `limit` per application or resource; older ones stay in SQLite, untouched. Manual
+ * records are always complete.
+ */
+export interface AutomatedHistory {
+  limit: number
+  /**
+   * Subjects with older automated results than the snapshot carries. From `since` on, their
+   * automated observations and events are complete; before it, only manual records are loaded.
+   */
+  truncated: { subject: EntityRef; since: string }[]
+}
+
 /** One consistent read of SQLite. Records are newest first; times are UTC RFC 3339. */
 export interface InventorySnapshot {
   applications: InventoryApplication[]
@@ -82,6 +96,7 @@ export interface InventorySnapshot {
   incidents: RecordedIncident[]
   events: RecordedEvent[]
   httpChecks: HttpCheck[]
+  automatedHistory: AutomatedHistory
 }
 
 export type ResourceInput = Omit<InventoryResource, 'id'> & { id?: string }

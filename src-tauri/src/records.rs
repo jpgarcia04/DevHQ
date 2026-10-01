@@ -304,6 +304,21 @@ fn query_all<T>(
     rows
 }
 
+fn query_with<T>(
+    tx: &Transaction,
+    sql: &str,
+    param: &str,
+    map: fn(&Row) -> rusqlite::Result<T>,
+) -> Result<Vec<T>, ApiError> {
+    let mut statement = tx.prepare(sql).map_err(ApiError::database)?;
+    let rows = statement
+        .query_map([param], map)
+        .map_err(ApiError::database)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(ApiError::database);
+    rows
+}
+
 fn query_one<T>(
     tx: &Transaction,
     select: &str,
@@ -319,16 +334,109 @@ pub(crate) struct Records {
     pub observations: Vec<Observation>,
     pub incidents: Vec<Incident>,
     pub events: Vec<Event>,
+    pub automated_history: AutomatedHistory,
 }
 
-/// Newest first. Reads inside the caller's transaction so the snapshot is consistent.
-pub(crate) fn load(tx: &Transaction) -> Result<Records, ApiError> {
+/// Automated results a snapshot carries per application or resource. Manual records grow as
+/// fast as a person types and are always loaded in full; supervision can add a result every
+/// 5 minutes for as long as DevHQ is open, so a snapshot carries only the latest ones. Older
+/// results stay in the database, untouched.
+pub(crate) const AUTOMATED_HISTORY_LIMIT: i64 = 200;
+
+/// What a snapshot leaves out, so that the window can say so instead of implying there is
+/// nothing older.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AutomatedHistory {
+    pub limit: i64,
+    /// Subjects with older automated results than the snapshot carries.
+    pub truncated: Vec<TruncatedHistory>,
+}
+
+/// From `since` on, the subject's automated observations and their events are complete;
+/// before it, only its manual records are loaded.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TruncatedHistory {
+    pub subject: Subject,
+    pub since: String,
+}
+
+// One statement per subject type, so that each follows its own subject index. The first
+// finds a subject's latest automated observations; the second, their events.
+const LATEST_AUTOMATED: [&str; 2] = [
+    "SELECT rowid, observed_at FROM observations WHERE application_id = ?1 AND source = 'http'
+     ORDER BY observed_at DESC, recorded_at DESC, rowid DESC LIMIT ?2",
+    "SELECT rowid, observed_at FROM observations WHERE resource_id = ?1 AND source = 'http'
+     ORDER BY observed_at DESC, recorded_at DESC, rowid DESC LIMIT ?2",
+];
+const AUTOMATED_EVENTS_SINCE: [&str; 2] = [
+    "SELECT rowid FROM events WHERE application_id = ?1 AND source = 'http' AND occurred_at >= ?2",
+    "SELECT rowid FROM events WHERE resource_id = ?1 AND source = 'http' AND occurred_at >= ?2",
+];
+// Every manual record, plus the automated rows chosen above (a JSON array of rowids).
+const WINDOWED_OBSERVATIONS: &str = "WHERE rowid IN (
+       SELECT rowid FROM observations WHERE source = 'manual'
+       UNION ALL SELECT value FROM json_each(?1))
+     ORDER BY observed_at DESC, recorded_at DESC, rowid DESC";
+const WINDOWED_EVENTS: &str = "WHERE rowid IN (
+       SELECT rowid FROM events WHERE source = 'manual'
+       UNION ALL SELECT value FROM json_each(?1))
+     ORDER BY occurred_at DESC, recorded_at DESC, rowid DESC";
+
+/// Newest first. Reads inside the caller's transaction so the snapshot is consistent. Every
+/// read follows an index, so its cost grows with what is loaded, not with what is stored.
+pub(crate) fn load(tx: &Transaction, subjects: &[Subject]) -> Result<Records, ApiError> {
+    let prepare = |sql| tx.prepare(sql).map_err(ApiError::database);
+    let mut latest = [prepare(LATEST_AUTOMATED[0])?, prepare(LATEST_AUTOMATED[1])?];
+    let mut since = [
+        prepare(AUTOMATED_EVENTS_SINCE[0])?,
+        prepare(AUTOMATED_EVENTS_SINCE[1])?,
+    ];
+    let limit = usize::try_from(AUTOMATED_HISTORY_LIMIT).map_err(ApiError::database)?;
+    let mut observation_rows = Vec::new();
+    let mut event_rows = Vec::new();
+    let mut truncated = Vec::new();
+    for subject in subjects {
+        let (kind, id) = match subject {
+            Subject::Application { id } => (0, id),
+            Subject::Resource { id } => (1, id),
+        };
+        // One more than the limit tells whether anything older exists.
+        let mut rows = latest[kind]
+            .query_map(params![id, AUTOMATED_HISTORY_LIMIT + 1], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+            })
+            .map_err(ApiError::database)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(ApiError::database)?;
+        let mut from = i64::MIN;
+        if rows.len() > limit {
+            rows.truncate(limit);
+            if let Some(&(_, oldest)) = rows.last() {
+                from = oldest;
+                truncated.push(TruncatedHistory {
+                    subject: subject.clone(),
+                    since: format_time(oldest)
+                        .ok_or_else(|| ApiError::database("an observation time is out of range"))?,
+                });
+            }
+        }
+        observation_rows.extend(rows.into_iter().map(|(rowid, _)| rowid));
+        // Each automated observation wrote its event, at the same moment, with it.
+        let rows = since[kind]
+            .query_map(params![id, from], |row| row.get::<_, i64>(0))
+            .map_err(ApiError::database)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(ApiError::database)?;
+        event_rows.extend(rows);
+    }
+    let rowids = |rows: &[i64]| serde_json::to_string(rows).map_err(ApiError::database);
     Ok(Records {
-        observations: query_all(
+        observations: query_with(
             tx,
-            &format!(
-                "{OBSERVATION_SELECT} ORDER BY observed_at DESC, recorded_at DESC, rowid DESC"
-            ),
+            &format!("{OBSERVATION_SELECT} {WINDOWED_OBSERVATIONS}"),
+            &rowids(&observation_rows)?,
             observation_from_row,
         )?,
         incidents: query_all(
@@ -336,11 +444,16 @@ pub(crate) fn load(tx: &Transaction) -> Result<Records, ApiError> {
             &format!("{INCIDENT_SELECT} ORDER BY opened_at DESC, rowid DESC"),
             incident_from_row,
         )?,
-        events: query_all(
+        events: query_with(
             tx,
-            &format!("{EVENT_SELECT} ORDER BY occurred_at DESC, recorded_at DESC, rowid DESC"),
+            &format!("{EVENT_SELECT} {WINDOWED_EVENTS}"),
+            &rowids(&event_rows)?,
             event_from_row,
         )?,
+        automated_history: AutomatedHistory {
+            limit: AUTOMATED_HISTORY_LIMIT,
+            truncated,
+        },
     })
 }
 
@@ -1016,6 +1129,206 @@ mod tests {
                 .is_err(),
             "history keeps its subject"
         );
+        drop(db);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    /// `count` automated results for a subject, 5 minutes apart from `first`, each with its
+    /// event, as supervision writes them. Returns their observation IDs, oldest first.
+    fn automated(path: &Path, subject: &Subject, first: i64, count: i64) -> Vec<String> {
+        let mut db = open(path).unwrap();
+        let tx = db.transaction().unwrap();
+        let (application_id, resource_id) = subject.columns();
+        let ids = (0..count)
+            .map(|index| {
+                let at = first + index * 5 * 60_000;
+                let id = Uuid::new_v4().to_string();
+                tx.execute(
+                    "INSERT INTO observations (id, application_id, resource_id, result, summary, source, observed_at, valid_until, recorded_at,
+                                               http_url, http_expected_status, http_status, http_latency_ms, http_error, http_redirects)
+                     VALUES (?1, ?2, ?3, 'healthy', 'HTTP 200 as expected', 'http', ?4, ?5, ?4, 'https://x.example/', 200, 200, 5, NULL, '[]')",
+                    params![id, application_id, resource_id, at, at + 15 * 60_000],
+                )
+                .unwrap();
+                tx.execute(
+                    "INSERT INTO events (id, application_id, resource_id, kind, outcome, title, detail, source, observation_id, occurred_at, recorded_at)
+                     VALUES (?1, ?2, ?3, 'observation', 'success', 'HTTP check: Healthy', 'HTTP 200 as expected', 'http', ?4, ?5, ?5)",
+                    params![Uuid::new_v4().to_string(), application_id, resource_id, id, at],
+                )
+                .unwrap();
+                id
+            })
+            .collect();
+        tx.commit().unwrap();
+        ids
+    }
+
+    fn millis(time: &str) -> i64 {
+        parse_time(time, "time").unwrap()
+    }
+
+    #[test]
+    fn a_snapshot_carries_every_manual_record_but_only_the_latest_automated_results() {
+        let path = path();
+        let (application_id, resource_id) = seed(&path);
+        let shop = Subject::Application { id: application_id };
+        let host = Subject::Resource { id: resource_id };
+        let limit = AUTOMATED_HISTORY_LIMIT;
+        let minutes = |count: i64| count * 60_000;
+        let first = now_ms() - minutes(30 * 24 * 60);
+        let host_runs = automated(&path, &host, first, limit + 5);
+        // Exactly the limit: nothing is left out.
+        let shop_runs = automated(&path, &shop, first, limit);
+        // Manual records older than every automated result, and one among those left out.
+        let early = format_time(first - minutes(60)).unwrap();
+        let old_observation = record_observation(
+            &path,
+            ObservationInput {
+                observed_at: Some(early.clone()),
+                ..observation(host.clone())
+            },
+        )
+        .unwrap();
+        let among_left_out = record_observation(
+            &path,
+            ObservationInput {
+                observed_at: format_time(first + minutes(11)),
+                ..observation(host.clone())
+            },
+        )
+        .unwrap();
+        let old_event = record_event(
+            &path,
+            EventInput {
+                occurred_at: Some(early),
+                ..event(host.clone())
+            },
+        )
+        .unwrap();
+        let opened = open_incident(&path, incident(host.clone())).unwrap();
+
+        let snapshot = list(&path).unwrap();
+        let automated_of = |subject: &Subject| -> Vec<String> {
+            snapshot
+                .observations
+                .iter()
+                .filter(|item| &item.subject == subject && item.source == HTTP)
+                .map(|item| item.id.clone())
+                .collect()
+        };
+        // The latest results, newest first; the five oldest stay in the database only.
+        let kept: Vec<_> = host_runs[5..].iter().rev().cloned().collect();
+        assert_eq!(automated_of(&host), kept);
+        assert_eq!(automated_of(&shop).len(), shop_runs.len());
+        assert!(snapshot.observations.contains(&old_observation));
+        assert!(snapshot.observations.contains(&among_left_out));
+        // Every loaded automated observation brings its event, and no other automated event.
+        let mut loaded: Vec<_> = snapshot
+            .observations
+            .iter()
+            .filter(|item| item.source == HTTP)
+            .map(|item| Some(item.id.clone()))
+            .collect();
+        let mut with_events: Vec<_> = snapshot
+            .events
+            .iter()
+            .filter(|item| item.source == HTTP)
+            .map(|item| item.observation_id.clone())
+            .collect();
+        loaded.sort();
+        with_events.sort();
+        assert_eq!(loaded, with_events);
+        assert!(snapshot.events.contains(&old_event));
+        assert!(snapshot
+            .events
+            .iter()
+            .any(|item| item.incident_id.as_deref() == Some(opened.id.as_str())));
+        assert_eq!(snapshot.events.len(), snapshot.observations.len() + 2);
+        // Newest first across both sources.
+        assert!(snapshot
+            .observations
+            .windows(2)
+            .all(|pair| millis(&pair[0].observed_at) >= millis(&pair[1].observed_at)));
+        assert!(snapshot
+            .events
+            .windows(2)
+            .all(|pair| millis(&pair[0].occurred_at) >= millis(&pair[1].occurred_at)));
+        // What was left out is said, so that the window never implies there is nothing older.
+        assert_eq!(
+            snapshot.automated_history,
+            AutomatedHistory {
+                limit,
+                truncated: vec![TruncatedHistory {
+                    subject: host.clone(),
+                    since: format_time(first + minutes(5 * 5)).unwrap(),
+                }],
+            }
+        );
+
+        // A new result moves the window forward by one.
+        automated(&path, &host, first + minutes(5 * (limit + 5)), 1);
+        let moved = list(&path).unwrap();
+        assert_eq!(
+            moved.automated_history.truncated[0].since,
+            format_time(first + minutes(5 * 6)).unwrap()
+        );
+        assert_eq!(automated_of(&host).len(), usize::try_from(limit).unwrap());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn snapshot_reads_follow_indexes_instead_of_scanning_history() {
+        let path = path();
+        let db = open(&path).unwrap();
+        let plan = |sql: &str, params: &[&dyn rusqlite::ToSql]| -> Vec<String> {
+            db.prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+                .unwrap()
+                .query_map(params, |row| row.get(3))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
+        };
+        let observations = format!("{OBSERVATION_SELECT} {WINDOWED_OBSERVATIONS}");
+        let events = format!("{EVENT_SELECT} {WINDOWED_EVENTS}");
+        let cases: [(&str, &[&dyn rusqlite::ToSql], &str); 6] = [
+            (
+                LATEST_AUTOMATED[0],
+                &[&"app", &1],
+                "observations_application_id",
+            ),
+            (
+                LATEST_AUTOMATED[1],
+                &[&"host", &1],
+                "observations_resource_id",
+            ),
+            (
+                AUTOMATED_EVENTS_SINCE[0],
+                &[&"app", &0],
+                "events_application_id",
+            ),
+            (
+                AUTOMATED_EVENTS_SINCE[1],
+                &[&"host", &0],
+                "events_resource_id",
+            ),
+            (&observations, &[&"[]"], "observations_manual"),
+            (&events, &[&"[]"], "events_manual"),
+        ];
+        for (sql, params, index) in cases {
+            let steps = plan(sql, params);
+            assert!(
+                steps.iter().any(|step| step.contains(index)),
+                "{sql}\n{steps:#?}"
+            );
+            // Only the manual records are ever read in full.
+            assert!(
+                steps.iter().all(|step| {
+                    !(step.starts_with("SCAN observations") || step.starts_with("SCAN events"))
+                        || step.contains("_manual")
+                }),
+                "{sql}\n{steps:#?}"
+            );
+        }
         drop(db);
         std::fs::remove_file(path).unwrap();
     }

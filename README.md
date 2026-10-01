@@ -153,6 +153,16 @@ ejecución, que es idéntica a la de Run check y sigue la misma semántica de vi
   que la configuración sigue existiendo, así que un resultado tardío nunca se registra.
 - El bucle vuelve a planificar al menos cada 30 s, para notar un cambio de reloj o la
   vuelta de una suspensión sin fiarse de un temporizador largo.
+- Cada lectura del inventario lleva **todos** los registros manuales, pero solo los últimos
+  200 resultados automáticos de cada aplicación o recurso (con sus eventos): la supervisión
+  puede añadir uno cada 5 min durante meses. Los anteriores siguen en SQLite, intactos, y la
+  UI lo dice: una nota indica desde cuándo los resultados automáticos están completos y una
+  línea marca dónde una lista pasa a tener solo registros manuales. Una vista que mezcla
+  sistemas (Activity) solo muestra resultados automáticos desde el momento en que los de
+  todos están completos, para no sugerir que uno no tuvo resultados. Cada consulta sigue un
+  índice, así que su coste depende de lo que se carga y no del historial acumulado: con 5
+  comprobaciones cada 5 min durante 90 días, una recarga pasó de 86 MB y 0.5 s a 0.7 MB y
+  5 ms.
 - El proceso nativo empuja el estado a la ventana por un `Channel` de Tauri: ejecución en
   curso, última y siguiente ejecución y último error de DevHQ. Cuando una ejecución
   registra evidencia, la ventana relee el inventario sin estado de carga, así que los
@@ -215,13 +225,14 @@ comprobaciones son asíncronos y avisan a la supervisión antes de responder, as
 reanudar o quitar surten efecto de inmediato; `run_http_check` pasa por la supervisión para
 no duplicar una ejecución en vuelo y `watch_http_monitor` abre el `Channel` de estado. Abre
 `inventory.sqlite3` en el directorio de datos de la aplicación que proporciona Tauri; las
-migraciones transaccionales v1→v5 usan `PRAGMA user_version` y una versión más nueva se
+migraciones transaccionales v1→v6 usan `PRAGMA user_version` y una versión más nueva se
 rechaza en vez de adivinarse. La v4 reconstruye `observations` y `events` (SQLite no cambia
 un CHECK con ALTER) conservando filas, IDs, `rowid` (desempate de orden), claves foráneas,
 índices y los vínculos evento → observación. La v5 solo reconstruye `http_checks` (nada la
 referencia) para añadir el estado y el intervalo de supervisión con sus CHECK, conservando
 el `rowid` que ordena la lista. Ambas se ejecutan con las claves foráneas desactivadas y
-solo se confirman si `PRAGMA foreign_key_check` no encuentra relaciones rotas. Los
+solo se confirman si `PRAGMA foreign_key_check` no encuentra relaciones rotas. La v6 solo
+añade dos índices parciales sobre los registros manuales; ninguna fila cambia. Los
 registros usan dos columnas con clave foránea (`application_id`/`resource_id`) y un CHECK
 que exige exactamente una; las referencias de historial son `ON DELETE RESTRICT`, así que
 nada puede borrar un sujeto y dejar evidencia huérfana (no existe aún ningún caso de uso de
@@ -246,7 +257,7 @@ vivir en componentes React, localStorage ni texto plano en SQLite.
 Las pruebas cubren navegación, tabs/teclado, filtros, rutas desconocidas, relaciones
 compartidas, cronología de la demo, salud desconocida, persistencia tras reapertura,
 rechazo de referencias inválidas sin escrituras parciales, restricciones del esquema,
-migraciones v1/v2→v3, v3→v4 y v4→v5 (incluida la negativa a confirmar relaciones rotas),
+migraciones v1/v2→v3, v3→v4, v4→v5 y v5→v6 (incluida la negativa a confirmar relaciones rotas),
 vigencia y sustitución de observaciones de ambos orígenes, orden de atención, errores de
 carga visibles y recuperables, comprobaciones contra un servidor local (estado esperado,
 500, redirect, bucle de redirects, tiempo agotado, conexión rechazada, dominio `.invalid`
@@ -256,4 +267,7 @@ prueba sobre un reloj simulado de Tokio, sin esperas reales: ritmo por intervalo
 continuidad tras reabrir, una sola ejecución por atraso, sin solapes, Run check que se une
 a la ejecución en vuelo, pausa, cancelación al quitar o cerrar, fallos de DevHQ visibles
 que no detienen al resto y configuración ilegible que se reintenta; y, con peticiones
-reales a un servidor local, que la evidencia programada es idéntica a la manual.
+reales a un servidor local, que la evidencia programada es idéntica a la manual. La ventana
+de historial se prueba por su límite exacto, los eventos que acompañan a cada resultado, el
+aviso de lo omitido en cada vista y los planes de consulta, que nunca recorren el historial
+automático completo.

@@ -1,3 +1,4 @@
+import { Fragment } from 'react'
 import { CircleDashed, History, PenLine, Radar, type LucideIcon } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { healthLabels, sourceLabels } from '@/domain/labels'
@@ -12,6 +13,7 @@ import {
 } from '@/domain/evidence'
 import { formatDateTime, relativeTime, timeUntil } from '@/shared/time'
 import { cn } from '@/shared/utils'
+import { automatedSince, beforeWindow } from './history'
 import { useInventory } from './inventory-context'
 
 // Absence and expiry get their own icon and words, so neither can pass for a result.
@@ -122,6 +124,25 @@ export function HttpEvidenceDetail({ evidence }: { evidence: HttpEvidence }) {
 
 function Moment({ value }: { value: string }) {
   return <time dateTime={value}>{formatDateTime(value)}</time>
+}
+
+/** Says what a view leaves out, so that a short history never reads as all there is. */
+export function AutomatedWindowNote({ since, limit }: { since: string; limit: number }) {
+  return (
+    <p className="rounded-md border border-dashed px-3 py-2 text-[11px] leading-5 text-muted-foreground">
+      Automated HTTP check results before <Moment value={since} /> are kept in the local database
+      but not loaded: DevHQ loads the latest {limit} per system. Manual records are always complete.
+    </p>
+  )
+}
+
+/** Marks where a list stops being complete: older entries are manual records only. */
+export function WindowBoundary({ since }: { since: string }) {
+  return (
+    <li className="py-3 text-center text-[10px] text-muted-foreground">
+      Before <Moment value={since} /> · manual records only
+    </li>
+  )
 }
 
 /**
@@ -243,37 +264,47 @@ export function SubjectEvidence({ subject }: { subject: EntityRef }) {
 export function ObservationHistory({ subject }: { subject: EntityRef }) {
   const { snapshot, now } = useInventory()
   const history = subjectObservations(snapshot?.observations ?? [], subject)
-  if (!history.length)
+  if (!snapshot || !history.length)
     return (
       <p className="text-xs leading-5 text-muted-foreground">
         No observations recorded. Record what you have checked, or run this system’s HTTP check.
       </p>
     )
+  const since = automatedSince(snapshot.automatedHistory, [subject])
+  const boundary = history.findIndex((item) => beforeWindow(item.observedAt, since))
   return (
-    <ol className="divide-y">
-      {history.map((observation, index) => {
-        const standing =
-          index > 0 ? 'Superseded' : isCurrent(observation, now) ? 'Current' : 'Expired'
-        return (
-          <li key={observation.id} className="py-4 first:pt-0 last:pb-0">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <EvidenceBadge state={observation.result} compact />
-              <span
-                className={cn(
-                  'rounded border px-1.5 py-0.5 text-[10px]',
-                  standing === 'Current'
-                    ? 'text-foreground'
-                    : 'border-dashed text-muted-foreground',
-                )}
-              >
-                {standing}
-              </span>
-            </div>
-            <p className="mt-2 text-xs leading-5 text-muted-foreground">{observation.summary}</p>
-            <ObservationMeta observation={observation} now={now} />
-          </li>
-        )
-      })}
-    </ol>
+    <div className="space-y-4">
+      {since && <AutomatedWindowNote since={since} limit={snapshot.automatedHistory.limit} />}
+      <ol className="divide-y">
+        {history.map((observation, index) => {
+          const standing =
+            index > 0 ? 'Superseded' : isCurrent(observation, now) ? 'Current' : 'Expired'
+          return (
+            <Fragment key={observation.id}>
+              {since && index === boundary && index > 0 && <WindowBoundary since={since} />}
+              <li className="py-4 first:pt-0 last:pb-0">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <EvidenceBadge state={observation.result} compact />
+                  <span
+                    className={cn(
+                      'rounded border px-1.5 py-0.5 text-[10px]',
+                      standing === 'Current'
+                        ? 'text-foreground'
+                        : 'border-dashed text-muted-foreground',
+                    )}
+                  >
+                    {standing}
+                  </span>
+                </div>
+                <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                  {observation.summary}
+                </p>
+                <ObservationMeta observation={observation} now={now} />
+              </li>
+            </Fragment>
+          )
+        })}
+      </ol>
+    </div>
   )
 }

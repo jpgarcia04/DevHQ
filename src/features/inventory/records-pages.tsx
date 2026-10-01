@@ -4,11 +4,12 @@ import { useSearchParams } from 'react-router-dom'
 import { EmptyState } from '@/components/empty-state'
 import { PageHeader } from '@/components/page-header'
 import { Button } from '@/components/ui/button'
-import { subjectKey } from '@/domain/evidence'
+import { subjectFromKey, subjectKey, subjectsOf } from '@/domain/evidence'
 import { incidentStatusLabels, severityLabels } from '@/domain/labels'
 import { activeIncidents } from '@/domain/selectors'
 import { deviceTimeZone, formatDate } from '@/shared/time'
-import { SubjectOptions } from './evidence'
+import { AutomatedWindowNote, SubjectOptions } from './evidence'
+import { automatedSince, beforeWindow, withinWindow } from './history'
 import { useInventory } from './inventory-context'
 import { InventoryState } from './inventory-state'
 import { EventForm, IncidentForm } from './record-forms'
@@ -113,8 +114,14 @@ export function RealActivityPage() {
   const { snapshot, now } = useInventory()
   const [subject, setSubject] = useState('all')
   const [creating, setCreating] = useState(false)
+  const chosen = subjectFromKey(subject)
+  const since = snapshot
+    ? automatedSince(snapshot.automatedHistory, chosen ? [chosen] : subjectsOf(snapshot))
+    : null
   const events = (snapshot?.events ?? []).filter(
-    (event) => subject === 'all' || subjectKey(event.subject) === subject,
+    (event) =>
+      (subject === 'all' || subjectKey(event.subject) === subject) &&
+      withinWindow(event.source, event.occurredAt, since),
   )
   const days = [...new Set(events.map((event) => formatDate(event.occurredAt)))]
   const today = formatDate(new Date(now).toISOString())
@@ -149,17 +156,25 @@ export function RealActivityPage() {
               </span>
             </div>
             <div className="max-w-4xl space-y-7">
-              {days.map((day) => (
-                <section key={day} aria-label={day}>
-                  <h2 className="eyebrow mb-4">{day === today ? `Today · ${day}` : day}</h2>
-                  <div className="panel px-5 py-5">
-                    <EventRecordList
-                      timeOnly
-                      items={events.filter((event) => formatDate(event.occurredAt) === day)}
-                    />
-                  </div>
-                </section>
-              ))}
+              {since && snapshot && (
+                <AutomatedWindowNote since={since} limit={snapshot.automatedHistory.limit} />
+              )}
+              {days.map((day) => {
+                const items = events.filter((event) => formatDate(event.occurredAt) === day)
+                // A day entirely before the window holds manual records only; say so.
+                const manualOnly = items.every((event) => beforeWindow(event.occurredAt, since))
+                return (
+                  <section key={day} aria-label={day}>
+                    <h2 className="eyebrow mb-4">
+                      {day === today ? `Today · ${day}` : day}
+                      {manualOnly && ' · manual records only'}
+                    </h2>
+                    <div className="panel px-5 py-5">
+                      <EventRecordList timeOnly items={items} automatedSince={since} />
+                    </div>
+                  </section>
+                )
+              })}
               {!events.length && (
                 <p className="py-10 text-muted-foreground">No activity recorded for this system.</p>
               )}

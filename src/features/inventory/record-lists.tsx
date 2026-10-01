@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { Fragment, useState } from 'react'
 import {
   ArrowUpRight,
   ChevronDown,
@@ -24,7 +24,8 @@ import type {
 } from '@/domain/models'
 import { formatDateTime, formatTime, relativeTime } from '@/shared/time'
 import { cn } from '@/shared/utils'
-import { EvidenceBadge, EvidenceDetail, SourceTag, SubjectLink } from './evidence'
+import { EvidenceBadge, EvidenceDetail, SourceTag, SubjectLink, WindowBoundary } from './evidence'
+import { beforeWindow, withinWindow } from './history'
 import { inventoryError } from './inventory-api'
 import { useInventory } from './inventory-context'
 
@@ -175,60 +176,74 @@ export function EventRecordList({
   items,
   timeOnly = false,
   detailed = true,
+  automatedSince = null,
 }: {
   items: RecordedEvent[]
   timeOnly?: boolean
   detailed?: boolean
+  /** Complete only from this moment on: older automated events are left out, and marked. */
+  automatedSince?: string | null
 }) {
+  const shown = items.filter((event) =>
+    withinWindow(event.source, event.occurredAt, automatedSince),
+  )
+  const boundary = shown.findIndex((event) => beforeWindow(event.occurredAt, automatedSince))
   return (
     <ol className="divide-y divide-border/65">
-      {items.map((event) => {
+      {shown.map((event, index) => {
         const Icon = kindIcons[event.kind]
         const late = Date.parse(event.recordedAt) - Date.parse(event.occurredAt) > lateEntryMs
         return (
-          <li key={event.id} className="flex gap-3 py-4 first:pt-1 last:pb-1">
-            <span
-              className={cn(
-                'mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-lg border',
-                event.outcome === 'failure'
-                  ? 'border-rose-400/20 text-rose-300'
-                  : event.outcome === 'warning'
-                    ? 'border-amber-400/20 text-amber-300'
-                    : event.outcome === 'success'
-                      ? 'text-emerald-300'
-                      : 'text-muted-foreground',
-              )}
-            >
-              <Icon className="size-3.5" aria-hidden="true" />
-              <span className="sr-only">{eventOutcomeLabels[event.outcome]}</span>
-            </span>
-            <div className="min-w-0 flex-1">
-              <div className="flex items-start justify-between gap-3">
-                <p className="text-[13px] font-medium">{event.title}</p>
-                <time
-                  dateTime={event.occurredAt}
-                  className="shrink-0 font-mono text-[10px] text-muted-foreground"
-                >
-                  {timeOnly ? formatTime(event.occurredAt) : formatDateTime(event.occurredAt)}
-                </time>
-              </div>
-              <p className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-muted-foreground">
-                <SubjectLink subject={event.subject} />
-                <span aria-hidden="true">·</span>
-                <span>{eventKindLabels[event.kind]}</span>
-                <SourceTag source={event.source} />
-                {late && (
-                  <span className="text-[11px]">
-                    recorded{' '}
-                    <time dateTime={event.recordedAt}>{formatDateTime(event.recordedAt)}</time>
-                  </span>
+          <Fragment key={event.id}>
+            {automatedSince && index === boundary && index > 0 && (
+              <WindowBoundary since={automatedSince} />
+            )}
+            <li className="flex gap-3 py-4 first:pt-1 last:pb-1">
+              <span
+                className={cn(
+                  'mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-lg border',
+                  event.outcome === 'failure'
+                    ? 'border-rose-400/20 text-rose-300'
+                    : event.outcome === 'warning'
+                      ? 'border-amber-400/20 text-amber-300'
+                      : event.outcome === 'success'
+                        ? 'text-emerald-300'
+                        : 'text-muted-foreground',
                 )}
-              </p>
-              {detailed && event.detail && (
-                <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{event.detail}</p>
-              )}
-            </div>
-          </li>
+              >
+                <Icon className="size-3.5" aria-hidden="true" />
+                <span className="sr-only">{eventOutcomeLabels[event.outcome]}</span>
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-start justify-between gap-3">
+                  <p className="text-[13px] font-medium">{event.title}</p>
+                  <time
+                    dateTime={event.occurredAt}
+                    className="shrink-0 font-mono text-[10px] text-muted-foreground"
+                  >
+                    {timeOnly ? formatTime(event.occurredAt) : formatDateTime(event.occurredAt)}
+                  </time>
+                </div>
+                <p className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-muted-foreground">
+                  <SubjectLink subject={event.subject} />
+                  <span aria-hidden="true">·</span>
+                  <span>{eventKindLabels[event.kind]}</span>
+                  <SourceTag source={event.source} />
+                  {late && (
+                    <span className="text-[11px]">
+                      recorded{' '}
+                      <time dateTime={event.recordedAt}>{formatDateTime(event.recordedAt)}</time>
+                    </span>
+                  )}
+                </p>
+                {detailed && event.detail && (
+                  <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+                    {event.detail}
+                  </p>
+                )}
+              </div>
+            </li>
+          </Fragment>
         )
       })}
     </ol>
