@@ -1,5 +1,7 @@
 mod http_check;
 mod inventory;
+#[cfg(test)]
+mod ipc_contract;
 mod monitor;
 mod records;
 
@@ -162,10 +164,40 @@ async fn run_http_check(
     monitor.run_now(subject).await
 }
 
-/// Streams supervision status to the window: now, and after every change.
+/// Streams supervision status to the window: now, and after every change. The watcher is a
+/// task on the async runtime, so the command must run there too: Tauri runs a synchronous
+/// command on the thread that received the request (the main thread), which has no runtime,
+/// and spawning the task from there panicked.
 #[tauri::command]
-fn watch_http_monitor(monitor: tauri::State<'_, Monitor>, channel: Channel<MonitorStatus>) {
+async fn watch_http_monitor(
+    monitor: tauri::State<'_, Monitor>,
+    channel: Channel<MonitorStatus>,
+) -> Result<(), inventory::ApiError> {
     monitor.watch(move |status| channel.send(status).is_ok());
+    Ok(())
+}
+
+/// Every command the window can call. The app and the IPC contract tests register this list.
+fn commands<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static {
+    tauri::generate_handler![
+        list_inventory,
+        data_location,
+        save_resource,
+        save_application,
+        delete_application,
+        delete_resource,
+        record_observation,
+        older_observations,
+        older_events,
+        open_incident,
+        update_incident_status,
+        record_event,
+        save_http_check,
+        set_http_check_paused,
+        remove_http_check,
+        run_http_check,
+        watch_http_monitor
+    ]
 }
 
 pub fn run() {
@@ -179,25 +211,7 @@ pub fn run() {
             app.manage(monitor);
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
-            list_inventory,
-            data_location,
-            save_resource,
-            save_application,
-            delete_application,
-            delete_resource,
-            record_observation,
-            older_observations,
-            older_events,
-            open_incident,
-            update_incident_status,
-            record_event,
-            save_http_check,
-            set_http_check_paused,
-            remove_http_check,
-            run_http_check,
-            watch_http_monitor
-        ])
+        .invoke_handler(commands())
         .build(tauri::generate_context!())
         .expect("error while building DevHQ")
         .run(|app, event| {

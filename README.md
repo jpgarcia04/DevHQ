@@ -283,7 +283,10 @@ Rust expone `list_inventory` (una lectura consistente de inventario, registros y
 `remove_http_check`, `run_http_check` y `watch_http_monitor`. Los comandos de
 comprobaciones y de borrado son asíncronos y avisan a la supervisión antes de responder, así
 que pausar, reanudar, quitar o borrar surten efecto de inmediato; `run_http_check` pasa por la supervisión para
-no duplicar una ejecución en vuelo y `watch_http_monitor` abre el `Channel` de estado. Abre
+no duplicar una ejecución en vuelo y `watch_http_monitor` abre el `Channel` de estado. Ese último también es
+asíncrono porque lanza la tarea que alimenta el `Channel`: Tauri ejecuta un comando síncrono en el hilo
+que recibe la petición (el principal), que no tiene runtime de Tokio, y lanzarla desde ahí provocaba un
+pánico. Abre
 `inventory.sqlite3` en el directorio de datos de la aplicación que proporciona Tauri; las
 migraciones transaccionales v1→v6 usan `PRAGMA user_version` y una versión más nueva se
 rechaza en vez de adivinarse. Cada apertura solo lee esa versión: únicamente una base antigua
@@ -343,7 +346,9 @@ prueba sobre un reloj simulado de Tokio, sin esperas reales: ritmo por intervalo
 continuidad tras reabrir, una sola ejecución por atraso, sin solapes, Run check que se une
 a la ejecución en vuelo, pausa, cancelación al quitar o cerrar, fallos de DevHQ visibles
 que no detienen al resto y configuración ilegible que se reintenta; y, con peticiones
-reales a un servidor local, que la evidencia programada es idéntica a la manual. La ventana
+reales a un servidor local, que la evidencia programada es idéntica a la manual; y, a través del manejador real de comandos sobre el
+runtime simulado de Tauri y desde un hilo sin runtime asíncrono como el principal, que la ventana puede
+abrir el `Channel` de estado. La ventana
 de historial se prueba por su límite exacto, los eventos que acompañan a cada resultado, el
 aviso de lo omitido en cada vista, la paginación de observaciones y de eventos de varios
 sistemas a la vez (sin huecos ni duplicados, con empates al mismo milisegundo y resultados
