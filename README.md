@@ -197,7 +197,7 @@ ejecución, que es idéntica a la de Run check y sigue la misma semántica de vi
 
 ## Ejecutar
 
-Requisitos: Node.js 24 LTS, npm, Rust estable y los
+Requisitos: Node.js 24 LTS con npm 11 (el que trae), Rust estable y los
 [prerrequisitos de Tauri 2](https://v2.tauri.app/start/prerequisites/).
 En Windows: Visual Studio Build Tools con C++ y Windows SDK, además de WebView2. Las
 comprobaciones HTTP usan el TLS del sistema: SChannel en Windows, Security.framework en
@@ -237,7 +237,11 @@ cada hilo con `dbghelp.dll` de Windows y el PDB de release, sin instalar nada.
 
 El instalador se genera en `src-tauri/target/release/bundle/nsis/`. El target de
 empaquetado está configurado para Windows; otros sistemas necesitan sus prerrequisitos
-y seleccionar un target de bundle apropiado. Los lockfiles de npm y Cargo se versionan.
+y seleccionar un target de bundle apropiado. Los lockfiles de npm y Cargo se versionan. El
+de npm lo escribe npm 11: npm 10 borra los campos `libc` de los paquetes de cada plataforma
+cada vez que lo reescribe. En las sesiones de Claude Code en la web,
+`.claude/hooks/session-start.sh` prepara el contenedor: WebKitGTK, npm 11, dependencias,
+crates y `DEVHQ_CHROMIUM`.
 
 ## Arquitectura
 

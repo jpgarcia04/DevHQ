@@ -20,8 +20,20 @@ if ! pkg-config --exists webkit2gtk-4.1 openssl 2>/dev/null; then
     libayatana-appindicator3-dev librsvg2-dev build-essential >/dev/null
 fi
 
-# npm ci never rewrites the lockfile (an older npm in the container would drop fields). It
-# reinstalls from scratch, so it runs only when the lockfile changed since the last install.
+# The lockfile is written by npm 11, as on desktops and in CI (Node 24). npm 10, which the
+# container may bring, drops the libc fields of every platform-specific package whenever it
+# rewrites the lockfile, so adding a dependency here would also rewrite unrelated entries.
+# Upgrading the container's own npm makes plain `npm` safe; failing to do so must not stop
+# the rest of the setup, so it only warns, and the warning reaches the session.
+if [ "$(npm --version | cut -d. -f1)" -lt 11 ]; then
+  if ! npm install --global --no-audit --no-fund npm@11 >/dev/null 2>&1; then
+    echo "WARNING: npm $(npm --version) could not be upgraded to npm 11." \
+      "Do not add, remove or update npm dependencies in this session."
+  fi
+fi
+
+# npm ci never rewrites the lockfile. It reinstalls from scratch, so it runs only when the
+# lockfile changed since the last install.
 stamp=node_modules/.devhq-lock.sha256
 if ! sha256sum --check --status "$stamp" 2>/dev/null; then
   npm ci --no-audit --no-fund
