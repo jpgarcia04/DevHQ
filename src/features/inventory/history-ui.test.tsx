@@ -352,6 +352,29 @@ describe('repeated automated results', () => {
     expect(recent.queryByText('Database run at -80')).not.toBeInTheDocument()
   })
 
+  it('in Activity, mark only the run that reaches the cut, not the last one of every day', () => {
+    // Two days apart: the newer day is complete, the older one is where the view is cut.
+    const today = [5, 10, 15].map((minutesAgo) => run(web, minutesAgo))
+    const cutDay = [2900, 2905, 2910].map((minutesAgo) => run(web, minutesAgo))
+    renderWith(
+      <RealActivityPage />,
+      inventoryContext({
+        snapshot: {
+          ...snapshot,
+          events: [...today, ...cutDay],
+          automatedHistory: {
+            limit: 200,
+            truncated: [{ subject: web, since: minutesFromNow(-2910) }],
+          },
+        },
+      }),
+    )
+    const day = (minutesAgo: number) =>
+      within(screen.getByRole('region', { name: formatDate(minutesFromNow(-minutesAgo)) }))
+    expect(day(5).getByText('3 consecutive results')).toBeInTheDocument()
+    expect(day(2900).getByText('3+ consecutive results')).toBeInTheDocument()
+  })
+
   it('keep what changed among the overview’s recent activity', () => {
     const runs = [5, 10, 15, 20, 25, 30].map((minutesAgo) => run(web, minutesAgo))
     renderWith(

@@ -308,6 +308,7 @@ export function EventRecordList({
   automatedSince = null,
   foldRepeats = false,
   maxRows,
+  reachesCut = true,
 }: {
   items: RecordedEvent[]
   timeOnly?: boolean
@@ -318,6 +319,11 @@ export function EventRecordList({
   foldRepeats?: boolean
   /** Shows only the newest rows, counted after folding. */
   maxRows?: number
+  /**
+   * Nothing complete follows this list before the view stops being complete. False for one
+   * list among several (a day), when an older one still has complete rows.
+   */
+  reachesCut?: boolean
 }) {
   const shown = items.filter((event) =>
     withinWindow(event.source, event.occurredAt, automatedSince),
@@ -328,7 +334,7 @@ export function EventRecordList({
   const first = (row: TimelineRow) => (row.kind === 'event' ? row.event : row.events[0]!)
   const boundary = all.findIndex((row) => beforeWindow(first(row).occurredAt, automatedSince))
   // A run that ends where the view stops being complete may have older results not shown.
-  const lastComplete = boundary === -1 ? all.length - 1 : boundary - 1
+  const lastComplete = boundary !== -1 ? boundary - 1 : reachesCut ? all.length - 1 : -1
   const rows = all.slice(0, maxRows)
   return (
     <ol className="divide-y divide-border/65">

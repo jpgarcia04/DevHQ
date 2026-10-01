@@ -122,6 +122,14 @@ export function RealActivityPage() {
     withinWindow(event.source, event.occurredAt, since),
   )
   const days = [...new Set(events.map((event) => formatDate(event.occurredAt)))]
+  // The oldest day with records in the complete part: only its last run can reach the cut.
+  const cutDay = [...days]
+    .reverse()
+    .find((day) =>
+      events.some(
+        (event) => formatDate(event.occurredAt) === day && !beforeWindow(event.occurredAt, since),
+      ),
+    )
   const today = formatDate(new Date(now).toISOString())
   return (
     <div className="page-stack">
@@ -168,7 +176,13 @@ export function RealActivityPage() {
                       {manualOnly && ' · manual records only'}
                     </h2>
                     <div className="panel px-5 py-5">
-                      <EventRecordList timeOnly foldRepeats items={items} automatedSince={since} />
+                      <EventRecordList
+                        timeOnly
+                        foldRepeats
+                        items={items}
+                        automatedSince={since}
+                        reachesCut={day === cutDay}
+                      />
                     </div>
                   </section>
                 )
