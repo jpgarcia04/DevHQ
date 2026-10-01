@@ -623,6 +623,84 @@ pub(crate) fn store_observation(path: &Path, new: NewObservation) -> Result<Obse
     Ok(observation)
 }
 
+// A subject's automated observations older than a cursor, newest first. The plain bound on
+// observed_at lets the subject index find the start; the row value breaks ties exactly.
+const OLDER_AUTOMATED: [&str; 2] = [
+    "WHERE application_id = ?1 AND source = 'http' AND observed_at <= ?2
+       AND (observed_at, recorded_at, rowid) < (?2, ?3, ?4)
+     ORDER BY observed_at DESC, recorded_at DESC, rowid DESC LIMIT ?5",
+    "WHERE resource_id = ?1 AND source = 'http' AND observed_at <= ?2
+       AND (observed_at, recorded_at, rowid) < (?2, ?3, ?4)
+     ORDER BY observed_at DESC, recorded_at DESC, rowid DESC LIMIT ?5",
+];
+
+/// Automated observations a snapshot left out, a page at a time.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ObservationPage {
+    pub observations: Vec<Observation>,
+    /// Older automated observations remain after this page.
+    pub more: bool,
+}
+
+/// The subject's automated observations older than `before`, one of its observations already
+/// shown, newest first and at most `AUTOMATED_HISTORY_LIMIT` of them. Anchoring on a shown
+/// observation, rather than counting, keeps pages exact while new results arrive.
+pub fn older_observations(
+    path: &Path,
+    subject: &Subject,
+    before: &str,
+) -> Result<ObservationPage, ApiError> {
+    let mut db = open(path)?;
+    let tx = db.transaction().map_err(ApiError::database)?;
+    ensure_subject(&tx, subject)?;
+    let (application_id, resource_id) = subject.columns();
+    let cursor: Option<(i64, i64, i64)> = tx
+        .query_row(
+            "SELECT observed_at, recorded_at, rowid FROM observations
+             WHERE id = ?1 AND application_id IS ?2 AND resource_id IS ?3",
+            params![before, application_id, resource_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()
+        .map_err(ApiError::database)?;
+    let Some((observed_at, recorded_at, rowid)) = cursor else {
+        return Err(ApiError::invalid(format!(
+            "Observation {before} is not one of this {}'s.",
+            subject.label()
+        )));
+    };
+    let (kind, id) = match subject {
+        Subject::Application { id } => (0, id),
+        Subject::Resource { id } => (1, id),
+    };
+    let mut observations = {
+        let mut statement = tx
+            .prepare(&format!("{OBSERVATION_SELECT} {}", OLDER_AUTOMATED[kind]))
+            .map_err(ApiError::database)?;
+        let rows = statement
+            .query_map(
+                params![
+                    id,
+                    observed_at,
+                    recorded_at,
+                    rowid,
+                    AUTOMATED_HISTORY_LIMIT + 1
+                ],
+                observation_from_row,
+            )
+            .map_err(ApiError::database)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(ApiError::database)?;
+        rows
+    };
+    let limit = usize::try_from(AUTOMATED_HISTORY_LIMIT).map_err(ApiError::database)?;
+    let more = observations.len() > limit;
+    observations.truncate(limit);
+    tx.commit().map_err(ApiError::database)?;
+    Ok(ObservationPage { observations, more })
+}
+
 /// Stores a manual observation and its timeline event atomically.
 pub fn record_observation(path: &Path, input: ObservationInput) -> Result<Observation, ApiError> {
     allowed(&input.result, OBSERVATION_RESULTS, "observation result")?;
@@ -1333,6 +1411,69 @@ mod tests {
     }
 
     #[test]
+    fn older_automated_results_load_a_page_at_a_time_without_gaps() {
+        let path = path();
+        let (_, resource_id) = seed(&path);
+        let host = Subject::Resource { id: resource_id };
+        let limit = usize::try_from(AUTOMATED_HISTORY_LIMIT).unwrap();
+        let first = now_ms() - 10 * 24 * 60 * 60_000;
+        // Oldest first: a full page and three more beyond the snapshot's window.
+        let runs = automated(&path, &host, first, AUTOMATED_HISTORY_LIMIT * 2 + 3);
+        record_observation(
+            &path,
+            ObservationInput {
+                observed_at: format_time(first + 1),
+                ..observation(host.clone())
+            },
+        )
+        .unwrap();
+        let snapshot = list(&path).unwrap();
+        let oldest_shown = snapshot
+            .observations
+            .iter()
+            .rfind(|item| item.source == HTTP)
+            .unwrap();
+        assert_eq!(oldest_shown.id, runs[limit + 3]);
+
+        let page = older_observations(&path, &host, &oldest_shown.id).unwrap();
+        assert!(page.more);
+        let ids: Vec<_> = page
+            .observations
+            .iter()
+            .map(|item| item.id.clone())
+            .collect();
+        assert_eq!(
+            ids,
+            runs[3..limit + 3].iter().rev().cloned().collect::<Vec<_>>()
+        );
+        assert!(page.observations.iter().all(|item| item.source == HTTP));
+        // A new result meanwhile changes nothing for the next page: it is anchored, not counted.
+        automated(&path, &host, now_ms() - 60_000, 1);
+        let last = older_observations(&path, &host, ids.last().unwrap()).unwrap();
+        assert!(!last.more);
+        assert_eq!(
+            last.observations
+                .iter()
+                .map(|item| item.id.clone())
+                .collect::<Vec<_>>(),
+            runs[..3].iter().rev().cloned().collect::<Vec<_>>()
+        );
+        let none = older_observations(&path, &host, &runs[0]).unwrap();
+        assert!(none.observations.is_empty() && !none.more);
+
+        // The anchor must be one of the subject's own observations.
+        let (other_application, _) = seed(&path);
+        let other = Subject::Application {
+            id: other_application,
+        };
+        for (subject, before) in [(&other, runs[5].as_str()), (&host, "ghost")] {
+            let error = older_observations(&path, subject, before).unwrap_err();
+            assert_eq!(error.code, "invalid_input", "{}", error.message);
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn snapshot_reads_follow_indexes_instead_of_scanning_history() {
         let path = path();
         let db = open(&path).unwrap();
@@ -1346,7 +1487,8 @@ mod tests {
         };
         let observations = format!("{OBSERVATION_SELECT} {WINDOWED_OBSERVATIONS}");
         let events = format!("{EVENT_SELECT} {WINDOWED_EVENTS}");
-        let cases: [(&str, &[&dyn rusqlite::ToSql], &str); 6] = [
+        let older = OLDER_AUTOMATED.map(|filter| format!("{OBSERVATION_SELECT} {filter}"));
+        let cases: [(&str, &[&dyn rusqlite::ToSql], &str); 8] = [
             (
                 LATEST_AUTOMATED[0],
                 &[&"app", &1],
@@ -1369,6 +1511,8 @@ mod tests {
             ),
             (&observations, &[&"[]"], "observations_manual"),
             (&events, &[&"[]"], "events_manual"),
+            (&older[0], &[&"app", &9, &9, &9, &1], "observed_at<"),
+            (&older[1], &[&"host", &9, &9, &9, &1], "observed_at<"),
         ];
         for (sql, params, index) in cases {
             let steps = plan(sql, params);

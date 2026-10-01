@@ -9,6 +9,7 @@ import type {
   InventorySnapshot,
   MonitorStatus,
   ObservationInput,
+  ObservationPage,
   ResourceInput,
 } from './inventory-api'
 
@@ -29,6 +30,8 @@ export interface InventoryContextValue {
   deleteApplication: (id: string) => Promise<void>
   deleteResource: (id: string) => Promise<void>
   recordObservation: (input: ObservationInput) => Promise<void>
+  /** Reads automated observations the snapshot left out; it writes nothing. */
+  olderObservations: (subject: EntityRef, before: string) => Promise<ObservationPage>
   openIncident: (input: IncidentInput) => Promise<void>
   updateIncidentStatus: (input: IncidentStatusInput) => Promise<void>
   recordEvent: (input: EventInput) => Promise<void>

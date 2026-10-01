@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
@@ -305,5 +305,74 @@ describe('repeated automated results', () => {
     expect(recent.getByText('6 consecutive results')).toBeInTheDocument()
     expect(recent.getByText('Deployed 2.0')).toBeInTheDocument()
     expect(recent.getByText('Old')).toBeInTheDocument()
+  })
+})
+
+describe('older automated results', () => {
+  const older = (minutesAgo: number) =>
+    observation(web, 'http', minutesAgo, `Run at -${minutesAgo}`)
+
+  it('load on demand from the oldest one shown, moving the boundary with them', async () => {
+    const user = userEvent.setup()
+    const olderObservations = vi
+      .fn()
+      .mockResolvedValueOnce({ observations: [older(65), older(95)], more: true })
+      .mockResolvedValueOnce({ observations: [older(100)], more: false })
+    renderWith(
+      <ObservationHistory subject={web} />,
+      inventoryContext({ snapshot, olderObservations }),
+    )
+    await user.click(screen.getByRole('button', { name: 'Show 200 older automated results' }))
+    expect(olderObservations).toHaveBeenCalledWith(web, 'obs-web-host-60')
+    // Complete down to the oldest result loaded; the manual one at -90 is now inside.
+    const boundary = `Before ${formatDateTime(minutesFromNow(-95))} · manual records only`
+    let items = itemTexts(screen.getByRole('list'))
+    expect(
+      items.map((item) => item.match(/Run at -\d+|Checked by hand at -90/)?.[0] ?? item),
+    ).toEqual([
+      'Run at -10',
+      'Run at -30',
+      'Run at -60',
+      'Run at -65',
+      'Checked by hand at -90',
+      'Run at -95',
+    ])
+    expect(
+      screen.getByText(whole('P', new RegExp(`before ${formatDateTime(minutesFromNow(-95))}`))),
+    ).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Show 200 older automated results' }))
+    expect(olderObservations).toHaveBeenLastCalledWith(web, 'obs-web-host-95')
+    items = itemTexts(screen.getByRole('list'))
+    expect(items).toHaveLength(7)
+    expect(items).not.toContain(boundary)
+    expect(screen.queryByText(theNote)).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: /older automated results/ }),
+    ).not.toBeInTheDocument()
+    expect(screen.getByText('Every automated result of this system is shown.')).toBeInTheDocument()
+  })
+
+  it('reports a failed read and keeps what is shown', async () => {
+    const user = userEvent.setup()
+    const olderObservations = vi.fn().mockRejectedValue({
+      code: 'database_error',
+      message: 'Inventory database error: locked',
+    })
+    renderWith(
+      <ObservationHistory subject={web} />,
+      inventoryContext({ snapshot, olderObservations }),
+    )
+    await user.click(screen.getByRole('button', { name: 'Show 200 older automated results' }))
+    expect(screen.getByRole('alert')).toHaveTextContent('Inventory database error: locked')
+    expect(itemTexts(screen.getByRole('list'))).toHaveLength(5)
+    expect(screen.getByRole('button', { name: 'Show 200 older automated results' })).toBeEnabled()
+  })
+
+  it('are not offered when the snapshot holds every result', () => {
+    renderWith(<ObservationHistory subject={db} />, inventoryContext({ snapshot }))
+    expect(
+      screen.queryByRole('button', { name: /older automated results/ }),
+    ).not.toBeInTheDocument()
   })
 })

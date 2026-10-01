@@ -88,6 +88,13 @@ export interface AutomatedHistory {
   truncated: { subject: EntityRef; since: string }[]
 }
 
+/** Automated observations a snapshot left out, a page at a time, newest first. */
+export interface ObservationPage {
+  observations: Observation[]
+  /** Older automated observations remain after this page. */
+  more: boolean
+}
+
 /** One consistent read of SQLite. Records are newest first; times are UTC RFC 3339. */
 export interface InventorySnapshot {
   applications: InventoryApplication[]
@@ -147,6 +154,9 @@ export const inventoryApi = {
   deleteResource: (id: string) => invoke<null>('delete_resource', { id }),
   recordObservation: (input: ObservationInput) =>
     invoke<Observation>('record_observation', { input }),
+  /** The subject's automated observations older than `before`, one of its own already shown. */
+  olderObservations: (subject: EntityRef, before: string) =>
+    invoke<ObservationPage>('older_observations', { subject, before }),
   openIncident: (input: IncidentInput) => invoke<RecordedIncident>('open_incident', { input }),
   updateIncidentStatus: (input: IncidentStatusInput) =>
     invoke<RecordedIncident>('update_incident_status', { input }),

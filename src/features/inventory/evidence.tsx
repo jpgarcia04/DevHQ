@@ -1,4 +1,4 @@
-import { Fragment } from 'react'
+import { Fragment, useState } from 'react'
 import { CircleDashed, History, PenLine, Radar, type LucideIcon } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { healthLabels, sourceLabels } from '@/domain/labels'
@@ -11,9 +11,11 @@ import {
   type Evidence,
   type EvidenceState,
 } from '@/domain/evidence'
+import { Button } from '@/components/ui/button'
 import { formatDateTime, relativeTime, timeUntil } from '@/shared/time'
 import { cn } from '@/shared/utils'
 import { automatedSince, beforeWindow } from './history'
+import { inventoryError } from './inventory-api'
 import { useInventory } from './inventory-context'
 
 // Absence and expiry get their own icon and words, so neither can pass for a result.
@@ -262,16 +264,47 @@ export function SubjectEvidence({ subject }: { subject: EntityRef }) {
 }
 
 export function ObservationHistory({ subject }: { subject: EntityRef }) {
-  const { snapshot, now } = useInventory()
-  const history = subjectObservations(snapshot?.observations ?? [], subject)
+  // Older results loaded for one system never carry over to another.
+  return <SubjectObservationHistory key={subjectKey(subject)} subject={subject} />
+}
+
+const byId = (items: Observation[]) => [...new Map(items.map((item) => [item.id, item])).values()]
+
+function SubjectObservationHistory({ subject }: { subject: EntityRef }) {
+  const { snapshot, now, olderObservations } = useInventory()
+  const [older, setOlder] = useState<Observation[]>([])
+  const [more, setMore] = useState(true)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const history = subjectObservations(byId([...(snapshot?.observations ?? []), ...older]), subject)
   if (!snapshot || !history.length)
     return (
       <p className="text-xs leading-5 text-muted-foreground">
         No observations recorded. Record what you have checked, or run this system’s HTTP check.
       </p>
     )
-  const since = automatedSince(snapshot.automatedHistory, [subject])
+  const automated = history.filter((item) => item.source === 'http')
+  const oldestAutomated = automated.at(-1)
+  // Until older results are asked for, the snapshot says where its window starts; after,
+  // the oldest loaded result does, until none is left.
+  const windowSince = automatedSince(snapshot.automatedHistory, [subject])
+  const since = !older.length ? windowSince : more ? (oldestAutomated?.observedAt ?? null) : null
   const boundary = history.findIndex((item) => beforeWindow(item.observedAt, since))
+  const loadOlder = async () => {
+    if (!oldestAutomated) return
+    setLoading(true)
+    setError(null)
+    try {
+      const page = await olderObservations(subject, oldestAutomated.id)
+      // Keep what is shown now as well: a newer snapshot may drop it from its window.
+      setOlder((current) => byId([...current, ...automated, ...page.observations]))
+      setMore(page.more)
+    } catch (cause) {
+      setError(inventoryError(cause))
+    } finally {
+      setLoading(false)
+    }
+  }
   return (
     <div className="space-y-4">
       {since && <AutomatedWindowNote since={since} limit={snapshot.automatedHistory.limit} />}
@@ -305,6 +338,23 @@ export function ObservationHistory({ subject }: { subject: EntityRef }) {
           )
         })}
       </ol>
+      {since && (
+        <Button size="sm" variant="outline" disabled={loading} onClick={() => void loadOlder()}>
+          {loading
+            ? 'Loading older results…'
+            : `Show ${snapshot.automatedHistory.limit} older automated results`}
+        </Button>
+      )}
+      {older.length > 0 && !more && (
+        <p className="text-[11px] text-muted-foreground">
+          Every automated result of this system is shown.
+        </p>
+      )}
+      {error && (
+        <p role="alert" className="text-xs text-rose-300">
+          {error}
+        </p>
+      )}
     </div>
   )
 }

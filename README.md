@@ -168,7 +168,9 @@ ejecución, que es idéntica a la de Run check y sigue la misma semántica de vi
   200 resultados automáticos de cada aplicación o recurso (con sus eventos): la supervisión
   puede añadir uno cada 5 min durante meses. Los anteriores siguen en SQLite, intactos, y la
   UI lo dice: una nota indica desde cuándo los resultados automáticos están completos y una
-  línea marca dónde una lista pasa a tener solo registros manuales. Una vista que mezcla
+  línea marca dónde una lista pasa a tener solo registros manuales. En el historial de
+  observaciones de un sistema, los anteriores se cargan bajo demanda, de 200 en 200, anclados
+  al más antiguo ya mostrado para que los resultados nuevos no causen saltos ni duplicados. Una vista que mezcla
   sistemas (Activity) solo muestra resultados automáticos desde el momento en que los de
   todos están completos, para no sugerir que uno no tuvo resultados. En las líneas de
   tiempo, tres o más resultados automáticos seguidos e idénticos de un mismo sistema se
@@ -233,7 +235,7 @@ consumen explícitamente el escenario durante esta etapa.
 
 Rust expone `list_inventory` (una lectura consistente de inventario, registros y
 `httpChecks`), `save_application`, `save_resource`, `delete_application`,
-`delete_resource`, `record_observation`, `open_incident`,
+`delete_resource`, `record_observation`, `older_observations`, `open_incident`,
 `update_incident_status`, `record_event`, `save_http_check`, `set_http_check_paused`,
 `remove_http_check`, `run_http_check` y `watch_http_monitor`. Los comandos de
 comprobaciones y de borrado son asíncronos y avisan a la supervisión antes de responder, así

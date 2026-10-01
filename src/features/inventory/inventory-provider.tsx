@@ -132,6 +132,7 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
           persist(inventoryApi.deleteApplication(id), 'Application deletion'),
         deleteResource: (id) => persist(inventoryApi.deleteResource(id), 'Resource deletion'),
         recordObservation: (input) => persist(inventoryApi.recordObservation(input), 'Observation'),
+        olderObservations: inventoryApi.olderObservations,
         openIncident: (input) => persist(inventoryApi.openIncident(input), 'Incident'),
         updateIncidentStatus: (input) =>
           persist(inventoryApi.updateIncidentStatus(input), 'Incident change'),

@@ -64,6 +64,16 @@ fn record_observation(
     records::record_observation(&path.0, input)
 }
 
+/// Automated observations older than the snapshot carries, a page at a time.
+#[tauri::command]
+fn older_observations(
+    path: tauri::State<'_, InventoryPath>,
+    subject: records::Subject,
+    before: String,
+) -> Result<records::ObservationPage, inventory::ApiError> {
+    records::older_observations(&path.0, &subject, &before)
+}
+
 #[tauri::command]
 fn open_incident(
     path: tauri::State<'_, InventoryPath>,
@@ -160,6 +170,7 @@ pub fn run() {
             delete_application,
             delete_resource,
             record_observation,
+            older_observations,
             open_incident,
             update_incident_status,
             record_event,
