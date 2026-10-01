@@ -2,8 +2,9 @@ use crate::inventory::{
     allowed, bounded_text, open, required_text, ApiError, MAX_DESCRIPTION, MAX_SUMMARY, MAX_TITLE,
 };
 use rusqlite::types::Type;
-use rusqlite::{params, OptionalExtension, Params, Row, Transaction, TransactionBehavior};
+use rusqlite::{params, OptionalExtension, Params, Row, Rows, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
+use std::collections::BinaryHeap;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 use time::format_description::well_known::Rfc3339;
@@ -729,6 +730,45 @@ const OLDER_AUTOMATED_EVENTS: [&str; 2] = [
 const EVENTS_BY_ROWID: &str = "WHERE rowid IN (SELECT value FROM json_each(?1))
      ORDER BY occurred_at DESC, recorded_at DESC, rowid DESC";
 
+/// Where an event sits in a timeline: when it happened, when it was recorded, then its rowid.
+/// Distinct for every event, so ordering by it is total.
+type Position = (i64, i64, i64);
+
+/// The next position a subject's older events give, if any.
+fn next_position(rows: &mut Rows) -> Result<Option<Position>, ApiError> {
+    rows.next()
+        .and_then(|row| {
+            row.map(|row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                .transpose()
+        })
+        .map_err(ApiError::database)
+}
+
+/// The newest `take` positions of several sources, each newest first, newest first. It takes
+/// from a source only what it returns from it, plus one position ahead to compare.
+fn newest_first<E>(
+    mut sources: Vec<impl Iterator<Item = Result<Position, E>>>,
+    take: usize,
+) -> Result<Vec<Position>, E> {
+    let mut heads = BinaryHeap::new();
+    for (index, source) in sources.iter_mut().enumerate() {
+        if let Some(head) = source.next().transpose()? {
+            heads.push((head, index));
+        }
+    }
+    let mut newest = Vec::with_capacity(take);
+    while newest.len() < take {
+        let Some((head, index)) = heads.pop() else {
+            break;
+        };
+        newest.push(head);
+        if let Some(next) = sources[index].next().transpose()? {
+            heads.push((next, index));
+        }
+    }
+    Ok(newest)
+}
+
 /// Automated events a snapshot left out of a timeline, a page at a time.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -743,8 +783,8 @@ pub struct EventPage {
 /// timeline that merges several systems pages through them together: after a page it is
 /// complete down to the page's oldest event, so pages never leave a gap between systems.
 /// Anchoring on a shown event, rather than counting, keeps pages exact while new results
-/// arrive. Each subject's read follows its own index, so a page costs what it returns per
-/// subject, never the whole automated history.
+/// arrive. Each subject's read follows its own index and stops one row past what the page takes
+/// from it, so a page costs what it returns plus a row per subject, never the whole history.
 pub fn older_events(
     path: &Path,
     subjects: &[Subject],
@@ -786,42 +826,39 @@ pub fn older_events(
             "Event {before} is not one of these systems' events."
         )));
     };
-    // One more than the page from each subject tells whether anything older remains.
-    let mut positions = Vec::new();
-    {
-        let prepare = |sql| tx.prepare(sql).map_err(ApiError::database);
-        let mut older = [
-            prepare(OLDER_AUTOMATED_EVENTS[0])?,
-            prepare(OLDER_AUTOMATED_EVENTS[1])?,
-        ];
-        for subject in &subjects {
-            let (kind, id) = subject.per_type();
-            let rows = older[kind]
-                .query_map(
-                    params![
-                        id,
-                        occurred_at,
-                        recorded_at,
-                        rowid,
-                        AUTOMATED_HISTORY_LIMIT + 1
-                    ],
-                    |row| {
-                        Ok((
-                            row.get::<_, i64>(0)?,
-                            row.get::<_, i64>(1)?,
-                            row.get::<_, i64>(2)?,
-                        ))
-                    },
-                )
-                .map_err(ApiError::database)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(ApiError::database)?;
-            positions.extend(rows);
-        }
-    }
-    // Newest first across subjects, exactly as the timeline orders them.
-    positions.sort_unstable_by(|a, b| b.cmp(a));
+    // Each subject's events come newest first from its own index, and are merged a row at a time:
+    // the page reads what it takes and one row ahead per subject, never a page from every subject.
+    // With many systems that was most of the cost, as each row of one system sits on a page of its
+    // own among the others'. One more than the page tells whether anything older remains.
     let limit = usize::try_from(AUTOMATED_HISTORY_LIMIT).map_err(ApiError::database)?;
+    let mut positions = {
+        let mut statements = subjects
+            .iter()
+            .map(|subject| tx.prepare(OLDER_AUTOMATED_EVENTS[subject.per_type().0]))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(ApiError::database)?;
+        let mut cursors = statements
+            .iter_mut()
+            .zip(&subjects)
+            .map(|(statement, subject)| {
+                statement.query(params![
+                    subject.per_type().1,
+                    occurred_at,
+                    recorded_at,
+                    rowid,
+                    AUTOMATED_HISTORY_LIMIT + 1
+                ])
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(ApiError::database)?;
+        newest_first(
+            cursors
+                .iter_mut()
+                .map(|rows| std::iter::from_fn(move || next_position(rows).transpose()))
+                .collect(),
+            limit + 1,
+        )?
+    };
     let more = positions.len() > limit;
     positions.truncate(limit);
     let chosen: Vec<i64> = positions.iter().map(|&(_, _, rowid)| rowid).collect();
@@ -1750,6 +1787,99 @@ mod tests {
     }
 
     #[test]
+    fn many_systems_page_together_exactly_as_the_timeline_orders_them() {
+        let path = path();
+        let subjects: Vec<Subject> = (0..6)
+            .flat_map(|_| {
+                let (application, resource) = seed(&path);
+                [
+                    Subject::Application { id: application },
+                    Subject::Resource { id: resource },
+                ]
+            })
+            .collect();
+        let first = now_ms() - 10 * 24 * 60 * 60_000;
+        // Uneven histories: some systems ran at the same instants as others, some in between, and
+        // some stopped early, so the merge runs some sources dry and breaks ties by rowid.
+        for (index, subject) in (0_i64..).zip(&subjects) {
+            automated(
+                &path,
+                subject,
+                first + (index % 3) * 60_000,
+                15 + index * 11,
+            );
+        }
+        let all: Vec<&Subject> = subjects.iter().collect();
+        let timeline: Vec<String> = automated_timeline(&path, &all)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        let mut shown = vec![timeline[0].clone()];
+        loop {
+            let page = older_events(&path, &subjects, shown.last().unwrap()).unwrap();
+            assert!(page.events.len() <= usize::try_from(AUTOMATED_HISTORY_LIMIT).unwrap());
+            shown.extend(page.events.into_iter().map(|event| event.id));
+            if !page.more {
+                break;
+            }
+        }
+        assert_eq!(shown, timeline);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn the_merge_takes_from_each_source_only_what_it_returns_and_one_ahead() {
+        use std::cell::Cell;
+        // Newest first within each source, with the same instant in several (the rowid differs)
+        // and sources of every length, an empty one too.
+        let sources: Vec<Vec<Position>> = (0..9_i64)
+            .map(|source| {
+                (0..source * 7)
+                    .map(|step| (1_000 - step * (source % 4 + 1), 5, source * 1_000 + step))
+                    .collect()
+            })
+            .collect();
+        let mut everything: Vec<Position> = sources.iter().flatten().copied().collect();
+        everything.sort_unstable_by(|a, b| b.cmp(a));
+        for take in [0, 1, 40, 201, everything.len(), everything.len() + 5] {
+            let pulled: Vec<Cell<usize>> = sources.iter().map(|_| Cell::new(0)).collect();
+            let counted = sources
+                .iter()
+                .zip(&pulled)
+                .map(|(source, pulls)| {
+                    source.iter().map(move |&position| {
+                        pulls.set(pulls.get() + 1);
+                        Ok::<_, ()>(position)
+                    })
+                })
+                .collect();
+            let newest = newest_first(counted, take).unwrap();
+            assert_eq!(
+                newest,
+                everything[..take.min(everything.len())],
+                "take {take}"
+            );
+            for (source, pulls) in sources.iter().zip(&pulled) {
+                let returned = newest.iter().filter(|item| source.contains(item)).count();
+                assert!(
+                    pulls.get() <= returned + 1,
+                    "take {take}: {} pulled to return {returned}",
+                    pulls.get()
+                );
+            }
+        }
+        // A source that fails, at once or later, stops the merge with its error.
+        let failing = |first: Result<Position, &'static str>| {
+            vec![
+                vec![Ok((9, 9, 1)), Ok((8, 8, 2))].into_iter(),
+                vec![first, Err("unreadable")].into_iter(),
+            ]
+        };
+        assert_eq!(newest_first(failing(Ok((7, 7, 3))), 10), Err("unreadable"));
+        assert_eq!(newest_first(failing(Err("locked")), 10), Err("locked"));
+    }
+
+    #[test]
     fn snapshot_reads_follow_indexes_instead_of_scanning_history() {
         let path = path();
         let observations = format!("{OBSERVATION_SELECT} {WINDOWED_OBSERVATIONS}");
@@ -1852,57 +1982,47 @@ mod tests {
             .find_map(|line| line.strip_prefix("rchar: ")?.parse().ok())
     }
 
-    /// Not a check: measures what a reload and a page of global Activity cost over a long
-    /// supervised history, for the figures in the README. Run it alone and in release:
-    /// `cargo test --release --manifest-path src-tauri/Cargo.toml --lib history_costs --
-    /// --ignored --nocapture`
-    #[test]
-    #[ignore = "measurement: run it alone with --ignored --nocapture"]
-    fn history_costs() {
-        use std::time::{Duration, Instant};
-        const DAYS: i64 = 90;
-        const RUNS: usize = 15;
+    /// `systems` systems supervised every 5 minutes for `days`, spread evenly over each 5 minutes
+    /// (five are a minute apart), written as supervision writes them: an observation and its
+    /// event, in the order they happen. And a person's records: a deployment per system each week. Three systems in five
+    /// are resources, the others applications.
+    fn supervised_history(path: &Path, systems: i64, days: i64) -> Vec<Subject> {
         let minutes = |count: i64| count * 60_000;
-        let path = path();
-        // Five supervised systems: three resources and two applications.
-        let mut subjects: Vec<Subject> = ["Host", "Database", "Proxy"]
-            .into_iter()
-            .map(|name| {
-                let resource = save_resource(
-                    &path,
-                    ResourceInput {
-                        id: None,
-                        name: name.into(),
-                        kind: "server".into(),
-                        description: String::new(),
-                        operating_system: "Linux".into(),
-                    },
-                )
-                .unwrap();
-                Subject::Resource { id: resource.id }
+        let subjects: Vec<Subject> = (0..systems)
+            .map(|index| {
+                let name = format!("System {index}");
+                if index % 5 < 3 {
+                    let resource = save_resource(
+                        path,
+                        ResourceInput {
+                            id: None,
+                            name,
+                            kind: "server".into(),
+                            description: String::new(),
+                            operating_system: "Linux".into(),
+                        },
+                    )
+                    .unwrap();
+                    Subject::Resource { id: resource.id }
+                } else {
+                    let application = save_application(
+                        path,
+                        ApplicationInput {
+                            id: None,
+                            name,
+                            description: String::new(),
+                            lifecycle: "production".into(),
+                            version: None,
+                            components: Vec::new(),
+                        },
+                    )
+                    .unwrap();
+                    Subject::Application { id: application.id }
+                }
             })
             .collect();
-        for name in ["Shop", "Blog"] {
-            let application = save_application(
-                &path,
-                ApplicationInput {
-                    id: None,
-                    name: name.into(),
-                    description: String::new(),
-                    lifecycle: "production".into(),
-                    version: None,
-                    components: Vec::new(),
-                },
-            )
-            .unwrap();
-            subjects.push(Subject::Application { id: application.id });
-        }
-
-        // Every 5 minutes for 90 days, each system a minute after the one before, written as
-        // supervision writes them: an observation and its event, in the order they happen.
-        let first = now_ms() - minutes(DAYS * 24 * 60);
-        let runs = DAYS * 24 * 12;
-        let mut db = open(&path).unwrap();
+        let first = now_ms() - minutes(days * 24 * 60);
+        let mut db = open(path).unwrap();
         let tx = db.transaction().unwrap();
         {
             let mut observation = tx
@@ -1918,9 +2038,9 @@ mod tests {
                      VALUES (?1, ?2, ?3, 'observation', 'success', 'HTTP check: Healthy', ?4, 'http', ?5, ?6, ?6)",
                 )
                 .unwrap();
-            for run in 0..runs {
+            for run in 0..days * 24 * 12 {
                 for (offset, subject) in (0_i64..).zip(&subjects) {
-                    let at = first + minutes(run * 5 + offset);
+                    let at = first + minutes(run * 5) + offset * 60_000 * 5 / systems;
                     let latency = 40 + (run * 7 + offset * 13) % 160;
                     let summary = format!("HTTP 200 as expected, in {latency} ms");
                     let url = format!("https://system-{offset}.example.com/health");
@@ -1953,11 +2073,10 @@ mod tests {
         }
         tx.commit().unwrap();
         drop(db);
-        // And a person's records: a deployment per system each week.
         for subject in &subjects {
-            for week in 0..DAYS / 7 {
+            for week in 0..days / 7 {
                 record_event(
-                    &path,
+                    path,
                     EventInput {
                         occurred_at: format_time(first + minutes(week * 7 * 24 * 60 + 90)),
                         ..event(subject.clone())
@@ -1966,38 +2085,66 @@ mod tests {
                 .unwrap();
             }
         }
+        subjects
+    }
 
-        // The median of RUNS calls, each opening its own connection as every command does and
-        // serializing what the window receives; and, for one call, what SQLite read.
-        let measure = |label: &str, call: &dyn Fn() -> Vec<u8>| {
-            let before = bytes_read();
-            let sent = call().len();
-            let read = before
-                .zip(bytes_read())
-                .map(|(before, after)| after - before);
-            let mut times: Vec<Duration> = (0..RUNS)
-                .map(|_| {
-                    let start = Instant::now();
-                    call();
-                    start.elapsed()
-                })
-                .collect();
-            times.sort();
-            println!(
-                "{label}: {:.1} ms; {:.1} KB to the window; {} read from the database",
-                times[RUNS / 2].as_secs_f64() * 1000.0,
-                sent as f64 / 1024.0,
-                read.map_or("not measured".into(), |read| format!(
-                    "{:.1} KB",
-                    read as f64 / 1024.0
-                )),
-            );
-        };
+    /// The median of `RUNS` calls, each opening its own connection as every command does and
+    /// serializing what the window receives; and, for one call, what SQLite read.
+    fn measure(label: &str, call: &dyn Fn() -> Vec<u8>) {
+        use std::time::{Duration, Instant};
+        const RUNS: usize = 15;
+        let before = bytes_read();
+        let sent = call().len();
+        let read = before
+            .zip(bytes_read())
+            .map(|(before, after)| after - before);
+        let mut times: Vec<Duration> = (0..RUNS)
+            .map(|_| {
+                let start = Instant::now();
+                call();
+                start.elapsed()
+            })
+            .collect();
+        times.sort();
+        println!(
+            "{label}: {:.1} ms; {:.1} KB to the window; {} read from the database",
+            times[RUNS / 2].as_secs_f64() * 1000.0,
+            sent as f64 / 1024.0,
+            read.map_or("not measured".into(), |read| format!(
+                "{:.1} KB",
+                read as f64 / 1024.0
+            )),
+        );
+    }
+
+    /// The subject's latest automated event at least `days` old: an anchor for a page.
+    fn anchor_at(path: &Path, subject: &Subject, days: i64) -> String {
+        let (kind, id) = subject.per_type();
+        let column = ["application_id", "resource_id"][kind];
+        open(path)
+            .unwrap()
+            .query_row(
+                &format!("SELECT id FROM events WHERE {column} = ?1 AND source = 'http' AND occurred_at <= ?2 ORDER BY occurred_at DESC LIMIT 1"),
+                params![id, now_ms() - days * 24 * 60 * 60_000],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    /// Not a check: measures what a reload and a page of global Activity cost over a long
+    /// supervised history, for the figures in the README. Run it alone and in release:
+    /// `cargo test --release --manifest-path src-tauri/Cargo.toml --lib history_costs --
+    /// --ignored --nocapture`
+    #[test]
+    #[ignore = "measurement: run it alone with --ignored --nocapture"]
+    fn history_costs() {
+        // Five systems supervised every 5 minutes for 90 days.
+        let path = path();
+        let subjects = supervised_history(&path, 5, 90);
         let snapshot = list(&path).unwrap();
         measure("Reload (list_inventory)", &|| {
             serde_json::to_vec(&list(&path).unwrap()).unwrap()
         });
-
         // Global Activity reads on from where the snapshot stops being complete: the subject
         // cut latest, at its oldest loaded result (windowCut in the window).
         let cut = subjects
@@ -2010,21 +2157,10 @@ mod tests {
             })
             .min()
             .unwrap();
-        let anchor_at = |days: i64| -> String {
-            let db = open(&path).unwrap();
-            let (kind, id) = subjects[0].per_type();
-            let column = ["application_id", "resource_id"][kind];
-            db.query_row(
-                &format!("SELECT id FROM events WHERE {column} = ?1 AND source = 'http' AND occurred_at <= ?2 ORDER BY occurred_at DESC LIMIT 1"),
-                params![id, now_ms() - minutes(days * 24 * 60)],
-                |row| row.get(0),
-            )
-            .unwrap()
-        };
         for (label, anchor) in [
             ("first page", snapshot.events[cut].id.clone()),
-            ("page from 45 days back", anchor_at(45)),
-            ("page from 89 days back", anchor_at(89)),
+            ("page from 45 days back", anchor_at(&path, &subjects[0], 45)),
+            ("page from 89 days back", anchor_at(&path, &subjects[0], 89)),
         ] {
             let page = older_events(&path, &subjects, &anchor).unwrap();
             assert_eq!(page.events.len(), 200);
@@ -2032,7 +2168,6 @@ mod tests {
                 serde_json::to_vec(&older_events(&path, &subjects, &anchor).unwrap()).unwrap()
             });
         }
-
         let db = open(&path).unwrap();
         let count = |table: &str| -> i64 {
             db.query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
@@ -2047,5 +2182,25 @@ mod tests {
             std::fs::metadata(&path).unwrap().len() as f64 / 1_048_576.0
         );
         std::fs::remove_file(path).unwrap();
+
+        // A page of global Activity takes from every system, so its cost may grow with how many
+        // there are; not with how far back it is (above). A week of history tells.
+        for systems in [5, 20, 50] {
+            let path = self::path();
+            let subjects = supervised_history(&path, systems, 7);
+            let anchor = anchor_at(&path, &subjects[0], 3);
+            assert_eq!(
+                older_events(&path, &subjects, &anchor)
+                    .unwrap()
+                    .events
+                    .len(),
+                200
+            );
+            measure(
+                &format!("Global Activity, {systems} systems, page from 3 days back"),
+                &|| serde_json::to_vec(&older_events(&path, &subjects, &anchor).unwrap()).unwrap(),
+            );
+            std::fs::remove_file(path).unwrap();
+        }
     }
 }

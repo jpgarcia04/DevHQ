@@ -180,9 +180,10 @@ ejecución, que es idéntica a la de Run check y sigue la misma semántica de vi
   al más antiguo ya mostrado para que los resultados nuevos no causen saltos ni duplicados. Una vista que mezcla
   sistemas (Activity) solo muestra resultados automáticos desde el momento en que los de
   todos están completos, para no sugerir que uno no tuvo resultados. Activity y la Activity
-  de una aplicación también cargan los anteriores bajo demanda: Rust lee, por cada sistema
-  recortado y siguiendo su índice, los que preceden al evento del corte, los mezcla y
-  devuelve los 200 siguientes en el orden de la línea de tiempo. Así la vista queda completa
+  de una aplicación también cargan los anteriores bajo demanda: Rust recorre, por el índice de
+  cada sistema, los que preceden al evento del corte y los mezcla fila a fila, tomando siempre el
+  más reciente, hasta reunir los 200 siguientes en el orden de la línea de tiempo; de cada sistema
+  lee solo lo que entra en la página y una fila más para comparar. Así la vista queda completa
   hasta el más antiguo de la página sin saltarse ningún sistema, y lo que ya mostraba se
   conserva aunque un snapshot más nuevo lo deje fuera de su ventana. En las líneas de
   tiempo, tres o más resultados automáticos seguidos de un mismo sistema que dijeron lo mismo
@@ -193,8 +194,11 @@ ejecución, que es idéntica a la de Run check y sigue la misma semántica de vi
   acumulado. Con 5 comprobaciones cada 5 min durante 90 días (129 600 resultados, 91 MB en
   disco), antes de la ventana una recarga movía 86 MB en 0.5 s; ahora tarda 8 ms, manda
   855 KB a la ventana y lee 0.7 MB del archivo (0.65 MB con 10 días). Una página de Activity
-  global tarda 2 ms, manda 79 KB y lee 0.4 MB, igual al principio, a la mitad o al final del
-  historial. Los eventos de la ventana se buscan por el índice de su sistema; cuando se
+  global tarda 1 ms, manda 79 KB y lee 0.15 MB, igual al principio, a la mitad o al final del
+  historial; con 20 y 50 sistemas lee 0.25 y 0.45 MB y tarda 2 ms. Cuando leía una página de cada
+  sistema (201 posiciones) para devolver 200 en total, y cada fila de un sistema cae en una página
+  del archivo distinta entre las de los demás, leía 0.37 MB con 5 sistemas, 1.2 MB con 20 y
+  14.5 MB con 50 (14 ms). Los eventos de la ventana se buscan por el índice de su sistema; cuando se
   buscaban por el ID aleatorio de su observación, cada búsqueda caía en una página distinta de
   un índice tan grande como el historial y la recarga leía 3.9 MB a los 90 días. Las cifras
   son de Linux, en release y con la caché del sistema caliente (`history_costs`, ver
@@ -253,7 +257,8 @@ npm run check             # ESLint, tests, TypeScript, Vite y cargo check
 npm run e2e               # Playwright sobre preview.html (Chrome del sistema)
 cargo test --manifest-path src-tauri/Cargo.toml --lib # persistencia y migraciones
 cargo test --release --manifest-path src-tauri/Cargo.toml --lib history_costs -- --ignored --nocapture
-                          # mide recarga y Activity con 90 días de supervisión
+                          # mide recarga y Activity con 90 días de supervisión,
+                          # y una página de Activity con 5, 20 y 50 sistemas
 cargo fmt --manifest-path src-tauri/Cargo.toml --check
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 npm run tauri build       # ejecutable e instalador NSIS para Windows
@@ -398,8 +403,9 @@ runtime simulado de Tauri y desde un hilo sin runtime asíncrono como el princip
 abrir el `Channel` de estado. La ventana
 de historial se prueba por su límite exacto, los eventos que acompañan a cada resultado, el
 aviso de lo omitido en cada vista, la paginación de observaciones y de eventos de varios
-sistemas a la vez (sin huecos ni duplicados, con empates al mismo milisegundo y resultados
-nuevos entre páginas) y los planes de consulta, que nunca recorren el historial automático
+sistemas a la vez (sin huecos ni duplicados, con empates al mismo milisegundo, resultados
+nuevos entre páginas y doce sistemas de historiales desiguales), que la mezcla toma de cada
+sistema solo lo que devuelve de él y una fila más, y los planes de consulta, que nunca recorren el historial automático
 completo ni buscan un evento automático por su observación, tampoco con estadísticas que otra
 herramienta haya calculado sobre el archivo. La concurrencia de SQLite se prueba sin esperas medidas: una lectura no espera a una
 escritura en curso, una escritura no espera a una lectura abierta (que conserva su estado), dos
