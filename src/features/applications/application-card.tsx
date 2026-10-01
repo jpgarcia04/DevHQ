@@ -21,7 +21,11 @@ export function ApplicationCard({ app }: { app: Application }) {
             <div className="relative z-10">
               <AppLogo app={app} large />
             </div>
-            <span className="select-none font-mono text-[10px] uppercase tracking-[0.18em] opacity-55">
+            {/* Decoration: the lifecycle is stated below, and the ID is not for people. */}
+            <span
+              aria-hidden="true"
+              className="select-none font-mono text-[10px] uppercase tracking-[0.18em] opacity-55"
+            >
               {app.lifecycle === 'production' ? 'Production system' : 'In the making'}
               <br />
               <span className="mt-1.5 block text-right text-[9px] opacity-60">{app.id}</span>

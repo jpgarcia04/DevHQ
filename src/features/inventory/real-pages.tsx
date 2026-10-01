@@ -408,6 +408,7 @@ export function RealApplicationDetailPage() {
         <ApplicationDetail app={app} />
       ) : (
         <EmptyState
+          page
           title="Application not found"
           description="This application is not in the local inventory."
           action={

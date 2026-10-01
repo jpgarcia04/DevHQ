@@ -61,12 +61,14 @@ export function ApplicationInfrastructure({ app }: { app: InventoryApplication }
                   aria-hidden="true"
                 />
                 <div className="min-w-0">
-                  <Link
-                    className="quiet-link text-base font-semibold text-foreground"
-                    to={`/infrastructure?resource=${resource.id}`}
-                  >
-                    {resource.name} <ArrowUpRight className="size-3.5" />
-                  </Link>
+                  <h2>
+                    <Link
+                      className="quiet-link text-base font-semibold text-foreground"
+                      to={`/infrastructure?resource=${resource.id}`}
+                    >
+                      {resource.name} <ArrowUpRight className="size-3.5" />
+                    </Link>
+                  </h2>
                   <p className="mt-1 text-xs text-muted-foreground">
                     {resource.kind === 'server' ? 'Server' : 'Workstation'} ·{' '}
                     {resource.operatingSystem || 'Operating system not recorded'}

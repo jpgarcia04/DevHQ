@@ -136,8 +136,13 @@ export function IncidentRecordList({
             </summary>
             <div className="ml-4.5 mt-4 space-y-4 border-t pt-4">
               <p className="text-xs text-muted-foreground">
-                Affects <SubjectLink subject={incident.subject} className="text-foreground" /> ·
-                opened <time dateTime={incident.openedAt}>{formatDateTime(incident.openedAt)}</time>
+                Affects{' '}
+                <SubjectLink
+                  subject={incident.subject}
+                  className="text-foreground underline decoration-muted-foreground/60 underline-offset-2"
+                />{' '}
+                · opened{' '}
+                <time dateTime={incident.openedAt}>{formatDateTime(incident.openedAt)}</time>
               </p>
               {incident.description && (
                 <p className="max-w-3xl text-[13px] leading-6 text-muted-foreground">

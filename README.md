@@ -225,7 +225,10 @@ pantalla dice que son datos de ejemplo. `?scenario=empty` y `?scenario=unavailab
 un inventario vacío o ilegible. El bundle de producción se construye desde `index.html` y no
 contiene nada de esto. `npm run e2e` usa el Chrome instalado (en CI, el del runner) o el
 ejecutable que indique `DEVHQ_CHROMIUM`; nunca descarga navegadores, y reutiliza un `npm run dev`
-en marcha.
+en marcha. Además de recorrer el historial, audita con axe-core (reglas WCAG A/AA y buenas
+prácticas) cada página real de la preview, algunos formularios abiertos y la demo: landmarks,
+orden de encabezados, nombres accesibles y contraste. Solo se excluye el rótulo decorativo de
+las miniaturas de la demo, oculto a tecnologías de asistencia y exento de contraste.
 
 Si DevHQ no termina tras cerrar su ventana, antes de matar el proceso ejecuta
 `powershell -NoProfile -File scripts/dump-stacks.ps1 -ProcessId <pid>`: vuelca la pila de

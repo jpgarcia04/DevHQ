@@ -74,6 +74,7 @@ function AppRoutes() {
           path="*"
           element={
             <EmptyState
+              page
               title="View not found"
               description="This view is not part of the current workspace."
               action={
