@@ -186,10 +186,17 @@ ejecución, que es idéntica a la de Run check y sigue la misma semántica de vi
   tiempo, tres o más resultados automáticos seguidos de un mismo sistema que dijeron lo mismo
   (el mismo estado o el mismo fallo, sin importar la latencia) se pliegan en una fila
   desplegable, marcada «N+» si llega al punto donde la vista deja de estar completa; cualquier otro registro entre medias corta el pliegue,
-  así que el orden se conserva y lo que cambió no queda enterrado. Cada consulta sigue un
-  índice, así que su coste depende de lo que se carga y no del historial acumulado: con 5
-  comprobaciones cada 5 min durante 90 días, una recarga pasó de 86 MB y 0.5 s a 0.7 MB y
-  5 ms.
+  así que el orden se conserva y lo que cambió no queda enterrado. Cada consulta sigue el
+  índice de cada sistema, así que su coste depende de lo que se carga y no del historial
+  acumulado. Con 5 comprobaciones cada 5 min durante 90 días (129 600 resultados, 91 MB en
+  disco), antes de la ventana una recarga movía 86 MB en 0.5 s; ahora tarda 8 ms, manda
+  855 KB a la ventana y lee 0.7 MB del archivo (0.65 MB con 10 días). Una página de Activity
+  global tarda 2 ms, manda 79 KB y lee 0.4 MB, igual al principio, a la mitad o al final del
+  historial. Los eventos de la ventana se buscan por el índice de su sistema; cuando se
+  buscaban por el ID aleatorio de su observación, cada búsqueda caía en una página distinta de
+  un índice tan grande como el historial y la recarga leía 3.9 MB a los 90 días. Las cifras
+  son de Linux, en release y con la caché del sistema caliente (`history_costs`, ver
+  [Ejecutar](#ejecutar)); en otros sistemas esa prueba no mide lo leído del archivo.
 - El proceso nativo empuja el estado a la ventana por un `Channel` de Tauri: ejecución en
   curso, última y siguiente ejecución y último error de DevHQ. Cuando una ejecución
   registra evidencia, la ventana relee el inventario sin estado de carga, así que los
@@ -212,6 +219,8 @@ npm run dev               # preview web: http://127.0.0.1:1420
 npm run check             # ESLint, tests, TypeScript, Vite y cargo check
 npm run e2e               # Playwright sobre preview.html (Chrome del sistema)
 cargo test --manifest-path src-tauri/Cargo.toml --lib # persistencia y migraciones
+cargo test --release --manifest-path src-tauri/Cargo.toml --lib history_costs -- --ignored --nocapture
+                          # mide recarga y Activity con 90 días de supervisión
 cargo fmt --manifest-path src-tauri/Cargo.toml --check
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 npm run tauri build       # ejecutable e instalador NSIS para Windows
@@ -336,7 +345,8 @@ de historial se prueba por su límite exacto, los eventos que acompañan a cada 
 aviso de lo omitido en cada vista, la paginación de observaciones y de eventos de varios
 sistemas a la vez (sin huecos ni duplicados, con empates al mismo milisegundo y resultados
 nuevos entre páginas) y los planes de consulta, que nunca recorren el historial automático
-completo. La concurrencia de SQLite se prueba sin esperas medidas: una lectura no espera a una
+completo ni buscan un evento automático por su observación, tampoco con estadísticas que otra
+herramienta haya calculado sobre el archivo. La concurrencia de SQLite se prueba sin esperas medidas: una lectura no espera a una
 escritura en curso, una escritura no espera a una lectura abierta (que conserva su estado), dos
 primeras aperturas simultáneas migran una sola vez, una base antigua ocupada se abre sin
 convertirse y se convierte en la siguiente apertura, y al cerrar queda un único archivo

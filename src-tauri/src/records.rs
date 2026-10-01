@@ -367,17 +367,25 @@ pub(crate) const LATEST_AUTOMATED: [&str; 2] = [
     "SELECT rowid, observed_at FROM observations WHERE resource_id = ?1 AND source = 'http'
      ORDER BY observed_at DESC, recorded_at DESC, rowid DESC LIMIT ?2",
 ];
-// Every manual record, plus the automated observations chosen above (a JSON array of rowids)
-// and exactly their events.
+// Exactly the events of a subject's observations chosen above (a JSON array of their rowids),
+// through the subject's own index. An automated observation's event happens when it was
+// observed, so all of them lie from the oldest chosen observation on. Looking each event up
+// by its observation instead lands every lookup on a random page of an index of random IDs
+// as large as the whole history; the unary plus keeps SQLite from choosing that index.
+const WINDOW_EVENTS: [&str; 2] = [
+    "SELECT rowid FROM events WHERE application_id = ?1 AND source = 'http' AND occurred_at >= ?2
+       AND +observation_id IN (SELECT id FROM observations WHERE rowid IN (SELECT value FROM json_each(?3)))",
+    "SELECT rowid FROM events WHERE resource_id = ?1 AND source = 'http' AND occurred_at >= ?2
+       AND +observation_id IN (SELECT id FROM observations WHERE rowid IN (SELECT value FROM json_each(?3)))",
+];
+// Every manual record, plus the automated ones chosen above (a JSON array of rowids).
 const WINDOWED_OBSERVATIONS: &str = "WHERE rowid IN (
        SELECT rowid FROM observations WHERE source = 'manual'
        UNION ALL SELECT value FROM json_each(?1))
      ORDER BY observed_at DESC, recorded_at DESC, rowid DESC";
 const WINDOWED_EVENTS: &str = "WHERE rowid IN (
        SELECT rowid FROM events WHERE source = 'manual'
-       UNION ALL SELECT e.rowid FROM json_each(?1) AS w
-         JOIN observations AS o ON o.rowid = w.value
-         JOIN events AS e ON e.observation_id = o.id)
+       UNION ALL SELECT value FROM json_each(?1))
      ORDER BY occurred_at DESC, recorded_at DESC, rowid DESC";
 
 /// Newest first. Reads inside the caller's transaction so the snapshot is consistent. Every
@@ -385,8 +393,10 @@ const WINDOWED_EVENTS: &str = "WHERE rowid IN (
 pub(crate) fn load(tx: &Transaction, subjects: &[Subject]) -> Result<Records, ApiError> {
     let prepare = |sql| tx.prepare(sql).map_err(ApiError::database);
     let mut latest = [prepare(LATEST_AUTOMATED[0])?, prepare(LATEST_AUTOMATED[1])?];
+    let mut their_events = [prepare(WINDOW_EVENTS[0])?, prepare(WINDOW_EVENTS[1])?];
     let limit = usize::try_from(AUTOMATED_HISTORY_LIMIT).map_err(ApiError::database)?;
     let mut observation_rows = Vec::new();
+    let mut event_rows = Vec::new();
     let mut truncated = Vec::new();
     for subject in subjects {
         let (kind, id) = subject.per_type();
@@ -398,24 +408,41 @@ pub(crate) fn load(tx: &Transaction, subjects: &[Subject]) -> Result<Records, Ap
             .map_err(ApiError::database)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(ApiError::database)?;
-        if rows.len() > limit {
-            rows.truncate(limit);
-            if let Some(&(_, oldest)) = rows.last() {
-                truncated.push(TruncatedHistory {
-                    subject: subject.clone(),
-                    since: format_time(oldest)
-                        .ok_or_else(|| ApiError::database("an observation time is out of range"))?,
-                });
-            }
+        let cut = rows.len() > limit;
+        rows.truncate(limit);
+        let Some(&(_, oldest)) = rows.last() else {
+            continue;
+        };
+        if cut {
+            truncated.push(TruncatedHistory {
+                subject: subject.clone(),
+                since: format_time(oldest)
+                    .ok_or_else(|| ApiError::database("an observation time is out of range"))?,
+            });
         }
-        observation_rows.extend(rows.into_iter().map(|(rowid, _)| rowid));
+        let chosen: Vec<i64> = rows.into_iter().map(|(rowid, _)| rowid).collect();
+        // Each automated observation wrote its event with it: these rows choose exactly those.
+        let events = their_events[kind]
+            .query_map(
+                params![
+                    id,
+                    oldest,
+                    serde_json::to_string(&chosen).map_err(ApiError::database)?
+                ],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(ApiError::database)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(ApiError::database)?;
+        observation_rows.extend(chosen);
+        event_rows.extend(events);
     }
-    let window = serde_json::to_string(&observation_rows).map_err(ApiError::database)?;
+    let json = |rows: &[i64]| serde_json::to_string(rows).map_err(ApiError::database);
     Ok(Records {
         observations: query_all(
             tx,
             &format!("{OBSERVATION_SELECT} {WINDOWED_OBSERVATIONS}"),
-            [&window],
+            [json(&observation_rows)?],
             observation_from_row,
         )?,
         incidents: query_all(
@@ -424,11 +451,10 @@ pub(crate) fn load(tx: &Transaction, subjects: &[Subject]) -> Result<Records, Ap
             [],
             incident_from_row,
         )?,
-        // Each automated observation wrote its event with it, so the same rows choose them.
         events: query_all(
             tx,
             &format!("{EVENT_SELECT} {WINDOWED_EVENTS}"),
-            [&window],
+            [json(&event_rows)?],
             event_from_row,
         )?,
         automated_history: AutomatedHistory {
@@ -1718,20 +1744,11 @@ mod tests {
     #[test]
     fn snapshot_reads_follow_indexes_instead_of_scanning_history() {
         let path = path();
-        let db = open(&path).unwrap();
-        let plan = |sql: &str, params: &[&dyn rusqlite::ToSql]| -> Vec<String> {
-            db.prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
-                .unwrap()
-                .query_map(params, |row| row.get(3))
-                .unwrap()
-                .collect::<Result<_, _>>()
-                .unwrap()
-        };
         let observations = format!("{OBSERVATION_SELECT} {WINDOWED_OBSERVATIONS}");
         let events = format!("{EVENT_SELECT} {WINDOWED_EVENTS}");
         let older = OLDER_AUTOMATED.map(|filter| format!("{OBSERVATION_SELECT} {filter}"));
         let page_events = format!("{EVENT_SELECT} {EVENTS_BY_ROWID}");
-        let cases: [(&str, &[&dyn rusqlite::ToSql], &str); 10] = [
+        let cases: [(&str, &[&dyn rusqlite::ToSql], &str); 12] = [
             (
                 LATEST_AUTOMATED[0],
                 &[&"app", &1],
@@ -1742,9 +1759,19 @@ mod tests {
                 &[&"host", &1],
                 "observations_resource_id",
             ),
-            (&events, &[&"[]"], "events_observation_id"),
+            (
+                WINDOW_EVENTS[0],
+                &[&"app", &9, &"[]"],
+                "events_application_id (application_id=? AND occurred_at>?)",
+            ),
+            (
+                WINDOW_EVENTS[1],
+                &[&"host", &9, &"[]"],
+                "events_resource_id (resource_id=? AND occurred_at>?)",
+            ),
             (&observations, &[&"[]"], "observations_manual"),
             (&events, &[&"[]"], "events_manual"),
+            (&events, &[&"[]"], "INTEGER PRIMARY KEY"),
             (&older[0], &[&"app", &9, &9, &9, &1], "observed_at<"),
             (&older[1], &[&"host", &9, &9, &9, &1], "observed_at<"),
             (
@@ -1759,22 +1786,258 @@ mod tests {
             ),
             (&page_events, &[&"[]"], "INTEGER PRIMARY KEY"),
         ];
-        for (sql, params, index) in cases {
-            let steps = plan(sql, params);
-            assert!(
-                steps.iter().any(|step| step.contains(index)),
-                "{sql}\n{steps:#?}"
-            );
-            // Only the manual records are ever read in full.
-            assert!(
-                steps.iter().all(|step| {
-                    !(step.starts_with("SCAN observations") || step.starts_with("SCAN events"))
-                        || step.contains("_manual")
-                }),
-                "{sql}\n{steps:#?}"
-            );
+        let check = |db: &rusqlite::Connection| {
+            for &(sql, params, index) in &cases {
+                let steps: Vec<String> = db
+                    .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+                    .unwrap()
+                    .query_map(params, |row| row.get(3))
+                    .unwrap()
+                    .collect::<Result<_, _>>()
+                    .unwrap();
+                assert!(
+                    steps.iter().any(|step| step.contains(index)),
+                    "{sql}\n{steps:#?}"
+                );
+                // Only the manual records are ever read in full.
+                assert!(
+                    steps.iter().all(|step| {
+                        !(step.starts_with("SCAN observations") || step.starts_with("SCAN events"))
+                            || step.contains("_manual")
+                    }),
+                    "{sql}\n{steps:#?}"
+                );
+                // Nor is an automated event found by its observation's random ID: each lookup
+                // would land on a random page of an index as large as the history.
+                assert!(
+                    steps
+                        .iter()
+                        .all(|step| !step.contains("events_observation_id")),
+                    "{sql}\n{steps:#?}"
+                );
+            }
+        };
+        check(&open(&path).unwrap());
+        // DevHQ never gathers statistics, but another tool opening the file might. The plans
+        // must hold even when they make every subject look as large as the whole history.
+        open(&path)
+            .unwrap()
+            .execute_batch(
+                "ANALYZE sqlite_schema;
+                 INSERT INTO sqlite_stat1 VALUES
+                   ('observations', 'observations_application_id', '1000000 1000000 1'),
+                   ('observations', 'observations_resource_id', '1000000 1000000 1'),
+                   ('events', 'events_application_id', '1000000 1000000 1'),
+                   ('events', 'events_resource_id', '1000000 1000000 1'),
+                   ('events', 'events_observation_id', '1000000 1');",
+            )
+            .unwrap();
+        check(&open(&path).unwrap());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    /// Bytes this process has read through system calls, which is how SQLite reads its file
+    /// (it maps no memory by default). Linux only; elsewhere the measurement leaves it out.
+    fn bytes_read() -> Option<u64> {
+        let io = std::fs::read_to_string("/proc/self/io").ok()?;
+        io.lines()
+            .find_map(|line| line.strip_prefix("rchar: ")?.parse().ok())
+    }
+
+    /// Not a check: measures what a reload and a page of global Activity cost over a long
+    /// supervised history, for the figures in the README. Run it alone and in release:
+    /// `cargo test --release --manifest-path src-tauri/Cargo.toml --lib history_costs --
+    /// --ignored --nocapture`
+    #[test]
+    #[ignore = "measurement: run it alone with --ignored --nocapture"]
+    fn history_costs() {
+        use std::time::{Duration, Instant};
+        const DAYS: i64 = 90;
+        const RUNS: usize = 15;
+        let minutes = |count: i64| count * 60_000;
+        let path = path();
+        // Five supervised systems: three resources and two applications.
+        let mut subjects: Vec<Subject> = ["Host", "Database", "Proxy"]
+            .into_iter()
+            .map(|name| {
+                let resource = save_resource(
+                    &path,
+                    ResourceInput {
+                        id: None,
+                        name: name.into(),
+                        kind: "server".into(),
+                        description: String::new(),
+                        operating_system: "Linux".into(),
+                    },
+                )
+                .unwrap();
+                Subject::Resource { id: resource.id }
+            })
+            .collect();
+        for name in ["Shop", "Blog"] {
+            let application = save_application(
+                &path,
+                ApplicationInput {
+                    id: None,
+                    name: name.into(),
+                    description: String::new(),
+                    lifecycle: "production".into(),
+                    version: None,
+                    components: Vec::new(),
+                },
+            )
+            .unwrap();
+            subjects.push(Subject::Application { id: application.id });
         }
+
+        // Every 5 minutes for 90 days, each system a minute after the one before, written as
+        // supervision writes them: an observation and its event, in the order they happen.
+        let first = now_ms() - minutes(DAYS * 24 * 60);
+        let runs = DAYS * 24 * 12;
+        let mut db = open(&path).unwrap();
+        let tx = db.transaction().unwrap();
+        {
+            let mut observation = tx
+                .prepare(
+                    "INSERT INTO observations (id, application_id, resource_id, result, summary, source, observed_at, valid_until, recorded_at,
+                                               http_url, http_expected_status, http_status, http_latency_ms, http_error, http_redirects)
+                     VALUES (?1, ?2, ?3, 'healthy', ?4, 'http', ?5, ?6, ?5, ?7, 200, 200, ?8, NULL, '[]')",
+                )
+                .unwrap();
+            let mut event = tx
+                .prepare(
+                    "INSERT INTO events (id, application_id, resource_id, kind, outcome, title, detail, source, observation_id, occurred_at, recorded_at)
+                     VALUES (?1, ?2, ?3, 'observation', 'success', 'HTTP check: Healthy', ?4, 'http', ?5, ?6, ?6)",
+                )
+                .unwrap();
+            for run in 0..runs {
+                for (offset, subject) in (0_i64..).zip(&subjects) {
+                    let at = first + minutes(run * 5 + offset);
+                    let latency = 40 + (run * 7 + offset * 13) % 160;
+                    let summary = format!("HTTP 200 as expected, in {latency} ms");
+                    let url = format!("https://system-{offset}.example.com/health");
+                    let (application_id, resource_id) = subject.columns();
+                    let id = Uuid::new_v4().to_string();
+                    observation
+                        .execute(params![
+                            id,
+                            application_id,
+                            resource_id,
+                            summary,
+                            at,
+                            at + minutes(15),
+                            url,
+                            latency
+                        ])
+                        .unwrap();
+                    event
+                        .execute(params![
+                            Uuid::new_v4().to_string(),
+                            application_id,
+                            resource_id,
+                            summary,
+                            id,
+                            at
+                        ])
+                        .unwrap();
+                }
+            }
+        }
+        tx.commit().unwrap();
         drop(db);
+        // And a person's records: a deployment per system each week.
+        for subject in &subjects {
+            for week in 0..DAYS / 7 {
+                record_event(
+                    &path,
+                    EventInput {
+                        occurred_at: format_time(first + minutes(week * 7 * 24 * 60 + 90)),
+                        ..event(subject.clone())
+                    },
+                )
+                .unwrap();
+            }
+        }
+
+        // The median of RUNS calls, each opening its own connection as every command does and
+        // serializing what the window receives; and, for one call, what SQLite read.
+        let measure = |label: &str, call: &dyn Fn() -> Vec<u8>| {
+            let before = bytes_read();
+            let sent = call().len();
+            let read = before
+                .zip(bytes_read())
+                .map(|(before, after)| after - before);
+            let mut times: Vec<Duration> = (0..RUNS)
+                .map(|_| {
+                    let start = Instant::now();
+                    call();
+                    start.elapsed()
+                })
+                .collect();
+            times.sort();
+            println!(
+                "{label}: {:.1} ms; {:.1} KB to the window; {} read from the database",
+                times[RUNS / 2].as_secs_f64() * 1000.0,
+                sent as f64 / 1024.0,
+                read.map_or("not measured".into(), |read| format!(
+                    "{:.1} KB",
+                    read as f64 / 1024.0
+                )),
+            );
+        };
+        let snapshot = list(&path).unwrap();
+        measure("Reload (list_inventory)", &|| {
+            serde_json::to_vec(&list(&path).unwrap()).unwrap()
+        });
+
+        // Global Activity reads on from where the snapshot stops being complete: the subject
+        // cut latest, at its oldest loaded result (windowCut in the window).
+        let cut = subjects
+            .iter()
+            .filter_map(|subject| {
+                snapshot
+                    .events
+                    .iter()
+                    .rposition(|event| event.source == HTTP && &event.subject == subject)
+            })
+            .min()
+            .unwrap();
+        let anchor_at = |days: i64| -> String {
+            let db = open(&path).unwrap();
+            let (kind, id) = subjects[0].per_type();
+            let column = ["application_id", "resource_id"][kind];
+            db.query_row(
+                &format!("SELECT id FROM events WHERE {column} = ?1 AND source = 'http' AND occurred_at <= ?2 ORDER BY occurred_at DESC LIMIT 1"),
+                params![id, now_ms() - minutes(days * 24 * 60)],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+        for (label, anchor) in [
+            ("first page", snapshot.events[cut].id.clone()),
+            ("page from 45 days back", anchor_at(45)),
+            ("page from 89 days back", anchor_at(89)),
+        ] {
+            let page = older_events(&path, &subjects, &anchor).unwrap();
+            assert_eq!(page.events.len(), 200);
+            measure(&format!("Global Activity, {label}"), &|| {
+                serde_json::to_vec(&older_events(&path, &subjects, &anchor).unwrap()).unwrap()
+            });
+        }
+
+        let db = open(&path).unwrap();
+        let count = |table: &str| -> i64 {
+            db.query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap()
+        };
+        let (observations, events) = (count("observations"), count("events"));
+        drop(db);
+        println!(
+            "{observations} observations, {events} events, {:.1} MB on disk",
+            std::fs::metadata(&path).unwrap().len() as f64 / 1_048_576.0
+        );
         std::fs::remove_file(path).unwrap();
     }
 }
