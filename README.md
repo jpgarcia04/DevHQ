@@ -348,22 +348,30 @@ respaldos. Después la instala otra vez y la desinstala como una persona
 casilla con `BM_GETCHECK` al dejar la página, así que es lo mismo que un clic) y pulsa Uninstall y,
 al terminar, Close con `WM_COMMAND`. Deben desaparecer `%APPDATA%\com.devhq.desktop`, con el
 inventario y `backups/`, `%LOCALAPPDATA%\com.devhq.desktop`, el ejecutable y la entrada de
-desinstalación. El runner trae
-Defender sin protección en tiempo real y con carpetas excluidas del análisis. Antes de esa
-tercera pasada y del recorrido, `.github/windows/defender.ps1` la activa, junto con la supervisión de
-comportamiento y el análisis de descargas, como en un escritorio; quita todas las exclusiones,
-comprueba con `Get-MpComputerStatus` que quedó activa y escribe el archivo de prueba EICAR (la cadena
-inofensiva que todo antivirus detecta a propósito) en la carpeta temporal o junto a la carpeta de
-datos: si Defender no lo borra ni lo bloquea, el paso falla. Así Back up now crea el `.partial`, lo
-enlaza con su nombre final y lo borra mientras Defender analiza cada archivo que se escribe, y la
-instalación y las desinstalaciones también corren bajo su análisis. Tras el recorrido comprueba que
-la protección siguió activa y al final de cada job la apaga, para que guardar las cachés no analice
-cada archivo. En ese recorrido el servidor
-de la comprobación habla HTTPS: el workflow crea un certificado para `127.0.0.1`, lo añade a las
-raíces de confianza del equipo y se lo pasa al recorrido con `DEVHQ_E2E_TLS_PFX`, así que DevHQ
-tiene que completar un handshake con SChannel y el almacén de certificados de Windows (los tests de
-Rust solo ven fallar uno). Su primera ejecución destapó que `cargo test` no arrancaba en Windows:
-tao, muda y los diálogos de Tauri importan `TaskDialogIndirect`, que solo existe en Common Controls
+desinstalación.
+
+El runner trae Defender sin protección en tiempo real y con `C:\` y `D:\` excluidas del análisis.
+Antes de la tercera pasada de los tests de Rust y del recorrido, `.github/windows/defender.ps1` la
+activa, junto con la supervisión de comportamiento y el análisis de descargas, como en un escritorio;
+quita todas las exclusiones y comprueba con `Get-MpComputerStatus` que quedó activa. Que lo diga no
+prueba que analice: Defender tarda unos segundos en aplicar la nueva configuración, y la primera
+versión de la sonda, que escribía un solo archivo nada más activarla, no vio ninguna detección. Por
+eso escribe archivos de prueba EICAR (la cadena inofensiva que todo antivirus detecta a propósito) en
+la carpeta temporal o junto a la carpeta de datos, uno nuevo cada pocos segundos, y los vuelve a abrir
+mientras espera, porque Defender analiza un archivo al cerrarlo tras escribirlo y otra vez al abrirlo.
+El paso falla si en un minuto no borra ni bloquea ninguno, y antes imprime las versiones del motor y
+de las firmas y le pide que analice la última prueba. En el runner bloquea la tercera al abrirla,
+unos 12 s después de activarse. Con la protección activa pasan todos los tests de Rust (en unos 33 s
+en lugar de 4) y el recorrido: Back up now crea el `.partial`, lo enlaza con su nombre final y lo
+borra mientras Defender analiza cada archivo que se escribe, y la instalación y las desinstalaciones
+también corren bajo su análisis. Tras el recorrido comprueba que la protección siguió activa, y al
+final de cada job la apaga, para que guardar las cachés no analice cada archivo.
+
+En el recorrido de Windows el servidor de la comprobación habla HTTPS: el workflow crea un
+certificado para `127.0.0.1`, lo añade a las raíces de confianza del equipo y se lo pasa al recorrido
+con `DEVHQ_E2E_TLS_PFX`, así que DevHQ tiene que completar un handshake con SChannel y el almacén de
+certificados de Windows (los tests de Rust solo ven fallar uno). La primera ejecución del workflow
+destapó que `cargo test` no arrancaba en Windows: tao, muda y los diálogos de Tauri importan `TaskDialogIndirect`, que solo existe en Common Controls
 v6, y un proceso solo obtiene esa versión por su manifiesto. tauri-build lo incrusta como recurso
 que Cargo enlaza solo en los binarios, así que el ejecutable de tests no lo llevaba y Windows se
 negaba a iniciarlo (`STATUS_ENTRYPOINT_NOT_FOUND`) antes del primer test. Con el linker de MSVC,
