@@ -48,25 +48,32 @@ jobs:
           New-Item -ItemType Directory -Force $folder | Out-Null
           $env:TMP = $folder
           $env:TEMP = $folder
-          # The tests remove what they create, so count what appears while they run: proof
-          # that they worked under this path.
-          $watcher = [System.IO.FileSystemWatcher]::new($folder)
-          $watcher.IncludeSubdirectories = $true
-          $watcher.InternalBufferSize = 65536
-          $created = [System.Collections.Concurrent.ConcurrentBag[string]]::new()
-          Register-ObjectEvent $watcher Created -MessageData $created -Action {
-            $Event.MessageData.Add($Event.SourceEventArgs.Name)
-          } | Out-Null
-          $watcher.EnableRaisingEvents = $true
+          # The tests remove what they create, so record what appears while they run: proof
+          # that they worked under this path. A .NET handler sees every event as it happens;
+          # PowerShell's own event queue waits while cargo runs and lost most of them.
+          Add-Type -TypeDefinition @'
+          using System.Collections.Concurrent;
+          using System.IO;
+          public static class Created {
+              public static readonly ConcurrentQueue<string> Names = new ConcurrentQueue<string>();
+              public static FileSystemWatcher Watch(string folder) {
+                  var watcher = new FileSystemWatcher(folder) { IncludeSubdirectories = true, InternalBufferSize = 65536 };
+                  watcher.Created += (sender, change) => Names.Enqueue(change.Name);
+                  watcher.EnableRaisingEvents = true;
+                  return watcher;
+              }
+          }
+          '@
+          $watcher = [Created]::Watch($folder)
           cargo test --manifest-path src-tauri/Cargo.toml --lib --locked
           $code = $LASTEXITCODE
-          Start-Sleep -Seconds 2
           $watcher.EnableRaisingEvents = $false
           if ($code -ne 0) { exit $code }
-          $names = @($created.ToArray())
-          "$($names.Count) files and folders were created under $folder, for example:"
-          $names | Where-Object { $_ -match '\.(sqlite3|partial)$' } | Select-Object -First 8
-          if ($names.Count -eq 0) { throw "The tests created nothing under $folder" }
+          # Every test database, backup folder and file starts with devhq-.
+          $made = @([Created]::Names.ToArray() | Where-Object { $_ -like 'devhq-*' })
+          "The tests created $($made.Count) files and folders under $folder, such as:"
+          $made | Select-Object -First 8
+          if ($made.Count -eq 0) { throw "The tests created nothing under $folder" }
           "Left in ${folder}: $(@(Get-ChildItem -Force $folder).Count) entries"
 
   app:
