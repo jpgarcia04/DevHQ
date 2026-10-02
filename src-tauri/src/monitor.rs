@@ -12,11 +12,13 @@
 //!   interval. A DevHQ failure records nothing, stays visible and never stops other checks.
 //! - Pausing lets the run in flight finish (its timeout bounds it) and records it; removing a
 //!   check cancels its run in flight and records nothing. Neither schedules another run.
-//! - Shutting down cancels every run in flight and ends the loop.
+//! - Shutting down cancels every run in flight and ends the loop. Nothing is recorded once it
+//!   has returned: a run whose request already ended cannot be aborted while it writes, so its
+//!   write checks the supervision's lifeline in its transaction (see `records::Lifeline`).
 
 use crate::http_check::{self, HttpCheck};
 use crate::inventory::ApiError;
-use crate::records::{self, Observation, Subject};
+use crate::records::{self, Lifeline, Observation, Subject};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::future::Future;
@@ -38,8 +40,9 @@ const LAUNCH_SPACING_MS: i64 = 10_000;
 /// Milliseconds since the Unix epoch. Tests pass a simulated clock.
 pub(crate) type Clock = Arc<dyn Fn() -> i64 + Send + Sync>;
 pub(crate) type RunFuture = Pin<Box<dyn Future<Output = Result<Observation, ApiError>> + Send>>;
-/// Runs a subject's check once and records its observation. Tests pass a scripted one.
-pub(crate) type Runner = Arc<dyn Fn(Subject) -> RunFuture + Send + Sync>;
+/// Runs a subject's check once and records its observation while the lifeline is alive. Tests
+/// pass a scripted one.
+pub(crate) type Runner = Arc<dyn Fn(Subject, Lifeline) -> RunFuture + Send + Sync>;
 type RunResult = Option<Result<Observation, ApiError>>;
 
 /// What the window shows about supervision. Configuration (interval, active or paused) comes
@@ -82,6 +85,8 @@ struct Inner {
     path: PathBuf,
     clock: Clock,
     runner: Runner,
+    /// Ended by `shutdown`, after which no run commits anything.
+    lifeline: Lifeline,
     state: Mutex<State>,
     /// Reading the configuration and applying it happen as one step.
     refresh: Mutex<()>,
@@ -227,9 +232,9 @@ impl Monitor {
         Self::with(
             path,
             Arc::new(records::now_ms),
-            Arc::new(move |subject: Subject| -> RunFuture {
+            Arc::new(move |subject: Subject, lifeline: Lifeline| -> RunFuture {
                 let path = database.clone();
-                Box::pin(async move { http_check::run_http_check(&path, subject).await })
+                Box::pin(async move { http_check::run_http_check(&path, subject, &lifeline).await })
             }),
         )
     }
@@ -240,6 +245,7 @@ impl Monitor {
                 path,
                 clock,
                 runner,
+                lifeline: Lifeline::default(),
                 state: Mutex::default(),
                 refresh: Mutex::default(),
                 wake: Notify::new(),
@@ -350,7 +356,7 @@ impl Monitor {
         let id = state.next_run_id;
         let entry = &mut state.entries[index];
         let (sender, receiver) = watch::channel(None);
-        let run = (self.inner.runner)(entry.subject.clone());
+        let run = (self.inner.runner)(entry.subject.clone(), self.inner.lifeline.clone());
         let monitor = self.clone();
         let task = tokio::spawn(async move {
             let result = run.await;
@@ -448,8 +454,12 @@ impl Monitor {
     }
 
     /// Stops supervision for good: cancels every run in flight and ends the loop. Nothing a
-    /// cancelled run was doing is recorded.
+    /// cancelled run was doing is recorded, and nothing at all once this returns. A run already
+    /// committing its result is waited for (it holds the lifeline only from SQLite's write lock
+    /// to its connection closing); any later write is refused in its transaction.
     pub fn shutdown(&self) {
+        // Before the state lock, which a finishing run takes: never hold it while waiting.
+        self.inner.lifeline.end();
         let mut state = self.lock();
         state.stopped = true;
         for entry in &mut state.entries {
@@ -594,7 +604,7 @@ mod tests {
     fn scripted(script: &Arc<Script>, clock: &Clock) -> Runner {
         let script = Arc::clone(script);
         let clock = Arc::clone(clock);
-        Arc::new(move |subject: Subject| -> RunFuture {
+        Arc::new(move |subject: Subject, _: Lifeline| -> RunFuture {
             let script = Arc::clone(&script);
             let clock = Arc::clone(&clock);
             Box::pin(async move {
@@ -832,6 +842,7 @@ mod tests {
                         error: None,
                         redirects: vec![],
                     }),
+                    lifeline: None,
                 },
             )
             .unwrap();
@@ -1145,9 +1156,11 @@ mod tests {
             Monitor::with(
                 path.clone(),
                 clock,
-                Arc::new(move |subject: Subject| -> RunFuture {
+                Arc::new(move |subject: Subject, lifeline: Lifeline| -> RunFuture {
                     let path = database.clone();
-                    Box::pin(async move { http_check::run_http_check(&path, subject).await })
+                    Box::pin(
+                        async move { http_check::run_http_check(&path, subject, &lifeline).await },
+                    )
                 }),
             )
         };
@@ -1248,6 +1261,71 @@ mod tests {
         assert!(started.elapsed() < Duration::from_millis(500));
         // Nothing more was recorded: not the hanging request, not the removed check.
         assert_eq!(list(&path).unwrap().observations.len(), 3);
+        remove_once_closed(&path);
+    }
+
+    /// A run whose request has ended has no await left before its commit, so aborting its task
+    /// when DevHQ closes cannot stop it there: its write has to refuse. Without the lifeline
+    /// this run recorded its observation, and run_now even returned it, after shutdown.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_run_writing_when_devhq_closes_records_nothing() {
+        let path = path();
+        let subject = resource(&path);
+        supervise(&path, &subject, "http://x.invalid/", None, 15);
+        let (entered, writing) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let released = Arc::new(Mutex::new(released));
+        let monitor = {
+            let database = path.clone();
+            Monitor::with(
+                path.clone(),
+                Arc::new(records::now_ms),
+                Arc::new(move |subject: Subject, lifeline: Lifeline| -> RunFuture {
+                    let (path, entered) = (database.clone(), entered.clone());
+                    let released = Arc::clone(&released);
+                    Box::pin(async move {
+                        // The request has ended: from here to the commit nothing awaits.
+                        entered.send(()).unwrap();
+                        released.lock().unwrap().recv().unwrap();
+                        let evidence = HttpEvidence {
+                            url: "http://x.invalid/".into(),
+                            expected_status: 200,
+                            status: Some(200),
+                            latency_ms: 1,
+                            error: None,
+                            redirects: Vec::new(),
+                        };
+                        let now = records::now_ms();
+                        records::store_observation(
+                            &path,
+                            NewObservation {
+                                subject: &subject,
+                                result: "healthy",
+                                summary: "HTTP 200 as expected, in 1 ms",
+                                observed_at: now,
+                                valid_for_minutes: 15,
+                                recorded_at: now,
+                                http: Some(&evidence),
+                                lifeline: Some(&lifeline),
+                            },
+                        )
+                    })
+                }),
+            )
+        };
+        let run = tokio::spawn({
+            let monitor = monitor.clone();
+            async move { monitor.run_now(subject).await }
+        });
+        tokio::task::spawn_blocking(move || writing.recv().unwrap())
+            .await
+            .unwrap();
+
+        monitor.shutdown();
+        release.send(()).unwrap();
+        let result = run.await.unwrap();
+        assert_eq!(result.map(|_| ()).unwrap_err().code, "cancelled");
+        assert!(list(&path).unwrap().observations.is_empty());
         remove_once_closed(&path);
     }
 

@@ -5,7 +5,9 @@
 //! or missing configuration, SQLite) is an error and is never recorded.
 
 use crate::inventory::{open, ApiError};
-use crate::records::{self, HttpEvidence, NewObservation, Observation, Redirect, Subject};
+use crate::records::{
+    self, HttpEvidence, Lifeline, NewObservation, Observation, Redirect, Subject,
+};
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use reqwest::header::LOCATION;
 use reqwest::{redirect, Client, Url};
@@ -291,7 +293,13 @@ pub fn remove_http_check(path: &Path, subject: Subject) -> Result<(), ApiError> 
 /// automated observation. One deadline covers the whole request, so a check cannot hang.
 /// Scheduled and manual runs are this same run and produce the same evidence; `monitor`
 /// makes sure a check never has two at once.
-pub async fn run_http_check(path: &Path, subject: Subject) -> Result<Observation, ApiError> {
+/// Runs the subject's check once and records its observation, while `lifeline` (supervision,
+/// which every run goes through) is alive.
+pub async fn run_http_check(
+    path: &Path,
+    subject: Subject,
+    lifeline: &Lifeline,
+) -> Result<Observation, ApiError> {
     // The database is closed again before any network traffic starts.
     let check = {
         let mut db = open(path)?;
@@ -315,6 +323,7 @@ pub async fn run_http_check(path: &Path, subject: Subject) -> Result<Observation
             valid_for_minutes: check.valid_for_minutes,
             recorded_at: observed_at,
             http: Some(&evidence),
+            lifeline: Some(lifeline),
         },
     )
 }
@@ -649,7 +658,7 @@ pub(crate) mod tests {
     }
 
     fn run(path: &Path, subject: &Subject) -> Result<Observation, ApiError> {
-        tauri::async_runtime::block_on(run_http_check(path, subject.clone()))
+        tauri::async_runtime::block_on(run_http_check(path, subject.clone(), &Lifeline::default()))
     }
 
     fn millis(time: &str) -> i128 {
@@ -1081,6 +1090,7 @@ pub(crate) mod tests {
                     error: None,
                     redirects: vec![],
                 }),
+                lifeline: None,
             },
         )
         .unwrap_err();
@@ -1088,6 +1098,51 @@ pub(crate) mod tests {
         let snapshot = list(&path).unwrap();
         assert!(snapshot.observations.is_empty());
         assert!(snapshot.events.is_empty());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn a_result_written_after_devhq_closed_is_not_recorded() {
+        let path = path();
+        let host = resource(&path);
+        save_http_check(&path, input(&host, "https://example.com/")).unwrap();
+        let evidence = HttpEvidence {
+            url: "https://example.com/".into(),
+            expected_status: 200,
+            status: Some(200),
+            latency_ms: 5,
+            error: None,
+            redirects: vec![],
+        };
+        let write = |lifeline: &Lifeline| {
+            records::store_observation(
+                &path,
+                NewObservation {
+                    subject: &host,
+                    result: "healthy",
+                    summary: "HTTP 200 as expected",
+                    observed_at: records::now_ms(),
+                    valid_for_minutes: 60,
+                    recorded_at: records::now_ms(),
+                    http: Some(&evidence),
+                    lifeline: Some(lifeline),
+                },
+            )
+        };
+        let lifeline = Lifeline::default();
+        write(&lifeline).unwrap();
+        // What a run whose request had already ended would write once DevHQ is closing.
+        lifeline.end();
+        let error = write(&lifeline).unwrap_err();
+        assert_eq!(error.code, "cancelled");
+        assert!(error.message.contains("DevHQ closed"), "{}", error.message);
+        let snapshot = list(&path).unwrap();
+        assert_eq!(
+            snapshot.observations.len(),
+            1,
+            "only the one written before"
+        );
+        assert_eq!(snapshot.events.len(), 1);
         std::fs::remove_file(path).unwrap();
     }
 

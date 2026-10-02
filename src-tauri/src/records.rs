@@ -6,6 +6,7 @@ use rusqlite::{params, OptionalExtension, Params, Row, Rows, Transaction, Transa
 use serde::{Deserialize, Serialize};
 use std::collections::BinaryHeap;
 use std::path::Path;
+use std::sync::{Arc, PoisonError, RwLock, RwLockReadGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
@@ -557,6 +558,29 @@ pub(crate) struct NewObservation<'a> {
     pub valid_for_minutes: i64,
     pub recorded_at: i64,
     pub http: Option<&'a HttpEvidence>,
+    /// For a run of supervision: it commits only while supervision is alive.
+    pub lifeline: Option<&'a Lifeline>,
+}
+
+/// Whether supervision may still record. Closing DevHQ ends it. A run whose request has ended has
+/// no await left before its commit, so aborting its task cannot stop its write; the write checks
+/// this instead, inside its transaction. It holds it from that check until its connection has
+/// closed, and `end` waits for every hold, so once `end` returns nothing more is recorded and no
+/// write is left half done (or its log unfolded) behind the closing window.
+#[derive(Clone, Default)]
+pub(crate) struct Lifeline(Arc<RwLock<bool>>);
+
+impl Lifeline {
+    /// Keeps supervision alive until the guard is dropped, or None once it has ended.
+    fn hold(&self) -> Option<RwLockReadGuard<'_, bool>> {
+        let ended = self.0.read().unwrap_or_else(PoisonError::into_inner);
+        (!*ended).then_some(ended)
+    }
+
+    /// Ends supervision once the writes holding it have finished. Writes that come later refuse.
+    pub(crate) fn end(&self) {
+        *self.0.write().unwrap_or_else(PoisonError::into_inner) = true;
+    }
 }
 
 pub(crate) fn store_observation(path: &Path, new: NewObservation) -> Result<Observation, ApiError> {
@@ -570,6 +594,9 @@ pub(crate) fn store_observation(path: &Path, new: NewObservation) -> Result<Obse
         .map(|http| serde_json::to_string(&http.redirects))
         .transpose()
         .map_err(ApiError::database)?;
+    // Declared before the connection, so that a hold taken below is let go only after the
+    // connection has closed and folded its log back into the file.
+    let _alive;
     let mut db = open(path)?;
     let tx = db
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -633,6 +660,15 @@ pub(crate) fn store_observation(path: &Path, new: NewObservation) -> Result<Obse
     )?;
     let observation = query_one(&tx, OBSERVATION_SELECT, &id, observation_from_row)?
         .ok_or_else(|| ApiError::database("Observation was not saved."))?;
+    // Checked after SQLite's write lock is taken, so closing DevHQ never waits for another
+    // writer, only for this commit: either it closes first and this write is rolled back, or it
+    // waits until the commit is on disk.
+    _alive = match new.lifeline {
+        Some(lifeline) => Some(lifeline.hold().ok_or_else(|| {
+            ApiError::cancelled("DevHQ closed while the HTTP check ran. Nothing was recorded.")
+        })?),
+        None => None,
+    };
     tx.commit().map_err(ApiError::database)?;
     Ok(observation)
 }
@@ -893,6 +929,7 @@ pub fn record_observation(path: &Path, input: ObservationInput) -> Result<Observ
             valid_for_minutes: input.valid_for_minutes,
             recorded_at,
             http: None,
+            lifeline: None,
         },
     )
 }

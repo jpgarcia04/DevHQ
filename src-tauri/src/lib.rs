@@ -243,7 +243,8 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building DevHQ")
         .run(|app, event| {
-            // Closing the window ends supervision: runs in flight are cancelled, none start.
+            // Closing the window ends supervision: runs in flight are cancelled, none start, and
+            // nothing is recorded once shutdown returns (it waits for a commit in progress).
             if let RunEvent::ExitRequested { .. } | RunEvent::Exit = event {
                 if let Some(monitor) = app.try_state::<Monitor>() {
                     monitor.shutdown();

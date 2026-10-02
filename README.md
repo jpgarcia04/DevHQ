@@ -151,8 +151,13 @@ ejecución, que es idéntica a la de Run check y sigue la misma semántica de vi
 - La vigencia del resultado debe superar el intervalo (lo validan Rust y un CHECK), así que
   la evidencia supervisada no caduca entre ejecuciones.
 - Un único bucle en el runtime asíncrono de Tauri planifica todas las comprobaciones; vive
-  lo que vive el proceso. Cerrar la ventana cancela las ejecuciones en vuelo, que no
-  registran nada, y termina el bucle. No hay servicio, tarea del sistema ni arranque solo.
+  lo que vive el proceso. Cerrar la ventana termina la supervisión: cancela las ejecuciones en
+  vuelo y el bucle, y desde ese momento no se registra nada más. Una ejecución cuya petición ya
+  terminó no se puede interrumpir mientras escribe, así que su escritura comprueba en su
+  transacción, ya con el lock de escritura de SQLite, que la supervisión sigue viva: si el cierre
+  llegó antes, no confirma nada; si ya estaba confirmando, el cierre la espera (lo que tarda ese
+  commit en llegar al disco y su conexión en cerrarse, nunca a otro escritor). No hay servicio,
+  tarea del sistema ni arranque solo.
 - La siguiente ejecución toca **un intervalo después de que terminó la anterior**, la
   lanzara quien la lanzara: un Run check también reinicia la espera. Las ejecuciones
   perdidas no se recuperan: tras una pausa, la app cerrada o una ejecución lenta, una
@@ -510,7 +515,8 @@ final) y el borrado (qué lo
 impide, la confirmación y que un resultado tardío de un sujeto borrado no se registra). La supervisión se
 prueba sobre un reloj simulado de Tokio, sin esperas reales: ritmo por intervalo,
 continuidad tras reabrir, una sola ejecución por atraso, sin solapes, Run check que se une
-a la ejecución en vuelo, pausa, cancelación al quitar o cerrar, fallos de DevHQ visibles
+a la ejecución en vuelo, pausa, cancelación al quitar o cerrar (también de una ejecución que
+ya estaba escribiendo su resultado al cerrar), fallos de DevHQ visibles
 que no detienen al resto y configuración ilegible que se reintenta; y, con peticiones
 reales a un servidor local, que la evidencia programada es idéntica a la manual; y, a través del manejador real de comandos sobre el
 runtime simulado de Tauri y desde un hilo sin runtime asíncrono como el principal, que la ventana puede

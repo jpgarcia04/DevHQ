@@ -1101,6 +1101,7 @@ pub(crate) mod tests {
                     error: None,
                     redirects: vec![],
                 }),
+                lifeline: None,
             },
         )
         .unwrap_err();
