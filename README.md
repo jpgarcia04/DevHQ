@@ -406,7 +406,10 @@ El instalador se genera en `src-tauri/target/release/bundle/nsis/`. El target de
 empaquetado está configurado para Windows; otros sistemas necesitan sus prerrequisitos
 y seleccionar un target de bundle apropiado. Los lockfiles de npm y Cargo se versionan. El
 de npm lo escribe npm 11: npm 10 borra los campos `libc` de los paquetes de cada plataforma
-cada vez que lo reescribe. En las sesiones de Claude Code en la web,
+cada vez que lo reescribe. Los archivos de texto llevan LF en el repositorio y en cada copia de
+trabajo (`.gitattributes`): Git for Windows se instala con `core.autocrlf=true` y, sin eso, los
+escribiría con CRLF, que `prettier --check` rechaza aunque el código no cambie. En las sesiones
+de Claude Code en la web,
 `.claude/hooks/session-start.sh` prepara el contenedor (WebKitGTK, npm 11, dependencias,
 crates y `DEVHQ_CHROMIUM`) y `CLAUDE.md` resume las reglas de trabajo del repositorio.
 
