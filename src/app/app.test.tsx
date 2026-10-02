@@ -71,6 +71,17 @@ describe('workspace navigation', () => {
     await user.click(screen.getByRole('button', { name: 'Clear filters' }))
     expect(screen.getAllByRole('link', { name: /^Open / })).toHaveLength(4)
   })
+  it('counts what the demo shows with the noun in the right number', async () => {
+    const user = userEvent.setup()
+    renderApp('/applications')
+    expect(screen.getByText('4 applications')).toBeInTheDocument()
+    expect(screen.getByText('4 applications shown')).toBeInTheDocument()
+    // Orchestrator's Brain has one open incident; ClipOps, on the same VPS, has two.
+    expect(screen.getByText('1 linked incident')).toBeInTheDocument()
+    expect(screen.getByText('2 linked incidents')).toBeInTheDocument()
+    await user.type(screen.getByRole('textbox', { name: 'Search applications' }), 'ClipOps')
+    expect(screen.getByText('1 application shown')).toBeInTheDocument()
+  })
   it('filters incidents without changing sample statuses', async () => {
     const user = userEvent.setup()
     renderApp('/incidents')

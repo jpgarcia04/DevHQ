@@ -5,6 +5,7 @@ import { HealthBadge, LifecycleBadge } from '@/components/status-badge'
 import type { Application } from '@/domain/models'
 import { activeIncidents, applicationIncidents } from '@/domain/selectors'
 import { incidents } from '@/data/mock/scenario'
+import { counted } from '@/shared/count'
 
 const componentIcons = { backend: Server, database: Database, docker: Box, frontend: Globe }
 export function ApplicationCard({ app }: { app: Application }) {
@@ -67,7 +68,7 @@ export function ApplicationCard({ app }: { app: Application }) {
         <HealthBadge health={app.health} compact />
         <span className="text-[10px] text-muted-foreground">
           {incidentCount
-            ? `${incidentCount} linked incidents`
+            ? counted(incidentCount, 'linked incident')
             : app.health === 'unknown'
               ? 'Awaiting observations'
               : 'No open incidents'}

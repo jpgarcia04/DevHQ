@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { applications } from '@/data/mock/scenario'
 import { lifecycleLabels } from '@/domain/labels'
 import { needsAttention } from '@/domain/selectors'
+import { counted } from '@/shared/count'
 import { ApplicationCard } from './application-card'
 
 export function ApplicationsPage() {
@@ -25,7 +26,9 @@ export function ApplicationsPage() {
         title="Applications"
         description="Every application, with its operational context in one place."
         action={
-          <span className="text-xs text-muted-foreground">{applications.length} applications</span>
+          <span className="text-xs text-muted-foreground">
+            {counted(applications.length, 'application')}
+          </span>
         }
       />
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -69,7 +72,7 @@ export function ApplicationsPage() {
         </select>
       </div>
       <p className="sr-only" aria-live="polite">
-        {filtered.length} applications shown
+        {counted(filtered.length, 'application')} shown
       </p>
       {filtered.length ? (
         <div className="grid grid-cols-1 gap-5 min-[1060px]:grid-cols-2 min-[1700px]:grid-cols-3">
