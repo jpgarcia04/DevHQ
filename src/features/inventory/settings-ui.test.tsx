@@ -237,11 +237,11 @@ describe('Back up now', () => {
     expect(screen.getByRole('button', { name: 'Back up now' })).toBeEnabled()
   })
 
-  it('warns that backups share the disk and DevHQ’s folder, which an uninstall can delete', async () => {
+  it('warns that backups share the disk and the folder the uninstaller deletes on request', async () => {
     renderSettings(inventoryContext({ dataLocation: located() }))
     expect(
       screen.getByText(
-        'These backups stay on the same disk as the inventory, inside DevHQ’s own data folder: a failing disk takes them along, and uninstalling DevHQ can delete the folder. Copy them somewhere else, such as another disk or a USB drive, to keep them.',
+        'These backups stay on the same disk as the inventory, inside DevHQ’s own data folder: a failing disk takes them along, and uninstalling DevHQ with “Delete the application data” ticked deletes the whole folder, backups included. Copy them somewhere else, such as another disk or a USB drive, to keep them.',
       ),
     ).toBeInTheDocument()
     await screen.findByText(database)

@@ -238,7 +238,14 @@ de ningún sistema.
   modificación y su tamaño, sin presentarlos como sanos: DevHQ verificó cada respaldo una vez, al
   hacerlo, y no ha vuelto a mirarlos. Un `.partial` se marca como incompleto, no como respaldo.
 - Los respaldos están en el mismo disco que el inventario y dentro de la carpeta de datos de
-  DevHQ, que el desinstalador puede borrar; la ventana avisa de copiarlos a otro sitio.
+  DevHQ, `%APPDATA%\com.devhq.desktop` en Windows; la ventana avisa de copiarlos a otro sitio. El
+  desinstalador solo borra esa carpeta si marcas «Delete the application data» en su página de
+  confirmación, una casilla que aparece desmarcada. Marcada, la borra entera, con el inventario y
+  `backups/`, y también `%LOCALAPPDATA%\com.devhq.desktop`, el perfil de WebView2.
+  Una desinstalación silenciosa (`/S`) o pasiva (`/P`) no muestra esa página y una actualización
+  no la aplica, así que ninguna borra datos. Así lo dice la plantilla NSIS de tauri-bundler que
+  trae `@tauri-apps/cli` 2.11.5, y el workflow de Windows comprueba que tras una desinstalación
+  silenciosa siguen el inventario y sus respaldos.
 - Se restauran como cualquier copia (ver [Arquitectura](#arquitectura)). La preview rechaza el
   respaldo como toda escritura y muestra una carpeta de ejemplo.
 

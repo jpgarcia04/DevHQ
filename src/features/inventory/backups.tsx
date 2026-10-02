@@ -86,8 +86,9 @@ export function Backups() {
       </div>
       <p className="mt-4 rounded-md border border-amber-400/20 bg-amber-300/5 px-3 py-2 text-xs leading-6 text-amber-200">
         These backups stay on the same disk as the inventory, inside DevHQ’s own data folder: a
-        failing disk takes them along, and uninstalling DevHQ can delete the folder. Copy them
-        somewhere else, such as another disk or a USB drive, to keep them.
+        failing disk takes them along, and uninstalling DevHQ with “Delete the application data”
+        ticked deletes the whole folder, backups included. Copy them somewhere else, such as another
+        disk or a USB drive, to keep them.
       </p>
       <h3 className="mt-6 text-[13px] font-semibold">Backups folder</h3>
       {folder ? (
