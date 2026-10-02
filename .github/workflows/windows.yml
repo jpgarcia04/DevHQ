@@ -1,0 +1,153 @@
+# What only Windows can show: the Rust tests on NTFS with SChannel, again with TMP and TEMP in a
+# folder whose path has spaces and accents; the NSIS installer; the native walk on WebView2
+# against the installed app, its HTTP check over HTTPS through SChannel; and what the silent
+# uninstaller leaves behind.
+# Windows minutes count double on a private repository, so this runs on demand and on pull
+# requests that change what it tests.
+name: Windows
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'src-tauri/**'
+      - 'contract/**'
+      - 'e2e/native/**'
+      - '.github/workflows/windows.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  rust:
+    name: Rust tests · NTFS, SChannel, a path with spaces and accents
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: cargo test --manifest-path src-tauri/Cargo.toml --lib --locked
+      # std::env::temp_dir() reads TMP first, then TEMP: every test database, backup and
+      # hard link then lives under this path.
+      - name: Again, with TMP and TEMP in a folder with spaces and accents
+        run: |
+          $folder = Join-Path $env:RUNNER_TEMP 'Copias de DevHQ\año ñandú é'
+          New-Item -ItemType Directory -Force $folder | Out-Null
+          $env:TMP = $folder
+          $env:TEMP = $folder
+          cargo test --manifest-path src-tauri/Cargo.toml --lib --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "Left in ${folder}:"
+          Get-ChildItem -Force $folder | Select-Object -ExpandProperty Name
+
+  app:
+    name: Installer, native walk on WebView2, silent uninstall
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Build the release app and its NSIS installer
+        run: npm run tauri build
+      - name: Keep the installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: devhq-windows-installer
+          path: src-tauri/target/release/bundle/nsis/*-setup.exe
+          retention-days: 7
+      # The same version as CI on Linux and the cloud session hook.
+      - run: cargo install tauri-driver --version 2.1.0 --locked
+      - name: Install DevHQ silently, as the current user
+        run: |
+          $installer = Get-ChildItem src-tauri/target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          Start-Process -FilePath $installer.FullName -ArgumentList '/S' -Wait
+          $folder = Join-Path $env:LOCALAPPDATA 'DevHQ'
+          Get-ChildItem $folder | Format-Table Name, Length
+          $app = Get-ChildItem $folder -Filter *.exe | Where-Object Name -ne 'uninstall.exe' | Select-Object -First 1
+          if (-not $app) { throw "No DevHQ executable in $folder" }
+          "DEVHQ_APP=$($app.FullName)" >> $env:GITHUB_ENV
+      # msedgedriver must be the same version as the WebView2 runtime it drives. The runner
+      # brings one for Edge; when WebView2 differs, fetch the matching build.
+      - name: Match msedgedriver to WebView2
+        run: |
+          $client = 'Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+          $webview = @("HKLM:\SOFTWARE\WOW6432Node\$client", "HKLM:\SOFTWARE\$client", "HKCU:\SOFTWARE\$client") |
+            Where-Object { Test-Path $_ } | ForEach-Object { (Get-ItemProperty $_).pv } | Select-Object -First 1
+          if (-not $webview) { throw 'WebView2 is not installed' }
+          $driver = Join-Path $env:EDGEWEBDRIVER 'msedgedriver.exe'
+          $version = if (Test-Path $driver) { [regex]::Match((& $driver --version), '\d+(\.\d+){3}').Value }
+          "WebView2 $webview · runner msedgedriver $version"
+          if ($version -ne $webview) {
+            $zip = Join-Path $env:RUNNER_TEMP 'edgedriver.zip'
+            Invoke-WebRequest "https://msedgedriver.microsoft.com/$webview/edgedriver_win64.zip" -OutFile $zip
+            Expand-Archive $zip -DestinationPath (Join-Path $env:RUNNER_TEMP 'edgedriver') -Force
+            $driver = Join-Path $env:RUNNER_TEMP 'edgedriver\msedgedriver.exe'
+            "Using msedgedriver $([regex]::Match((& $driver --version), '\d+(\.\d+){3}').Value)"
+          }
+          "DEVHQ_EDGEDRIVER=$driver" >> $env:GITHUB_ENV
+      # The Rust tests only see SChannel fail a handshake. A certificate for 127.0.0.1 in the
+      # machine's trusted roots makes the walk's server speak HTTPS, so DevHQ's check has to
+      # complete one, verified against the Windows trust store.
+      - name: Trust a throwaway certificate for 127.0.0.1
+        run: |
+          $certificate = New-SelfSignedCertificate -Subject 'CN=DevHQ native walk' `
+            -TextExtension @('2.5.29.17={text}IPAddress=127.0.0.1') `
+            -CertStoreLocation Cert:\LocalMachine\My -KeyExportPolicy Exportable -NotAfter (Get-Date).AddDays(1)
+          $passphrase = [guid]::NewGuid().ToString()
+          "::add-mask::$passphrase"
+          $pfx = Join-Path $env:RUNNER_TEMP 'walk.pfx'
+          Export-PfxCertificate -Cert $certificate -FilePath $pfx -CryptoAlgorithmOption AES256_SHA256 `
+            -Password (ConvertTo-SecureString $passphrase -AsPlainText -Force) | Out-Null
+          $cer = Join-Path $env:RUNNER_TEMP 'walk.cer'
+          Export-Certificate -Cert $certificate -FilePath $cer | Out-Null
+          Import-Certificate -FilePath $cer -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
+          "DEVHQ_E2E_TLS_PFX=$pfx" >> $env:GITHUB_ENV
+          "DEVHQ_E2E_TLS_PASSPHRASE=$passphrase" >> $env:GITHUB_ENV
+      # The data stays for the uninstall step below; a fresh runner has none of its own.
+      - name: Native walk on the installed DevHQ
+        env:
+          DEVHQ_E2E_KEEP_DATA: '1'
+        run: node --disable-warning=ExperimentalWarning e2e/native/main.ts
+      - name: Keep the screenshots of each step
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-walk-windows
+          path: test-results/native/
+          retention-days: 7
+          if-no-files-found: ignore
+      # The uninstaller deletes the data folder only when "Delete the application data" is
+      # ticked on its confirmation page, which a silent uninstall never shows.
+      - name: Uninstall silently and check what stays
+        run: |
+          $data = Join-Path $env:APPDATA 'com.devhq.desktop'
+          $folder = Split-Path $env:DEVHQ_APP
+          Start-Process -FilePath (Join-Path $folder 'uninstall.exe') -ArgumentList '/S' -Wait
+          # The uninstaller runs from a copy of itself; wait until it has removed the app.
+          $deadline = (Get-Date).AddMinutes(1)
+          while ((Test-Path $env:DEVHQ_APP) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 1 }
+          if (Test-Path $env:DEVHQ_APP) { throw 'The uninstaller left the DevHQ executable' }
+          "Install folder left: $(Test-Path $folder)"
+          "Uninstall entry left: $(Test-Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\DevHQ')"
+          "WebView2 profile left: $(Test-Path (Join-Path $env:LOCALAPPDATA 'com.devhq.desktop'))"
+          Get-ChildItem -Recurse -Force $data | Format-Table FullName, Length -AutoSize
+          if (-not (Test-Path (Join-Path $data 'inventory.sqlite3'))) { throw 'The silent uninstall deleted the inventory' }
+          if (-not (Get-ChildItem (Join-Path $data 'backups') -Filter 'inventory-*.sqlite3')) { throw 'The silent uninstall deleted the backups' }
+          'The silent uninstall kept the inventory and its backups.'

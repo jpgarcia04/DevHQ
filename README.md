@@ -310,6 +310,20 @@ terminar borra las que creó. Con la versión síncrona de `watch_http_monitor`,
 en su primer paso: en Linux el pánico no puede atravesar la llamada de WebKitGTK que entrega la
 petición, así que el proceso abortaba y la ventana se cerraba en cuanto abría Mi inventario.
 
+El workflow `Windows` (`.github/workflows/windows.yml`) corre en `windows-latest` lo que solo
+Windows puede mostrar. Pasa los tests de Rust sobre NTFS y SChannel dos veces, la segunda con `TMP`
+y `TEMP` en una carpeta con espacios y acentos (`temp_dir()` lee `TMP`), de modo que cada base de
+prueba, `VACUUM INTO`, el enlace duro del respaldo y el WAL viven en esa ruta. Construye la app de
+release y su instalador NSIS con `npm run tauri build` y guarda el instalador como artefacto. Lo
+instala en silencio para el usuario actual, recorre la app instalada con el recorrido nativo sobre
+WebView2, con un `msedgedriver` de la misma versión que WebView2, y la desinstala en silencio para
+comprobar qué queda. En ese recorrido el servidor de la comprobación habla HTTPS: el workflow crea
+un certificado para `127.0.0.1`, lo añade a las raíces de confianza del equipo y se lo pasa al
+recorrido con `DEVHQ_E2E_TLS_PFX`, así que DevHQ tiene que completar un handshake con SChannel y el
+almacén de certificados de Windows (los tests de Rust solo ven fallar uno). Los minutos de Windows cuentan doble en un repositorio privado, así que corre a
+mano (`workflow_dispatch`) y en los pull requests que cambian `src-tauri/`, `contract/`,
+`e2e/native/` o el propio workflow.
+
 Si DevHQ no termina tras cerrar su ventana, antes de matar el proceso ejecuta
 `powershell -NoProfile -File scripts/dump-stacks.ps1 -ProcessId <pid>`: vuelca la pila de
 cada hilo con `dbghelp.dll` de Windows y el PDB de release, sin instalar nada.

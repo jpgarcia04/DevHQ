@@ -167,6 +167,11 @@ export async function launch(binary: string, env: NodeJS.ProcessEnv, helpers: Ch
     driver.on('error', reject)
     driver.on('exit', (code) => reject(new Error(`tauri-driver exited with ${code}`)))
   })
+  // The native driver first: tauri-driver logs an error for every request it cannot forward.
+  await Promise.race([
+    until('the native WebDriver to answer', () => ready(`http://127.0.0.1:${nativePort}`), 30_000),
+    exited,
+  ])
   const base = `http://127.0.0.1:${port}`
   await Promise.race([until('tauri-driver to answer', () => ready(base), 30_000), exited])
   const session = await Promise.race([

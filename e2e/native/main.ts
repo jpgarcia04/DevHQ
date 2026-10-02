@@ -15,7 +15,8 @@ import assert from 'node:assert/strict'
 import type { ChildProcess } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { mkdir, readdir, rm, writeFile } from 'node:fs/promises'
-import { createServer } from 'node:http'
+import { createServer, type RequestListener } from 'node:http'
+import { createServer as createHttpsServer } from 'node:https'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import {
@@ -139,16 +140,29 @@ const journalOf = (database: string) => {
   return header[0] === 2 && header[1] === 2 ? 'wal' : header[0] === 1 ? 'rollback' : 'unknown'
 }
 
-/** The one server the HTTP check talks to. It counts what DevHQ asked of it. */
+/**
+ * The one server the HTTP check talks to. It counts what DevHQ asked of it. With
+ * DEVHQ_E2E_TLS_PFX (a certificate for 127.0.0.1 that the system trusts, as the Windows
+ * workflow sets up) it speaks HTTPS, so the check must complete a handshake with the system's
+ * own TLS stack and trust store.
+ */
 async function healthServer() {
   const requests: { method?: string; url?: string; headers: Record<string, unknown> }[] = []
-  const server = createServer((request, response) => {
+  const answer: RequestListener = (request, response) => {
     requests.push({ method: request.method, url: request.url, headers: request.headers })
     response.writeHead(200, { 'content-type': 'text/plain' }).end('ok')
-  })
+  }
+  const pfx = process.env.DEVHQ_E2E_TLS_PFX
+  const server = pfx
+    ? createHttpsServer(
+        { pfx: readFileSync(pfx), passphrase: process.env.DEVHQ_E2E_TLS_PASSPHRASE },
+        answer,
+      )
+    : createServer(answer)
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   const { port } = server.address() as { port: number }
-  return { url: `http://127.0.0.1:${port}/health`, requests, close: () => server.close() }
+  const scheme = pfx ? 'https' : 'http'
+  return { url: `${scheme}://127.0.0.1:${port}/health`, requests, close: () => server.close() }
 }
 
 const helpers: ChildProcess[] = []
@@ -268,7 +282,7 @@ try {
     await ui.see('Manual entry', resource)
   })
 
-  await step('Supervise an HTTP check against 127.0.0.1', async () => {
+  await step('Supervise an HTTP check of a server on 127.0.0.1', async () => {
     await ui.click(button('Configure HTTP check', resource))
     const check = `${resource}//form[@aria-label='Configure HTTP check']`
     await ui.fill(field('URL', check), server.url)
@@ -278,6 +292,7 @@ try {
     // reach the window only through the status channel that watch_http_monitor opened.
     await until('DevHQ to request the health URL', () => server.requests.length >= 1)
     await ui.see('Automated · HTTP check', resource)
+    await ui.see('HTTP 200 as expected', resource)
     await ui.see('Next run in', resource)
     const request = server.requests[0]!
     assert.equal(request.method, 'GET')
