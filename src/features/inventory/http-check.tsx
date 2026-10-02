@@ -226,7 +226,16 @@ export function HttpCheckPanel({ subject, name }: { subject: EntityRef; name: st
         </p>
       )}
       {editing && (
-        <HttpCheckForm subject={subject} check={check} onDone={() => setEditing(false)} />
+        <HttpCheckForm
+          subject={subject}
+          check={check}
+          onDone={() => setEditing(false)}
+          // What the last run or action said was about the check as it was: no longer the one shown.
+          onSaved={() => {
+            setOutcome(null)
+            setError(null)
+          }}
+        />
       )}
     </section>
   )
@@ -236,10 +245,13 @@ export function HttpCheckForm({
   subject,
   check,
   onDone,
+  onSaved,
 }: {
   subject: EntityRef
   check?: HttpCheck
   onDone: () => void
+  /** Called once the new configuration is saved, before `onDone`. */
+  onSaved?: () => void
 }) {
   const { saveHttpCheck } = useInventory()
   const [url, setUrl] = useState(check?.url ?? '')
@@ -265,6 +277,7 @@ export function HttpCheckForm({
         validForMinutes,
         monitorIntervalMinutes: interval,
       })
+      onSaved?.()
       onDone()
     } catch (cause) {
       setError(inventoryError(cause))
@@ -284,10 +297,11 @@ export function HttpCheckForm({
         The URL is stored in plain text: keep secrets out of it.
       </p>
       <div className="grid gap-4 min-[1100px]:grid-cols-2">
-        <label className="space-y-1.5 text-xs min-[1100px]:col-span-2">
+        <label className="grid gap-1.5 text-xs min-[1100px]:col-span-2">
           URL
           <Input
             required
+            spellCheck={false}
             type="url"
             maxLength={textLimits.url}
             placeholder="https://example.com/health"
@@ -295,7 +309,7 @@ export function HttpCheckForm({
             onChange={(event) => setUrl(event.target.value)}
           />
         </label>
-        <label className="space-y-1.5 text-xs">
+        <label className="grid gap-1.5 text-xs">
           Expected status
           <Input
             required
@@ -306,7 +320,7 @@ export function HttpCheckForm({
             onChange={(event) => setExpectedStatus(event.target.value)}
           />
         </label>
-        <label className="space-y-1.5 text-xs">
+        <label className="grid gap-1.5 text-xs">
           Give up after
           <select
             className="filter-select block w-full"
@@ -320,7 +334,7 @@ export function HttpCheckForm({
             ))}
           </select>
         </label>
-        <label className="space-y-1.5 text-xs">
+        <label className="grid gap-1.5 text-xs">
           Result valid for
           <select
             className="filter-select block w-full"
@@ -334,7 +348,7 @@ export function HttpCheckForm({
             ))}
           </select>
         </label>
-        <label className="space-y-1.5 text-xs">
+        <label className="grid gap-1.5 text-xs">
           Supervise while DevHQ is open
           <select
             className="filter-select block w-full"

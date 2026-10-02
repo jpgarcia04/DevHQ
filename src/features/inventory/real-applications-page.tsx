@@ -47,6 +47,7 @@ export function RealApplicationsPage() {
             <Search className="absolute left-3 top-2.5 size-4 text-muted-foreground" />
             <Input
               className="pl-9"
+              spellCheck={false}
               placeholder="Find an application…"
               value={query}
               onChange={(event) => setQuery(event.target.value)}

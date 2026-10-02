@@ -47,6 +47,15 @@ describe('real inventory UI', () => {
     expect(onDone).toHaveBeenCalledOnce()
   })
 
+  it('leaves names and versions out of the spell checker, not descriptions', async () => {
+    const user = userEvent.setup()
+    renderWithInventory(<ApplicationForm onDone={vi.fn()} />, context())
+    await user.click(screen.getByRole('button', { name: 'Add component' }))
+    for (const name of ['Name', 'Version', 'Component name'])
+      expect(screen.getByRole('textbox', { name })).toHaveAttribute('spellcheck', 'false')
+    expect(screen.getByRole('textbox', { name: 'Description' })).not.toHaveAttribute('spellcheck')
+  })
+
   it('keeps a failed inventory request distinct from an empty or healthy inventory', async () => {
     const user = userEvent.setup()
     const list = vi.spyOn(inventoryApi, 'list').mockRejectedValue({

@@ -61,10 +61,14 @@
   }
   a,
   button,
-  input,
-  select,
   summary {
     @apply outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-4 focus-visible:ring-offset-background;
+  }
+  /* A field's ring hugs its border. Set 4px off, like a button's, it reached the label above
+     and covered the bottom of its letters. */
+  input,
+  select {
+    @apply outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30;
   }
   ::selection {
     background: #b5a4f540;
@@ -95,8 +99,22 @@
   .page-stack {
     @apply space-y-7;
   }
+  /* A native select, so the keyboard and the system's list keep working, drawn like the inputs:
+     the same border, its own chevron instead of the system's arrow, and the theme's colours in
+     the open list. */
   .filter-select {
-    @apply h-9 rounded-md border bg-card px-3 text-xs text-foreground;
+    @apply h-9 appearance-none rounded-md border border-input bg-card pr-8 pl-3 text-xs text-foreground transition-colors hover:border-[#4a4d5a];
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23969ba8' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m4 6 4 4 4-4'/%3E%3C/svg%3E");
+    background-position: right 0.6rem center;
+    background-repeat: no-repeat;
+    background-size: 0.875rem;
+  }
+  .filter-select option {
+    @apply bg-card text-foreground;
+  }
+  /* Shown again when its key changes, so that a repeated action visibly answers again. */
+  .fade-in {
+    animation: fade-in 180ms ease-out;
   }
   .health-dot {
     @apply inline-block size-1.5 shrink-0 rounded-full bg-current;
@@ -126,6 +144,12 @@
   }
   .app-card:hover .app-card-arrow {
     @apply translate-x-1 text-foreground;
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
   }
 }
 

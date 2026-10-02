@@ -39,6 +39,7 @@ export function ApplicationsPage() {
           />
           <Input
             aria-label="Search applications"
+            spellCheck={false}
             placeholder="Find an application…"
             value={query}
             onChange={(event) => setQuery(event.target.value)}

@@ -5,6 +5,9 @@ import { Backups } from './backups'
 import { inventoryError, type DataLocation } from './inventory-api'
 import { useInventory } from './inventory-context'
 
+/** How long «Path copied.» stays, in milliseconds. */
+const copiedFor = 3000
+
 /**
  * The inventory's file on this device and how to back it up. It asks the native process only
  * where the file is and what its backups folder holds, so it still answers when the inventory
@@ -14,7 +17,14 @@ function DatabaseFile() {
   const { dataLocation } = useInventory()
   const [location, setLocation] = useState<DataLocation | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [copied, setCopied] = useState<boolean | null>(null)
+  // `at` tells each click apart, so that copying again shows the confirmation anew.
+  const [copied, setCopied] = useState<{ ok: boolean; at: number } | null>(null)
+  // A confirmation goes away by itself; a failure stays, since it says what to do instead.
+  useEffect(() => {
+    if (!copied?.ok) return
+    const timer = setTimeout(() => setCopied(null), copiedFor)
+    return () => clearTimeout(timer)
+  }, [copied])
   useEffect(() => {
     let current = true
     dataLocation().then(
@@ -28,9 +38,9 @@ function DatabaseFile() {
   const copy = async (path: string) => {
     try {
       await navigator.clipboard.writeText(path)
-      setCopied(true)
+      setCopied({ ok: true, at: Date.now() })
     } catch {
-      setCopied(false)
+      setCopied({ ok: false, at: Date.now() })
     }
   }
   return (
@@ -53,8 +63,13 @@ function DatabaseFile() {
               Copy path
             </Button>
             <p role="status" className="text-[11px] text-muted-foreground">
-              {copied === true && 'Path copied.'}
-              {copied === false && 'The path could not be copied: select it and copy it.'}
+              {copied && (
+                <span key={copied.at} className="fade-in">
+                  {copied.ok
+                    ? 'Path copied.'
+                    : 'The path could not be copied: select it and copy it.'}
+                </span>
+              )}
             </p>
           </div>
           {location.storedAt && (

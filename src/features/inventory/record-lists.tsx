@@ -64,7 +64,7 @@ function IncidentStatusControl({ incident }: { incident: RecordedIncident }) {
   }
   return (
     <div className="flex flex-wrap items-end gap-2">
-      <label className="min-w-52 flex-1 space-y-1.5 text-xs">
+      <label className="min-w-52 flex-1 grid gap-1.5 text-xs">
         Status note (optional)
         <Input
           maxLength={textLimits.summary}

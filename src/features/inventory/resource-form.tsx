@@ -39,16 +39,17 @@ export function ResourceForm({
     >
       <h2 className="section-heading">{resource ? 'Edit resource' : 'New resource'}</h2>
       <div className="grid gap-4 min-[1100px]:grid-cols-2">
-        <label className="space-y-1.5 text-xs">
+        <label className="grid gap-1.5 text-xs">
           Name{' '}
           <Input
             required
+            spellCheck={false}
             maxLength={textLimits.name}
             value={name}
             onChange={(event) => setName(event.target.value)}
           />
         </label>
-        <label className="space-y-1.5 text-xs">
+        <label className="grid gap-1.5 text-xs">
           Kind
           <select
             className="filter-select block w-full"
@@ -59,7 +60,7 @@ export function ResourceForm({
             <option value="workstation">Workstation</option>
           </select>
         </label>
-        <label className="space-y-1.5 text-xs">
+        <label className="grid gap-1.5 text-xs">
           Description{' '}
           <Input
             maxLength={textLimits.description}
@@ -67,9 +68,10 @@ export function ResourceForm({
             onChange={(event) => setDescription(event.target.value)}
           />
         </label>
-        <label className="space-y-1.5 text-xs">
+        <label className="grid gap-1.5 text-xs">
           Operating system{' '}
           <Input
+            spellCheck={false}
             maxLength={textLimits.name}
             value={operatingSystem}
             onChange={(event) => setOperatingSystem(event.target.value)}

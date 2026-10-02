@@ -58,16 +58,17 @@ export function ApplicationForm({
     >
       <h2 className="section-heading">{application ? 'Edit application' : 'New application'}</h2>
       <div className="grid gap-4 min-[1100px]:grid-cols-2">
-        <label className="space-y-1.5 text-xs">
+        <label className="grid gap-1.5 text-xs">
           Name{' '}
           <Input
             required
+            spellCheck={false}
             maxLength={textLimits.name}
             value={name}
             onChange={(event) => setName(event.target.value)}
           />
         </label>
-        <label className="space-y-1.5 text-xs">
+        <label className="grid gap-1.5 text-xs">
           Lifecycle
           <select
             className="filter-select block w-full"
@@ -81,7 +82,7 @@ export function ApplicationForm({
             ))}
           </select>
         </label>
-        <label className="space-y-1.5 text-xs">
+        <label className="grid gap-1.5 text-xs">
           Description{' '}
           <Input
             maxLength={textLimits.description}
@@ -89,9 +90,10 @@ export function ApplicationForm({
             onChange={(event) => setDescription(event.target.value)}
           />
         </label>
-        <label className="space-y-1.5 text-xs">
+        <label className="grid gap-1.5 text-xs">
           Version{' '}
           <Input
+            spellCheck={false}
             maxLength={textLimits.version}
             value={version}
             onChange={(event) => setVersion(event.target.value)}
@@ -124,16 +126,17 @@ export function ApplicationForm({
             className="grid gap-3 rounded-lg border p-3 min-[1100px]:grid-cols-[1fr_140px_1fr_auto]"
             key={component.id ?? `new-${index}`}
           >
-            <label className="space-y-1.5 text-xs">
+            <label className="grid gap-1.5 text-xs">
               Component name{' '}
               <Input
                 required
+                spellCheck={false}
                 maxLength={textLimits.name}
                 value={component.name}
                 onChange={(event) => updateComponent(index, { name: event.target.value })}
               />
             </label>
-            <label className="space-y-1.5 text-xs">
+            <label className="grid gap-1.5 text-xs">
               Kind
               <select
                 className="filter-select block w-full"
@@ -147,7 +150,7 @@ export function ApplicationForm({
                 ))}
               </select>
             </label>
-            <label className="space-y-1.5 text-xs">
+            <label className="grid gap-1.5 text-xs">
               Resource
               <select
                 className="filter-select block w-full"

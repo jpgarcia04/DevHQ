@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { render, screen, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { formatBytes } from '@/shared/size'
@@ -32,7 +32,10 @@ const paragraph = (text: RegExp) => (_: string, element: Element | null) =>
   element?.tagName === 'P' && text.test(element.textContent ?? '')
 
 describe('the database file in Settings', () => {
-  afterEach(() => vi.unstubAllGlobals())
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
 
   it('shows where the native process keeps it and how to back it up', async () => {
     renderSettings(inventoryContext({ dataLocation: located() }))
@@ -62,8 +65,41 @@ describe('the database file in Settings', () => {
     renderSettings(inventoryContext({ dataLocation: located() }))
     await user.click(await screen.findByRole('button', { name: 'Copy path' }))
     expect(writeText).toHaveBeenCalledWith(database)
-    expect(screen.getByText('Path copied.')).toHaveAttribute('role', 'status')
+    expect(screen.getByText('Path copied.').closest('[role="status"]')).not.toBeNull()
     await user.click(screen.getByRole('button', { name: 'Copy path' }))
+    expect(
+      screen.getByText('The path could not be copied: select it and copy it.'),
+    ).toBeInTheDocument()
+  })
+
+  it('lets «Path copied.» go after a few seconds and answers every click anew', async () => {
+    const writeText = vi
+      .fn()
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('denied'))
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } })
+    renderSettings(inventoryContext({ dataLocation: located() }))
+    const button = await screen.findByRole('button', { name: 'Copy path' })
+    // Only the simulated clock moves from here: real time spent by a busy machine adds nothing.
+    // user-event waits on timers of its own, so the click is a plain event inside act, which
+    // also lets the copy's promise settle.
+    vi.useFakeTimers()
+    const click = () => act(async () => void fireEvent.click(button))
+    await click()
+    const first = screen.getByText('Path copied.')
+    act(() => vi.advanceTimersByTime(1000))
+    // Copying again shows the confirmation anew and gives it its full time again.
+    await click()
+    const second = screen.getByText('Path copied.')
+    expect(second).not.toBe(first)
+    act(() => vi.advanceTimersByTime(2900))
+    expect(screen.getByText('Path copied.')).toBe(second)
+    act(() => vi.advanceTimersByTime(200))
+    expect(screen.queryByText('Path copied.')).not.toBeInTheDocument()
+    // A failure says what to do instead, so it stays.
+    await click()
+    act(() => vi.advanceTimersByTime(10_000))
     expect(
       screen.getByText('The path could not be copied: select it and copy it.'),
     ).toBeInTheDocument()
