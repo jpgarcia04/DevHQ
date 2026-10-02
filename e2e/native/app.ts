@@ -139,34 +139,38 @@ export async function until<T>(what: string, check: () => Promise<T> | T, timeou
   }
 }
 
-/**
- * The native WebDriver for this platform: WebKitWebDriver on Linux, found on the PATH by
- * tauri-driver, and on Windows the msedgedriver that DEVHQ_EDGEDRIVER names or, on GitHub's
- * runners, the one in EDGEWEBDRIVER, which must match the installed WebView2.
- */
-function nativeDriver() {
-  if (!windows) return []
-  const explicit = process.env.DEVHQ_EDGEDRIVER
-  const runner = process.env.EDGEWEBDRIVER && join(process.env.EDGEWEBDRIVER, 'msedgedriver.exe')
-  const driver = explicit ?? (runner && existsSync(runner) ? runner : undefined)
-  return driver ? ['--native-driver', driver] : []
+/** The DevTools port the Windows test build opens in its WebView2 (see build.ts). */
+export const WEBVIEW2_DEBUG_PORT = 9222
+
+/** A process that stops the walk if it ends before the walk is done with it. */
+function exitOf(child: ChildProcess, name: string) {
+  return new Promise<never>((_, reject) => {
+    child.on('error', reject)
+    child.on('exit', (code) => reject(new Error(`${name} exited with ${code}`)))
+  })
 }
 
-/** Starts tauri-driver and, through it, DevHQ. */
+/**
+ * Starts DevHQ and a WebDriver session on its window. Linux: tauri-driver starts
+ * WebKitWebDriver, which launches DevHQ. Windows: tauri-driver cannot have msedgedriver launch
+ * a Tauri app on WebView2 150 or later (see build.ts), so the walk starts DevHQ itself and
+ * msedgedriver attaches to the DevTools port of the test build.
+ */
 export async function launch(binary: string, env: NodeJS.ProcessEnv, helpers: ChildProcess[]) {
+  return windows ? attach(binary, env, helpers) : viaTauriDriver(binary, env, helpers)
+}
+
+async function viaTauriDriver(binary: string, env: NodeJS.ProcessEnv, helpers: ChildProcess[]) {
   const [port, nativePort] = [await freePort(), await freePort()]
   const driver = track(
     spawn(
       process.env.DEVHQ_TAURI_DRIVER ?? 'tauri-driver',
-      ['--port', String(port), '--native-port', String(nativePort), ...nativeDriver()],
+      ['--port', String(port), '--native-port', String(nativePort)],
       { env, stdio: ['ignore', 'inherit', 'inherit'] },
     ),
     helpers,
   )
-  const exited = new Promise<never>((_, reject) => {
-    driver.on('error', reject)
-    driver.on('exit', (code) => reject(new Error(`tauri-driver exited with ${code}`)))
-  })
+  const exited = exitOf(driver, 'tauri-driver')
   // The native driver first: tauri-driver logs an error for every request it cannot forward.
   await Promise.race([
     until('the native WebDriver to answer', () => ready(`http://127.0.0.1:${nativePort}`), 30_000),
@@ -182,13 +186,47 @@ export async function launch(binary: string, env: NodeJS.ProcessEnv, helpers: Ch
   return { session, pid }
 }
 
-/** The running process of this executable, if there is exactly one. */
+/**
+ * msedgedriver must be the same version as WebView2: DEVHQ_EDGEDRIVER names it, or else the one
+ * GitHub's runners keep in EDGEWEBDRIVER, or else the one on the PATH.
+ */
+function edgeDriver() {
+  if (process.env.DEVHQ_EDGEDRIVER) return process.env.DEVHQ_EDGEDRIVER
+  const runner = process.env.EDGEWEBDRIVER && join(process.env.EDGEWEBDRIVER, 'msedgedriver.exe')
+  return runner && existsSync(runner) ? runner : 'msedgedriver'
+}
+
+async function attach(binary: string, env: NodeJS.ProcessEnv, helpers: ChildProcess[]) {
+  const app = track(spawn(binary, [], { env, stdio: 'inherit' }), helpers)
+  const appExited = exitOf(app, 'DevHQ')
+  const debuggerAddress = `127.0.0.1:${WEBVIEW2_DEBUG_PORT}`
+  await Promise.race([
+    until(
+      'the WebView2 DevTools port (is this the build from e2e/native/build.ts?)',
+      async () => (await fetch(`http://${debuggerAddress}/json/version`)).ok,
+      60_000,
+    ),
+    appExited,
+  ])
+  const port = await freePort()
+  const driver = track(
+    spawn(edgeDriver(), [`--port=${port}`], { stdio: ['ignore', 'inherit', 'inherit'] }),
+    helpers,
+  )
+  const stopped = Promise.race([appExited, exitOf(driver, 'msedgedriver')])
+  const base = `http://127.0.0.1:${port}`
+  await Promise.race([until('msedgedriver to answer', () => ready(base), 30_000), stopped])
+  const session = await Promise.race([
+    Session.create(base, { browserName: 'webview2', 'ms:edgeOptions': { debuggerAddress } }),
+    stopped,
+  ])
+  // From here on the walk watches DevHQ's exit itself; the cleanup stops msedgedriver.
+  stopped.catch(() => {})
+  return { session, pid: app.pid! }
+}
+
+/** The running process of this executable on Linux, if there is exactly one. */
 function processOf(binary: string): number | undefined {
-  if (windows) {
-    const script = `(Get-CimInstance Win32_Process -Filter "Name='${binary.split('\\').pop()}'" | Where-Object ExecutablePath -eq '${binary.replaceAll("'", "''")}').ProcessId`
-    const found = powershell(script).split(/\s+/).filter(Boolean)
-    return found.length === 1 ? Number(found[0]) : undefined
-  }
   const found = readdirSync('/proc')
     .filter((entry) => /^\d+$/.test(entry))
     .filter((pid) => {

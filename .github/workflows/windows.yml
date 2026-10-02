@@ -1,7 +1,7 @@
 # What only Windows can show: the Rust tests on NTFS with SChannel, again with TMP and TEMP in a
-# folder whose path has spaces and accents; the NSIS installer; the native walk on WebView2
-# against the installed app, its HTTP check over HTTPS through SChannel; and what the silent
-# uninstaller leaves behind.
+# folder whose path has spaces and accents; the NSIS installer; the native walk on WebView2 with
+# its HTTP check over HTTPS through SChannel; the installed app starting and closing; and what
+# the silent uninstaller leaves behind.
 # Windows minutes count double on a private repository, so this runs on demand and on pull
 # requests that change what it tests.
 name: Windows
@@ -72,17 +72,16 @@ jobs:
           name: devhq-windows-installer
           path: src-tauri/target/release/bundle/nsis/*-setup.exe
           retention-days: 7
-      # The same version as CI on Linux and the cloud session hook.
-      - run: cargo install tauri-driver --version 2.1.0 --locked
-      - name: Install DevHQ silently, as the current user
+      # The same release build, plus a DevTools port in its WebView2 that msedgedriver attaches
+      # to (see e2e/native/build.ts). It replaces target/release/devhq.exe, not the installer.
+      - name: Build the release app the walk drives
         run: |
-          $installer = Get-ChildItem src-tauri/target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
-          Start-Process -FilePath $installer.FullName -ArgumentList '/S' -Wait
-          $folder = Join-Path $env:LOCALAPPDATA 'DevHQ'
-          Get-ChildItem $folder | Format-Table Name, Length
-          $app = Get-ChildItem $folder -Filter *.exe | Where-Object Name -ne 'uninstall.exe' | Select-Object -First 1
-          if (-not $app) { throw "No DevHQ executable in $folder" }
-          "DEVHQ_APP=$($app.FullName)" >> $env:GITHUB_ENV
+          node e2e/native/build.ts --release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $walked = Join-Path $env:RUNNER_TEMP 'walk\devhq.exe'
+          New-Item -ItemType Directory -Force (Split-Path $walked) | Out-Null
+          Copy-Item src-tauri/target/release/devhq.exe $walked
+          "DEVHQ_APP=$walked" >> $env:GITHUB_ENV
       # msedgedriver must be the same version as the WebView2 runtime it drives. The runner
       # brings one for Edge; when WebView2 differs, fetch the matching build.
       - name: Match msedgedriver to WebView2
@@ -120,8 +119,8 @@ jobs:
           Import-Certificate -FilePath $cer -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
           "DEVHQ_E2E_TLS_PFX=$pfx" >> $env:GITHUB_ENV
           "DEVHQ_E2E_TLS_PASSPHRASE=$passphrase" >> $env:GITHUB_ENV
-      # The data stays for the uninstall step below; a fresh runner has none of its own.
-      - name: Native walk on the installed DevHQ
+      # The data stays for the steps below; a fresh runner has none of its own.
+      - name: Native walk on WebView2
         env:
           DEVHQ_E2E_KEEP_DATA: '1'
         run: node --disable-warning=ExperimentalWarning e2e/native/main.ts
@@ -133,17 +132,49 @@ jobs:
           path: test-results/native/
           retention-days: 7
           if-no-files-found: ignore
+      - name: Install DevHQ silently, as the current user
+        run: |
+          $installer = Get-ChildItem src-tauri/target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          Start-Process -FilePath $installer.FullName -ArgumentList '/S' -Wait
+          $folder = Join-Path $env:LOCALAPPDATA 'DevHQ'
+          Get-ChildItem $folder | Format-Table Name, Length
+          $app = Get-ChildItem $folder -Filter *.exe | Where-Object Name -ne 'uninstall.exe' | Select-Object -First 1
+          if (-not $app) { throw "No DevHQ executable in $folder" }
+          "DEVHQ_INSTALLED=$($app.FullName)" >> $env:GITHUB_ENV
+      # The installed app has no DevTools port to drive, so this only checks that it starts on
+      # the walk's inventory, brings up WebView2 and ends when its window is closed.
+      - name: Open and close the installed DevHQ
+        run: |
+          $data = Join-Path $env:APPDATA 'com.devhq.desktop'
+          # WebView2 recreates its profile when the window starts: proof that it did.
+          $webviewProfile = Join-Path $env:LOCALAPPDATA 'com.devhq.desktop\EBWebView'
+          Remove-Item -Recurse -Force $webviewProfile -ErrorAction SilentlyContinue
+          $process = Start-Process -FilePath $env:DEVHQ_INSTALLED -PassThru
+          $deadline = (Get-Date).AddMinutes(1)
+          do { Start-Sleep -Milliseconds 500; $process.Refresh() }
+          until ($process.HasExited -or $process.MainWindowHandle -ne [IntPtr]::Zero -or (Get-Date) -gt $deadline)
+          if ($process.HasExited) { throw "The installed DevHQ exited at start, with code $($process.ExitCode)" }
+          if ($process.MainWindowHandle -eq [IntPtr]::Zero) { throw 'The installed DevHQ showed no window' }
+          "Window: $($process.MainWindowTitle)"
+          while (-not (Test-Path $webviewProfile) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
+          if (-not (Test-Path $webviewProfile)) { throw 'WebView2 never started in the installed DevHQ' }
+          Start-Sleep -Seconds 5
+          Add-Type -Namespace DevHQ -Name User32 -MemberDefinition '[DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr window, uint message, IntPtr w, IntPtr l);'
+          [DevHQ.User32]::PostMessageW($process.MainWindowHandle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
+          if (-not $process.WaitForExit(20000)) { throw 'The installed DevHQ did not end after its window closed' }
+          "Exit code: $($process.ExitCode)"
+          if (Test-Path (Join-Path $data 'inventory.sqlite3-wal')) { throw 'A write-ahead log was left behind' }
       # The uninstaller deletes the data folder only when "Delete the application data" is
       # ticked on its confirmation page, which a silent uninstall never shows.
       - name: Uninstall silently and check what stays
         run: |
           $data = Join-Path $env:APPDATA 'com.devhq.desktop'
-          $folder = Split-Path $env:DEVHQ_APP
+          $folder = Split-Path $env:DEVHQ_INSTALLED
           Start-Process -FilePath (Join-Path $folder 'uninstall.exe') -ArgumentList '/S' -Wait
           # The uninstaller runs from a copy of itself; wait until it has removed the app.
           $deadline = (Get-Date).AddMinutes(1)
-          while ((Test-Path $env:DEVHQ_APP) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 1 }
-          if (Test-Path $env:DEVHQ_APP) { throw 'The uninstaller left the DevHQ executable' }
+          while ((Test-Path $env:DEVHQ_INSTALLED) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 1 }
+          if (Test-Path $env:DEVHQ_INSTALLED) { throw 'The uninstaller left the DevHQ executable' }
           "Install folder left: $(Test-Path $folder)"
           "Uninstall entry left: $(Test-Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\DevHQ')"
           "WebView2 profile left: $(Test-Path (Join-Path $env:LOCALAPPDATA 'com.devhq.desktop'))"

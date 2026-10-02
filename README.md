@@ -290,24 +290,30 @@ WCAG A/AA y buenas prácticas) cada página real de la preview, algunos formular
 demo: landmarks, orden de encabezados, nombres accesibles y contraste. Solo se excluye el rótulo decorativo de
 las miniaturas de la demo, oculto a tecnologías de asistencia y exento de contraste.
 
-`npm run e2e:native` recorre la app real, no la preview: compila DevHQ en modo debug con el
-frontend embebido y lo maneja con `tauri-driver` 2.1.0 a través del WebDriver del sistema:
-`WebKitWebDriver` (paquete `webkit2gtk-driver`) en Linux y, en Windows, un `msedgedriver` de la
-misma versión que WebView2. El cliente WebDriver es un archivo propio sobre `fetch`
-(`e2e/native/webdriver.ts`): el protocolo es JSON sobre HTTP, así que no hace falta ninguna
-dependencia, y cada petición que hace está a la vista. El recorrido parte de una base v6 en modo
-journal de rollback, como las anteriores a WAL. Abre Mi inventario, comprueba la ruta que muestra
-Settings y «Copy path», crea un recurso y una aplicación, registra una observación, supervisa una
-comprobación HTTP contra un servidor propio en `127.0.0.1` (esa ejecución y la recarga de su
-evidencia solo llegan a la ventana por el `Channel` de supervisión), la ejecuta a petición, lee el
-panel Supervision y pulsa Back up now: el archivo debe estar en `backups/`, sin `.partial`, con
-`quick_check` correcto, la versión del esquema y las filas del inventario, y la ventana debe
-listarlo. Por último cierra la ventana como lo hace su botón, nunca por WebDriver: con
-`WM_DELETE_WINDOW` en X11 (un script de Python que llama a libX11, porque bajo Xvfb no hay gestor
-de ventanas que lo envíe) o con `WM_CLOSE` en Windows. El proceso debe terminar, sin dejar
-`inventory.sqlite3-wal`, y el archivo debe haber pasado a WAL. Antes de hacer clic espera a que el
-elemento deje de moverse, porque el contenido que llega tarde empuja la página, y guarda una
-captura por paso en `test-results/native/`. `DEVHQ_APP` lo apunta a otro ejecutable.
+`npm run e2e:native` recorre la app real, no la preview. `e2e/native/build.ts` compila DevHQ en
+modo debug con el frontend embebido y el recorrido lo maneja por WebDriver. En Linux lo lanza
+`tauri-driver` 2.1.0 a través de `WebKitWebDriver` (paquete `webkit2gtk-driver`). En Windows
+`tauri-driver` ya no puede: desde WebView2 150, `msedgedriver` le pasa a la app su puerto de
+depuración y su carpeta de datos por variables de entorno, pero Tauri fija los argumentos y la
+carpeta de WebView2 por su API, que manda, así que el puerto nunca se abre (`DevToolsActivePort
+file doesn't exist`). Allí la build de prueba, y solo ella, abre el puerto de DevTools de WebView2
+en `127.0.0.1` con una configuración que se fusiona al compilarla; el recorrido arranca DevHQ y un
+`msedgedriver` de la misma versión que WebView2 se engancha a ese puerto. El instalador se compila
+sin ella. El cliente WebDriver es un archivo propio sobre `fetch` (`e2e/native/webdriver.ts`): el
+protocolo es JSON sobre HTTP, así que no hace falta ninguna dependencia, y cada petición que hace
+está a la vista. El recorrido parte de una base v6 en modo journal de rollback, como las anteriores
+a WAL. Abre Mi inventario, comprueba la ruta que muestra Settings y «Copy path», crea un recurso y
+una aplicación, registra una observación, supervisa una comprobación HTTP contra un servidor propio
+en `127.0.0.1` (esa ejecución y la recarga de su evidencia solo llegan a la ventana por el
+`Channel` de supervisión), la ejecuta a petición, lee el panel Supervision y pulsa Back up now: el
+archivo debe estar en `backups/`, sin `.partial`, con `quick_check` correcto, la versión del
+esquema y las filas del inventario, y la ventana debe listarlo. Por último cierra la ventana como
+lo hace su botón, nunca por WebDriver: con `WM_DELETE_WINDOW` en X11 (un script de Python que llama
+a libX11, porque bajo Xvfb no hay gestor de ventanas que lo envíe) o con `WM_CLOSE` en Windows. El
+proceso debe terminar, sin dejar `inventory.sqlite3-wal`, y el archivo debe haber pasado a WAL.
+Antes de hacer clic espera a que el elemento deje de moverse, porque el contenido que llega tarde
+empuja la página, y guarda una captura por paso en `test-results/native/`. `DEVHQ_APP` lo apunta a
+otro ejecutable.
 
 Nunca toca un inventario real. En Linux, todas las carpetas XDG apuntan a una carpeta temporal y,
 si no hay pantalla, arranca su propio Xvfb. Windows resuelve sus carpetas con la API de carpetas
@@ -321,22 +327,24 @@ El workflow `Windows` (`.github/workflows/windows.yml`) corre en `windows-latest
 Windows puede mostrar. Pasa los tests de Rust sobre NTFS y SChannel dos veces, la segunda con `TMP`
 y `TEMP` en una carpeta con espacios y acentos (`temp_dir()` lee `TMP`), de modo que cada base de
 prueba, `VACUUM INTO`, el enlace duro del respaldo y el WAL viven en esa ruta. Construye la app de
-release y su instalador NSIS con `npm run tauri build` y guarda el instalador como artefacto. Lo
-instala en silencio para el usuario actual, recorre la app instalada con el recorrido nativo sobre
-WebView2, con un `msedgedriver` de la misma versión que WebView2, y la desinstala en silencio para
-comprobar qué queda. En ese recorrido el servidor de la comprobación habla HTTPS: el workflow crea
-un certificado para `127.0.0.1`, lo añade a las raíces de confianza del equipo y se lo pasa al
-recorrido con `DEVHQ_E2E_TLS_PFX`, así que DevHQ tiene que completar un handshake con SChannel y el
-almacén de certificados de Windows (los tests de Rust solo ven fallar uno). Su primera ejecución
-destapó que `cargo test` no arrancaba en Windows: tao, muda y los diálogos de Tauri importan
-`TaskDialogIndirect`, que solo existe en Common Controls v6, y un proceso solo obtiene esa versión
-por su manifiesto. tauri-build lo incrusta como recurso que Cargo enlaza solo en los binarios, así
-que el ejecutable de tests no lo llevaba y Windows se negaba a iniciarlo
-(`STATUS_ENTRYPOINT_NOT_FOUND`) antes del primer test. Con el linker de MSVC, `src-tauri/build.rs`
-incrusta ahora ese mismo manifiesto (`src-tauri/windows-app-manifest.xml`) en cada ejecutable del
-paquete, la app incluida, y tauri-build ya no pone el suyo, así que hay uno solo. Los minutos de
-Windows cuentan doble en un repositorio privado, así que corre a mano (`workflow_dispatch`) y en
-los pull requests que cambian `src-tauri/`, `contract/`, `e2e/native/` o el propio workflow.
+release y su instalador NSIS con `npm run tauri build` y guarda el instalador como artefacto.
+Compila después la misma app con el puerto de DevTools de la build de prueba y la recorre sobre
+WebView2. Instala el instalador en silencio para el usuario actual, abre la app instalada sobre el
+inventario del recorrido (debe mostrar su ventana, arrancar WebView2 y terminar al cerrarla sin
+dejar `-wal`) y la desinstala en silencio para comprobar qué queda. En ese recorrido el servidor de
+la comprobación habla HTTPS: el workflow crea un certificado para `127.0.0.1`, lo añade a las
+raíces de confianza del equipo y se lo pasa al recorrido con `DEVHQ_E2E_TLS_PFX`, así que DevHQ
+tiene que completar un handshake con SChannel y el almacén de certificados de Windows (los tests de
+Rust solo ven fallar uno). Su primera ejecución destapó que `cargo test` no arrancaba en Windows:
+tao, muda y los diálogos de Tauri importan `TaskDialogIndirect`, que solo existe en Common Controls
+v6, y un proceso solo obtiene esa versión por su manifiesto. tauri-build lo incrusta como recurso
+que Cargo enlaza solo en los binarios, así que el ejecutable de tests no lo llevaba y Windows se
+negaba a iniciarlo (`STATUS_ENTRYPOINT_NOT_FOUND`) antes del primer test. Con el linker de MSVC,
+`src-tauri/build.rs` incrusta ahora ese mismo manifiesto (`src-tauri/windows-app-manifest.xml`) en
+cada ejecutable del paquete, la app incluida, y tauri-build ya no pone el suyo, así que hay uno
+solo. Los minutos de Windows cuentan doble en un repositorio privado, así que corre a mano
+(`workflow_dispatch`) y en los pull requests que cambian `src-tauri/`, `contract/`, `e2e/native/` o
+el propio workflow.
 
 Si DevHQ no termina tras cerrar su ventana, antes de matar el proceso ejecuta
 `powershell -NoProfile -File scripts/dump-stacks.ps1 -ProcessId <pid>`: vuelca la pila de

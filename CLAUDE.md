@@ -69,8 +69,10 @@ To look at the UI: `npx vite --host 127.0.0.1 --port 1420`, then open
 
 ## Native walk
 
-`e2e/native/` drives the real app through tauri-driver with a WebDriver client of its own over
-`fetch` (no dependency). It finds elements by XPath on visible text and labels, so renaming a
+`e2e/native/` drives the real app with a WebDriver client of its own over `fetch` (no
+dependency): through tauri-driver and WebKitWebDriver on Linux; on Windows msedgedriver attaches
+to the DevTools port that only the build from `e2e/native/build.ts` opens, because tauri-driver
+cannot launch a Tauri app on WebView2 150 or later. It finds elements by XPath on visible text and labels, so renaming a
 label, a button or a heading it uses means updating `main.ts`. It never touches a real
 inventory: on Linux every XDG directory points into a temporary folder; on Windows it refuses
 to run while `%APPDATA%` or `%LOCALAPPDATA%` already hold DevHQ folders. It closes the window
