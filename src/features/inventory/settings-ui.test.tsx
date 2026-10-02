@@ -237,6 +237,38 @@ describe('Back up now', () => {
     expect(screen.getByRole('button', { name: 'Back up now' })).toBeEnabled()
   })
 
+  it('drops the list it showed when reading the folder again fails', async () => {
+    const user = userEvent.setup()
+    const listBackups = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ...empty,
+        files: [{ ...withBackup.files[0]!, name: 'older.sqlite3' }],
+      })
+      .mockRejectedValue({
+        code: 'backup_error',
+        message: 'DevHQ could not read the backups folder: Access is denied.',
+      })
+    renderSettings(
+      inventoryContext({
+        dataLocation: located(),
+        backupInventory: vi.fn().mockResolvedValue(backup),
+        listBackups,
+      }),
+    )
+    expect(await screen.findByText('older.sqlite3')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Back up now' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'DevHQ could not list the backups folder. DevHQ could not read the backups folder: Access is denied.',
+    )
+    // The old list lacks the new backup, so it is not shown as the folder's contents.
+    expect(screen.queryByText('older.sqlite3')).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('list', { name: 'Files in the backups folder' }),
+    ).not.toBeInTheDocument()
+    expect(listBackups).toHaveBeenCalledTimes(2)
+  })
+
   it('warns that backups share the disk and the folder the uninstaller deletes on request', async () => {
     renderSettings(inventoryContext({ dataLocation: located() }))
     expect(

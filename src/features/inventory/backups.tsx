@@ -45,7 +45,12 @@ export function Backups() {
         setFolder(value)
         setFolderError(null)
       },
-      (cause) => current && setFolderError(inventoryError(cause)),
+      (cause) => {
+        if (!current) return
+        // A list read before would no longer be what the folder holds: show the failure alone.
+        setFolder(null)
+        setFolderError(inventoryError(cause))
+      },
     )
     return () => {
       current = false
