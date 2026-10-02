@@ -331,7 +331,11 @@ try {
     const name = files[0]!
     assert.match(name, /^inventory-\d{8}T\d{6}\.\d{3}Z\.sqlite3$/)
     await ui.see(join(folder, name), status)
-    await ui.see(name, "//ul[@aria-label='Files in the backups folder']")
+    const listed = "//ul[@aria-label='Files in the backups folder']"
+    await ui.see(name, listed)
+    // The folder is read again once the backup is named. A .partial that an antivirus still
+    // held open while it scanned it would be listed too, as incomplete.
+    assert.doesNotMatch(await ui.text(listed), /Incomplete/, 'the window lists no incomplete copy')
     const copy = new DatabaseSync(join(folder, name), { readOnly: true })
     try {
       const value = (sql: string) => Object.values(copy.prepare(sql).get()!)[0]

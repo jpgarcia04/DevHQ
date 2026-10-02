@@ -310,7 +310,9 @@ una aplicación, registra una observación, supervisa una comprobación HTTP con
 en `127.0.0.1` (esa ejecución y la recarga de su evidencia solo llegan a la ventana por el
 `Channel` de supervisión), la ejecuta a petición, lee el panel Supervision y pulsa Back up now: el
 archivo debe estar en `backups/`, sin `.partial`, con `quick_check` correcto, la versión del
-esquema y las filas del inventario, y la ventana debe listarlo. Por último cierra la ventana como
+esquema y las filas del inventario, y la ventana debe listarlo sin ninguna copia incompleta (un
+antivirus que aún retuviera el `.partial` borrado mientras lo analiza lo dejaría a la vista en la
+lista). Por último cierra la ventana como
 lo hace su botón, nunca por WebDriver: con `WM_DELETE_WINDOW` en X11 (un script de Python que llama
 a libX11, porque bajo Xvfb no hay gestor de ventanas que lo envíe) o con `WM_CLOSE` en Windows. El
 proceso debe terminar, sin dejar `inventory.sqlite3-wal`, y el archivo debe haber pasado a WAL.
