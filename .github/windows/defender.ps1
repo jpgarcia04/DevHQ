@@ -71,35 +71,83 @@ $preference = Get-MpPreference
 $left = @($preference.ExclusionPath) + @($preference.ExclusionExtension) + @($preference.ExclusionProcess) |
   Where-Object { $_ }
 if ($left) { throw "Exclusions remain: $($left -join ', ')" }
-
-# The probe has a name of its own, so a detection can only be this file.
-New-Item -ItemType Directory -Force $Probe | Out-Null
-$file = Join-Path $Probe "devhq-antivirus-probe-$([guid]::NewGuid()).txt"
-# Built from two halves, so that no file in the repository is itself the test file.
-$eicar = 'X5O!P%@AP[4\PZX54(P^)7CC)7}$EICAR' + '-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*'
-$blocked = $false
-try {
-  [IO.File]::WriteAllText($file, $eicar)
-} catch {
-  # Defender may refuse the write itself: ERROR_VIRUS_INFECTED (225) or ERROR_VIRUS_DELETED (226).
-  $cause = $_.Exception
-  while ($cause.InnerException) { $cause = $cause.InnerException }
-  if (($cause.HResult -band 0xFFFF) -notin 225, 226) { throw }
-  "Writing the probe was refused: $($cause.Message)"
-  $blocked = $true
-}
-$deadline = (Get-Date).AddSeconds(30)
-while (-not $blocked -and (Test-Path -LiteralPath $file) -and (Get-Date) -lt $deadline) {
-  Start-Sleep -Milliseconds 250
-}
-if (Test-Path -LiteralPath $file) {
-  if ($blocked) {
-    Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue
-  } else {
-    Remove-Item -LiteralPath $file -Force
-    throw "Real-time protection left a test file in $Probe alone: that folder is not scanned."
+# What Defender does with what it finds. On a desktop each threat gets its signature's action
+# (EICAR's is quarantine); Allow, NoAction or UserDefined here would leave the probe in place.
+$actions = 'LowThreatDefaultAction', 'ModerateThreatDefaultAction', 'HighThreatDefaultAction',
+  'SevereThreatDefaultAction', 'UnknownThreatDefaultAction'
+$preference | Format-List $actions
+foreach ($action in $actions) {
+  if ($preference.$action -in 6, 8, 9) {
+    "Resetting $action ($($preference.$action)) to its signature's action."
+    $reset = @{ $action = $true }
+    Remove-MpPreference @reset
   }
 }
-"Defender detected a test file written to $Probe, so real-time protection scans that folder."
-Get-MpThreatDetection | Where-Object { $_.Resources -match [regex]::Escape((Split-Path -Leaf $file)) } |
-  Format-List ThreatID, ActionSuccess, InitialDetectionTime, Resources
+
+# Built from two halves, so that no file in the repository is itself the test file.
+$eicar = 'X5O!P%@AP[4\PZX54(P^)7CC)7}$EICAR' + '-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*'
+
+# ERROR_VIRUS_INFECTED (225) or ERROR_VIRUS_DELETED (226): Defender refused the operation.
+function Test-Refused($record) {
+  $cause = $record.Exception
+  while ($cause.InnerException) { $cause = $cause.InnerException }
+  if (($cause.HResult -band 0xFFFF) -in 225, 226) { return $cause.Message }
+}
+
+# Writes probes until one is detected. Each gets a name of its own, so a detection can only be
+# that file. Real-time protection scans a file when it is closed after a write and again when it
+# is opened, so each probe is also read back for a few seconds: the first probe can be written
+# while Defender is still applying the new settings, which leaves it unscanned until opened.
+function Find-Probe([string] $folder, [int] $seconds) {
+  New-Item -ItemType Directory -Force $folder | Out-Null
+  $started = Get-Date
+  $attempt = 0
+  while ((Get-Date) -lt $started.AddSeconds($seconds)) {
+    $attempt += 1
+    if ($script:undetected) { Remove-Item -LiteralPath $script:undetected -Force -ErrorAction SilentlyContinue }
+    $file = Join-Path $folder "devhq-antivirus-probe-$([guid]::NewGuid()).txt"
+    try {
+      [IO.File]::WriteAllText($file, $eicar)
+    } catch {
+      $refused = Test-Refused $_
+      if (-not $refused) { throw }
+      return "Defender refused to write probe $attempt after $([int]((Get-Date) - $started).TotalSeconds) s: $refused"
+    }
+    $until = (Get-Date).AddSeconds(5)
+    while ((Get-Date) -lt $until) {
+      if (-not (Test-Path -LiteralPath $file)) {
+        return "Defender removed probe $attempt after $([int]((Get-Date) - $started).TotalSeconds) s."
+      }
+      try {
+        [IO.File]::ReadAllBytes($file) | Out-Null
+      } catch {
+        $refused = Test-Refused $_
+        if ($refused) {
+          Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue
+          return "Defender refused to open probe $attempt after $([int]((Get-Date) - $started).TotalSeconds) s: $refused"
+        }
+      }
+      Start-Sleep -Milliseconds 500
+    }
+    $script:undetected = $file
+  }
+}
+
+$undetected = $null
+$found = Find-Probe $Probe 60
+if (-not $found) {
+  # Everything that could explain it, then the engine itself asked to scan the probe.
+  Get-MpComputerStatus | Format-List AMEngineVersion, AMProductVersion, AMServiceEnabled,
+    AntivirusSignatureVersion, AntivirusSignatureLastUpdated, AntivirusSignatureAge,
+    DefenderSignaturesOutOfDate, RealTimeProtectionEnabled, OnAccessProtectionEnabled
+  Get-MpPreference | Format-List (@('DisableRealtimeMonitoring', 'RealTimeScanDirection',
+      'DisableBehaviorMonitoring', 'DisableIOAVProtection', 'DisableScriptScanning') + $actions)
+  Get-MpThreatDetection | Format-List ThreatID, ActionSuccess, InitialDetectionTime, Resources
+  Start-MpScan -ScanType CustomScan -ScanPath $undetected
+  "After a scan on demand, the last probe is $(if (Test-Path -LiteralPath $undetected) { 'still there' } else { 'gone' })."
+  Get-MpThreatDetection | Format-List ThreatID, ActionSuccess, InitialDetectionTime, Resources
+  Remove-Item -LiteralPath $undetected -Force -ErrorAction SilentlyContinue
+  throw "Real-time protection left every test file written to $Probe for a minute alone: that folder is not scanned."
+}
+$found
+"So real-time protection scans $Probe."
