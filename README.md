@@ -326,13 +326,16 @@ petición, así que el proceso abortaba y la ventana se cerraba en cuanto abría
 El workflow `Windows` (`.github/workflows/windows.yml`) corre en `windows-latest` lo que solo
 Windows puede mostrar. Pasa los tests de Rust sobre NTFS y SChannel dos veces, la segunda con `TMP`
 y `TEMP` en una carpeta con espacios y acentos (`temp_dir()` lee `TMP`), de modo que cada base de
-prueba, `VACUUM INTO`, el enlace duro del respaldo y el WAL viven en esa ruta. Construye la app de
-release y su instalador NSIS con `npm run tauri build` y guarda el instalador como artefacto.
-Compila después la misma app con el puerto de DevTools de la build de prueba y la recorre sobre
-WebView2. Instala el instalador en silencio para el usuario actual, abre la app instalada sobre el
-inventario del recorrido (debe mostrar su ventana, arrancar WebView2 y terminar al cerrarla sin
-dejar `-wal`) y la desinstala en silencio para comprobar qué queda. En ese recorrido el servidor de
-la comprobación habla HTTPS: el workflow crea un certificado para `127.0.0.1`, lo añade a las
+prueba, `VACUUM INTO`, el enlace duro del respaldo y el WAL viven en esa ruta; un
+`FileSystemWatcher` registra lo que los tests crean allí y el paso falla si no ve nada. Construye
+la app de release y su instalador NSIS con `npm run tauri build` y guarda el instalador como
+artefacto. Compila después la misma app con el puerto de DevTools de la build de prueba y la
+recorre sobre WebView2. Instala el instalador en silencio para el usuario actual, abre la app
+instalada sobre el inventario del recorrido (debe mostrar su ventana, arrancar WebView2 y terminar
+al cerrarla sin dejar `-wal`) y la desinstala en silencio para comprobar qué queda. En el runner,
+Defender está activo pero sin protección en tiempo real (el workflow lo imprime), así que un
+respaldo bajo un antivirus que vigile la carpeta sigue sin probarse. En ese recorrido el servidor
+de la comprobación habla HTTPS: el workflow crea un certificado para `127.0.0.1`, lo añade a las
 raíces de confianza del equipo y se lo pasa al recorrido con `DEVHQ_E2E_TLS_PFX`, así que DevHQ
 tiene que completar un handshake con SChannel y el almacén de certificados de Windows (los tests de
 Rust solo ven fallar uno). Su primera ejecución destapó que `cargo test` no arrancaba en Windows:
