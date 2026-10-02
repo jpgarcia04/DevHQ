@@ -345,9 +345,21 @@ que Cargo enlaza solo en los binarios, así que el ejecutable de tests no lo lle
 negaba a iniciarlo (`STATUS_ENTRYPOINT_NOT_FOUND`) antes del primer test. Con el linker de MSVC,
 `src-tauri/build.rs` incrusta ahora ese mismo manifiesto (`src-tauri/windows-app-manifest.xml`) en
 cada ejecutable del paquete, la app incluida, y tauri-build ya no pone el suyo, así que hay uno
-solo. Los minutos de Windows cuentan doble en un repositorio privado, así que corre a mano
-(`workflow_dispatch`) y en los pull requests que cambian `src-tauri/`, `contract/`, `e2e/native/` o
-el propio workflow.
+solo.
+
+Los minutos de Windows cuentan doble en un repositorio privado, así que el workflow corre entero a
+mano (`workflow_dispatch`, que GitHub solo ofrece cuando el workflow está en la rama principal) y, en
+un pull request, solo cuando un push cambió algo que prueba. No usa un filtro `paths`: en
+`pull_request` compara todo el pull request con su base, así que, en cuanto uno tocaba `src-tauri/`,
+Windows corría en cada push. En su lugar, un job previo en Linux (`.github/windows/needs-windows.sh`)
+busca el commit más reciente de la rama en el que pasaron todos los jobs de Windows y mira qué cambió
+desde él: Windows corre si cambió `src-tauri/`, `contract/`, `e2e/native/`, el propio workflow, sus
+scripts (`.github/windows/`) o `package-lock.json`, que fija la CLI de Tauri que construye el
+instalador. Si no, sus jobs quedan como omitidos y el job previo dice por qué. Una ejecución fallida o
+cancelada no cuenta, así que la siguiente vuelve a probar lo que esa no terminó (un push nuevo cancela
+la ejecución en curso de la misma rama). Si ningún commit de la rama pasó todavía, o GitHub no lista
+las ejecuciones anteriores, compara con el punto en que la rama salió de su base, como hacía el
+filtro: un job omitido nunca esconde un cambio del pull request sin probar.
 
 Si DevHQ no termina tras cerrar su ventana, antes de matar el proceso ejecuta
 `powershell -NoProfile -File scripts/dump-stacks.ps1 -ProcessId <pid>`: vuelca la pila de

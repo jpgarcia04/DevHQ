@@ -79,6 +79,16 @@ to run while `%APPDATA%` or `%LOCALAPPDATA%` already hold DevHQ folders. It clos
 through the system (X11 `WM_DELETE_WINDOW`, Win32 `WM_CLOSE`), never through WebDriver, whose
 Close Window only destroys the WebView. Screenshots of each step land in `test-results/native/`.
 
+## Windows workflow
+
+`.github/workflows/windows.yml` runs on demand and on pull requests, but its Windows jobs only run
+when a push changed `src-tauri/`, `contract/`, `e2e/native/`, the workflow, `.github/windows/` or
+`package-lock.json` since the newest commit of the branch on which every Windows job passed
+(`.github/windows/needs-windows.sh`, which a Linux job runs first). A push that only touches `src/`
+or documentation skips them. A run costs about 22 billable minutes with a warm cache and 48 cold:
+group the changes it tests, push rarely, and do not push while a run whose result you need is in
+progress, because a new push cancels it.
+
 ## IPC
 
 - `contract/commands/<command>.json` holds the exact arguments `inventoryApi` sends and

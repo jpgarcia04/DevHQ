@@ -2,18 +2,15 @@
 # folder whose path has spaces and accents; the NSIS installer; the native walk on WebView2 with
 # its HTTP check over HTTPS through SChannel; the installed app starting and closing; and what
 # the silent uninstaller leaves behind.
-# Windows minutes count double on a private repository, so this runs on demand and on pull
-# requests that change what it tests.
+# Windows minutes count double on a private repository, so this runs on demand and, on a pull
+# request, only when a push changed something it tests since the last commit that passed it.
 name: Windows
 
 on:
   workflow_dispatch:
+  # No paths filter: on pull_request it compares the whole pull request with its base, so a pull
+  # request that touched src-tauri/ once ran Windows on every later push. The changes job decides.
   pull_request:
-    paths:
-      - 'src-tauri/**'
-      - 'contract/**'
-      - 'e2e/native/**'
-      - '.github/workflows/windows.yml'
 
 permissions:
   contents: read
@@ -27,8 +24,42 @@ defaults:
     shell: pwsh
 
 jobs:
+  # A minute of Linux decides whether the Windows jobs, at twice the price, have anything new to
+  # test (see .github/windows/needs-windows.sh). A run started by hand always tests everything.
+  changes:
+    name: What Windows has not tested yet
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      windows: ${{ steps.decide.outputs.windows }}
+    steps:
+      - uses: actions/checkout@v7
+        if: github.event_name == 'pull_request'
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - id: decide
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != pull_request ]; then
+            echo "Started by hand: every Windows job runs."
+            echo "windows=true" >> "$GITHUB_OUTPUT"
+          else
+            bash .github/windows/needs-windows.sh
+          fi
+
   rust:
     name: Rust tests · NTFS, SChannel, a path with spaces and accents
+    needs: changes
+    if: needs.changes.outputs.windows == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
@@ -78,6 +109,8 @@ jobs:
 
   app:
     name: Installer, native walk on WebView2, silent uninstall
+    needs: changes
+    if: needs.changes.outputs.windows == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
