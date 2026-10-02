@@ -23,4 +23,6 @@ export default defineConfig({
     url: 'http://127.0.0.1:1420/preview.html',
     reuseExistingServer: !process.env.CI,
   },
+  // Runs after the server is up: loads the app once, so that no test waits for a cold server.
+  globalSetup: './e2e/warm-up.ts',
 })

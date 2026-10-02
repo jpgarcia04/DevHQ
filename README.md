@@ -292,7 +292,11 @@ sobre la ventana dice que son datos de ejemplo; la ventana ocupa el resto, así 
 tapa nada al desplazarse. `?scenario=empty` y `?scenario=unavailable` muestran un inventario
 vacío o ilegible. El bundle de producción se construye desde `index.html` y no contiene nada de
 esto. `npm run e2e` usa el Chrome instalado (en CI, el del runner) o el ejecutable que indique
-`DEVHQ_CHROMIUM`; nunca descarga navegadores, y reutiliza un `npm run dev` en marcha. Además de
+`DEVHQ_CHROMIUM`; nunca descarga navegadores, y reutiliza un `npm run dev` en marcha. Antes de
+la primera prueba carga la preview una vez (`e2e/warm-up.ts`): Vite transforma cada módulo la
+primera vez que se pide y no guarda nada entre arranques. En una laptop con Windows (i5-13420H),
+con seis pestañas a la vez, la primera ventana tardaba unos 3.5 s de los 5 s que una prueba le
+da para aparecer, y a veces más: fallaban las seis primeras pruebas, o una con 12 workers. Además de
 recorrer el historial y comprobar que el aviso no tapa la ventana, audita con axe-core (reglas
 WCAG A/AA y buenas prácticas) cada página real de la preview, algunos formularios abiertos y la
 demo: landmarks, orden de encabezados, nombres accesibles y contraste. Solo se excluye el rótulo decorativo de
