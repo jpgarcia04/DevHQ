@@ -119,6 +119,12 @@ export interface DataLocation {
   database: string
   /** The folder it is in, which also holds its write-ahead log while DevHQ has it open. */
   directory: string
+  /**
+   * Where the file system really keeps the file, when that is not `database`: through a link, or
+   * because Windows redirects AppData for a DevHQ started from a packaged app (the Claude or
+   * Codex desktop app, say). Other programs, File Explorer included, find it only there.
+   */
+  storedAt: string | null
 }
 
 /** Rows in a backup, by table. */
@@ -137,6 +143,8 @@ export interface Backup {
   name: string
   /** Where the file is, to copy it somewhere safer. */
   path: string
+  /** Where the file system really keeps it, when that is not `path` (see `DataLocation`). */
+  storedAt: string | null
   /** When the copy was taken (UTC), as its name says. */
   takenAt: string
   sizeBytes: number
@@ -157,6 +165,11 @@ export interface BackupFile {
   modifiedAt: string | null
   /** A copy that a backup was still writing, or that an interrupted one left behind. */
   partial: boolean
+  /**
+   * Where the file system really keeps it, when that is not in the listed folder. Asked file by
+   * file: a folder Windows redirects for a packaged app can hold files kept in two places.
+   */
+  storedAt: string | null
 }
 
 export interface BackupFolder {

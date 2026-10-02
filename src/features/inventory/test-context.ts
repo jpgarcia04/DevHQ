@@ -37,6 +37,7 @@ export function inventoryContext(
     dataLocation: vi.fn(async () => ({
       database: '/home/you/.local/share/com.devhq.desktop/inventory.sqlite3',
       directory: '/home/you/.local/share/com.devhq.desktop',
+      storedAt: null,
     })),
     backupInventory: vi.fn(async () => {
       throw new Error('backupInventory is not mocked in this test')

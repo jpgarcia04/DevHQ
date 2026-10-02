@@ -136,6 +136,8 @@ pub struct DataLocation {
     pub database: String,
     /// The folder it is in, which also holds its write-ahead log while DevHQ has it open.
     pub directory: String,
+    /// Where the file system really keeps the file, when that is not `database` (see `stored_at`).
+    pub stored_at: Option<String>,
 }
 
 impl DataLocation {
@@ -146,7 +148,43 @@ impl DataLocation {
                 .parent()
                 .map(|folder| folder.display().to_string())
                 .unwrap_or_default(),
+            stored_at: stored_at(path),
         }
+    }
+}
+
+/// Where the file system really keeps the file at `path`, when that is another path; `None` when
+/// it is the same one or the file cannot be resolved (it does not exist yet, say).
+///
+/// A symbolic link or a junction leads elsewhere. So does Windows for an app started from a
+/// packaged app, such as the Claude or Codex desktop app: it redirects the files that process
+/// creates under AppData to the packaged app's own folder, and shows that process a merge of both.
+/// DevHQ then reads and writes there, while File Explorer, the installed DevHQ and every other
+/// program see the real AppData, where the file is missing or is another one. Windows resolves
+/// each file on its own (a folder that exists on both sides resolves to the real one), so this
+/// asks about the file itself, never its folder.
+pub fn stored_at(path: &Path) -> Option<String> {
+    let resolved = plain(&std::fs::canonicalize(path).ok()?);
+    let asked = path.display().to_string();
+    // Windows compares names regardless of case, and answers with the case the files have.
+    let same = if cfg!(windows) {
+        resolved.eq_ignore_ascii_case(&asked)
+    } else {
+        resolved == asked
+    };
+    (!same).then_some(resolved)
+}
+
+/// Windows resolves to a verbatim path (`\\?\C:\…`, `\\?\UNC\server\share\…`); File Explorer and
+/// people use the plain form.
+fn plain(path: &Path) -> String {
+    let text = path.display().to_string();
+    if let Some(share) = text.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{share}")
+    } else if let Some(drive) = text.strip_prefix(r"\\?\") {
+        drive.to_owned()
+    } else {
+        text
     }
 }
 
@@ -668,6 +706,7 @@ pub fn delete_resource(path: &Path, id: &str) -> Result<(), ApiError> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn path() -> std::path::PathBuf {
         std::env::temp_dir().join(format!("devhq-test-{}.sqlite3", Uuid::new_v4()))
@@ -1216,8 +1255,67 @@ pub(crate) mod tests {
             DataLocation {
                 database: folder.join("inventory.sqlite3").display().to_string(),
                 directory: folder.display().to_string(),
+                // Not created yet, so there is nothing to resolve.
+                stored_at: None,
             }
         );
+    }
+
+    /// The temporary folder as the file system names it, for tests that compare paths it
+    /// resolves: on a Windows runner `TMP` is a short 8.3 name (`C:\Users\RUNNER~1\…`), and on
+    /// macOS `/var` is a link to `/private/var`.
+    pub(crate) fn resolved_temp_dir() -> PathBuf {
+        PathBuf::from(plain(&std::fs::canonicalize(std::env::temp_dir()).unwrap()))
+    }
+
+    /// A folder of its own and, beside it, a link to it: the data folder reached through the
+    /// link stands for one that Windows redirects for a packaged app, which a test cannot set up.
+    /// A junction on Windows, which needs no privilege; a symbolic link elsewhere.
+    pub(crate) fn linked_folder() -> (PathBuf, PathBuf) {
+        let base = resolved_temp_dir();
+        let name = format!("devhq-linked-{}", Uuid::new_v4());
+        let (real, link) = (base.join(&name), base.join(format!("{name}-link")));
+        std::fs::create_dir(&real).unwrap();
+        #[cfg(windows)]
+        assert!(std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(&real)
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success());
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        (real, link)
+    }
+
+    /// Removes the link alone, then the folder and what it holds.
+    pub(crate) fn remove_linked((real, link): (PathBuf, PathBuf)) {
+        #[cfg(windows)]
+        std::fs::remove_dir(&link).unwrap();
+        #[cfg(unix)]
+        std::fs::remove_file(&link).unwrap();
+        std::fs::remove_dir_all(real).unwrap();
+    }
+
+    #[test]
+    fn says_where_the_file_system_really_keeps_the_database_file() {
+        let (real, link) = linked_folder();
+        let asked = link.join("inventory.sqlite3");
+        list(&asked).unwrap();
+        let kept = real.join("inventory.sqlite3");
+        assert_eq!(
+            DataLocation::of(&asked),
+            DataLocation {
+                database: asked.display().to_string(),
+                directory: link.display().to_string(),
+                stored_at: Some(kept.display().to_string()),
+            }
+        );
+        // Asked for where it really is, it has nothing else to say.
+        assert_eq!(DataLocation::of(&kept).stored_at, None);
+        remove_linked((real, link));
     }
 
     #[test]

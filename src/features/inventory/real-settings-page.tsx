@@ -40,11 +40,16 @@ function DatabaseFile() {
       </h2>
       {location ? (
         <>
+          {/* Where the file really is: the path that File Explorer and other programs open. */}
           <p className="mt-4 select-all break-all rounded-md border bg-background/40 px-3 py-2 font-mono text-[11px] text-foreground/90">
-            {location.database}
+            {location.storedAt ?? location.database}
           </p>
           <div className="mt-3 flex flex-wrap items-center gap-3">
-            <Button size="sm" variant="outline" onClick={() => void copy(location.database)}>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => void copy(location.storedAt ?? location.database)}
+            >
               Copy path
             </Button>
             <p role="status" className="text-[11px] text-muted-foreground">
@@ -52,6 +57,17 @@ function DatabaseFile() {
               {copied === false && 'The path could not be copied: select it and copy it.'}
             </p>
           </div>
+          {location.storedAt && (
+            <p className="mt-3 rounded-md border border-amber-400/20 bg-amber-300/5 px-3 py-2 text-xs leading-6 text-amber-200">
+              DevHQ asked for{' '}
+              <span className="break-all font-mono text-[11px]">{location.database}</span>, but the
+              file system keeps the file at the path above. A link can do that, and so does Windows
+              when DevHQ is started from a packaged app, such as the Claude or Codex desktop app: it
+              keeps the files DevHQ writes in that app’s own folder. DevHQ opened from the Start
+              menu or File Explorer uses the other path, which holds another inventory or none. Back
+              up, copy and restore at the path above.
+            </p>
+          )}
         </>
       ) : error ? (
         <p role="alert" className="mt-4 text-xs text-rose-300">

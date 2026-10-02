@@ -3,6 +3,7 @@ import { sameSubject, subjectsOf } from '@/domain/evidence'
 import type { EntityRef, Observation, RecordedEvent } from '@/domain/models'
 import type {
   BackupFolder,
+  DataLocation,
   EventPage,
   InventorySnapshot,
   MonitorStatus,
@@ -152,7 +153,8 @@ export function previewBackend(database: PreviewDatabase) {
         return {
           database: `${folder}\\inventory.sqlite3`,
           directory: folder,
-        }
+          storedAt: null,
+        } satisfies DataLocation
       // Listing reads the folder, not the inventory. Backing up writes, so it is refused.
       case 'list_backups':
         return { directory: `${folder}\\backups`, files: database.backups } satisfies BackupFolder

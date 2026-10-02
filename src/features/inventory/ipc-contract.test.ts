@@ -300,14 +300,19 @@ const olderEvents: Answer<'olderEvents'> = {
 }
 
 const folder = 'C:\\Users\\Juan Pablo\\AppData\\Roaming\\com.devhq.desktop'
+// Where Windows keeps that folder's files for a DevHQ started from a packaged app.
+const packaged =
+  'C:\\Users\\Juan Pablo\\AppData\\Local\\Packages\\Claude_pzs8sxrjxfjjc\\LocalCache\\Roaming\\com.devhq.desktop'
 const dataLocation: Answer<'dataLocation'> = {
   database: `${folder}\\inventory.sqlite3`,
   directory: folder,
+  storedAt: `${packaged}\\inventory.sqlite3`,
 }
 
 const backup: Answer<'backupInventory'> = {
   name: 'inventory-20260101T100500.123Z.sqlite3',
   path: `${folder}\\backups\\inventory-20260101T100500.123Z.sqlite3`,
+  storedAt: null,
   takenAt: '2026-01-01T10:05:00.123Z',
   sizeBytes: 2_097_152,
   quickCheck: 'ok',
@@ -331,12 +336,14 @@ const backups: Answer<'listBackups'> = {
       sizeBytes: 2_097_152,
       modifiedAt: '2026-01-01T10:05:01Z',
       partial: false,
+      storedAt: null,
     },
     {
       name: 'inventory-20260101T090000.000Z.sqlite3.partial',
       sizeBytes: 1_048_576,
       modifiedAt: null,
       partial: true,
+      storedAt: `${packaged}\\backups\\inventory-20260101T090000.000Z.sqlite3.partial`,
     },
   ],
 }

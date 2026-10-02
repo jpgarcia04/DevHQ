@@ -11,6 +11,9 @@ import { inventoryContext } from './test-context'
 
 const folder = 'C:\\Users\\Juan Pablo\\AppData\\Roaming\\com.devhq.desktop'
 const database = `${folder}\\inventory.sqlite3`
+// Where Windows keeps that folder's files for a DevHQ started from a packaged app.
+const packaged =
+  'C:\\Users\\Juan Pablo\\AppData\\Local\\Packages\\Claude_pzs8sxrjxfjjc\\LocalCache\\Roaming\\com.devhq.desktop'
 
 function renderSettings(value: InventoryContextValue) {
   return render(
@@ -22,7 +25,7 @@ function renderSettings(value: InventoryContextValue) {
   )
 }
 
-const located = () => vi.fn(async () => ({ database, directory: folder }))
+const located = () => vi.fn(async () => ({ database, directory: folder, storedAt: null }))
 
 // Matched on the whole paragraph, which file names in their own elements split.
 const paragraph = (text: RegExp) => (_: string, element: Element | null) =>
@@ -66,6 +69,35 @@ describe('the database file in Settings', () => {
     ).toBeInTheDocument()
   })
 
+  it('shows and copies where the file system really keeps it, and says why', async () => {
+    const user = userEvent.setup()
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } })
+    const kept = `${packaged}\\inventory.sqlite3`
+    renderSettings(
+      inventoryContext({
+        dataLocation: vi.fn(async () => ({ database, directory: folder, storedAt: kept })),
+      }),
+    )
+    // The path File Explorer and every other program open is the one shown and copied.
+    expect(await screen.findByText(kept)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Copy path' }))
+    expect(writeText).toHaveBeenCalledWith(kept)
+    expect(
+      screen.getByText(
+        paragraph(
+          /^DevHQ asked for C:\\Users\\Juan Pablo\\AppData\\Roaming\\com\.devhq\.desktop\\inventory\.sqlite3, but the file system keeps the file at the path above\. .*Claude or Codex desktop app.* DevHQ opened from the Start menu or File Explorer uses the other path, which holds another inventory or none\. Back up, copy and restore at the path above\.$/,
+        ),
+      ),
+    ).toBeInTheDocument()
+  })
+
+  it('says nothing more when the file is where DevHQ asked for it', async () => {
+    renderSettings(inventoryContext({ dataLocation: located() }))
+    expect(await screen.findByText(database)).toBeInTheDocument()
+    expect(screen.queryByText(/the file system keeps/)).not.toBeInTheDocument()
+  })
+
   it('answers even when the inventory cannot be read', async () => {
     renderSettings(
       inventoryContext({
@@ -98,6 +130,7 @@ const takenAt = '2026-09-30T11:58:12.345Z'
 const backup: Backup = {
   name: 'inventory-20260930T115812.345Z.sqlite3',
   path: `${folder}\\backups\\inventory-20260930T115812.345Z.sqlite3`,
+  storedAt: null,
   takenAt,
   sizeBytes: 2_097_152,
   quickCheck: 'ok',
@@ -115,7 +148,15 @@ const backup: Backup = {
 const empty: BackupFolder = { directory: `${folder}\\backups`, files: [] }
 const withBackup: BackupFolder = {
   ...empty,
-  files: [{ name: backup.name, sizeBytes: backup.sizeBytes, modifiedAt: takenAt, partial: false }],
+  files: [
+    {
+      name: backup.name,
+      sizeBytes: backup.sizeBytes,
+      modifiedAt: takenAt,
+      partial: false,
+      storedAt: null,
+    },
+  ],
 }
 
 /** A promise settled by hand, to look at the page while a backup is being made. */
@@ -189,14 +230,27 @@ describe('Back up now', () => {
 
   it('lists the backups folder as found, without vouching for any file in it', async () => {
     const files: BackupFolder['files'] = [
-      { name: backup.name, sizeBytes: 2_097_152, modifiedAt: takenAt, partial: false },
+      {
+        name: backup.name,
+        sizeBytes: 2_097_152,
+        modifiedAt: takenAt,
+        partial: false,
+        storedAt: null,
+      },
       {
         name: 'inventory-20260929T080000.000Z.sqlite3.partial',
         sizeBytes: 655_360,
         modifiedAt: '2026-09-29T08:00:01Z',
         partial: true,
+        storedAt: null,
       },
-      { name: 'my-own-copy.sqlite3', sizeBytes: 900, modifiedAt: null, partial: false },
+      {
+        name: 'my-own-copy.sqlite3',
+        sizeBytes: 900,
+        modifiedAt: null,
+        partial: false,
+        storedAt: null,
+      },
     ]
     renderSettings(
       inventoryContext({
@@ -219,6 +273,36 @@ describe('Back up now', () => {
         'Files as found in the folder. DevHQ checked each of its backups once, when it made it, and has not checked any of these files since.',
       ),
     ).toBeInTheDocument()
+  })
+
+  it('says where the file system really keeps a backup, when it is not in the folder', async () => {
+    const user = userEvent.setup()
+    const kept = `${packaged}\\backups\\${backup.name}`
+    const older = 'inventory-20260929T080000.000Z.sqlite3'
+    const listBackups = vi.fn().mockResolvedValue({
+      ...empty,
+      files: [
+        { ...withBackup.files[0]!, storedAt: kept },
+        { ...withBackup.files[0]!, name: older, storedAt: null },
+      ],
+    })
+    renderSettings(
+      inventoryContext({
+        dataLocation: located(),
+        backupInventory: vi.fn().mockResolvedValue({ ...backup, storedAt: kept }),
+        listBackups,
+      }),
+    )
+    await user.click(await screen.findByRole('button', { name: 'Back up now' }))
+    const status = screen.getByRole('status', { name: 'Backup' })
+    expect(await within(status).findByText(kept)).toBeInTheDocument()
+    expect(status).toHaveTextContent(`Kept there by the file system, not at ${backup.path}`)
+    // Asked file by file: one is kept elsewhere, the other where it is listed.
+    const items = within(
+      await screen.findByRole('list', { name: 'Files in the backups folder' }),
+    ).getAllByRole('listitem')
+    expect(items[0]).toHaveTextContent(`Kept by the file system at ${kept}`)
+    expect(items[1]).not.toHaveTextContent('Kept by the file system')
   })
 
   it('says when the folder cannot be read', async () => {

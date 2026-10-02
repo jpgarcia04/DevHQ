@@ -468,7 +468,25 @@ ruta exacta del archivo (`data_location` no abre la base, así que responde aunq
 leer): con DevHQ abierto se respalda con Back up now (ver [Respaldo](#respaldo)); con DevHQ
 cerrado también basta copiarlo. Para restaurar un respaldo o una copia, con DevHQ cerrado se pone
 en lugar del archivo, con el nombre `inventory.sqlite3`, y se borran `-wal` y `-shm` si quedaron,
-para que ningún log del archivo anterior se aplique a la copia. La v4 reconstruye `observations` y `events` (SQLite no cambia
+para que ningún log del archivo anterior se aplique a la copia.
+
+Esa ruta es la que DevHQ pide, y el sistema puede guardar el archivo en otra. Un enlace simbólico o un
+junction llevan a otra carpeta, y Windows redirige `AppData` para un DevHQ lanzado desde una app
+empaquetada (MSIX), como las apps de escritorio de Claude o Codex: lo que ese proceso crea bajo
+`AppData` va a la carpeta del paquete
+(`%LOCALAPPDATA%\Packages\<paquete>\LocalCache\Roaming\com.devhq.desktop`) y el proceso ve una mezcla
+de las dos. El Explorador, el DevHQ instalado y cualquier otro programa ven el `%APPDATA%` real, donde
+ese inventario no está o hay otro, así que un respaldo puesto allí no lo restaura. Por eso
+`data_location`, `backup_inventory` y `list_backups` preguntan al sistema dónde está cada archivo
+(`std::fs::canonicalize`, que en Windows llama a `GetFinalPathNameByHandleW`) y, si no es la ruta
+pedida, lo devuelven en `storedAt`: Settings muestra y copia esa ruta, dice cuál pidió DevHQ y por
+qué difieren, y señala cada respaldo que el sistema guarda fuera de la carpeta listada. Se pregunta
+archivo por archivo porque Windows resuelve así: una carpeta que existe en los dos lados se resuelve
+a la real, aunque guarde archivos de las dos. Un junction en Windows y un enlace simbólico en Linux
+lo prueban, porque llegan a la carpeta de datos por otra ruta igual que la redirección, que un test
+no puede montar.
+
+La v4 reconstruye `observations` y `events` (SQLite no cambia
 un CHECK con ALTER) conservando filas, IDs, `rowid` (desempate de orden), claves foráneas,
 índices y los vínculos evento → observación. La v5 solo reconstruye `http_checks` (nada la
 referencia) para añadir el estado y el intervalo de supervisión con sus CHECK, conservando

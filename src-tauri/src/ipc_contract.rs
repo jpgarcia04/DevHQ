@@ -410,6 +410,8 @@ fn every_answer_has_the_shape_the_window_expects() {
         recorded_at: at("10:00"),
     };
     let folder = r"C:\Users\Juan Pablo\AppData\Roaming\com.devhq.desktop";
+    // Where Windows keeps that folder's files for a DevHQ started from a packaged app.
+    let packaged = r"C:\Users\Juan Pablo\AppData\Local\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\com.devhq.desktop";
     let supervision = MonitorStatus {
         checks: vec![CheckStatus {
             subject: host(),
@@ -452,6 +454,7 @@ fn every_answer_has_the_shape_the_window_expects() {
             value(&DataLocation {
                 database: format!(r"{folder}\inventory.sqlite3"),
                 directory: folder.into(),
+                stored_at: Some(format!(r"{packaged}\inventory.sqlite3")),
             }),
         ),
         ("watch_http_monitor".to_owned(), value(&supervision)),
@@ -460,6 +463,7 @@ fn every_answer_has_the_shape_the_window_expects() {
             value(&Backup {
                 name: "inventory-20260101T100500.123Z.sqlite3".into(),
                 path: format!(r"{folder}\backups\inventory-20260101T100500.123Z.sqlite3"),
+                stored_at: None,
                 taken_at: "2026-01-01T10:05:00.123Z".into(),
                 size_bytes: 2_097_152,
                 quick_check: "ok".into(),
@@ -485,12 +489,16 @@ fn every_answer_has_the_shape_the_window_expects() {
                         size_bytes: 2_097_152,
                         modified_at: Some("2026-01-01T10:05:01Z".into()),
                         partial: false,
+                        stored_at: None,
                     },
                     BackupFile {
                         name: "inventory-20260101T090000.000Z.sqlite3.partial".into(),
                         size_bytes: 1_048_576,
                         modified_at: None,
                         partial: true,
+                        stored_at: Some(format!(
+                            r"{packaged}\backups\inventory-20260101T090000.000Z.sqlite3.partial"
+                        )),
                     },
                 ],
             }),

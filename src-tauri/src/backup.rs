@@ -9,7 +9,7 @@
 //! was complete and verified when it was made. Nothing deletes or rewrites a finished backup.
 //! A backup is not evidence about a system, so the timeline records nothing.
 
-use crate::inventory::{open, ApiError, SCHEMA_VERSION};
+use crate::inventory::{open, stored_at, ApiError, SCHEMA_VERSION};
 use crate::records::{format_time, now_ms};
 use rusqlite::{Connection, OpenFlags};
 use serde::Serialize;
@@ -40,6 +40,8 @@ pub struct Backup {
     pub name: String,
     /// Where the file is, to copy it somewhere safer.
     pub path: String,
+    /// Where the file system really keeps it, when that is not `path` (see `inventory::stored_at`).
+    pub stored_at: Option<String>,
     /// When the copy was taken (UTC), as its name says.
     pub taken_at: String,
     pub size_bytes: u64,
@@ -60,6 +62,10 @@ pub struct BackupFile {
     pub modified_at: Option<String>,
     /// A copy that a backup was still writing, or that an interrupted one left behind.
     pub partial: bool,
+    /// Where the file system really keeps it, when that is not in `BackupFolder::directory`.
+    /// Asked file by file: a folder that Windows redirects for a packaged app can show files kept
+    /// in two places at once (see `inventory::stored_at`).
+    pub stored_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -175,6 +181,7 @@ fn finish(
     Ok(Backup {
         name: name.to_owned(),
         path: finished.display().to_string(),
+        stored_at: stored_at(&finished),
         taken_at: format_time(taken_at).unwrap_or_default(),
         size_bytes,
         quick_check,
@@ -265,6 +272,7 @@ pub fn list(database: &Path) -> Result<BackupFolder, ApiError> {
                         name,
                         size_bytes: metadata.len(),
                         modified_at: modified.and_then(format_time),
+                        stored_at: stored_at(&entry.path()),
                     },
                 ));
             }
@@ -300,7 +308,7 @@ impl Backups {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::inventory::tests::{dump, holding};
+    use crate::inventory::tests::{dump, holding, linked_folder, remove_linked, resolved_temp_dir};
     use crate::inventory::{list as snapshot, save_resource, ResourceInput};
     use crate::records::{record_event, EventInput, Subject};
     use rusqlite::TransactionBehavior;
@@ -308,7 +316,7 @@ mod tests {
     /// An inventory path in a folder of its own, so that its backups folder is its own too.
     fn inventory() -> PathBuf {
         let folder =
-            std::env::temp_dir().join(format!("devhq-backup-test-{}", uuid::Uuid::new_v4()));
+            resolved_temp_dir().join(format!("devhq-backup-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&folder).unwrap();
         folder.join("inventory.sqlite3")
     }
@@ -405,6 +413,7 @@ mod tests {
             Backup {
                 name: name.into(),
                 path: file.display().to_string(),
+                stored_at: None,
                 taken_at: "2026-01-01T09:30:00.123Z".into(),
                 size_bytes: std::fs::metadata(&file).unwrap().len(),
                 quick_check: "ok".into(),
@@ -642,6 +651,36 @@ mod tests {
             ]
         );
         assert!(listed.files.iter().all(|file| file.modified_at.is_some()));
+        // Kept where they are listed.
+        assert!(listed.files.iter().all(|file| file.stored_at.is_none()));
         remove(&database);
+    }
+
+    #[test]
+    fn says_where_the_file_system_really_keeps_each_backup() {
+        let (real, link) = linked_folder();
+        let database = link.join("inventory.sqlite3");
+        seed(&database);
+        let backup = write(&database, TAKEN_AT, |_| Ok(())).unwrap();
+        let kept = real.join("backups").join(&backup.name);
+        assert_eq!(
+            backup.path,
+            folder_of(&database)
+                .join(&backup.name)
+                .display()
+                .to_string()
+        );
+        assert_eq!(backup.stored_at, Some(kept.display().to_string()));
+        let listed = list(&database).unwrap();
+        assert_eq!(listed.directory, folder_of(&database).display().to_string());
+        assert_eq!(
+            listed
+                .files
+                .iter()
+                .map(|file| file.stored_at.clone())
+                .collect::<Vec<_>>(),
+            [Some(kept.display().to_string())]
+        );
+        remove_linked((real, link));
     }
 }

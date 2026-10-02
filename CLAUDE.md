@@ -79,6 +79,15 @@ to run while `%APPDATA%` or `%LOCALAPPDATA%` already hold DevHQ folders. It clos
 through the system (X11 `WM_DELETE_WINDOW`, Win32 `WM_CLOSE`), never through WebDriver, whose
 Close Window only destroys the WebView. Screenshots of each step land in `test-results/native/`.
 
+## Local Windows sessions
+
+The Claude and Codex desktop apps are packaged (MSIX), and Windows redirects AppData for every
+process they start: `npm run tauri dev` and your own shell read and write the package's copy
+(`%LOCALAPPDATA%\Packages\<package>\LocalCache\Roaming\com.devhq.desktop`), merged with the real
+`%APPDATA%`, while File Explorer and the installed DevHQ see only the real one. Settings shows
+the path the file really has (`storedAt`). To look at or change the real `%APPDATA%`, run the
+command outside the package, through WMI (`Invoke-CimMethod Win32_Process -MethodName Create`).
+
 ## Windows workflow
 
 `.github/workflows/windows.yml` runs on demand and on pull requests, but its Windows jobs only run

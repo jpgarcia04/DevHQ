@@ -121,6 +121,11 @@ export function Backups() {
                       Incomplete: a backup was writing it or was interrupted. It is not a backup.
                     </span>
                   )}
+                  {file.storedAt && (
+                    <span className="w-full break-all text-[11px] text-amber-200">
+                      Kept by the file system at <span className="font-mono">{file.storedAt}</span>
+                    </span>
+                  )}
                 </li>
               ))}
             </ul>
@@ -151,7 +156,15 @@ function Finished({ backup }: { backup: Backup }) {
         Checked once written: SQLite’s quick check said “{backup.quickCheck}”, schema version{' '}
         {backup.schemaVersion}. It holds {contents(backup.counts)}.
       </p>
-      <p className="break-all font-mono text-[11px] text-foreground/90">{backup.path}</p>
+      <p className="break-all font-mono text-[11px] text-foreground/90">
+        {backup.storedAt ?? backup.path}
+      </p>
+      {backup.storedAt && (
+        <p className="text-[11px] text-amber-200">
+          Kept there by the file system, not at{' '}
+          <span className="break-all font-mono">{backup.path}</span>
+        </p>
+      )}
     </div>
   )
 }

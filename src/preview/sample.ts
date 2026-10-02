@@ -77,6 +77,7 @@ function sampleBackups(now: number): BackupFile[] {
     sizeBytes,
     modifiedAt: at(now, minutesAgo),
     partial,
+    storedAt: null,
   })
   return [file(90, 1_843_200), file(3 * 24 * 60, 655_360, true), file(9 * 24 * 60, 1_572_864)]
 }
