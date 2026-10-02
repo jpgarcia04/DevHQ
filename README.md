@@ -207,7 +207,12 @@ ejecución, que es idéntica a la de Run check y sigue la misma semántica de vi
   buscaban por el ID aleatorio de su observación, cada búsqueda caía en una página distinta de
   un índice tan grande como el historial y la recarga leía 3.9 MB a los 90 días. Las cifras
   son de Linux, en release y con la caché del sistema caliente (`history_costs`, ver
-  [Ejecutar](#ejecutar)); en otros sistemas esa prueba no mide lo leído del archivo.
+  [Ejecutar](#ejecutar)); en otros sistemas esa prueba no mide lo leído del archivo. En una
+  laptop con Windows 11 (i5-13420H), con la protección en tiempo real de Defender activa, dos
+  corridas dieron 8.9 y 12.6 ms por recarga, 2.2 a 2.4 ms por página de Activity global al
+  principio, a la mitad y al final del historial, y 2.2–3.2, 2.7–2.8 y 4.1–4.3 ms con 5, 20 y 50
+  sistemas, con los mismos 855 y 79 KB hacia la ventana: más lento que en Linux, pero igual de
+  independiente de lo lejos que esté la página.
 - El proceso nativo empuja el estado a la ventana por un `Channel` de Tauri: ejecución en
   curso, última y siguiente ejecución y último error de DevHQ. Cuando una ejecución
   registra evidencia, la ventana relee el inventario sin estado de carga, así que los
@@ -401,6 +406,30 @@ cancelada no cuenta, así que la siguiente vuelve a probar lo que esa no termin�
 la ejecución en curso de la misma rama). Si ningún commit de la rama pasó todavía, o GitHub no lista
 las ejecuciones anteriores, compara con el punto en que la rama salió de su base, como hacía el
 filtro: un job omitido nunca esconde un cambio del pull request sin probar.
+
+Lo que el workflow no hace como una persona se comprobó a mano el 2 oct 2026 en una laptop con
+Windows 11 (i5-13420H), WebView2 154 y Defender en tiempo real, con `npm run tauri dev`, con el
+instalador y con el `devhq.exe` de release. Una base v5 en journal de rollback se migró a v6 al
+abrir, con todas sus filas y `rowid` intactos, y pasó a WAL; `-wal` y `-shm` aparecen al abrir cada
+conexión y desaparecen al cerrarla, y al cerrar la ventana el proceso terminó en menos de 200 ms
+sin dejar `-wal`. La comprobación atrasada corrió 10.0 s después de abrir y las siguientes cada 5
+min, también durante los respaldos. SChannel contra internet: `https://example.org` dio Healthy
+(HTTP 200 en ~100 ms), `expired.badssl.com` y `self-signed.badssl.com` dieron Unhealthy con el error
+de Windows como evidencia (`CERT_E_EXPIRED`, os error -2146762495, y `CERT_E_UNTRUSTEDROOT`, os error
+-2146762487) y un dominio `.invalid`, Unhealthy por DNS (os error 11001). «Copy path» copió la ruta
+exacta. Cinco Back up now seguidos tardaron 10–16 ms cada uno (`.partial`, nombre final y borrado,
+sin que Defender retuviera nada) y dieron copias idénticas byte a byte; un `.partial` puesto a mano
+salió como incompleto, y restaurar una copia como dice «By hand» mostró exactamente su contenido,
+más la ejecución atrasada que la supervisión hizo al abrir.
+El instalador pide la carpeta (`%LOCALAPPDATA%\DevHQ`, sin permisos de administrador) y al final
+ofrece abrir DevHQ y crear un acceso directo en el escritorio. Desinstalar con «Delete the
+application data» desmarcada conservó el inventario, los respaldos y el perfil de WebView2, y quitó
+el ejecutable, los accesos directos y la entrada de desinstalación; marcada, borró también
+`%APPDATA%\com.devhq.desktop` y `%LOCALAPPDATA%\com.devhq.desktop`. Lanzado desde la terminal de la
+app de escritorio de Claude, DevHQ guardaba sus datos en la carpeta del paquete de esa app (ver
+[Arquitectura](#arquitectura)). Con Build Tools en español, el enlazador escribe «Creando
+biblioteca…» y rustc lo muestra como aviso `linker_messages`, porque solo reconoce el texto en
+inglés; no afecta a nada.
 
 Si DevHQ no termina tras cerrar su ventana, antes de matar el proceso ejecuta
 `powershell -NoProfile -File scripts/dump-stacks.ps1 -ProcessId <pid>`: vuelca la pila de
