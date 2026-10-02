@@ -36,6 +36,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          # A cold build costs 7 to 12 minutes, counted double: keep it even when a later
+          # step fails, so the next run only rebuilds what changed.
+          cache-on-failure: true
       - run: cargo test --manifest-path src-tauri/Cargo.toml --lib --locked
       # std::env::temp_dir() reads TMP first, then TEMP: every test database, backup and
       # hard link then lives under this path.
@@ -59,6 +62,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          # A cold build costs 7 to 12 minutes, counted double: keep it even when a later
+          # step fails, so the next run only rebuilds what changed.
+          cache-on-failure: true
       - uses: actions/setup-node@v7
         with:
           node-version: 24
