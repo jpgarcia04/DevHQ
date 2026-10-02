@@ -68,7 +68,7 @@ function OverviewContent() {
     ],
     unobserved: [
       'No recorded problems, but coverage is incomplete.',
-      `${coverage.unobserved} of ${subjects.length} systems have never been observed. DevHQ does not assume they are healthy.`,
+      `${coverage.unobserved} of ${subjects.length} ${subjects.length === 1 ? 'system has' : 'systems have'} never been observed. DevHQ does not assume ${coverage.unobserved === 1 ? 'it is' : 'they are'} healthy.`,
     ],
     covered: [
       'Every system has current healthy evidence.',

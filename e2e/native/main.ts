@@ -254,7 +254,7 @@ try {
     await ui.fill(field('Component name', applicationForm), 'web')
     await ui.choose(field('Resource', applicationForm), 'Build server')
     await ui.click(button('Save application', applicationForm))
-    await ui.see('1 components · 1 linked resources', "//main//a[@aria-label='Open Status page']")
+    await ui.see('1 component · 1 linked resource', "//main//a[@aria-label='Open Status page']")
   })
 
   await step('Record an observation', async () => {

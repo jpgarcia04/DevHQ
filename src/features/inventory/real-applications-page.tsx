@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input'
 import { concernsApplication, resourceIdsOf, subjectEvidence } from '@/domain/evidence'
 import { lifecycleLabels } from '@/domain/labels'
 import { activeIncidents } from '@/domain/selectors'
+import { counted } from '@/shared/count'
 import { ApplicationForm } from './application-form'
 import { EvidenceBadge } from './evidence'
 import { useInventory } from './inventory-context'
@@ -66,7 +67,7 @@ export function RealApplicationsPage() {
           </select>
         </div>
         <p className="sr-only" aria-live="polite">
-          {apps.length} applications shown
+          {counted(apps.length, 'application')} shown
         </p>
         {apps.length ? (
           <div className="grid gap-5 min-[1060px]:grid-cols-2">
@@ -101,7 +102,8 @@ export function RealApplicationsPage() {
                     <EvidenceBadge state={evidence.state} compact />
                   </div>
                   <p className="mt-4 border-t pt-3 text-xs text-muted-foreground">
-                    {app.components.length} components · {resourceIds.length} linked resources
+                    {counted(app.components.length, 'component')} ·{' '}
+                    {counted(resourceIds.length, 'linked resource')}
                     {incidents > 0 && (
                       <span className="text-amber-200">
                         {' '}

@@ -1,12 +1,10 @@
 import { useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
+import { counted } from '@/shared/count'
 import { formatBytes } from '@/shared/size'
 import { formatMoment } from '@/shared/time'
 import { inventoryError, type Backup, type BackupCounts, type BackupFolder } from './inventory-api'
 import { useInventory } from './inventory-context'
-
-const counted = (count: number, one: string, many = `${one}s`) =>
-  `${count.toLocaleString('en-GB')} ${count === 1 ? one : many}`
 
 function contents(counts: BackupCounts) {
   const parts = [

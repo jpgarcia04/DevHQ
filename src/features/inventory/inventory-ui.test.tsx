@@ -6,6 +6,7 @@ import type { ReactNode } from 'react'
 import { InventoryContext, useInventory, type InventoryContextValue } from './inventory-context'
 import { ApplicationForm } from './application-form'
 import { RealApplicationDetailPage } from './real-application-detail-page'
+import { RealApplicationsPage } from './real-applications-page'
 import { RealInfrastructurePage } from './real-infrastructure-page'
 import { RealOverviewPage } from './real-overview-page'
 import { InventoryProvider } from './inventory-provider'
@@ -112,7 +113,58 @@ describe('real inventory UI', () => {
     const main = within(screen.getByRole('main'))
     expect(main.getByText('Not observed')).toBeInTheDocument()
     expect(main.getByText('No recorded problems, but coverage is incomplete.')).toBeInTheDocument()
+    expect(
+      main.getByText('1 of 1 system has never been observed. DevHQ does not assume it is healthy.'),
+    ).toBeInTheDocument()
     expect(main.queryByText('Healthy')).not.toBeInTheDocument()
+  })
+
+  it('counts components, linked resources and applications in the right number', async () => {
+    const base = context()
+    const application = (id: string, name: string, resourceIds: (string | null)[]) => ({
+      id,
+      name,
+      description: '',
+      lifecycle: 'production' as const,
+      version: null,
+      components: resourceIds.map((resourceId, index) => ({
+        id: `${id}-${index}`,
+        name: `part ${index}`,
+        kind: 'backend' as const,
+        resourceId,
+      })),
+    })
+    renderWithInventory(
+      <RealApplicationsPage />,
+      context({
+        snapshot: {
+          ...base.snapshot!,
+          resources: [
+            ...base.snapshot!.resources,
+            {
+              id: 'host-2',
+              name: 'Host Two',
+              kind: 'server',
+              description: '',
+              operatingSystem: '',
+            },
+          ],
+          applications: [
+            application('one', 'One', ['host-1']),
+            application('two', 'Two', ['host-1', 'host-2', null]),
+          ],
+        },
+      }),
+    )
+    expect(screen.getByRole('link', { name: 'Open One' })).toHaveTextContent(
+      '1 component · 1 linked resource',
+    )
+    expect(screen.getByRole('link', { name: 'Open Two' })).toHaveTextContent(
+      '3 components · 2 linked resources',
+    )
+    expect(screen.getByText('2 applications shown')).toBeInTheDocument()
+    await userEvent.setup().type(screen.getByPlaceholderText('Find an application…'), 'Two')
+    expect(screen.getByText('1 application shown')).toBeInTheDocument()
   })
 
   it('focuses a linked resource in the real inventory', async () => {
