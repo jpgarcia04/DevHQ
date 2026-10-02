@@ -80,9 +80,21 @@ jobs:
           New-Item -ItemType Directory -Force $folder | Out-Null
           $env:TMP = $folder
           $env:TEMP = $folder
+          # A new TMP makes Cargo build the package again, and the compiler and the linker leave
+          # files of their own there: one stayed behind after a run. So build first, then run
+          # the test executable itself (from the package folder, as Cargo does): whatever is
+          # left in the folder after that, the tests left.
+          $artifacts = cargo test --manifest-path src-tauri/Cargo.toml --lib --locked --no-run --message-format=json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $tests = @($artifacts | ForEach-Object { $_ | ConvertFrom-Json } |
+            Where-Object { $_.reason -eq 'compiler-artifact' -and $_.profile.test -and $_.executable } |
+            ForEach-Object { $_.executable })
+          if ($tests.Count -ne 1) { throw "Expected one test executable, found: $tests" }
+          $built = @(Get-ChildItem -Force -Name $folder)
+          "The build left $($built.Count) entries in ${folder}: $($built -join ', ')"
           # The tests remove what they create, so record what appears while they run: proof
           # that they worked under this path. A .NET handler sees every event as it happens;
-          # PowerShell's own event queue waits while cargo runs and lost most of them.
+          # PowerShell's own event queue waits while the tests run and lost most of them.
           Add-Type -TypeDefinition @'
           using System.Collections.Concurrent;
           using System.IO;
@@ -97,8 +109,10 @@ jobs:
           }
           '@
           $watcher = [Created]::Watch($folder)
-          cargo test --manifest-path src-tauri/Cargo.toml --lib --locked
+          Push-Location src-tauri
+          & $tests[0]
           $code = $LASTEXITCODE
+          Pop-Location
           $watcher.EnableRaisingEvents = $false
           if ($code -ne 0) { exit $code }
           # Every test database, backup folder and file starts with devhq-.
@@ -106,7 +120,12 @@ jobs:
           "The tests created $($made.Count) files and folders under $folder, such as:"
           $made | Select-Object -First 8
           if ($made.Count -eq 0) { throw "The tests created nothing under $folder" }
-          "Left in ${folder}: $(@(Get-ChildItem -Force $folder).Count) entries"
+          $left = @(Get-ChildItem -Force -Name $folder | Where-Object { $built -notcontains $_ })
+          "The tests left $($left.Count) entries in $folder"
+          if ($left.Count) {
+            Get-ChildItem -Force -Recurse $folder | Format-Table FullName, Length -AutoSize
+            throw 'The tests left files behind'
+          }
       # The whole suite once more, the backup tests included, with Defender scanning every file
       # the tests write, as an antivirus does on a desktop.
       # TMP changed back, so Cargo builds again: before Defender scans what the build writes.

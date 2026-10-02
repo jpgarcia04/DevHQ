@@ -330,7 +330,10 @@ El workflow `Windows` (`.github/workflows/windows.yml`) corre en `windows-latest
 Windows puede mostrar. Pasa los tests de Rust sobre NTFS y SChannel tres veces: la segunda con `TMP`
 y `TEMP` en una carpeta con espacios y acentos (`temp_dir()` lee `TMP`), de modo que cada base de
 prueba, `VACUUM INTO`, el enlace duro del respaldo y el WAL viven en esa ruta; un
-`FileSystemWatcher` registra lo que los tests crean allí y el paso falla si no ve nada. La tercera,
+`FileSystemWatcher` registra lo que los tests crean allí, y el paso falla si no ve nada o si los
+tests dejan algo. Cambiar `TMP` hace que Cargo vuelva a compilar el paquete, y el compilador y el
+enlazador escriben allí archivos propios, así que compila primero, anota lo que deja la compilación y
+ejecuta después el binario de tests directamente, desde la carpeta del paquete como Cargo. La tercera,
 con la protección en tiempo real de Microsoft Defender activa, como el recorrido. Construye
 la app de release y su instalador NSIS con `npm run tauri build` y guarda el instalador como
 artefacto. Compila después la misma app con el puerto de DevTools de la build de prueba y la
