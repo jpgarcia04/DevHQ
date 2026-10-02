@@ -30,6 +30,7 @@ npm run e2e
 cargo fmt --manifest-path src-tauri/Cargo.toml --check
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings
 cargo test --manifest-path src-tauri/Cargo.toml --lib --locked
+npm run e2e:native
 ```
 
 Confirm that each new test fails without the fix (temporary mutation). Never restore a
@@ -37,15 +38,17 @@ file that has uncommitted changes with `git checkout`.
 
 ## Cloud sessions
 
-- `.claude/hooks/session-start.sh` installs WebKitGTK, upgrades the container's npm to 11,
-  runs `npm ci`, fetches crates and exports `DEVHQ_CHROMIUM`. It only runs when the branch
-  the session starts on contains it. If it did not run, run it by hand:
+- `.claude/hooks/session-start.sh` installs WebKitGTK, WebKitWebDriver, Xvfb and
+  tauri-driver, upgrades the container's npm to 11, runs `npm ci`, fetches crates and exports
+  `DEVHQ_CHROMIUM`. It only runs when the branch the session starts on contains it. If it did
+  not run, run it by hand:
   `CLAUDE_CODE_REMOTE=true CLAUDE_PROJECT_DIR=$PWD bash .claude/hooks/session-start.sh`.
 - `npm run e2e` never downloads a browser. Without `DEVHQ_CHROMIUM` it looks for the system
   Chrome; in the container use
   `DEVHQ_CHROMIUM=$(ls -d /opt/pw-browsers/chromium-*/chrome-linux/chrome | sort -V | tail -1)`.
-- The native window, WebView2, SChannel and the NSIS installer cannot run here: say what
-  remains to be checked on Windows instead of claiming it works.
+- The native window runs here: `npm run e2e:native` drives the real app with WebKitGTK under
+  its own Xvfb. WebView2, SChannel and the NSIS installer cannot: say what remains to be
+  checked on Windows instead of claiming it works.
 
 ## Dependencies
 
@@ -63,6 +66,16 @@ Rust windowing and paging rules (`src/preview/backend.test.ts`); every write is 
 `?scenario=empty` and `?scenario=unavailable` show an empty and an unreadable inventory.
 To look at the UI: `npx vite --host 127.0.0.1 --port 1420`, then open
 `http://127.0.0.1:1420/preview.html#/...` with the global Playwright (`npm root -g`).
+
+## Native walk
+
+`e2e/native/` drives the real app through tauri-driver with a WebDriver client of its own over
+`fetch` (no dependency). It finds elements by XPath on visible text and labels, so renaming a
+label, a button or a heading it uses means updating `main.ts`. It never touches a real
+inventory: on Linux every XDG directory points into a temporary folder; on Windows it refuses
+to run while `%APPDATA%` or `%LOCALAPPDATA%` already hold DevHQ folders. It closes the window
+through the system (X11 `WM_DELETE_WINDOW`, Win32 `WM_CLOSE`), never through WebDriver, whose
+Close Window only destroys the WebView. Screenshots of each step land in `test-results/native/`.
 
 ## IPC
 

@@ -258,6 +258,7 @@ npm run dev               # preview web: http://127.0.0.1:1420
                           # Mi inventario simulado: http://127.0.0.1:1420/preview.html
 npm run check             # ESLint, tests, TypeScript, Vite y cargo check
 npm run e2e               # Playwright sobre preview.html (Chrome del sistema)
+npm run e2e:native        # la app real (Rust, SQLite y WebView) con tauri-driver
 cargo test --manifest-path src-tauri/Cargo.toml --lib # persistencia y migraciones
 cargo test --release --manifest-path src-tauri/Cargo.toml --lib history_costs -- --ignored --nocapture
                           # mide recarga y Activity con 90 días de supervisión,
@@ -281,6 +282,33 @@ recorrer el historial y comprobar que el aviso no tapa la ventana, audita con ax
 WCAG A/AA y buenas prácticas) cada página real de la preview, algunos formularios abiertos y la
 demo: landmarks, orden de encabezados, nombres accesibles y contraste. Solo se excluye el rótulo decorativo de
 las miniaturas de la demo, oculto a tecnologías de asistencia y exento de contraste.
+
+`npm run e2e:native` recorre la app real, no la preview: compila DevHQ en modo debug con el
+frontend embebido y lo maneja con `tauri-driver` 2.1.0 a través del WebDriver del sistema:
+`WebKitWebDriver` (paquete `webkit2gtk-driver`) en Linux y, en Windows, un `msedgedriver` de la
+misma versión que WebView2. El cliente WebDriver es un archivo propio sobre `fetch`
+(`e2e/native/webdriver.ts`): el protocolo es JSON sobre HTTP, así que no hace falta ninguna
+dependencia, y cada petición que hace está a la vista. El recorrido parte de una base v6 en modo
+journal de rollback, como las anteriores a WAL. Abre Mi inventario, comprueba la ruta que muestra
+Settings y «Copy path», crea un recurso y una aplicación, registra una observación, supervisa una
+comprobación HTTP contra un servidor propio en `127.0.0.1` (esa ejecución y la recarga de su
+evidencia solo llegan a la ventana por el `Channel` de supervisión), la ejecuta a petición, lee el
+panel Supervision y pulsa Back up now: el archivo debe estar en `backups/`, sin `.partial`, con
+`quick_check` correcto, la versión del esquema y las filas del inventario, y la ventana debe
+listarlo. Por último cierra la ventana como lo hace su botón, nunca por WebDriver: con
+`WM_DELETE_WINDOW` en X11 (un script de Python que llama a libX11, porque bajo Xvfb no hay gestor
+de ventanas que lo envíe) o con `WM_CLOSE` en Windows. El proceso debe terminar, sin dejar
+`inventory.sqlite3-wal`, y el archivo debe haber pasado a WAL. Antes de hacer clic espera a que el
+elemento deje de moverse, porque el contenido que llega tarde empuja la página, y guarda una
+captura por paso en `test-results/native/`. `DEVHQ_APP` lo apunta a otro ejecutable.
+
+Nunca toca un inventario real. En Linux, todas las carpetas XDG apuntan a una carpeta temporal y,
+si no hay pantalla, arranca su propio Xvfb. Windows resuelve sus carpetas con la API de carpetas
+conocidas, que ninguna variable de entorno redirige: allí solo corre si aún no existen las
+carpetas de DevHQ en `%APPDATA%` y `%LOCALAPPDATA%` (en un equipo con datos se niega) y al
+terminar borra las que creó. Con la versión síncrona de `watch_http_monitor`, este recorrido falla
+en su primer paso: en Linux el pánico no puede atravesar la llamada de WebKitGTK que entrega la
+petición, así que el proceso abortaba y la ventana se cerraba en cuanto abría Mi inventario.
 
 Si DevHQ no termina tras cerrar su ventana, antes de matar el proceso ejecuta
 `powershell -NoProfile -File scripts/dump-stacks.ps1 -ProcessId <pid>`: vuelca la pila de
@@ -326,7 +354,7 @@ que pausar, reanudar, quitar o borrar surten efecto de inmediato; `run_http_chec
 no duplicar una ejecución en vuelo y `watch_http_monitor` abre el `Channel` de estado. Ese último también es
 asíncrono porque lanza la tarea que alimenta el `Channel`: Tauri ejecuta un comando síncrono en el hilo
 que recibe la petición (el principal), que no tiene runtime de Tokio, y lanzarla desde ahí provocaba un
-pánico. Abre
+pánico que en Linux abortaba el proceso al abrir Mi inventario (lo comprueba `npm run e2e:native`). Abre
 `inventory.sqlite3` en el directorio de datos de la aplicación que proporciona Tauri; las
 migraciones transaccionales v1→v6 usan `PRAGMA user_version` y una versión más nueva se
 rechaza en vez de adivinarse. Cada apertura solo lee esa versión: únicamente una base antigua
@@ -414,4 +442,5 @@ herramienta haya calculado sobre el archivo. La concurrencia de SQLite se prueba
 escritura en curso, una escritura no espera a una lectura abierta (que conserva su estado), dos
 primeras aperturas simultáneas migran una sola vez, una base antigua ocupada se abre sin
 convertirse y se convierte en la siguiente apertura, y al cerrar queda un único archivo
-completo.
+completo. Por encima de todo eso, el recorrido nativo de `npm run e2e:native` prueba la app real,
+con su ventana, de punta a punta (ver [Ejecutar](#ejecutar)).

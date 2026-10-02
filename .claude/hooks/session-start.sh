@@ -9,15 +9,23 @@ fi
 
 cd "${CLAUDE_PROJECT_DIR:-$(dirname "$0")/../..}"
 
+SUDO=""
+if [ "$(id -u)" -ne 0 ]; then SUDO="sudo"; fi
+export DEBIAN_FRONTEND=noninteractive
+packages=()
 # Tauri 2 on Linux needs WebKitGTK; OpenSSL headers back the native-tls HTTP checks.
 if ! pkg-config --exists webkit2gtk-4.1 openssl 2>/dev/null; then
-  SUDO=""
-  if [ "$(id -u)" -ne 0 ]; then SUDO="sudo"; fi
-  export DEBIAN_FRONTEND=noninteractive
+  packages+=(libwebkit2gtk-4.1-dev libxdo-dev libssl-dev
+    libayatana-appindicator3-dev librsvg2-dev build-essential)
+fi
+# The native end-to-end walk (npm run e2e:native) drives the real window through
+# WebKitWebDriver on a virtual X display.
+if ! command -v WebKitWebDriver >/dev/null || ! command -v Xvfb >/dev/null; then
+  packages+=(webkit2gtk-driver xvfb)
+fi
+if [ ${#packages[@]} -gt 0 ]; then
   $SUDO apt-get update -qq
-  $SUDO apt-get install -y -qq --no-install-recommends \
-    libwebkit2gtk-4.1-dev libxdo-dev libssl-dev \
-    libayatana-appindicator3-dev librsvg2-dev build-essential >/dev/null
+  $SUDO apt-get install -y -qq --no-install-recommends "${packages[@]}" >/dev/null
 fi
 
 # The lockfile is written by npm 11, as on desktops and in CI (Node 24). npm 10, which the
@@ -48,4 +56,8 @@ fi
 
 if command -v cargo >/dev/null; then
   cargo fetch --manifest-path src-tauri/Cargo.toml --locked
+  # tauri-driver sits between the walk and WebKitWebDriver. Same version as in CI.
+  if ! cargo install --list | grep -q '^tauri-driver v2.1.0:'; then
+    cargo install tauri-driver --version 2.1.0 --locked --quiet
+  fi
 fi

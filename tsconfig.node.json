@@ -8,6 +8,8 @@
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
+    // Node runs e2e/native/*.ts by stripping their types: only syntax it can erase.
+    "erasableSyntaxOnly": true,
     "noEmit": true,
     "strict": true,
     "types": ["node"]
