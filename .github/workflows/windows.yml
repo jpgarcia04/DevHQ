@@ -141,6 +141,11 @@ jobs:
           Import-Certificate -FilePath $cer -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
           "DEVHQ_E2E_TLS_PFX=$pfx" >> $env:GITHUB_ENV
           "DEVHQ_E2E_TLS_PASSPHRASE=$passphrase" >> $env:GITHUB_ENV
+      # Whether an antivirus watched the walk's files: a backup renamed under real-time
+      # scanning is still one of the things to try on a desktop.
+      - name: Report the runner's antivirus
+        run: |
+          Get-MpComputerStatus | Format-List AMRunningMode, AntivirusEnabled, RealTimeProtectionEnabled, OnAccessProtectionEnabled
       # The data stays for the steps below; a fresh runner has none of its own.
       - name: Native walk on WebView2
         env:
