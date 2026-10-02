@@ -327,9 +327,16 @@ WebView2, con un `msedgedriver` de la misma versión que WebView2, y la desinsta
 comprobar qué queda. En ese recorrido el servidor de la comprobación habla HTTPS: el workflow crea
 un certificado para `127.0.0.1`, lo añade a las raíces de confianza del equipo y se lo pasa al
 recorrido con `DEVHQ_E2E_TLS_PFX`, así que DevHQ tiene que completar un handshake con SChannel y el
-almacén de certificados de Windows (los tests de Rust solo ven fallar uno). Los minutos de Windows cuentan doble en un repositorio privado, así que corre a
-mano (`workflow_dispatch`) y en los pull requests que cambian `src-tauri/`, `contract/`,
-`e2e/native/` o el propio workflow.
+almacén de certificados de Windows (los tests de Rust solo ven fallar uno). Su primera ejecución
+destapó que `cargo test` no arrancaba en Windows: tao, muda y los diálogos de Tauri importan
+`TaskDialogIndirect`, que solo existe en Common Controls v6, y un proceso solo obtiene esa versión
+por su manifiesto. tauri-build lo incrusta como recurso que Cargo enlaza solo en los binarios, así
+que el ejecutable de tests no lo llevaba y Windows se negaba a iniciarlo
+(`STATUS_ENTRYPOINT_NOT_FOUND`) antes del primer test. Con el linker de MSVC, `src-tauri/build.rs`
+incrusta ahora ese mismo manifiesto (`src-tauri/windows-app-manifest.xml`) en cada ejecutable del
+paquete, la app incluida, y tauri-build ya no pone el suyo, así que hay uno solo. Los minutos de
+Windows cuentan doble en un repositorio privado, así que corre a mano (`workflow_dispatch`) y en
+los pull requests que cambian `src-tauri/`, `contract/`, `e2e/native/` o el propio workflow.
 
 Si DevHQ no termina tras cerrar su ventana, antes de matar el proceso ejecuta
 `powershell -NoProfile -File scripts/dump-stacks.ps1 -ProcessId <pid>`: vuelca la pila de
