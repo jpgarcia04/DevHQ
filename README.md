@@ -230,7 +230,9 @@ de ningún sistema.
   estaba completa y verificada al hacerse. DevHQ nunca borra ni reescribe un respaldo terminado.
   La carpeta de datos suele estar en el disco del sistema (NTFS, APFS, ext4…), que admite enlaces; en un
   sistema de archivos que no los admita, como FAT32 o exFAT, el respaldo fallaría al nombrar la
-  copia, con un error recuperable y sin dejar archivos.
+  copia, con un error recuperable y sin dejar archivos. En Windows, el workflow hace el respaldo con
+  la protección en tiempo real de Defender activa (ver [Ejecutar](#ejecutar)); otros antivirus siguen
+  sin probarse.
 - Si algo falla, borra el `.partial` y la ventana muestra un error recuperable; el inventario no
   cambia. Al terminar, muestra la hora, el tamaño, la verificación y cuántas filas de cada tabla
   tiene la copia.
@@ -324,17 +326,26 @@ en su primer paso: en Linux el pánico no puede atravesar la llamada de WebKitGT
 petición, así que el proceso abortaba y la ventana se cerraba en cuanto abría Mi inventario.
 
 El workflow `Windows` (`.github/workflows/windows.yml`) corre en `windows-latest` lo que solo
-Windows puede mostrar. Pasa los tests de Rust sobre NTFS y SChannel dos veces, la segunda con `TMP`
+Windows puede mostrar. Pasa los tests de Rust sobre NTFS y SChannel tres veces: la segunda con `TMP`
 y `TEMP` en una carpeta con espacios y acentos (`temp_dir()` lee `TMP`), de modo que cada base de
 prueba, `VACUUM INTO`, el enlace duro del respaldo y el WAL viven en esa ruta; un
-`FileSystemWatcher` registra lo que los tests crean allí y el paso falla si no ve nada. Construye
+`FileSystemWatcher` registra lo que los tests crean allí y el paso falla si no ve nada. La tercera,
+con la protección en tiempo real de Microsoft Defender activa, como el recorrido. Construye
 la app de release y su instalador NSIS con `npm run tauri build` y guarda el instalador como
 artefacto. Compila después la misma app con el puerto de DevTools de la build de prueba y la
 recorre sobre WebView2. Instala el instalador en silencio para el usuario actual, abre la app
 instalada sobre el inventario del recorrido (debe mostrar su ventana, arrancar WebView2 y terminar
-al cerrarla sin dejar `-wal`) y la desinstala en silencio para comprobar qué queda. En el runner,
-Defender está activo pero sin protección en tiempo real (el workflow lo imprime), así que un
-respaldo bajo un antivirus que vigile la carpeta sigue sin probarse. En ese recorrido el servidor
+al cerrarla sin dejar `-wal`) y la desinstala en silencio para comprobar qué queda. El runner trae
+Defender sin protección en tiempo real y con carpetas excluidas del análisis. Antes de esa
+tercera pasada y del recorrido, `.github/windows/defender.ps1` la activa, junto con la supervisión de
+comportamiento y el análisis de descargas, como en un escritorio; quita todas las exclusiones,
+comprueba con `Get-MpComputerStatus` que quedó activa y escribe el archivo de prueba EICAR (la cadena
+inofensiva que todo antivirus detecta a propósito) en la carpeta temporal o junto a la carpeta de
+datos: si Defender no lo borra ni lo bloquea, el paso falla. Así Back up now crea el `.partial`, lo
+enlaza con su nombre final y lo borra mientras Defender analiza cada archivo que se escribe, y la
+instalación y la desinstalación también corren bajo su análisis. Tras el recorrido comprueba que
+la protección siguió activa y al final de cada job la apaga, para que guardar las cachés no analice
+cada archivo. En ese recorrido el servidor
 de la comprobación habla HTTPS: el workflow crea un certificado para `127.0.0.1`, lo añade a las
 raíces de confianza del equipo y se lo pasa al recorrido con `DEVHQ_E2E_TLS_PFX`, así que DevHQ
 tiene que completar un handshake con SChannel y el almacén de certificados de Windows (los tests de

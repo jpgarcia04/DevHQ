@@ -1,7 +1,8 @@
 # What only Windows can show: the Rust tests on NTFS with SChannel, again with TMP and TEMP in a
-# folder whose path has spaces and accents; the NSIS installer; the native walk on WebView2 with
-# its HTTP check over HTTPS through SChannel; the installed app starting and closing; and what
-# the silent uninstaller leaves behind.
+# folder whose path has spaces and accents, and once more under Defender's real-time protection;
+# the NSIS installer; the native walk on WebView2, under real-time protection, with its HTTP check
+# over HTTPS through SChannel; the installed app starting and closing; and what the silent
+# uninstaller leaves behind.
 # Windows minutes count double on a private repository, so this runs on demand and, on a pull
 # request, only when a push changed something it tests since the last commit that passed it.
 name: Windows
@@ -57,7 +58,7 @@ jobs:
           fi
 
   rust:
-    name: Rust tests · NTFS, SChannel, a path with spaces and accents
+    name: Rust tests · NTFS, SChannel, an accented path, real-time protection
     needs: changes
     if: needs.changes.outputs.windows == 'true'
     runs-on: windows-latest
@@ -106,9 +107,22 @@ jobs:
           $made | Select-Object -First 8
           if ($made.Count -eq 0) { throw "The tests created nothing under $folder" }
           "Left in ${folder}: $(@(Get-ChildItem -Force $folder).Count) entries"
+      # The whole suite once more, the backup tests included, with Defender scanning every file
+      # the tests write, as an antivirus does on a desktop.
+      # TMP changed back, so Cargo builds again: before Defender scans what the build writes.
+      - name: Build the tests again, then turn on Defender's real-time protection
+        run: |
+          cargo test --manifest-path src-tauri/Cargo.toml --lib --locked --no-run
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./.github/windows/defender.ps1 -On -Probe ([IO.Path]::GetTempPath())
+      - name: Again, under real-time protection
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib --locked
+      - name: Turn real-time protection off before the caches are saved
+        if: always()
+        run: ./.github/windows/defender.ps1 -Off
 
   app:
-    name: Installer, native walk on WebView2, silent uninstall
+    name: Installer, native walk under real-time protection, silent uninstall
     needs: changes
     if: needs.changes.outputs.windows == 'true'
     runs-on: windows-latest
@@ -181,16 +195,18 @@ jobs:
           Import-Certificate -FilePath $cer -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
           "DEVHQ_E2E_TLS_PFX=$pfx" >> $env:GITHUB_ENV
           "DEVHQ_E2E_TLS_PASSPHRASE=$passphrase" >> $env:GITHUB_ENV
-      # Whether an antivirus watched the walk's files: a backup renamed under real-time
-      # scanning is still one of the things to try on a desktop.
-      - name: Report the runner's antivirus
-        run: |
-          Get-MpComputerStatus | Format-List AMRunningMode, AntivirusEnabled, RealTimeProtectionEnabled, OnAccessProtectionEnabled
+      # From here on Defender scans every file DevHQ, the installer and the uninstaller write, as
+      # an antivirus does on a desktop: the backup's .partial, its hard link and the removal of
+      # the .partial included. The probe goes next to the data folder, which the walk must create.
+      - name: Turn on Defender's real-time protection
+        run: ./.github/windows/defender.ps1 -On -Probe $env:APPDATA
       # The data stays for the steps below; a fresh runner has none of its own.
-      - name: Native walk on WebView2
+      - name: Native walk on WebView2, under real-time protection
         env:
           DEVHQ_E2E_KEEP_DATA: '1'
         run: node --disable-warning=ExperimentalWarning e2e/native/main.ts
+      - name: Real-time protection stayed on during the walk
+        run: ./.github/windows/defender.ps1 -Check
       - name: Keep the screenshots of each step
         if: always()
         uses: actions/upload-artifact@v7
@@ -249,3 +265,6 @@ jobs:
           if (-not (Test-Path (Join-Path $data 'inventory.sqlite3'))) { throw 'The silent uninstall deleted the inventory' }
           if (-not (Get-ChildItem (Join-Path $data 'backups') -Filter 'inventory-*.sqlite3')) { throw 'The silent uninstall deleted the backups' }
           'The silent uninstall kept the inventory and its backups.'
+      - name: Turn real-time protection off before the caches are saved
+        if: always()
+        run: ./.github/windows/defender.ps1 -Off
