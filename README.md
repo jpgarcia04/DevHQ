@@ -246,8 +246,9 @@ de ningún sistema.
   `backups/`, y también `%LOCALAPPDATA%\com.devhq.desktop`, el perfil de WebView2.
   Una desinstalación silenciosa (`/S`) o pasiva (`/P`) no muestra esa página y una actualización
   no la aplica, así que ninguna borra datos. Así lo dice la plantilla NSIS de tauri-bundler que
-  trae `@tauri-apps/cli` 2.11.5, y el workflow de Windows comprueba que tras una desinstalación
-  silenciosa siguen el inventario y sus respaldos.
+  trae `@tauri-apps/cli` 2.11.5, y el workflow de Windows lo comprueba en los dos sentidos: tras una
+  desinstalación silenciosa siguen el inventario y sus respaldos, y con la casilla marcada desaparecen
+  las dos carpetas.
 - Se restauran como cualquier copia (ver [Arquitectura](#arquitectura)). La preview rechaza el
   respaldo como toda escritura y muestra una carpeta de ejemplo.
 
@@ -335,7 +336,14 @@ la app de release y su instalador NSIS con `npm run tauri build` y guarda el ins
 artefacto. Compila después la misma app con el puerto de DevTools de la build de prueba y la
 recorre sobre WebView2. Instala el instalador en silencio para el usuario actual, abre la app
 instalada sobre el inventario del recorrido (debe mostrar su ventana, arrancar WebView2 y terminar
-al cerrarla sin dejar `-wal`) y la desinstala en silencio para comprobar qué queda. El runner trae
+al cerrarla sin dejar `-wal`) y la desinstala en silencio: deben quedar el inventario y sus
+respaldos. Después la instala otra vez y la desinstala como una persona
+(`.github/windows/uninstall-deleting-data.ps1`): lanza `uninstall.exe` sin `/S`, comprueba que
+«Delete the application data» aparece desmarcada, la marca con `BM_SETCHECK` (la plantilla lee la
+casilla con `BM_GETCHECK` al dejar la página, así que es lo mismo que un clic) y pulsa Uninstall y,
+al terminar, Close con `WM_COMMAND`. Deben desaparecer `%APPDATA%\com.devhq.desktop`, con el
+inventario y `backups/`, `%LOCALAPPDATA%\com.devhq.desktop`, el ejecutable y la entrada de
+desinstalación. El runner trae
 Defender sin protección en tiempo real y con carpetas excluidas del análisis. Antes de esa
 tercera pasada y del recorrido, `.github/windows/defender.ps1` la activa, junto con la supervisión de
 comportamiento y el análisis de descargas, como en un escritorio; quita todas las exclusiones,
@@ -343,7 +351,7 @@ comprueba con `Get-MpComputerStatus` que quedó activa y escribe el archivo de p
 inofensiva que todo antivirus detecta a propósito) en la carpeta temporal o junto a la carpeta de
 datos: si Defender no lo borra ni lo bloquea, el paso falla. Así Back up now crea el `.partial`, lo
 enlaza con su nombre final y lo borra mientras Defender analiza cada archivo que se escribe, y la
-instalación y la desinstalación también corren bajo su análisis. Tras el recorrido comprueba que
+instalación y las desinstalaciones también corren bajo su análisis. Tras el recorrido comprueba que
 la protección siguió activa y al final de cada job la apaga, para que guardar las cachés no analice
 cada archivo. En ese recorrido el servidor
 de la comprobación habla HTTPS: el workflow crea un certificado para `127.0.0.1`, lo añade a las

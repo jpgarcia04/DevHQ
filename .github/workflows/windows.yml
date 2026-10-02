@@ -1,8 +1,8 @@
 # What only Windows can show: the Rust tests on NTFS with SChannel, again with TMP and TEMP in a
 # folder whose path has spaces and accents, and once more under Defender's real-time protection;
 # the NSIS installer; the native walk on WebView2, under real-time protection, with its HTTP check
-# over HTTPS through SChannel; the installed app starting and closing; and what the silent
-# uninstaller leaves behind.
+# over HTTPS through SChannel; the installed app starting and closing; and what the uninstaller
+# leaves behind, silently and with "Delete the application data" ticked.
 # Windows minutes count double on a private repository, so this runs on demand and, on a pull
 # request, only when a push changed something it tests since the last commit that passed it.
 name: Windows
@@ -122,7 +122,7 @@ jobs:
         run: ./.github/windows/defender.ps1 -Off
 
   app:
-    name: Installer, native walk under real-time protection, silent uninstall
+    name: Installer, native walk under real-time protection, uninstall
     needs: changes
     if: needs.changes.outputs.windows == 'true'
     runs-on: windows-latest
@@ -265,6 +265,35 @@ jobs:
           if (-not (Test-Path (Join-Path $data 'inventory.sqlite3'))) { throw 'The silent uninstall deleted the inventory' }
           if (-not (Get-ChildItem (Join-Path $data 'backups') -Filter 'inventory-*.sqlite3')) { throw 'The silent uninstall deleted the backups' }
           'The silent uninstall kept the inventory and its backups.'
+      # A second installation over the data the silent uninstall kept, then the uninstaller as a
+      # person runs it, with "Delete the application data" ticked (.github/windows/
+      # uninstall-deleting-data.ps1). It must delete the data folder, inventory and backups
+      # included, and the WebView2 profile.
+      - name: Install again, then uninstall with "Delete the application data" ticked
+        run: |
+          $data = Join-Path $env:APPDATA 'com.devhq.desktop'
+          $webviewProfile = Join-Path $env:LOCALAPPDATA 'com.devhq.desktop'
+          $installer = Get-ChildItem src-tauri/target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          Start-Process -FilePath $installer.FullName -ArgumentList '/S' -Wait
+          if (-not (Test-Path $env:DEVHQ_INSTALLED)) { throw 'The second installation put no DevHQ executable in place' }
+          # What there is to delete: without it, a clean result would prove nothing.
+          if (-not (Test-Path (Join-Path $data 'inventory.sqlite3'))) { throw 'There is no inventory to delete' }
+          if (-not (Get-ChildItem (Join-Path $data 'backups') -Filter 'inventory-*.sqlite3')) { throw 'There are no backups to delete' }
+          if (-not (Test-Path $webviewProfile)) { throw 'There is no WebView2 profile to delete' }
+          if (-not (Test-Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\DevHQ')) { throw 'The installation has no uninstall entry' }
+          Get-ChildItem -Recurse -Force $data | Format-Table FullName, Length -AutoSize
+          "WebView2 profile: $webviewProfile, $(@(Get-ChildItem -Recurse -Force $webviewProfile).Count) entries"
+          ./.github/windows/uninstall-deleting-data.ps1 -Uninstaller (Join-Path (Split-Path $env:DEVHQ_INSTALLED) 'uninstall.exe')
+          $deadline = (Get-Date).AddMinutes(1)
+          while ((Test-Path $env:DEVHQ_INSTALLED) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 1 }
+          $left = @($env:DEVHQ_INSTALLED, $data, $webviewProfile,
+            'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\DevHQ') | Where-Object { Test-Path $_ }
+          if ($left) {
+            $left | Where-Object { $_ -notlike 'HKCU:*' } | ForEach-Object { Get-ChildItem -Recurse -Force $_ } |
+              Format-Table FullName, Length -AutoSize
+            throw "The uninstaller left: $($left -join ', ')"
+          }
+          'With "Delete the application data" ticked, the uninstaller deleted the inventory, its backups and the WebView2 profile.'
       - name: Turn real-time protection off before the caches are saved
         if: always()
         run: ./.github/windows/defender.ps1 -Off
