@@ -1248,6 +1248,30 @@ mod tests {
         assert!(started.elapsed() < Duration::from_millis(500));
         // Nothing more was recorded: not the hanging request, not the removed check.
         assert_eq!(list(&path).unwrap().observations.len(), 3);
-        std::fs::remove_file(path).unwrap();
+        remove_once_closed(&path);
+    }
+
+    /// Removes a test database once no connection has it open. The run cancelled above may
+    /// have been reading its configuration on a worker thread when DevHQ shut down: a
+    /// cancellation only takes effect at the run's next await, so its connection can close just
+    /// after the loop has ended. Linux removes an open file anyway; Windows refuses (error 32,
+    /// a sharing violation), so wait for the connection, but not forever: a connection that is
+    /// never closed is a bug.
+    fn remove_once_closed(path: &Path) {
+        const SHARING_VIOLATION: i32 = 32;
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            match std::fs::remove_file(path) {
+                Ok(()) => return,
+                Err(error)
+                    if error.raw_os_error() == Some(SHARING_VIOLATION)
+                        && cfg!(windows)
+                        && std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(20))
+                }
+                Err(error) => panic!("cannot remove {}: {error}", path.display()),
+            }
+        }
     }
 }
