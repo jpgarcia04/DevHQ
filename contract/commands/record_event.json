@@ -1,0 +1,10 @@
+{
+  "input": {
+    "subject": { "type": "application", "id": "shop" },
+    "kind": "deployment",
+    "outcome": "success",
+    "title": "Deployed 2.1",
+    "detail": "From the release branch",
+    "occurredAt": "2026-01-01T10:00:00.000Z"
+  }
+}

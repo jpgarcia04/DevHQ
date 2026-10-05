@@ -1,0 +1,318 @@
+# What only Windows can show: the Rust tests on NTFS with SChannel, again with TMP and TEMP in a
+# folder whose path has spaces and accents, and once more under Defender's real-time protection;
+# the NSIS installer; the native walk on WebView2, under real-time protection, with its HTTP check
+# over HTTPS through SChannel; the installed app starting and closing; and what the uninstaller
+# leaves behind, silently and with "Delete the application data" ticked.
+# Windows minutes count double on a private repository, so this runs on demand and, on a pull
+# request, only when a push changed something it tests since the last commit that passed it.
+name: Windows
+
+on:
+  workflow_dispatch:
+  # No paths filter: on pull_request it compares the whole pull request with its base, so a pull
+  # request that touched src-tauri/ once ran Windows on every later push. The changes job decides.
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  # A minute of Linux decides whether the Windows jobs, at twice the price, have anything new to
+  # test (see .github/windows/needs-windows.sh). A run started by hand always tests everything.
+  changes:
+    name: What Windows has not tested yet
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      windows: ${{ steps.decide.outputs.windows }}
+    steps:
+      - uses: actions/checkout@v7
+        if: github.event_name == 'pull_request'
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - id: decide
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != pull_request ]; then
+            echo "Started by hand: every Windows job runs."
+            echo "windows=true" >> "$GITHUB_OUTPUT"
+          else
+            bash .github/windows/needs-windows.sh
+          fi
+
+  rust:
+    name: Rust tests · NTFS, SChannel, an accented path, real-time protection
+    needs: changes
+    if: needs.changes.outputs.windows == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          # A cold build costs 7 to 12 minutes, counted double: keep it even when a later
+          # step fails, so the next run only rebuilds what changed.
+          cache-on-failure: true
+      - run: cargo test --manifest-path src-tauri/Cargo.toml --lib --locked
+      # std::env::temp_dir() reads TMP first, then TEMP: every test database, backup and
+      # hard link then lives under this path.
+      - name: Again, with TMP and TEMP in a folder with spaces and accents
+        run: |
+          $folder = Join-Path $env:RUNNER_TEMP 'Copias de DevHQ\año ñandú é'
+          New-Item -ItemType Directory -Force $folder | Out-Null
+          $env:TMP = $folder
+          $env:TEMP = $folder
+          # A new TMP makes Cargo build the package again, and the compiler and the linker leave
+          # files of their own there: one stayed behind after a run. So build first, then run
+          # the test executable itself (from the package folder, as Cargo does): whatever is
+          # left in the folder after that, the tests left.
+          $artifacts = cargo test --manifest-path src-tauri/Cargo.toml --lib --locked --no-run --message-format=json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $tests = @($artifacts | ForEach-Object { $_ | ConvertFrom-Json } |
+            Where-Object { $_.reason -eq 'compiler-artifact' -and $_.profile.test -and $_.executable } |
+            ForEach-Object { $_.executable })
+          if ($tests.Count -ne 1) { throw "Expected one test executable, found: $tests" }
+          $built = @(Get-ChildItem -Force -Name $folder)
+          "The build left $($built.Count) entries in ${folder}: $($built -join ', ')"
+          # The tests remove what they create, so record what appears while they run: proof
+          # that they worked under this path. A .NET handler sees every event as it happens;
+          # PowerShell's own event queue waits while the tests run and lost most of them.
+          Add-Type -TypeDefinition @'
+          using System.Collections.Concurrent;
+          using System.IO;
+          public static class Created {
+              public static readonly ConcurrentQueue<string> Names = new ConcurrentQueue<string>();
+              public static FileSystemWatcher Watch(string folder) {
+                  var watcher = new FileSystemWatcher(folder) { IncludeSubdirectories = true, InternalBufferSize = 65536 };
+                  watcher.Created += (sender, change) => Names.Enqueue(change.Name);
+                  watcher.EnableRaisingEvents = true;
+                  return watcher;
+              }
+          }
+          '@
+          $watcher = [Created]::Watch($folder)
+          Push-Location src-tauri
+          & $tests[0]
+          $code = $LASTEXITCODE
+          Pop-Location
+          $watcher.EnableRaisingEvents = $false
+          if ($code -ne 0) { exit $code }
+          # Every test database, backup folder and file starts with devhq-.
+          $made = @([Created]::Names.ToArray() | Where-Object { $_ -like 'devhq-*' })
+          "The tests created $($made.Count) files and folders under $folder, such as:"
+          $made | Select-Object -First 8
+          if ($made.Count -eq 0) { throw "The tests created nothing under $folder" }
+          $left = @(Get-ChildItem -Force -Name $folder | Where-Object { $built -notcontains $_ })
+          "The tests left $($left.Count) entries in $folder"
+          if ($left.Count) {
+            Get-ChildItem -Force -Recurse $folder | Format-Table FullName, Length -AutoSize
+            throw 'The tests left files behind'
+          }
+      # The whole suite once more, the backup tests included, with Defender scanning every file
+      # the tests write, as an antivirus does on a desktop.
+      # TMP changed back, so Cargo builds again: before Defender scans what the build writes.
+      - name: Build the tests again, then turn on Defender's real-time protection
+        run: |
+          cargo test --manifest-path src-tauri/Cargo.toml --lib --locked --no-run
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./.github/windows/defender.ps1 -On -Probe ([IO.Path]::GetTempPath())
+      - name: Again, under real-time protection
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib --locked
+      - name: Turn real-time protection off before the caches are saved
+        if: always()
+        run: ./.github/windows/defender.ps1 -Off
+
+  app:
+    name: Installer, native walk under real-time protection, uninstall
+    needs: changes
+    if: needs.changes.outputs.windows == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          # A cold build costs 7 to 12 minutes, counted double: keep it even when a later
+          # step fails, so the next run only rebuilds what changed.
+          cache-on-failure: true
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Build the release app and its NSIS installer
+        run: npm run tauri build
+      - name: Keep the installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: devhq-windows-installer
+          path: src-tauri/target/release/bundle/nsis/*-setup.exe
+          retention-days: 7
+      # The same release build, plus a DevTools port in its WebView2 that msedgedriver attaches
+      # to (see e2e/native/build.ts). It replaces target/release/devhq.exe, not the installer.
+      - name: Build the release app the walk drives
+        run: |
+          node e2e/native/build.ts --release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $walked = Join-Path $env:RUNNER_TEMP 'walk\devhq.exe'
+          New-Item -ItemType Directory -Force (Split-Path $walked) | Out-Null
+          Copy-Item src-tauri/target/release/devhq.exe $walked
+          "DEVHQ_APP=$walked" >> $env:GITHUB_ENV
+      # msedgedriver must be the same version as the WebView2 runtime it drives. The runner
+      # brings one for Edge; when WebView2 differs, fetch the matching build.
+      - name: Match msedgedriver to WebView2
+        run: |
+          $client = 'Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+          $webview = @("HKLM:\SOFTWARE\WOW6432Node\$client", "HKLM:\SOFTWARE\$client", "HKCU:\SOFTWARE\$client") |
+            Where-Object { Test-Path $_ } | ForEach-Object { (Get-ItemProperty $_).pv } | Select-Object -First 1
+          if (-not $webview) { throw 'WebView2 is not installed' }
+          $driver = Join-Path $env:EDGEWEBDRIVER 'msedgedriver.exe'
+          $version = if (Test-Path $driver) { [regex]::Match((& $driver --version), '\d+(\.\d+){3}').Value }
+          "WebView2 $webview · runner msedgedriver $version"
+          if ($version -ne $webview) {
+            $zip = Join-Path $env:RUNNER_TEMP 'edgedriver.zip'
+            Invoke-WebRequest "https://msedgedriver.microsoft.com/$webview/edgedriver_win64.zip" -OutFile $zip
+            Expand-Archive $zip -DestinationPath (Join-Path $env:RUNNER_TEMP 'edgedriver') -Force
+            $driver = Join-Path $env:RUNNER_TEMP 'edgedriver\msedgedriver.exe'
+            "Using msedgedriver $([regex]::Match((& $driver --version), '\d+(\.\d+){3}').Value)"
+          }
+          "DEVHQ_EDGEDRIVER=$driver" >> $env:GITHUB_ENV
+      # The Rust tests only see SChannel fail a handshake. A certificate for 127.0.0.1 in the
+      # machine's trusted roots makes the walk's server speak HTTPS, so DevHQ's check has to
+      # complete one, verified against the Windows trust store.
+      - name: Trust a throwaway certificate for 127.0.0.1
+        run: |
+          $certificate = New-SelfSignedCertificate -Subject 'CN=DevHQ native walk' `
+            -TextExtension @('2.5.29.17={text}IPAddress=127.0.0.1') `
+            -CertStoreLocation Cert:\LocalMachine\My -KeyExportPolicy Exportable -NotAfter (Get-Date).AddDays(1)
+          $passphrase = [guid]::NewGuid().ToString()
+          "::add-mask::$passphrase"
+          $pfx = Join-Path $env:RUNNER_TEMP 'walk.pfx'
+          Export-PfxCertificate -Cert $certificate -FilePath $pfx -CryptoAlgorithmOption AES256_SHA256 `
+            -Password (ConvertTo-SecureString $passphrase -AsPlainText -Force) | Out-Null
+          $cer = Join-Path $env:RUNNER_TEMP 'walk.cer'
+          Export-Certificate -Cert $certificate -FilePath $cer | Out-Null
+          Import-Certificate -FilePath $cer -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
+          "DEVHQ_E2E_TLS_PFX=$pfx" >> $env:GITHUB_ENV
+          "DEVHQ_E2E_TLS_PASSPHRASE=$passphrase" >> $env:GITHUB_ENV
+      # From here on Defender scans every file DevHQ, the installer and the uninstaller write, as
+      # an antivirus does on a desktop: the backup's .partial, its hard link and the removal of
+      # the .partial included. The probe goes next to the data folder, which the walk must create.
+      - name: Turn on Defender's real-time protection
+        run: ./.github/windows/defender.ps1 -On -Probe $env:APPDATA
+      # The data stays for the steps below; a fresh runner has none of its own.
+      - name: Native walk on WebView2, under real-time protection
+        env:
+          DEVHQ_E2E_KEEP_DATA: '1'
+        run: node --disable-warning=ExperimentalWarning e2e/native/main.ts
+      - name: Real-time protection stayed on during the walk
+        run: ./.github/windows/defender.ps1 -Check
+      - name: Keep the screenshots of each step
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-walk-windows
+          path: test-results/native/
+          retention-days: 7
+          if-no-files-found: ignore
+      - name: Install DevHQ silently, as the current user
+        run: |
+          $installer = Get-ChildItem src-tauri/target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          Start-Process -FilePath $installer.FullName -ArgumentList '/S' -Wait
+          $folder = Join-Path $env:LOCALAPPDATA 'DevHQ'
+          Get-ChildItem $folder | Format-Table Name, Length
+          $app = Get-ChildItem $folder -Filter *.exe | Where-Object Name -ne 'uninstall.exe' | Select-Object -First 1
+          if (-not $app) { throw "No DevHQ executable in $folder" }
+          "DEVHQ_INSTALLED=$($app.FullName)" >> $env:GITHUB_ENV
+      # The installed app has no DevTools port to drive, so this only checks that it starts on
+      # the walk's inventory, brings up WebView2 and ends when its window is closed.
+      - name: Open and close the installed DevHQ
+        run: |
+          $data = Join-Path $env:APPDATA 'com.devhq.desktop'
+          # WebView2 recreates its profile when the window starts: proof that it did.
+          $webviewProfile = Join-Path $env:LOCALAPPDATA 'com.devhq.desktop\EBWebView'
+          Remove-Item -Recurse -Force $webviewProfile -ErrorAction SilentlyContinue
+          $process = Start-Process -FilePath $env:DEVHQ_INSTALLED -PassThru
+          $deadline = (Get-Date).AddMinutes(1)
+          do { Start-Sleep -Milliseconds 500; $process.Refresh() }
+          until ($process.HasExited -or $process.MainWindowHandle -ne [IntPtr]::Zero -or (Get-Date) -gt $deadline)
+          if ($process.HasExited) { throw "The installed DevHQ exited at start, with code $($process.ExitCode)" }
+          if ($process.MainWindowHandle -eq [IntPtr]::Zero) { throw 'The installed DevHQ showed no window' }
+          "Window: $($process.MainWindowTitle)"
+          while (-not (Test-Path $webviewProfile) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
+          if (-not (Test-Path $webviewProfile)) { throw 'WebView2 never started in the installed DevHQ' }
+          Start-Sleep -Seconds 5
+          Add-Type -Namespace DevHQ -Name User32 -MemberDefinition '[DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr window, uint message, IntPtr w, IntPtr l);'
+          [DevHQ.User32]::PostMessageW($process.MainWindowHandle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
+          if (-not $process.WaitForExit(20000)) { throw 'The installed DevHQ did not end after its window closed' }
+          "Exit code: $($process.ExitCode)"
+          if (Test-Path (Join-Path $data 'inventory.sqlite3-wal')) { throw 'A write-ahead log was left behind' }
+      # The uninstaller deletes the data folder only when "Delete the application data" is
+      # ticked on its confirmation page, which a silent uninstall never shows.
+      - name: Uninstall silently and check what stays
+        run: |
+          $data = Join-Path $env:APPDATA 'com.devhq.desktop'
+          $folder = Split-Path $env:DEVHQ_INSTALLED
+          Start-Process -FilePath (Join-Path $folder 'uninstall.exe') -ArgumentList '/S' -Wait
+          # The uninstaller runs from a copy of itself; wait until it has removed the app.
+          $deadline = (Get-Date).AddMinutes(1)
+          while ((Test-Path $env:DEVHQ_INSTALLED) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 1 }
+          if (Test-Path $env:DEVHQ_INSTALLED) { throw 'The uninstaller left the DevHQ executable' }
+          "Install folder left: $(Test-Path $folder)"
+          "Uninstall entry left: $(Test-Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\DevHQ')"
+          "WebView2 profile left: $(Test-Path (Join-Path $env:LOCALAPPDATA 'com.devhq.desktop'))"
+          Get-ChildItem -Recurse -Force $data | Format-Table FullName, Length -AutoSize
+          if (-not (Test-Path (Join-Path $data 'inventory.sqlite3'))) { throw 'The silent uninstall deleted the inventory' }
+          if (-not (Get-ChildItem (Join-Path $data 'backups') -Filter 'inventory-*.sqlite3')) { throw 'The silent uninstall deleted the backups' }
+          'The silent uninstall kept the inventory and its backups.'
+      # A second installation over the data the silent uninstall kept, then the uninstaller as a
+      # person runs it, with "Delete the application data" ticked (.github/windows/
+      # uninstall-deleting-data.ps1). It must delete the data folder, inventory and backups
+      # included, and the WebView2 profile.
+      - name: Install again, then uninstall with "Delete the application data" ticked
+        run: |
+          $data = Join-Path $env:APPDATA 'com.devhq.desktop'
+          $webviewProfile = Join-Path $env:LOCALAPPDATA 'com.devhq.desktop'
+          $installer = Get-ChildItem src-tauri/target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          Start-Process -FilePath $installer.FullName -ArgumentList '/S' -Wait
+          if (-not (Test-Path $env:DEVHQ_INSTALLED)) { throw 'The second installation put no DevHQ executable in place' }
+          # What there is to delete: without it, a clean result would prove nothing.
+          if (-not (Test-Path (Join-Path $data 'inventory.sqlite3'))) { throw 'There is no inventory to delete' }
+          if (-not (Get-ChildItem (Join-Path $data 'backups') -Filter 'inventory-*.sqlite3')) { throw 'There are no backups to delete' }
+          if (-not (Test-Path $webviewProfile)) { throw 'There is no WebView2 profile to delete' }
+          if (-not (Test-Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\DevHQ')) { throw 'The installation has no uninstall entry' }
+          Get-ChildItem -Recurse -Force $data | Format-Table FullName, Length -AutoSize
+          "WebView2 profile: $webviewProfile, $(@(Get-ChildItem -Recurse -Force $webviewProfile).Count) entries"
+          ./.github/windows/uninstall-deleting-data.ps1 -Uninstaller (Join-Path (Split-Path $env:DEVHQ_INSTALLED) 'uninstall.exe')
+          $deadline = (Get-Date).AddMinutes(1)
+          while ((Test-Path $env:DEVHQ_INSTALLED) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 1 }
+          $left = @($env:DEVHQ_INSTALLED, $data, $webviewProfile,
+            'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\DevHQ') | Where-Object { Test-Path $_ }
+          if ($left) {
+            $left | Where-Object { $_ -notlike 'HKCU:*' } | ForEach-Object { Get-ChildItem -Recurse -Force $_ } |
+              Format-Table FullName, Length -AutoSize
+            throw "The uninstaller left: $($left -join ', ')"
+          }
+          'With "Delete the application data" ticked, the uninstaller deleted the inventory, its backups and the WebView2 profile.'
+      - name: Turn real-time protection off before the caches are saved
+        if: always()
+        run: ./.github/windows/defender.ps1 -Off

@@ -13,14 +13,12 @@ import { EmptyState } from '@/components/empty-state'
 import { Button } from '@/components/ui/button'
 import { useInventory } from '@/features/inventory/inventory-context'
 import { InventoryProvider } from '@/features/inventory/inventory-provider'
-import {
-  RealApplicationDetailPage,
-  RealApplicationsPage,
-  RealInfrastructurePage,
-  RealOverviewPage,
-  RealSettingsPage,
-  RealUnavailablePage,
-} from '@/features/inventory/real-pages'
+import { RealApplicationDetailPage } from '@/features/inventory/real-application-detail-page'
+import { RealApplicationsPage } from '@/features/inventory/real-applications-page'
+import { RealInfrastructurePage } from '@/features/inventory/real-infrastructure-page'
+import { RealOverviewPage } from '@/features/inventory/real-overview-page'
+import { RealSettingsPage } from '@/features/inventory/real-settings-page'
+import { RealUnavailablePage } from '@/features/inventory/real-unavailable-page'
 import { InventoryState } from '@/features/inventory/inventory-state'
 import { RealActivityPage, RealIncidentsPage } from '@/features/inventory/records-pages'
 
@@ -74,6 +72,7 @@ function AppRoutes() {
           path="*"
           element={
             <EmptyState
+              page
               title="View not found"
               description="This view is not part of the current workspace."
               action={

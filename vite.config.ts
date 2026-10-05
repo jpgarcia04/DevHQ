@@ -1,7 +1,7 @@
 import { fileURLToPath, URL } from 'node:url'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
-import { defineConfig } from 'vitest/config'
+import { configDefaults, defineConfig } from 'vitest/config'
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
@@ -15,5 +15,11 @@ export default defineConfig({
   },
   envPrefix: ['VITE_', 'TAURI_ENV_*'],
   build: { target: 'es2022' },
-  test: { environment: 'jsdom', setupFiles: ['./src/test/setup.ts'], css: false },
+  test: {
+    environment: 'jsdom',
+    setupFiles: ['./src/test/setup.ts'],
+    css: false,
+    // Playwright runs those, in a browser: npm run e2e.
+    exclude: [...configDefaults.exclude, 'e2e/**'],
+  },
 })

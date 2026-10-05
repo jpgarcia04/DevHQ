@@ -2,13 +2,18 @@ import { createContext, useContext } from 'react'
 import type { EntityRef, Observation } from '@/domain/models'
 import type {
   ApplicationInput,
+  Backup,
+  BackupFolder,
+  DataLocation,
   EventInput,
+  EventPage,
   HttpCheckInput,
   IncidentInput,
   IncidentStatusInput,
   InventorySnapshot,
   MonitorStatus,
   ObservationInput,
+  ObservationPage,
   ResourceInput,
 } from './inventory-api'
 
@@ -24,9 +29,21 @@ export interface InventoryContextValue {
   /** Clock used to judge validity. Refreshed on load and periodically while open. */
   now: number
   reload: () => Promise<boolean>
+  /** Where the database file is; it reads nothing from it, so it works when loading fails. */
+  dataLocation: () => Promise<DataLocation>
+  /** Copies the inventory into its backups folder; it changes nothing in the inventory. */
+  backupInventory: () => Promise<Backup>
+  /** The files in the backups folder; it reads none of them. */
+  listBackups: () => Promise<BackupFolder>
   saveResource: (input: ResourceInput) => Promise<void>
   saveApplication: (input: ApplicationInput) => Promise<void>
+  deleteApplication: (id: string) => Promise<void>
+  deleteResource: (id: string) => Promise<void>
   recordObservation: (input: ObservationInput) => Promise<void>
+  /** Reads automated observations the snapshot left out; it writes nothing. */
+  olderObservations: (subject: EntityRef, before: string) => Promise<ObservationPage>
+  /** Reads automated events a timeline left out; it writes nothing. */
+  olderEvents: (subjects: EntityRef[], before: string) => Promise<EventPage>
   openIncident: (input: IncidentInput) => Promise<void>
   updateIncidentStatus: (input: IncidentStatusInput) => Promise<void>
   recordEvent: (input: EventInput) => Promise<void>

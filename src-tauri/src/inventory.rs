@@ -1,5 +1,5 @@
 use crate::{http_check, records};
-use rusqlite::{params, Connection, TransactionBehavior};
+use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::time::Duration;
@@ -39,6 +39,13 @@ impl ApiError {
             message: message.into(),
         }
     }
+    /// No backup was made, or one is already being made. The inventory itself is untouched.
+    pub(crate) fn backup(message: impl Into<String>) -> Self {
+        Self {
+            code: "backup_error",
+            message: message.into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -52,6 +59,8 @@ pub struct Resource {
 }
 
 #[derive(Debug, Deserialize)]
+// Serialized only by tests: ipc_contract finds the fixture keys Rust never reads.
+#[cfg_attr(test, derive(Serialize))]
 #[serde(rename_all = "camelCase")]
 pub struct ResourceInput {
     pub id: Option<String>,
@@ -70,7 +79,9 @@ pub struct Component {
     pub resource_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
+// Serialized only by tests: ipc_contract finds the fixture keys Rust never reads.
+#[cfg_attr(test, derive(Serialize))]
 #[serde(rename_all = "camelCase")]
 pub struct ComponentInput {
     pub id: Option<String>,
@@ -91,6 +102,8 @@ pub struct Application {
 }
 
 #[derive(Debug, Deserialize)]
+// Serialized only by tests: ipc_contract finds the fixture keys Rust never reads.
+#[cfg_attr(test, derive(Serialize))]
 #[serde(rename_all = "camelCase")]
 pub struct ApplicationInput {
     pub id: Option<String>,
@@ -111,17 +124,88 @@ pub struct Inventory {
     pub incidents: Vec<records::Incident>,
     pub events: Vec<records::Event>,
     pub http_checks: Vec<http_check::HttpCheck>,
+    /// Which automated results the snapshot leaves out. Manual records are always complete.
+    pub automated_history: records::AutomatedHistory,
 }
 
-const SCHEMA_VERSION: i64 = 5;
-const MIGRATIONS: [(i64, &str); 5] = [
+/// Where the inventory lives on this device, so that a person can back it up.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DataLocation {
+    /// The SQLite file. Once DevHQ is closed it holds everything on its own.
+    pub database: String,
+    /// The folder it is in, which also holds its write-ahead log while DevHQ has it open.
+    pub directory: String,
+    /// Where the file system really keeps the file, when that is not `database` (see `stored_at`).
+    pub stored_at: Option<String>,
+}
+
+impl DataLocation {
+    pub fn of(path: &Path) -> Self {
+        Self {
+            database: path.display().to_string(),
+            directory: path
+                .parent()
+                .map(|folder| folder.display().to_string())
+                .unwrap_or_default(),
+            stored_at: stored_at(path),
+        }
+    }
+}
+
+/// Where the file system really keeps the file at `path`, when that is another path; `None` when
+/// it is the same one or the file cannot be resolved (it does not exist yet, say).
+///
+/// A symbolic link or a junction leads elsewhere. So does Windows for an app started from a
+/// packaged app, such as the Claude or Codex desktop app: it redirects the files that process
+/// creates under AppData to the packaged app's own folder, and shows that process a merge of both.
+/// DevHQ then reads and writes there, while File Explorer, the installed DevHQ and every other
+/// program see the real AppData, where the file is missing or is another one. Windows resolves
+/// each file on its own (a folder that exists on both sides resolves to the real one), so this
+/// asks about the file itself, never its folder.
+pub fn stored_at(path: &Path) -> Option<String> {
+    let resolved = plain(&std::fs::canonicalize(path).ok()?);
+    let asked = path.display().to_string();
+    // Windows compares names regardless of case, and answers with the case the files have.
+    let same = if cfg!(windows) {
+        resolved.eq_ignore_ascii_case(&asked)
+    } else {
+        resolved == asked
+    };
+    (!same).then_some(resolved)
+}
+
+/// Windows resolves to a verbatim path (`\\?\C:\…`, `\\?\UNC\server\share\…`); File Explorer and
+/// people use the plain form.
+fn plain(path: &Path) -> String {
+    let text = path.display().to_string();
+    if let Some(share) = text.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{share}")
+    } else if let Some(drive) = text.strip_prefix(r"\\?\") {
+        drive.to_owned()
+    } else {
+        text
+    }
+}
+
+pub(crate) const SCHEMA_VERSION: i64 = 6;
+const MIGRATIONS: [(i64, &str); 6] = [
     (1, include_str!("../migrations/001_inventory.sql")),
     (2, include_str!("../migrations/002_inventory_details.sql")),
     (3, include_str!("../migrations/003_operational_records.sql")),
     (4, include_str!("../migrations/004_http_checks.sql")),
     (5, include_str!("../migrations/005_http_monitoring.sql")),
+    (6, include_str!("../migrations/006_history_window.sql")),
 ];
 
+/// Opens the inventory, upgrading its schema first if it is older than this build's.
+///
+/// The database uses write-ahead logging: a reader works on the last committed state and
+/// never waits for a writer, and a writer never waits for readers. Supervision writes from
+/// the async runtime while the window reads, and some commands run on the main thread, so
+/// with a rollback journal a reader could stall the window behind a commit in progress.
+/// Writers still take turns. The mode is stored in the file, so setting it again is a no-op;
+/// when the last connection closes SQLite folds the log back into `inventory.sqlite3`.
 pub(crate) fn open(path: &Path) -> Result<Connection, ApiError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(ApiError::database)?;
@@ -129,22 +213,34 @@ pub(crate) fn open(path: &Path) -> Result<Connection, ApiError> {
     let mut db = Connection::open(path).map_err(ApiError::database)?;
     db.busy_timeout(Duration::from_secs(5))
         .map_err(ApiError::database)?;
-    // Upgrades rebuild tables, which SQLite only allows safely with enforcement off.
-    // migrate() verifies every relationship before committing; from then on it is on.
-    db.pragma_update(None, "foreign_keys", "OFF")
-        .map_err(ApiError::database)?;
-    migrate(&mut db)?;
+    // Switching an older file needs it to itself, and SQLite does not wait for that: when
+    // another connection holds a lock (two requests at first launch), a later open switches
+    // it. Until then, and where the file system cannot share memory between connections, the
+    // rollback journal stays: just as correct, only readers and writers wait for each other.
+    match db.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get::<_, String>(0)) {
+        Err(rusqlite::Error::SqliteFailure(error, _))
+            if error.code == rusqlite::ErrorCode::DatabaseBusy => {}
+        result => {
+            result.map_err(ApiError::database)?;
+        }
+    }
+    // Only an upgrade takes the write lock; an up-to-date database is just read.
+    if schema_version(&db)? < SCHEMA_VERSION {
+        // Upgrades rebuild tables, which SQLite only allows safely with enforcement off.
+        // migrate() verifies every relationship before committing; from then on it is on.
+        db.pragma_update(None, "foreign_keys", "OFF")
+            .map_err(ApiError::database)?;
+        migrate(&mut db)?;
+    }
     db.pragma_update(None, "foreign_keys", "ON")
         .map_err(ApiError::database)?;
     Ok(db)
 }
 
-fn migrate(db: &mut Connection) -> Result<(), ApiError> {
-    // Serialize first launch: two WebView requests may reach this path together.
-    let tx = db
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(ApiError::database)?;
-    let version: i64 = tx
+/// The schema version stored in the file. A newer one than this build knows is refused
+/// rather than guessed at.
+fn schema_version(db: &Connection) -> Result<i64, ApiError> {
+    let version: i64 = db
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .map_err(ApiError::database)?;
     if version > SCHEMA_VERSION {
@@ -152,6 +248,16 @@ fn migrate(db: &mut Connection) -> Result<(), ApiError> {
             "unsupported inventory schema version {version}"
         )));
     }
+    Ok(version)
+}
+
+fn migrate(db: &mut Connection) -> Result<(), ApiError> {
+    // Serialize first launch: two WebView requests may reach this path together. Whoever
+    // gets the lock second finds the schema already upgraded.
+    let tx = db
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(ApiError::database)?;
+    let version = schema_version(&tx)?;
     if version == SCHEMA_VERSION {
         return Ok(());
     }
@@ -182,17 +288,51 @@ fn migrate(db: &mut Connection) -> Result<(), ApiError> {
     Ok(())
 }
 
-pub(crate) fn required_text(value: &str, label: &str) -> Result<String, ApiError> {
+/// Longest texts DevHQ accepts. The window enforces the same limits as you type.
+pub(crate) const MAX_NAME: usize = 120;
+pub(crate) const MAX_TITLE: usize = 160;
+pub(crate) const MAX_SUMMARY: usize = 500;
+pub(crate) const MAX_DESCRIPTION: usize = 1000;
+const MAX_VERSION: usize = 60;
+
+/// What a person typed, without surrounding whitespace, and no longer than `max` characters,
+/// counted as the window counts them (UTF-16 code units), so both agree on every text.
+pub(crate) fn bounded_text(value: &str, max: usize, label: &str) -> Result<String, ApiError> {
     let text = value.trim();
+    if text.encode_utf16().count() > max {
+        return Err(ApiError::invalid(format!(
+            "{label} is longer than {max} characters."
+        )));
+    }
+    Ok(text.to_owned())
+}
+
+pub(crate) fn required_text(value: &str, max: usize, label: &str) -> Result<String, ApiError> {
+    let text = bounded_text(value, max, label)?;
     if text.is_empty() {
         Err(ApiError::invalid(format!("{label} is required.")))
     } else {
-        Ok(text.to_owned())
+        Ok(text)
     }
 }
 
-fn required_name(value: &str, label: &str) -> Result<String, ApiError> {
-    required_text(value, &format!("{label} name"))
+/// Like `bounded_text`, but the text already stored is always accepted unchanged: limits apply
+/// to what is typed, so something saved before a limit existed can still be saved.
+fn bounded_or_kept(value: &str, kept: &str, max: usize, label: &str) -> Result<String, ApiError> {
+    let text = value.trim();
+    if !text.is_empty() && text == kept.trim() {
+        return Ok(text.to_owned());
+    }
+    bounded_text(value, max, label)
+}
+
+fn required_or_kept(value: &str, kept: &str, max: usize, label: &str) -> Result<String, ApiError> {
+    let text = bounded_or_kept(value, kept, max, label)?;
+    if text.is_empty() {
+        Err(ApiError::invalid(format!("{label} is required.")))
+    } else {
+        Ok(text)
+    }
 }
 
 pub(crate) fn allowed(value: &str, choices: &[&str], label: &str) -> Result<(), ApiError> {
@@ -258,11 +398,19 @@ pub fn list(path: &Path) -> Result<Inventory, ApiError> {
                 .map_err(ApiError::database)?;
         }
     }
+    let subjects: Vec<_> = applications
+        .iter()
+        .map(|app| records::Subject::Application { id: app.id.clone() })
+        .chain(resources.iter().map(|resource| records::Subject::Resource {
+            id: resource.id.clone(),
+        }))
+        .collect();
     let records::Records {
         observations,
         incidents,
         events,
-    } = records::load(&tx)?;
+        automated_history,
+    } = records::load(&tx, &subjects)?;
     let http_checks = http_check::load(&tx)?;
     tx.commit().map_err(ApiError::database)?;
     Ok(Inventory {
@@ -272,50 +420,147 @@ pub fn list(path: &Path) -> Result<Inventory, ApiError> {
         incidents,
         events,
         http_checks,
+        automated_history,
     })
 }
 
 pub fn save_resource(path: &Path, input: ResourceInput) -> Result<Resource, ApiError> {
-    let name = required_name(&input.name, "Resource")?;
     allowed(&input.kind, &["server", "workstation"], "resource kind")?;
-    let db = open(path)?;
     let id = input.id.unwrap_or_else(|| Uuid::new_v4().to_string());
     if id.is_empty() {
         return Err(ApiError::invalid("Resource ID is required."));
     }
-    if db.execute(
+    let mut db = open(path)?;
+    let tx = db
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(ApiError::database)?;
+    let (kept_name, kept_description, kept_system): (String, String, String) = tx
+        .query_row(
+            "SELECT name, description, operating_system FROM resources WHERE id = ?1",
+            [&id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()
+        .map_err(ApiError::database)?
+        .unwrap_or_default();
+    let name = required_or_kept(&input.name, &kept_name, MAX_NAME, "Resource name")?;
+    let description = bounded_or_kept(
+        &input.description,
+        &kept_description,
+        MAX_DESCRIPTION,
+        "Resource description",
+    )?;
+    let operating_system = bounded_or_kept(
+        &input.operating_system,
+        &kept_system,
+        MAX_NAME,
+        "Operating system",
+    )?;
+    tx.execute(
         "INSERT INTO resources (id, name, kind, description, operating_system) VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT(id) DO UPDATE SET name=excluded.name, kind=excluded.kind, description=excluded.description, operating_system=excluded.operating_system",
-        params![id, name, input.kind, input.description, input.operating_system],
-    ).map_err(ApiError::database)? == 0 { return Err(ApiError::database("Resource was not saved.")); }
+        params![id, name, input.kind, description, operating_system],
+    )
+    .map_err(ApiError::database)?;
+    tx.commit().map_err(ApiError::database)?;
     Ok(Resource {
         id,
         name,
         kind: input.kind,
-        description: input.description,
-        operating_system: input.operating_system,
+        description,
+        operating_system,
     })
 }
 
 pub fn save_application(path: &Path, input: ApplicationInput) -> Result<Application, ApiError> {
-    let name = required_name(&input.name, "Application")?;
     allowed(
         &input.lifecycle,
         &["development", "testing", "production", "archived"],
         "lifecycle",
     )?;
-    for component in &input.components {
-        required_name(&component.name, "Component")?;
+    let id = input.id.unwrap_or_else(|| Uuid::new_v4().to_string());
+    if id.is_empty() {
+        return Err(ApiError::invalid("Application ID is required."));
+    }
+    let mut parts: Vec<ComponentInput> = Vec::with_capacity(input.components.len());
+    for mut component in input.components {
         allowed(
             &component.kind,
             &["backend", "database", "docker", "frontend"],
             "component kind",
         )?;
+        let component_id = component
+            .id
+            .take()
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
+        if component_id.is_empty() {
+            return Err(ApiError::invalid("Component ID is required."));
+        }
+        if parts
+            .iter()
+            .any(|item| item.id.as_deref() == Some(component_id.as_str()))
+        {
+            return Err(ApiError::invalid(format!(
+                "Component {component_id} appears twice. Each component can be listed once."
+            )));
+        }
+        component.id = Some(component_id);
+        parts.push(component);
     }
     let mut db = open(path)?;
-    let tx = db.transaction().map_err(ApiError::database)?;
-    for component in &input.components {
-        if let Some(resource_id) = &component.resource_id {
+    let tx = db
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(ApiError::database)?;
+    let (kept_name, kept_description, kept_version): (String, String, Option<String>) = tx
+        .query_row(
+            "SELECT name, description, version FROM applications WHERE id = ?1",
+            [&id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()
+        .map_err(ApiError::database)?
+        .unwrap_or_default();
+    let name = required_or_kept(&input.name, &kept_name, MAX_NAME, "Application name")?;
+    let description = bounded_or_kept(
+        &input.description,
+        &kept_description,
+        MAX_DESCRIPTION,
+        "Application description",
+    )?;
+    // A blank version is no version.
+    let version = match &input.version {
+        Some(version) => Some(bounded_or_kept(
+            version,
+            kept_version.as_deref().unwrap_or_default(),
+            MAX_VERSION,
+            "Version",
+        )?),
+        None => None,
+    }
+    .filter(|version| !version.is_empty());
+    let mut components = Vec::with_capacity(parts.len());
+    for part in parts {
+        let component_id = part.id.unwrap_or_default();
+        // A component belongs to one application; reusing its ID elsewhere would move it.
+        let stored: Option<(String, String)> = tx
+            .query_row(
+                "SELECT application_id, name FROM components WHERE id = ?1",
+                [&component_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(ApiError::database)?;
+        let kept = match stored {
+            Some((owner, _)) if owner != id => {
+                return Err(ApiError::invalid(format!(
+                    "Component {component_id} belongs to another application."
+                )))
+            }
+            Some((_, kept)) => kept,
+            None => String::new(),
+        };
+        let name = required_or_kept(&part.name, &kept, MAX_NAME, "Component name")?;
+        if let Some(resource_id) = &part.resource_id {
             let exists: bool = tx
                 .query_row(
                     "SELECT EXISTS(SELECT 1 FROM resources WHERE id = ?1)",
@@ -327,53 +572,146 @@ pub fn save_application(path: &Path, input: ApplicationInput) -> Result<Applicat
                 return Err(ApiError::invalid(format!("Resource {resource_id} does not exist. Choose an existing resource or leave the component unlinked.")));
             }
         }
-    }
-    let id = input.id.unwrap_or_else(|| Uuid::new_v4().to_string());
-    if id.is_empty() {
-        return Err(ApiError::invalid("Application ID is required."));
+        components.push(Component {
+            id: component_id,
+            name,
+            kind: part.kind,
+            resource_id: part.resource_id,
+        });
     }
     tx.execute(
         "INSERT INTO applications (id, name, lifecycle, description, version) VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT(id) DO UPDATE SET name=excluded.name, lifecycle=excluded.lifecycle, description=excluded.description, version=excluded.version",
-        params![id, name, input.lifecycle, input.description, input.version],
+        params![id, name, input.lifecycle, description, version],
     ).map_err(ApiError::database)?;
     // The submitted component list is the complete set. Omitted components are removed atomically.
     tx.execute("DELETE FROM components WHERE application_id = ?1", [&id])
         .map_err(ApiError::database)?;
-    let mut components = Vec::with_capacity(input.components.len());
-    for component in input.components {
-        let component_id = component.id.unwrap_or_else(|| Uuid::new_v4().to_string());
-        if component_id.is_empty() {
-            return Err(ApiError::invalid("Component ID is required."));
-        }
-        let component_name = component.name.trim().to_owned();
+    for component in &components {
         tx.execute("INSERT INTO components (id, application_id, name, kind, resource_id) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![component_id, id, component_name, component.kind, component.resource_id]).map_err(ApiError::database)?;
-        components.push(Component {
-            id: component_id,
-            name: component_name,
-            kind: component.kind,
-            resource_id: component.resource_id,
-        });
+            params![component.id, id, component.name, component.kind, component.resource_id]).map_err(ApiError::database)?;
     }
     tx.commit().map_err(ApiError::database)?;
     Ok(Application {
         id,
         name,
-        description: input.description,
+        description,
         lifecycle: input.lifecycle,
-        version: input.version,
+        version,
         components,
     })
 }
 
+/// Which kinds of record reference a subject. History is never deleted, so any keeps it.
+fn history_of(tx: &Transaction, column: &str, id: &str) -> Result<Vec<String>, ApiError> {
+    let mut found = Vec::new();
+    for table in ["observations", "incidents", "events"] {
+        // EXISTS stops at the first one: a long supervised history costs no more than one.
+        let exists: bool = tx
+            .query_row(
+                &format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE {column} = ?1)"),
+                [id],
+                |row| row.get(0),
+            )
+            .map_err(ApiError::database)?;
+        if exists {
+            found.push(table.to_owned());
+        }
+    }
+    Ok(found)
+}
+
+fn listed(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+/// Deletes an application that has no records, with its components and HTTP check. One with
+/// observations, incidents or events is kept: DevHQ never erases history. Archive it instead.
+pub fn delete_application(path: &Path, id: &str) -> Result<(), ApiError> {
+    let mut db = open(path)?;
+    let tx = db
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(ApiError::database)?;
+    let name: String = tx
+        .query_row("SELECT name FROM applications WHERE id = ?1", [id], |row| {
+            row.get(0)
+        })
+        .optional()
+        .map_err(ApiError::database)?
+        .ok_or_else(|| ApiError::invalid(format!("The application {id} does not exist.")))?;
+    let history = history_of(&tx, "application_id", id)?;
+    if !history.is_empty() {
+        return Err(ApiError::invalid(format!(
+            "{name} has recorded {}. DevHQ keeps history, so it cannot be deleted; set its lifecycle to Archived instead.",
+            listed(&history)
+        )));
+    }
+    // Its components and its HTTP check go with it (ON DELETE CASCADE).
+    tx.execute("DELETE FROM applications WHERE id = ?1", [id])
+        .map_err(ApiError::database)?;
+    tx.commit().map_err(ApiError::database)
+}
+
+/// Deletes a resource that no component runs on and that has no records, with its HTTP check.
+pub fn delete_resource(path: &Path, id: &str) -> Result<(), ApiError> {
+    let mut db = open(path)?;
+    let tx = db
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(ApiError::database)?;
+    let name: String = tx
+        .query_row("SELECT name FROM resources WHERE id = ?1", [id], |row| {
+            row.get(0)
+        })
+        .optional()
+        .map_err(ApiError::database)?
+        .ok_or_else(|| ApiError::invalid(format!("The resource {id} does not exist.")))?;
+    let users = {
+        let mut statement = tx
+            .prepare(
+                "SELECT a.name || ' (' || c.name || ')' FROM components c
+                 JOIN applications a ON a.id = c.application_id
+                 WHERE c.resource_id = ?1 ORDER BY a.name COLLATE NOCASE, c.rowid",
+            )
+            .map_err(ApiError::database)?;
+        let rows = statement
+            .query_map([id], |row| row.get::<_, String>(0))
+            .map_err(ApiError::database)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(ApiError::database)?;
+        rows
+    };
+    if !users.is_empty() {
+        return Err(ApiError::invalid(format!(
+            "{name} is used by {}. Link those components to another resource, or leave them unlinked, first.",
+            listed(&users)
+        )));
+    }
+    let history = history_of(&tx, "resource_id", id)?;
+    if !history.is_empty() {
+        return Err(ApiError::invalid(format!(
+            "{name} has recorded {}. DevHQ keeps history, so it cannot be deleted.",
+            listed(&history)
+        )));
+    }
+    // Its HTTP check goes with it (ON DELETE CASCADE).
+    tx.execute("DELETE FROM resources WHERE id = ?1", [id])
+        .map_err(ApiError::database)?;
+    tx.commit().map_err(ApiError::database)
+}
+
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn path() -> std::path::PathBuf {
         std::env::temp_dir().join(format!("devhq-test-{}.sqlite3", Uuid::new_v4()))
     }
+
     fn app(resource_id: Option<String>) -> ApplicationInput {
         ApplicationInput {
             id: None,
@@ -493,14 +831,637 @@ mod tests {
     }
 
     #[test]
+    fn stores_text_as_typed_without_surrounding_whitespace() {
+        let path = path();
+        let resource = save_resource(
+            &path,
+            ResourceInput {
+                id: None,
+                name: "  Host  ".into(),
+                kind: "server".into(),
+                description: "  Rack 2 \n".into(),
+                operating_system: " Debian 13 ".into(),
+            },
+        )
+        .unwrap();
+        let saved = save_application(
+            &path,
+            ApplicationInput {
+                description: "  Store  ".into(),
+                // A blank version is no version.
+                version: Some("   ".into()),
+                ..app(Some(resource.id.clone()))
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                resource.name.as_str(),
+                resource.description.as_str(),
+                resource.operating_system.as_str()
+            ),
+            ("Host", "Rack 2", "Debian 13")
+        );
+        assert_eq!(
+            (saved.description.as_str(), saved.version.as_deref()),
+            ("Store", None)
+        );
+        let reopened = list(&path).unwrap();
+        assert_eq!(reopened.resources, vec![resource]);
+        assert_eq!(reopened.applications, vec![saved]);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn rejects_oversized_or_conflicting_input_without_partial_writes() {
+        let path = path();
+        let original = save_application(&path, app(None)).unwrap();
+        let other = save_application(&path, app(None)).unwrap();
+        let long = |count: usize| "é".repeat(count);
+        let component = |id: Option<&str>| ComponentInput {
+            id: id.map(Into::into),
+            name: "API".into(),
+            kind: "backend".into(),
+            resource_id: None,
+        };
+        let edit = |change: fn(&mut ApplicationInput)| {
+            let mut input = ApplicationInput {
+                id: Some(original.id.clone()),
+                ..app(None)
+            };
+            input.components = vec![component(Some(&original.components[0].id))];
+            change(&mut input);
+            input
+        };
+        let attempts = [
+            (
+                edit(|input| input.name = "é".repeat(121)),
+                "longer than 120",
+            ),
+            (
+                edit(|input| input.description = "é".repeat(1001)),
+                "longer than 1000",
+            ),
+            (
+                edit(|input| input.version = Some("1".repeat(61))),
+                "longer than 60",
+            ),
+            (
+                edit(|input| input.components[0].name = "é".repeat(121)),
+                "Component name is longer",
+            ),
+            (
+                edit(|input| input.components.push(input.components[0].clone())),
+                "appears twice",
+            ),
+        ];
+        for (attempt, message) in attempts {
+            let error = save_application(&path, attempt).unwrap_err();
+            assert_eq!(error.code, "invalid_input");
+            assert!(error.message.contains(message), "{}", error.message);
+        }
+        // Reusing another application's component would move it; it is refused instead.
+        let mut stolen = edit(|_| {});
+        stolen.components = vec![component(Some(&other.components[0].id))];
+        let error = save_application(&path, stolen).unwrap_err();
+        assert_eq!(error.code, "invalid_input");
+        assert!(error.message.contains("belongs to another application"));
+        // Exactly at the limits is fine, counted in characters rather than bytes.
+        assert!(save_resource(
+            &path,
+            ResourceInput {
+                id: None,
+                name: long(120),
+                kind: "server".into(),
+                description: long(1000),
+                operating_system: long(120),
+            },
+        )
+        .is_ok());
+        let error = save_resource(
+            &path,
+            ResourceInput {
+                id: None,
+                name: "Host".into(),
+                kind: "server".into(),
+                description: String::new(),
+                operating_system: long(121),
+            },
+        )
+        .unwrap_err();
+        assert!(error
+            .message
+            .contains("Operating system is longer than 120"));
+        let snapshot = list(&path).unwrap();
+        assert_eq!(snapshot.applications.len(), 2);
+        assert!(snapshot.applications.contains(&original));
+        assert!(snapshot.applications.contains(&other));
+        assert_eq!(snapshot.resources.len(), 1);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    fn resource(path: &Path, name: &str) -> Resource {
+        save_resource(
+            path,
+            ResourceInput {
+                id: None,
+                name: name.into(),
+                kind: "server".into(),
+                description: String::new(),
+                operating_system: String::new(),
+            },
+        )
+        .unwrap()
+    }
+
+    fn http_check(subject: records::Subject) -> http_check::HttpCheckInput {
+        http_check::HttpCheckInput {
+            subject,
+            url: "https://example.com/health".into(),
+            expected_status: 200,
+            timeout_seconds: 5,
+            valid_for_minutes: 60,
+            monitor_interval_minutes: Some(5),
+        }
+    }
+
+    #[test]
+    fn deletes_what_has_no_history_with_its_components_and_check() {
+        let path = path();
+        let host = resource(&path, "Host");
+        let spare = resource(&path, "Spare");
+        let shop = save_application(&path, app(Some(host.id.clone()))).unwrap();
+        let kept = save_application(&path, app(Some(host.id.clone()))).unwrap();
+        http_check::save_http_check(
+            &path,
+            http_check(records::Subject::Application {
+                id: shop.id.clone(),
+            }),
+        )
+        .unwrap();
+        http_check::save_http_check(
+            &path,
+            http_check(records::Subject::Resource {
+                id: spare.id.clone(),
+            }),
+        )
+        .unwrap();
+
+        delete_application(&path, &shop.id).unwrap();
+        delete_resource(&path, &spare.id).unwrap();
+        let snapshot = list(&path).unwrap();
+        assert_eq!(snapshot.applications, vec![kept]);
+        assert_eq!(snapshot.resources, vec![host]);
+        assert!(snapshot.http_checks.is_empty());
+        let db = open(&path).unwrap();
+        let components: i64 = db
+            .query_row(
+                "SELECT count(*) FROM components WHERE application_id = ?1",
+                [&shop.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(components, 0);
+        drop(db);
+        let missing = delete_application(&path, &shop.id).unwrap_err();
+        assert_eq!(missing.code, "invalid_input");
+        assert!(missing.message.contains("does not exist"));
+        assert_eq!(
+            delete_resource(&path, "ghost").unwrap_err().code,
+            "invalid_input"
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn keeps_anything_with_history_or_in_use_and_says_why() {
+        let path = path();
+        let host = resource(&path, "Host");
+        let shop = save_application(&path, app(Some(host.id.clone()))).unwrap();
+        let application = records::Subject::Application {
+            id: shop.id.clone(),
+        };
+        let used = delete_resource(&path, &host.id).unwrap_err();
+        assert_eq!(used.code, "invalid_input");
+        assert!(
+            used.message
+                .contains("Host is used by Example (API). Link those components"),
+            "{}",
+            used.message
+        );
+
+        records::open_incident(
+            &path,
+            records::IncidentInput {
+                subject: application.clone(),
+                title: "Down".into(),
+                description: String::new(),
+                severity: "critical".into(),
+            },
+        )
+        .unwrap();
+        records::record_event(
+            &path,
+            records::EventInput {
+                subject: application.clone(),
+                kind: "note".into(),
+                outcome: "info".into(),
+                title: "Noted".into(),
+                detail: String::new(),
+                occurred_at: None,
+            },
+        )
+        .unwrap();
+        let error = delete_application(&path, &shop.id).unwrap_err();
+        assert_eq!(error.code, "invalid_input");
+        assert_eq!(
+            error.message,
+            "Example has recorded incidents and events. DevHQ keeps history, so it cannot be deleted; set its lifecycle to Archived instead."
+        );
+
+        // Unlinked, the resource is still kept by its own history.
+        save_application(
+            &path,
+            ApplicationInput {
+                id: Some(shop.id.clone()),
+                components: vec![],
+                ..app(None)
+            },
+        )
+        .unwrap();
+        records::record_observation(
+            &path,
+            records::ObservationInput {
+                subject: records::Subject::Resource {
+                    id: host.id.clone(),
+                },
+                result: "healthy".into(),
+                summary: "Fine".into(),
+                observed_at: None,
+                valid_for_minutes: 60,
+            },
+        )
+        .unwrap();
+        let error = delete_resource(&path, &host.id).unwrap_err();
+        assert_eq!(
+            error.message,
+            "Host has recorded observations and events. DevHQ keeps history, so it cannot be deleted."
+        );
+        let snapshot = list(&path).unwrap();
+        assert_eq!(snapshot.applications.len(), 1);
+        assert_eq!(snapshot.resources.len(), 1);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn a_result_arriving_after_its_subject_was_deleted_is_not_recorded() {
+        let path = path();
+        let host = resource(&path, "Host");
+        let subject = records::Subject::Resource {
+            id: host.id.clone(),
+        };
+        http_check::save_http_check(&path, http_check(subject.clone())).unwrap();
+        // A run started before the deletion finishes after it.
+        delete_resource(&path, &host.id).unwrap();
+        let late = records::store_observation(
+            &path,
+            records::NewObservation {
+                subject: &subject,
+                result: "healthy",
+                summary: "HTTP 200 as expected",
+                observed_at: records::now_ms(),
+                valid_for_minutes: 60,
+                recorded_at: records::now_ms(),
+                http: Some(&records::HttpEvidence {
+                    url: "https://example.com/health".into(),
+                    expected_status: 200,
+                    status: Some(200),
+                    latency_ms: 5,
+                    error: None,
+                    redirects: vec![],
+                }),
+                lifeline: None,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(late.code, "invalid_input");
+        let snapshot = list(&path).unwrap();
+        assert!(snapshot.observations.is_empty() && snapshot.resources.is_empty());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn text_saved_before_the_limits_can_still_be_saved_unchanged() {
+        let path = path();
+        let long = |count: usize| "a".repeat(count);
+        // As a version without limits could have left them.
+        let db = open(&path).unwrap();
+        db.execute(
+            "INSERT INTO resources (id, name, kind, description, operating_system) VALUES ('host', 'Host', 'server', ?1, ?2)",
+            params![long(1500), long(200)],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO applications (id, name, lifecycle, description, version) VALUES ('shop', ?1, 'production', ?2, ?3)",
+            params![long(130), long(1500), long(80)],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO components (id, application_id, name, kind, resource_id) VALUES ('api', 'shop', ?1, 'docker', 'host')",
+            [long(150)],
+        )
+        .unwrap();
+        drop(db);
+        let stored = list(&path).unwrap();
+        let shop = &stored.applications[0];
+        let archive = |description: String| ApplicationInput {
+            id: Some(shop.id.clone()),
+            name: shop.name.clone(),
+            description,
+            lifecycle: "archived".into(),
+            version: shop.version.clone(),
+            components: vec![ComponentInput {
+                id: Some("api".into()),
+                name: shop.components[0].name.clone(),
+                kind: "docker".into(),
+                resource_id: Some("host".into()),
+            }],
+        };
+        // Archiving, as a refused deletion suggests, keeps working.
+        let archived = save_application(&path, archive(shop.description.clone())).unwrap();
+        assert_eq!(archived.lifecycle, "archived");
+        assert_eq!(archived.description.len(), 1500);
+        let host = &stored.resources[0];
+        assert!(save_resource(
+            &path,
+            ResourceInput {
+                id: Some(host.id.clone()),
+                name: "Renamed host".into(),
+                kind: "server".into(),
+                description: host.description.clone(),
+                operating_system: host.operating_system.clone(),
+            },
+        )
+        .is_ok());
+        // New text, though, must fit.
+        let error = save_application(&path, archive(long(1400))).unwrap_err();
+        assert!(
+            error.message.contains("longer than 1000"),
+            "{}",
+            error.message
+        );
+        // A component's kept name is its own: another component cannot borrow it.
+        let mut borrowed = archive(shop.description.clone());
+        borrowed.components.push(ComponentInput {
+            id: None,
+            ..borrowed.components[0].clone()
+        });
+        let error = save_application(&path, borrowed).unwrap_err();
+        assert!(
+            error.message.contains("Component name is longer than 120"),
+            "{}",
+            error.message
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn counts_length_as_the_window_does() {
+        let path = path();
+        // Outside the Basic Multilingual Plane: one character, two UTF-16 code units.
+        let emoji = |count: usize| "🛰".repeat(count);
+        let named = |name: String| ResourceInput {
+            id: None,
+            name,
+            kind: "server".into(),
+            description: String::new(),
+            operating_system: String::new(),
+        };
+        assert!(save_resource(&path, named(emoji(60))).is_ok());
+        let error = save_resource(&path, named(emoji(61))).unwrap_err();
+        assert!(
+            error.message.contains("longer than 120"),
+            "{}",
+            error.message
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn says_where_the_database_file_is() {
+        let folder = std::env::temp_dir().join("com.devhq.desktop");
+        assert_eq!(
+            DataLocation::of(&folder.join("inventory.sqlite3")),
+            DataLocation {
+                database: folder.join("inventory.sqlite3").display().to_string(),
+                directory: folder.display().to_string(),
+                // Not created yet, so there is nothing to resolve.
+                stored_at: None,
+            }
+        );
+    }
+
+    /// The temporary folder as the file system names it, for tests that compare paths it
+    /// resolves: on a Windows runner `TMP` is a short 8.3 name (`C:\Users\RUNNER~1\…`), and on
+    /// macOS `/var` is a link to `/private/var`.
+    pub(crate) fn resolved_temp_dir() -> PathBuf {
+        PathBuf::from(plain(&std::fs::canonicalize(std::env::temp_dir()).unwrap()))
+    }
+
+    /// A folder of its own and, beside it, a link to it: the data folder reached through the
+    /// link stands for one that Windows redirects for a packaged app, which a test cannot set up.
+    /// A junction on Windows, which needs no privilege; a symbolic link elsewhere.
+    pub(crate) fn linked_folder() -> (PathBuf, PathBuf) {
+        let base = resolved_temp_dir();
+        let name = format!("devhq-linked-{}", Uuid::new_v4());
+        let (real, link) = (base.join(&name), base.join(format!("{name}-link")));
+        std::fs::create_dir(&real).unwrap();
+        #[cfg(windows)]
+        assert!(std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(&real)
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success());
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        (real, link)
+    }
+
+    /// Removes the link alone, then the folder and what it holds.
+    pub(crate) fn remove_linked((real, link): (PathBuf, PathBuf)) {
+        #[cfg(windows)]
+        std::fs::remove_dir(&link).unwrap();
+        #[cfg(unix)]
+        std::fs::remove_file(&link).unwrap();
+        std::fs::remove_dir_all(real).unwrap();
+    }
+
+    #[test]
+    fn says_where_the_file_system_really_keeps_the_database_file() {
+        let (real, link) = linked_folder();
+        let asked = link.join("inventory.sqlite3");
+        list(&asked).unwrap();
+        let kept = real.join("inventory.sqlite3");
+        assert_eq!(
+            DataLocation::of(&asked),
+            DataLocation {
+                database: asked.display().to_string(),
+                directory: link.display().to_string(),
+                stored_at: Some(kept.display().to_string()),
+            }
+        );
+        // Asked for where it really is, it has nothing else to say.
+        assert_eq!(DataLocation::of(&kept).stored_at, None);
+        remove_linked((real, link));
+    }
+
+    #[test]
     fn concurrent_first_open_migrates_once() {
         let path = path();
         let first = path.clone();
         let second = path.clone();
         let one = std::thread::spawn(move || list(&first));
         let two = std::thread::spawn(move || list(&second));
-        assert!(one.join().unwrap().is_ok());
-        assert!(two.join().unwrap().is_ok());
+        let (one, two) = (one.join().unwrap(), two.join().unwrap());
+        assert!(
+            one.is_ok() && two.is_ok(),
+            "{:?} {:?}",
+            one.err(),
+            two.err()
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    /// Runs `work` on its own connection in another thread and waits until it holds what it
+    /// took; the thread lets go when the returned sender is dropped or used.
+    pub(crate) fn holding<T: Send + 'static>(
+        path: &Path,
+        work: impl FnOnce(&Path, &dyn Fn()) -> T + Send + 'static,
+    ) -> (std::sync::mpsc::Sender<()>, std::thread::JoinHandle<T>) {
+        let (held, wait_held) = std::sync::mpsc::channel();
+        let (release, wait_release) = std::sync::mpsc::channel::<()>();
+        let path = path.to_path_buf();
+        let thread = std::thread::spawn(move || {
+            work(&path, &|| {
+                held.send(()).unwrap();
+                // Far longer than anything here would wait before giving up.
+                let _ = wait_release.recv_timeout(Duration::from_secs(30));
+            })
+        });
+        wait_held.recv().unwrap();
+        (release, thread)
+    }
+
+    #[test]
+    fn an_up_to_date_database_is_read_without_waiting_for_a_write_in_progress() {
+        let path = path();
+        let host = resource(&path, "Host");
+        let id = host.id.clone();
+        let (release, writer) = holding(&path, move |path, hold| {
+            let mut db = Connection::open(path).unwrap();
+            let tx = db
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .unwrap();
+            tx.execute("UPDATE resources SET name = 'Renamed' WHERE id = ?1", [&id])
+                .unwrap();
+            hold();
+            tx.commit().unwrap();
+        });
+        // Every open used to take the write lock just to check the schema version, so this
+        // waited for the writer and gave up after five seconds.
+        let snapshot = list(&path);
+        release.send(()).unwrap();
+        writer.join().unwrap();
+        // The last committed state, then the new one.
+        assert_eq!(snapshot.unwrap().resources, vec![host]);
+        assert_eq!(list(&path).unwrap().resources[0].name, "Renamed");
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn a_write_never_waits_for_a_read_in_progress() {
+        let path = path();
+        resource(&path, "Host");
+        let (release, reader) = holding(&path, |path, hold| {
+            let mut db = open(path).unwrap();
+            let tx = db.transaction().unwrap();
+            let count = || -> i64 {
+                tx.query_row("SELECT count(*) FROM resources", [], |row| row.get(0))
+                    .unwrap()
+            };
+            let before = count();
+            hold();
+            (before, count())
+        });
+        // With a rollback journal a commit needs every reader gone, so this waited for the
+        // reader and gave up after five seconds.
+        let saved = save_resource(
+            &path,
+            ResourceInput {
+                id: None,
+                name: "Spare".into(),
+                kind: "server".into(),
+                description: String::new(),
+                operating_system: String::new(),
+            },
+        );
+        release.send(()).unwrap();
+        // The reader kept the state it started from.
+        assert_eq!(reader.join().unwrap(), (1, 1));
+        assert!(saved.is_ok(), "{saved:?}");
+        assert_eq!(list(&path).unwrap().resources.len(), 2);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn writes_ahead_and_leaves_one_complete_file_once_closed() {
+        let path = path();
+        // As earlier releases left it: a rollback journal.
+        let db = Connection::open(&path).unwrap();
+        db.pragma_update(None, "foreign_keys", "OFF").unwrap();
+        for (_, sql) in &MIGRATIONS {
+            db.execute_batch(sql).unwrap();
+        }
+        db.pragma_update(None, "user_version", SCHEMA_VERSION)
+            .unwrap();
+        let mode = |db: &Connection| -> String {
+            db.query_row("PRAGMA journal_mode", [], |row| row.get(0))
+                .unwrap()
+        };
+        assert_eq!(mode(&db), "delete");
+        drop(db);
+        // Switching needs the file to itself and SQLite does not wait for it: while another
+        // connection writes, DevHQ still opens it, in the mode it has.
+        let (release, writer) = holding(&path, |path, hold| {
+            let mut db = Connection::open(path).unwrap();
+            let tx = db
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .unwrap();
+            hold();
+            tx.commit().unwrap();
+        });
+        let contended = list(&path);
+        release.send(()).unwrap();
+        writer.join().unwrap();
+        assert!(contended.is_ok(), "{:?}", contended.err());
+        assert_eq!(mode(&Connection::open(&path).unwrap()), "delete");
+        // The next open has it to itself and switches it.
+        resource(&path, "Host");
+        resource(&path, "Spare");
+        // The mode is stored in the file, for every later connection.
+        let db = Connection::open(&path).unwrap();
+        assert_eq!(mode(&db), "wal");
+        drop(db);
+        // Every connection is closed: the log was folded back into the database file, which
+        // alone holds everything, so a copy of it is a complete backup.
+        assert!(!path.with_extension("sqlite3-wal").exists());
+        let copy = path.with_extension("copy.sqlite3");
+        std::fs::copy(&path, &copy).unwrap();
+        assert_eq!(list(&copy).unwrap().resources.len(), 2);
+        std::fs::remove_file(copy).unwrap();
         std::fs::remove_file(path).unwrap();
     }
 
@@ -689,11 +1650,13 @@ mod tests {
                 "components_resource_id",
                 "events_application_id",
                 "events_incident_id",
+                "events_manual",
                 "events_observation_id",
                 "events_resource_id",
                 "incidents_application_id",
                 "incidents_resource_id",
                 "observations_application_id",
+                "observations_manual",
                 "observations_resource_id",
             ]
         );
@@ -759,7 +1722,7 @@ mod tests {
     }
 
     /// Every row of a table, rowid first, as text: a lossless picture to compare across upgrades.
-    fn dump(db: &Connection, table: &str) -> Vec<String> {
+    pub(crate) fn dump(db: &Connection, table: &str) -> Vec<String> {
         let mut statement = db
             .prepare(&format!("SELECT rowid, * FROM {table} ORDER BY rowid"))
             .unwrap();
@@ -846,7 +1809,7 @@ mod tests {
         let version: i64 = db
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 5);
+        assert_eq!(version, SCHEMA_VERSION);
         for (table, rows) in unchanged.iter().zip(&before) {
             assert_eq!(&dump(&db, table), rows, "{table}");
         }
@@ -946,6 +1909,77 @@ mod tests {
             "SELECT name FROM pragma_table_info('http_checks') WHERE name = 'monitor'"
         )
         .is_empty());
+        drop(db);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn upgrades_v5_with_history_indexes_without_changing_any_row() {
+        let path = path();
+        let db = Connection::open(&path).unwrap();
+        db.pragma_update(None, "foreign_keys", "OFF").unwrap();
+        for (_, sql) in &MIGRATIONS[..5] {
+            db.execute_batch(sql).unwrap();
+        }
+        db.pragma_update(None, "user_version", 5).unwrap();
+        db.execute_batch(
+            "INSERT INTO resources (id, name, kind, description, operating_system) VALUES ('host', 'Host', 'server', '', 'Linux');
+             INSERT INTO applications (id, name, lifecycle, description, version) VALUES ('shop', 'Shop', 'production', 'Store', '2.0');
+             INSERT INTO components (id, application_id, name, kind, resource_id) VALUES ('api', 'shop', 'API', 'backend', 'host');
+             INSERT INTO observations (id, resource_id, result, summary, source, observed_at, valid_until, recorded_at)
+               VALUES ('obs-manual', 'host', 'degraded', 'Slow', 'manual', 500, 900, 600);
+             INSERT INTO observations (id, resource_id, result, summary, source, observed_at, valid_until, recorded_at,
+                                       http_url, http_expected_status, http_status, http_latency_ms, http_error, http_redirects)
+               VALUES ('obs-http', 'host', 'healthy', 'HTTP 200 as expected', 'http', 1000, 2000, 1000,
+                       'http://host/health', 200, 200, 9, NULL, '[]');
+             INSERT INTO incidents (id, application_id, title, description, severity, status, source, opened_at, updated_at)
+               VALUES ('inc', 'shop', 'Down', 'Checkout', 'critical', 'open', 'manual', 700, 700);
+             INSERT INTO events (id, resource_id, kind, outcome, title, detail, source, observation_id, occurred_at, recorded_at)
+               VALUES ('evt-http', 'host', 'observation', 'success', 'HTTP check: Healthy', '', 'http', 'obs-http', 1000, 1000),
+                      ('evt-manual', 'host', 'observation', 'warning', 'Observation: Attention required', 'Slow', 'manual', 'obs-manual', 500, 600);
+             INSERT INTO events (id, application_id, kind, outcome, title, source, incident_id, occurred_at, recorded_at)
+               VALUES ('evt-inc', 'shop', 'incident', 'failure', 'Incident opened: Down', 'manual', 'inc', 700, 700);
+             INSERT INTO http_checks (resource_id, url, expected_status, timeout_seconds, valid_for_minutes, updated_at, monitor, monitor_interval_minutes)
+               VALUES ('host', 'http://host/health', 200, 5, 15, 800, 'active', 5);",
+        )
+        .unwrap();
+        let tables = [
+            "resources",
+            "applications",
+            "components",
+            "observations",
+            "incidents",
+            "events",
+            "http_checks",
+        ];
+        let before: Vec<_> = tables.iter().map(|table| dump(&db, table)).collect();
+        drop(db);
+
+        let upgraded = list(&path).unwrap();
+        assert_eq!(upgraded.observations.len(), 2);
+        assert_eq!(upgraded.events.len(), 3);
+        assert_eq!(upgraded.http_checks[0].monitor, "active");
+        assert!(upgraded.automated_history.truncated.is_empty());
+
+        let db = Connection::open(&path).unwrap();
+        let version: i64 = db
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 6);
+        for (table, rows) in tables.iter().zip(&before) {
+            assert_eq!(&dump(&db, table), rows, "{table}");
+        }
+        // Partial: they hold only the manual records.
+        assert_eq!(
+            strings(
+                &db,
+                "SELECT name || ': ' || substr(sql, instr(sql, 'WHERE')) FROM sqlite_master WHERE name LIKE '%_manual' ORDER BY name"
+            ),
+            [
+                "events_manual: WHERE source = 'manual'",
+                "observations_manual: WHERE source = 'manual'",
+            ]
+        );
         drop(db);
         std::fs::remove_file(path).unwrap();
     }

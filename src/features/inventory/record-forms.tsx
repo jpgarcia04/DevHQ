@@ -15,6 +15,7 @@ import { toDateTimeLocal } from '@/shared/time'
 import { SubjectOptions } from './evidence'
 import { inventoryError } from './inventory-api'
 import { useInventory } from './inventory-context'
+import { textLimits } from './limits'
 
 const validityOptions = [
   { minutes: 60, label: '1 hour' },
@@ -90,7 +91,7 @@ function RecordForm({
       </div>
       <div className="grid gap-4 min-[1100px]:grid-cols-2">
         {onSubjectChange && (
-          <label className="space-y-1.5 text-xs">
+          <label className="grid gap-1.5 text-xs">
             System
             <select
               required
@@ -152,7 +153,7 @@ export function ObservationForm({ subject, onDone }: { subject?: EntityRef; onDo
       )}
       onCancel={onDone}
     >
-      <label className="space-y-1.5 text-xs">
+      <label className="grid gap-1.5 text-xs">
         Result
         <select
           className="filter-select block w-full"
@@ -166,17 +167,17 @@ export function ObservationForm({ subject, onDone }: { subject?: EntityRef; onDo
           ))}
         </select>
       </label>
-      <label className="space-y-1.5 text-xs min-[1100px]:col-span-2">
+      <label className="grid gap-1.5 text-xs min-[1100px]:col-span-2">
         What did you observe?
         <Input
           required
-          maxLength={500}
+          maxLength={textLimits.summary}
           placeholder="e.g. Login page responds; disk at 71%"
           value={summary}
           onChange={(event) => setSummary(event.target.value)}
         />
       </label>
-      <label className="space-y-1.5 text-xs">
+      <label className="grid gap-1.5 text-xs">
         Observed at
         <Input
           required
@@ -186,7 +187,7 @@ export function ObservationForm({ subject, onDone }: { subject?: EntityRef; onDo
           onChange={(event) => setObservedAt(event.target.value)}
         />
       </label>
-      <label className="space-y-1.5 text-xs">
+      <label className="grid gap-1.5 text-xs">
         Valid for
         <select
           className="filter-select block w-full"
@@ -225,16 +226,16 @@ export function IncidentForm({ subject, onDone }: { subject?: EntityRef; onDone:
       )}
       onCancel={onDone}
     >
-      <label className="space-y-1.5 text-xs">
+      <label className="grid gap-1.5 text-xs">
         Title
         <Input
           required
-          maxLength={160}
+          maxLength={textLimits.title}
           value={title}
           onChange={(event) => setTitle(event.target.value)}
         />
       </label>
-      <label className="space-y-1.5 text-xs">
+      <label className="grid gap-1.5 text-xs">
         Severity
         <select
           className="filter-select block w-full"
@@ -248,10 +249,10 @@ export function IncidentForm({ subject, onDone }: { subject?: EntityRef; onDone:
           ))}
         </select>
       </label>
-      <label className="space-y-1.5 text-xs min-[1100px]:col-span-2">
+      <label className="grid gap-1.5 text-xs min-[1100px]:col-span-2">
         Description
         <Input
-          maxLength={1000}
+          maxLength={textLimits.description}
           value={description}
           onChange={(event) => setDescription(event.target.value)}
         />
@@ -290,7 +291,7 @@ export function EventForm({ subject, onDone }: { subject?: EntityRef; onDone: ()
       )}
       onCancel={onDone}
     >
-      <label className="space-y-1.5 text-xs">
+      <label className="grid gap-1.5 text-xs">
         Kind
         <select
           className="filter-select block w-full"
@@ -304,7 +305,7 @@ export function EventForm({ subject, onDone }: { subject?: EntityRef; onDone: ()
           ))}
         </select>
       </label>
-      <label className="space-y-1.5 text-xs">
+      <label className="grid gap-1.5 text-xs">
         Outcome
         <select
           className="filter-select block w-full"
@@ -318,16 +319,16 @@ export function EventForm({ subject, onDone }: { subject?: EntityRef; onDone: ()
           ))}
         </select>
       </label>
-      <label className="space-y-1.5 text-xs">
+      <label className="grid gap-1.5 text-xs">
         Title
         <Input
           required
-          maxLength={160}
+          maxLength={textLimits.title}
           value={title}
           onChange={(event) => setTitle(event.target.value)}
         />
       </label>
-      <label className="space-y-1.5 text-xs">
+      <label className="grid gap-1.5 text-xs">
         Happened at
         <Input
           required
@@ -337,10 +338,10 @@ export function EventForm({ subject, onDone }: { subject?: EntityRef; onDone: ()
           onChange={(event) => setOccurredAt(event.target.value)}
         />
       </label>
-      <label className="space-y-1.5 text-xs min-[1100px]:col-span-2">
+      <label className="grid gap-1.5 text-xs min-[1100px]:col-span-2">
         Details
         <Input
-          maxLength={1000}
+          maxLength={textLimits.description}
           value={detail}
           onChange={(event) => setDetail(event.target.value)}
         />

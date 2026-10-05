@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { Fragment, useState } from 'react'
 import {
   ArrowUpRight,
   ChevronDown,
@@ -24,9 +24,11 @@ import type {
 } from '@/domain/models'
 import { formatDateTime, formatTime, relativeTime } from '@/shared/time'
 import { cn } from '@/shared/utils'
-import { EvidenceBadge, EvidenceDetail, SourceTag, SubjectLink } from './evidence'
+import { EvidenceBadge, EvidenceDetail, SourceTag, SubjectLink, WindowBoundary } from './evidence'
+import { beforeWindow, timelineRows, withinWindow, type TimelineRow } from './history'
 import { inventoryError } from './inventory-api'
 import { useInventory } from './inventory-context'
+import { textLimits } from './limits'
 
 const severityBar: Record<IncidentSeverity, string> = {
   critical: 'bg-rose-300/75',
@@ -62,9 +64,13 @@ function IncidentStatusControl({ incident }: { incident: RecordedIncident }) {
   }
   return (
     <div className="flex flex-wrap items-end gap-2">
-      <label className="min-w-52 flex-1 space-y-1.5 text-xs">
+      <label className="min-w-52 flex-1 grid gap-1.5 text-xs">
         Status note (optional)
-        <Input maxLength={500} value={note} onChange={(event) => setNote(event.target.value)} />
+        <Input
+          maxLength={textLimits.summary}
+          value={note}
+          onChange={(event) => setNote(event.target.value)}
+        />
       </label>
       {nextStatuses[incident.status].map(({ status, label }) => (
         <Button key={status} variant="outline" disabled={busy} onClick={() => void change(status)}>
@@ -130,8 +136,13 @@ export function IncidentRecordList({
             </summary>
             <div className="ml-4.5 mt-4 space-y-4 border-t pt-4">
               <p className="text-xs text-muted-foreground">
-                Affects <SubjectLink subject={incident.subject} className="text-foreground" /> ·
-                opened <time dateTime={incident.openedAt}>{formatDateTime(incident.openedAt)}</time>
+                Affects{' '}
+                <SubjectLink
+                  subject={incident.subject}
+                  className="text-foreground underline decoration-muted-foreground/60 underline-offset-2"
+                />{' '}
+                · opened{' '}
+                <time dateTime={incident.openedAt}>{formatDateTime(incident.openedAt)}</time>
               </p>
               {incident.description && (
                 <p className="max-w-3xl text-[13px] leading-6 text-muted-foreground">
@@ -171,66 +182,185 @@ const kindIcons: Record<RecordedEventKind, LucideIcon> = {
 // Entries typed in well after the fact say so; the timeline keeps both moments.
 const lateEntryMs = 5 * 60_000
 
+const outcomeStyles: Record<RecordedEvent['outcome'], string> = {
+  failure: 'border-rose-400/20 text-rose-300',
+  warning: 'border-amber-400/20 text-amber-300',
+  success: 'text-emerald-300',
+  info: 'text-muted-foreground',
+}
+
+function EventIcon({ event }: { event: RecordedEvent }) {
+  const Icon = kindIcons[event.kind]
+  return (
+    <span
+      className={cn(
+        'mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-lg border',
+        outcomeStyles[event.outcome],
+      )}
+    >
+      <Icon className="size-3.5" aria-hidden="true" />
+      <span className="sr-only">{eventOutcomeLabels[event.outcome]}</span>
+    </span>
+  )
+}
+
+function EventItem({
+  event,
+  timeOnly,
+  detailed,
+}: {
+  event: RecordedEvent
+  timeOnly: boolean
+  detailed: boolean
+}) {
+  const late = Date.parse(event.recordedAt) - Date.parse(event.occurredAt) > lateEntryMs
+  return (
+    <li className="flex gap-3 py-4 first:pt-1 last:pb-1">
+      <EventIcon event={event} />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-start justify-between gap-3">
+          <p className="text-[13px] font-medium">{event.title}</p>
+          <time
+            dateTime={event.occurredAt}
+            className="shrink-0 font-mono text-[10px] text-muted-foreground"
+          >
+            {timeOnly ? formatTime(event.occurredAt) : formatDateTime(event.occurredAt)}
+          </time>
+        </div>
+        <p className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-muted-foreground">
+          <SubjectLink subject={event.subject} />
+          <span aria-hidden="true">·</span>
+          <span>{eventKindLabels[event.kind]}</span>
+          <SourceTag source={event.source} />
+          {late && (
+            <span className="text-[11px]">
+              recorded <time dateTime={event.recordedAt}>{formatDateTime(event.recordedAt)}</time>
+            </span>
+          )}
+        </p>
+        {detailed && event.detail && (
+          <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{event.detail}</p>
+        )}
+      </div>
+    </li>
+  )
+}
+
+/** Consecutive automated results that said the same thing, folded into one row. */
+function RepeatedResults({
+  events,
+  timeOnly,
+  detailed,
+  continues,
+}: {
+  events: RecordedEvent[]
+  timeOnly: boolean
+  detailed: boolean
+  /** The run reaches where the view stops being complete, so it may go on before. */
+  continues: boolean
+}) {
+  const [open, setOpen] = useState(false)
+  const latest = events[0]!
+  const oldest = events.at(-1)!
+  const format = timeOnly ? formatTime : formatDateTime
+  return (
+    <li className="flex gap-3 py-4 first:pt-1 last:pb-1">
+      <EventIcon event={latest} />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-start justify-between gap-3">
+          <p className="text-[13px] font-medium">{latest.title}</p>
+          <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
+            <time dateTime={oldest.occurredAt}>{format(oldest.occurredAt)}</time>–
+            <time dateTime={latest.occurredAt}>{format(latest.occurredAt)}</time>
+          </span>
+        </div>
+        <p className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-muted-foreground">
+          <SubjectLink subject={latest.subject} />
+          <span aria-hidden="true">·</span>
+          <span>
+            {events.length}
+            {continues && '+'} consecutive results
+          </span>
+          <SourceTag source={latest.source} />
+          <Button size="xs" variant="ghost" aria-expanded={open} onClick={() => setOpen(!open)}>
+            {open ? 'Hide them' : `Show all ${events.length}`}
+          </Button>
+        </p>
+        {detailed && latest.detail && !open && (
+          <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+            Latest: {latest.detail}
+          </p>
+        )}
+        {open && (
+          <ol
+            aria-label={`${events.length} consecutive results`}
+            className="mt-2 divide-y divide-border/65 border-l pl-4"
+          >
+            {events.map((event) => (
+              <EventItem key={event.id} event={event} timeOnly={timeOnly} detailed={detailed} />
+            ))}
+          </ol>
+        )}
+      </div>
+    </li>
+  )
+}
+
 export function EventRecordList({
   items,
   timeOnly = false,
   detailed = true,
+  automatedSince = null,
+  foldRepeats = false,
+  maxRows,
+  reachesCut = true,
 }: {
   items: RecordedEvent[]
   timeOnly?: boolean
   detailed?: boolean
+  /** Complete only from this moment on: older automated events are left out, and marked. */
+  automatedSince?: string | null
+  /** Folds runs of identical automated results of one system into a single row. */
+  foldRepeats?: boolean
+  /** Shows only the newest rows, counted after folding. */
+  maxRows?: number
+  /**
+   * Nothing complete follows this list before the view stops being complete. False for one
+   * list among several (a day), when an older one still has complete rows.
+   */
+  reachesCut?: boolean
 }) {
+  const shown = items.filter((event) =>
+    withinWindow(event.source, event.occurredAt, automatedSince),
+  )
+  const all: TimelineRow[] = foldRepeats
+    ? timelineRows(shown)
+    : shown.map((event) => ({ kind: 'event', event }))
+  const first = (row: TimelineRow) => (row.kind === 'event' ? row.event : row.events[0]!)
+  const boundary = all.findIndex((row) => beforeWindow(first(row).occurredAt, automatedSince))
+  // A run that ends where the view stops being complete may have older results not shown.
+  const lastComplete = boundary !== -1 ? boundary - 1 : reachesCut ? all.length - 1 : -1
+  const rows = all.slice(0, maxRows)
   return (
     <ol className="divide-y divide-border/65">
-      {items.map((event) => {
-        const Icon = kindIcons[event.kind]
-        const late = Date.parse(event.recordedAt) - Date.parse(event.occurredAt) > lateEntryMs
-        return (
-          <li key={event.id} className="flex gap-3 py-4 first:pt-1 last:pb-1">
-            <span
-              className={cn(
-                'mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-lg border',
-                event.outcome === 'failure'
-                  ? 'border-rose-400/20 text-rose-300'
-                  : event.outcome === 'warning'
-                    ? 'border-amber-400/20 text-amber-300'
-                    : event.outcome === 'success'
-                      ? 'text-emerald-300'
-                      : 'text-muted-foreground',
-              )}
-            >
-              <Icon className="size-3.5" aria-hidden="true" />
-              <span className="sr-only">{eventOutcomeLabels[event.outcome]}</span>
-            </span>
-            <div className="min-w-0 flex-1">
-              <div className="flex items-start justify-between gap-3">
-                <p className="text-[13px] font-medium">{event.title}</p>
-                <time
-                  dateTime={event.occurredAt}
-                  className="shrink-0 font-mono text-[10px] text-muted-foreground"
-                >
-                  {timeOnly ? formatTime(event.occurredAt) : formatDateTime(event.occurredAt)}
-                </time>
-              </div>
-              <p className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-muted-foreground">
-                <SubjectLink subject={event.subject} />
-                <span aria-hidden="true">·</span>
-                <span>{eventKindLabels[event.kind]}</span>
-                <SourceTag source={event.source} />
-                {late && (
-                  <span className="text-[11px]">
-                    recorded{' '}
-                    <time dateTime={event.recordedAt}>{formatDateTime(event.recordedAt)}</time>
-                  </span>
-                )}
-              </p>
-              {detailed && event.detail && (
-                <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{event.detail}</p>
-              )}
-            </div>
-          </li>
-        )
-      })}
+      {rows.map((row, index) => (
+        // A run keeps its oldest result as new ones arrive, so an expanded run stays open.
+        <Fragment key={row.kind === 'event' ? row.event.id : row.events.at(-1)!.id}>
+          {automatedSince && index === boundary && index > 0 && (
+            <WindowBoundary since={automatedSince} />
+          )}
+          {row.kind === 'event' ? (
+            <EventItem event={row.event} timeOnly={timeOnly} detailed={detailed} />
+          ) : (
+            <RepeatedResults
+              events={row.events}
+              timeOnly={timeOnly}
+              detailed={detailed}
+              continues={automatedSince !== null && index === lastComplete}
+            />
+          )}
+        </Fragment>
+      ))}
     </ol>
   )
 }

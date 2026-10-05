@@ -3,17 +3,22 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { lifecycleLabels } from '@/domain/labels'
 import type { ComponentKind, Lifecycle } from '@/domain/models'
+import { DeleteSubject } from './delete-subject'
 import { inventoryError, type ApplicationInput, type InventoryApplication } from './inventory-api'
 import { useInventory } from './inventory-context'
+import { textLimits } from './limits'
 
 type DraftComponent = ApplicationInput['components'][number]
 
 export function ApplicationForm({
   application,
   onDone,
+  onDeleted = onDone,
 }: {
   application?: InventoryApplication
   onDone: () => void
+  /** After a successful deletion; the application no longer exists. */
+  onDeleted?: () => void
 }) {
   const { snapshot, saveApplication } = useInventory()
   const [name, setName] = useState(application?.name ?? '')
@@ -53,16 +58,17 @@ export function ApplicationForm({
     >
       <h2 className="section-heading">{application ? 'Edit application' : 'New application'}</h2>
       <div className="grid gap-4 min-[1100px]:grid-cols-2">
-        <label className="space-y-1.5 text-xs">
+        <label className="grid gap-1.5 text-xs">
           Name{' '}
           <Input
             required
-            maxLength={120}
+            spellCheck={false}
+            maxLength={textLimits.name}
             value={name}
             onChange={(event) => setName(event.target.value)}
           />
         </label>
-        <label className="space-y-1.5 text-xs">
+        <label className="grid gap-1.5 text-xs">
           Lifecycle
           <select
             className="filter-select block w-full"
@@ -76,12 +82,22 @@ export function ApplicationForm({
             ))}
           </select>
         </label>
-        <label className="space-y-1.5 text-xs">
+        <label className="grid gap-1.5 text-xs">
           Description{' '}
-          <Input value={description} onChange={(event) => setDescription(event.target.value)} />
+          <Input
+            maxLength={textLimits.description}
+            value={description}
+            onChange={(event) => setDescription(event.target.value)}
+          />
         </label>
-        <label className="space-y-1.5 text-xs">
-          Version <Input value={version} onChange={(event) => setVersion(event.target.value)} />
+        <label className="grid gap-1.5 text-xs">
+          Version{' '}
+          <Input
+            spellCheck={false}
+            maxLength={textLimits.version}
+            value={version}
+            onChange={(event) => setVersion(event.target.value)}
+          />
         </label>
       </div>
       <div className="space-y-3 border-t pt-5">
@@ -110,15 +126,17 @@ export function ApplicationForm({
             className="grid gap-3 rounded-lg border p-3 min-[1100px]:grid-cols-[1fr_140px_1fr_auto]"
             key={component.id ?? `new-${index}`}
           >
-            <label className="space-y-1.5 text-xs">
+            <label className="grid gap-1.5 text-xs">
               Component name{' '}
               <Input
                 required
+                spellCheck={false}
+                maxLength={textLimits.name}
                 value={component.name}
                 onChange={(event) => updateComponent(index, { name: event.target.value })}
               />
             </label>
-            <label className="space-y-1.5 text-xs">
+            <label className="grid gap-1.5 text-xs">
               Kind
               <select
                 className="filter-select block w-full"
@@ -132,7 +150,7 @@ export function ApplicationForm({
                 ))}
               </select>
             </label>
-            <label className="space-y-1.5 text-xs">
+            <label className="grid gap-1.5 text-xs">
               Resource
               <select
                 className="filter-select block w-full"
@@ -176,6 +194,13 @@ export function ApplicationForm({
           Cancel
         </Button>
       </div>
+      {application && (
+        <DeleteSubject
+          subject={{ type: 'application', id: application.id }}
+          name={application.name}
+          onDeleted={onDeleted}
+        />
+      )}
     </form>
   )
 }

@@ -1,0 +1,7 @@
+{
+  "subjects": [
+    { "type": "application", "id": "shop" },
+    { "type": "resource", "id": "host" }
+  ],
+  "before": "evt-http-2"
+}

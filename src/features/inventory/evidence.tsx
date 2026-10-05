@@ -1,4 +1,5 @@
-import { CircleDashed, History, PenLine, Radar, type LucideIcon } from 'lucide-react'
+import { Fragment, useId, useState } from 'react'
+import { ChevronDown, CircleDashed, History, PenLine, Radar, type LucideIcon } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { healthLabels, sourceLabels } from '@/domain/labels'
 import type { EntityRef, HttpEvidence, Observation, RecordSource } from '@/domain/models'
@@ -10,8 +11,11 @@ import {
   type Evidence,
   type EvidenceState,
 } from '@/domain/evidence'
+import { Button } from '@/components/ui/button'
 import { formatDateTime, relativeTime, timeUntil } from '@/shared/time'
 import { cn } from '@/shared/utils'
+import { automatedSince, beforeWindow } from './history'
+import { inventoryError } from './inventory-api'
 import { useInventory } from './inventory-context'
 
 // Absence and expiry get their own icon and words, so neither can pass for a result.
@@ -122,6 +126,25 @@ export function HttpEvidenceDetail({ evidence }: { evidence: HttpEvidence }) {
 
 function Moment({ value }: { value: string }) {
   return <time dateTime={value}>{formatDateTime(value)}</time>
+}
+
+/** Says what a view leaves out, so that a short history never reads as all there is. */
+export function AutomatedWindowNote({ since, limit }: { since: string; limit: number }) {
+  return (
+    <p className="rounded-md border border-dashed px-3 py-2 text-[11px] leading-5 text-muted-foreground">
+      Automated HTTP check results before <Moment value={since} /> are kept in the local database
+      but not loaded: DevHQ loads the latest {limit} per system. Manual records are always complete.
+    </p>
+  )
+}
+
+/** Marks where a list stops being complete: older entries are manual records only. */
+export function WindowBoundary({ since }: { since: string }) {
+  return (
+    <li className="py-3 text-center text-[10px] text-muted-foreground">
+      Before <Moment value={since} /> · manual records only
+    </li>
+  )
 }
 
 /**
@@ -241,39 +264,172 @@ export function SubjectEvidence({ subject }: { subject: EntityRef }) {
 }
 
 export function ObservationHistory({ subject }: { subject: EntityRef }) {
-  const { snapshot, now } = useInventory()
-  const history = subjectObservations(snapshot?.observations ?? [], subject)
-  if (!history.length)
+  // Older results loaded for one system never carry over to another.
+  return <SubjectObservationHistory key={subjectKey(subject)} subject={subject} />
+}
+
+/**
+ * A system's whole observation history behind a toggle, for places that show only its latest
+ * evidence. Closed, it reads nothing; closing it forgets the older results it loaded.
+ */
+export function ObservationHistoryToggle({ subject, name }: { subject: EntityRef; name: string }) {
+  const [open, setOpen] = useState(false)
+  const region = useId()
+  return (
+    <div>
+      <Button
+        size="sm"
+        variant="ghost"
+        className="-ml-2"
+        aria-expanded={open}
+        aria-controls={region}
+        onClick={() => setOpen(!open)}
+      >
+        <ChevronDown
+          className={cn('size-3.5 transition-transform', open && 'rotate-180')}
+          aria-hidden="true"
+        />
+        {open ? 'Hide observation history' : 'Show observation history'}
+      </Button>
+      <div
+        id={region}
+        role="region"
+        aria-label={`Observation history of ${name}`}
+        hidden={!open}
+        className="mt-3"
+      >
+        {open && <ObservationHistory subject={subject} />}
+      </div>
+    </div>
+  )
+}
+
+const byId = (items: Observation[]) => [...new Map(items.map((item) => [item.id, item])).values()]
+
+function SubjectObservationHistory({ subject }: { subject: EntityRef }) {
+  const { snapshot, now, olderObservations } = useInventory()
+  const [older, setOlder] = useState<Observation[]>([])
+  const [more, setMore] = useState(true)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  // The subject's own observations first: the merge never touches other systems' records.
+  const history = subjectObservations(
+    byId([...subjectObservations(snapshot?.observations ?? [], subject), ...older]),
+    subject,
+  )
+  if (!snapshot || !history.length)
     return (
       <p className="text-xs leading-5 text-muted-foreground">
         No observations recorded. Record what you have checked, or run this system’s HTTP check.
       </p>
     )
+  const automated = history.filter((item) => item.source === 'http')
+  const oldestAutomated = automated.at(-1)
+  // Until older results are asked for, the snapshot says where its window starts; after,
+  // the oldest loaded result does, until none is left.
+  const windowSince = automatedSince(snapshot.automatedHistory, [subject])
+  const since = !older.length ? windowSince : more ? (oldestAutomated?.observedAt ?? null) : null
+  const boundary = history.findIndex((item) => beforeWindow(item.observedAt, since))
+  const loadOlder = async () => {
+    if (!oldestAutomated) return
+    setLoading(true)
+    setError(null)
+    try {
+      const page = await olderObservations(subject, oldestAutomated.id)
+      // Keep what is shown now as well: a newer snapshot may drop it from its window.
+      setOlder((current) => byId([...current, ...automated, ...page.observations]))
+      setMore(page.more)
+    } catch (cause) {
+      setError(inventoryError(cause))
+    } finally {
+      setLoading(false)
+    }
+  }
   return (
-    <ol className="divide-y">
-      {history.map((observation, index) => {
-        const standing =
-          index > 0 ? 'Superseded' : isCurrent(observation, now) ? 'Current' : 'Expired'
-        return (
-          <li key={observation.id} className="py-4 first:pt-0 last:pb-0">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <EvidenceBadge state={observation.result} compact />
-              <span
-                className={cn(
-                  'rounded border px-1.5 py-0.5 text-[10px]',
-                  standing === 'Current'
-                    ? 'text-foreground'
-                    : 'border-dashed text-muted-foreground',
-                )}
-              >
-                {standing}
-              </span>
-            </div>
-            <p className="mt-2 text-xs leading-5 text-muted-foreground">{observation.summary}</p>
-            <ObservationMeta observation={observation} now={now} />
-          </li>
-        )
-      })}
-    </ol>
+    <div className="space-y-4">
+      {since && <AutomatedWindowNote since={since} limit={snapshot.automatedHistory.limit} />}
+      <ol className="divide-y">
+        {history.map((observation, index) => {
+          const standing =
+            index > 0 ? 'Superseded' : isCurrent(observation, now) ? 'Current' : 'Expired'
+          return (
+            <Fragment key={observation.id}>
+              {since && index === boundary && index > 0 && <WindowBoundary since={since} />}
+              <li className="py-4 first:pt-0 last:pb-0">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <EvidenceBadge state={observation.result} compact />
+                  <span
+                    className={cn(
+                      'rounded border px-1.5 py-0.5 text-[10px]',
+                      standing === 'Current'
+                        ? 'text-foreground'
+                        : 'border-dashed text-muted-foreground',
+                    )}
+                  >
+                    {standing}
+                  </span>
+                </div>
+                <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                  {observation.summary}
+                </p>
+                <ObservationMeta observation={observation} now={now} />
+              </li>
+            </Fragment>
+          )
+        })}
+      </ol>
+      <OlderResults
+        limit={snapshot.automatedHistory.limit}
+        offered={since !== null}
+        loading={loading}
+        error={error}
+        complete={older.length > 0 && !more}
+        scope="this system"
+        onLoad={() => void loadOlder()}
+      />
+    </div>
+  )
+}
+
+/**
+ * Offers the automated results a view left out, a page at a time, and says when none is left.
+ * A failed read is reported and leaves what is shown as it was.
+ */
+export function OlderResults({
+  limit,
+  offered,
+  loading,
+  error,
+  complete,
+  scope,
+  onLoad,
+}: {
+  limit: number
+  offered: boolean
+  loading: boolean
+  error: string | null
+  complete: boolean
+  /** Whose results: "this system", "these systems". */
+  scope: string
+  onLoad: () => void
+}) {
+  return (
+    <>
+      {offered && (
+        <Button size="sm" variant="outline" disabled={loading} onClick={onLoad}>
+          {loading ? 'Loading older results…' : `Show ${limit} older automated results`}
+        </Button>
+      )}
+      {complete && (
+        <p className="text-[11px] text-muted-foreground">
+          Every automated result of {scope} is shown.
+        </p>
+      )}
+      {error && (
+        <p role="alert" className="text-xs text-rose-300">
+          {error}
+        </p>
+      )}
+    </>
   )
 }

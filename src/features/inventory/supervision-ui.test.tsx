@@ -15,7 +15,8 @@ import {
 } from './inventory-api'
 import { InventoryContext, useInventory, type InventoryContextValue } from './inventory-context'
 import { InventoryProvider } from './inventory-provider'
-import { RealInfrastructurePage, RealOverviewPage } from './real-pages'
+import { RealInfrastructurePage } from './real-infrastructure-page'
+import { RealOverviewPage } from './real-overview-page'
 import { inventoryContext, minutesFromNow } from './test-context'
 
 const web: EntityRef = { type: 'resource', id: 'web-host' }
@@ -71,6 +72,7 @@ const snapshot: InventorySnapshot = {
     check(web),
     check(db, { url: 'https://db.example/ready', monitor: 'paused', monitorIntervalMinutes: 30 }),
   ],
+  automatedHistory: { limit: 200, truncated: [] },
 }
 
 const monitor = (checks: MonitorCheckStatus[], recorded = 0): MonitorStatus => ({

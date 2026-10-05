@@ -22,7 +22,7 @@ export function SettingsPage() {
               'Reference snapshot',
               `${formatDate(scenario.observedAt, scenario.timeZone)} · ${formatTime(scenario.observedAt, scenario.timeZone)} CEST`,
             ],
-            ['Persistence', 'Not enabled in this version'],
+            ['Persistence', 'None: a fixed example. My inventory, in the desktop app, uses SQLite'],
             ['Connections', 'No external integrations'],
           ].map(([label, value]) => (
             <div

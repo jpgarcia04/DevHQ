@@ -1,0 +1,18 @@
+{
+  "events": [
+    {
+      "id": "evt-timeout",
+      "subject": { "type": "resource", "id": "host" },
+      "kind": "observation",
+      "outcome": "failure",
+      "title": "HTTP check: Unhealthy",
+      "detail": "Timed out after 5 s",
+      "source": "http",
+      "observationId": "obs-timeout",
+      "incidentId": null,
+      "occurredAt": "2026-01-01T10:00:00Z",
+      "recordedAt": "2026-01-01T10:00:00Z"
+    }
+  ],
+  "more": false
+}

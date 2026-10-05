@@ -1,8 +1,10 @@
 import { useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { DeleteSubject } from './delete-subject'
 import { inventoryError, type InventoryResource, type ResourceInput } from './inventory-api'
 import { useInventory } from './inventory-context'
+import { textLimits } from './limits'
 
 export function ResourceForm({
   resource,
@@ -37,16 +39,17 @@ export function ResourceForm({
     >
       <h2 className="section-heading">{resource ? 'Edit resource' : 'New resource'}</h2>
       <div className="grid gap-4 min-[1100px]:grid-cols-2">
-        <label className="space-y-1.5 text-xs">
+        <label className="grid gap-1.5 text-xs">
           Name{' '}
           <Input
             required
-            maxLength={120}
+            spellCheck={false}
+            maxLength={textLimits.name}
             value={name}
             onChange={(event) => setName(event.target.value)}
           />
         </label>
-        <label className="space-y-1.5 text-xs">
+        <label className="grid gap-1.5 text-xs">
           Kind
           <select
             className="filter-select block w-full"
@@ -57,13 +60,19 @@ export function ResourceForm({
             <option value="workstation">Workstation</option>
           </select>
         </label>
-        <label className="space-y-1.5 text-xs">
+        <label className="grid gap-1.5 text-xs">
           Description{' '}
-          <Input value={description} onChange={(event) => setDescription(event.target.value)} />
+          <Input
+            maxLength={textLimits.description}
+            value={description}
+            onChange={(event) => setDescription(event.target.value)}
+          />
         </label>
-        <label className="space-y-1.5 text-xs">
+        <label className="grid gap-1.5 text-xs">
           Operating system{' '}
           <Input
+            spellCheck={false}
+            maxLength={textLimits.name}
             value={operatingSystem}
             onChange={(event) => setOperatingSystem(event.target.value)}
           />
@@ -82,6 +91,13 @@ export function ResourceForm({
           Cancel
         </Button>
       </div>
+      {resource && (
+        <DeleteSubject
+          subject={{ type: 'resource', id: resource.id }}
+          name={resource.name}
+          onDeleted={onDone}
+        />
+      )}
     </form>
   )
 }

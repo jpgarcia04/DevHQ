@@ -42,6 +42,18 @@ export function formatDateTime(timestamp: string): string {
   return `${formatDate(timestamp)}, ${formatTime(timestamp)}`
 }
 
+/** To the second, for moments that can be a minute apart, such as two backups. */
+export function formatMoment(timestamp: string): string {
+  return new Intl.DateTimeFormat('en-GB', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  }).format(new Date(timestamp))
+}
+
 export const deviceTimeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone
 
 /** The value a datetime-local input expects, in the device's time zone. */

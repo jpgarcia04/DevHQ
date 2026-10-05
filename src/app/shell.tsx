@@ -21,11 +21,12 @@ export function Shell() {
   const app = (mode === 'demo' ? applications : (snapshot?.applications ?? [])).find(
     (item) => pathname === `/applications/${item.id}`,
   )
-  // Real counts appear only after a successful load; a failed load must not read as zero.
+  // Real counts appear only after a successful load; a failed load must not read as zero. A
+  // reload keeps the last snapshot, so the count stays visible while it runs.
   const activeCount =
     mode === 'demo'
       ? activeIncidents(incidents).length
-      : loadState === 'ready' && snapshot
+      : loadState !== 'error' && snapshot
         ? activeIncidents(snapshot.incidents).length
         : null
   const unavailable = mode === 'real' && loadState === 'error'
@@ -77,7 +78,11 @@ export function Shell() {
             {mode === 'demo' ? 'Fixed example · not live' : 'Stored on this device'}
           </p>
         </div>
-        <div className="mx-4 mb-5 flex rounded-md border p-1 text-[11px]" aria-label="Data source">
+        <div
+          role="group"
+          aria-label="Data source"
+          className="mx-4 mb-5 flex rounded-md border p-1 text-[11px]"
+        >
           {nativeAvailable && (
             <button
               type="button"
@@ -152,20 +157,29 @@ export function Shell() {
         </div>
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
-        <div className="flex h-14 shrink-0 items-center justify-between border-b px-7 text-xs">
-          <div className="flex min-w-0 items-center gap-2.5 text-muted-foreground">
+        <header className="flex h-14 shrink-0 items-center justify-between border-b px-7 text-xs">
+          <nav
+            aria-label="Breadcrumb"
+            className="flex min-w-0 items-center gap-2.5 text-muted-foreground"
+          >
             <span>Workspace</span>
             <ChevronRight className="size-3" aria-hidden="true" />
-            <Link className="shrink-0 rounded-sm text-foreground" to={section?.path ?? '/'}>
+            <Link
+              className="shrink-0 rounded-sm text-foreground"
+              to={section?.path ?? '/'}
+              aria-current={app ? undefined : 'page'}
+            >
               {section?.label ?? 'Not found'}
             </Link>
             {app && (
               <>
                 <ChevronRight className="size-3 shrink-0" aria-hidden="true" />
-                <span className="truncate text-foreground">{app.name}</span>
+                <span className="truncate text-foreground" aria-current="page">
+                  {app.name}
+                </span>
               </>
             )}
-          </div>
+          </nav>
           <span
             className={cn(
               'ml-4 flex shrink-0 items-center gap-2 rounded-full border px-2.5 py-1 text-[10px]',
@@ -185,7 +199,7 @@ export function Shell() {
                 ? 'Local inventory · unavailable'
                 : 'Local inventory · recorded evidence'}
           </span>
-        </div>
+        </header>
         <main
           id="main-content"
           tabIndex={-1}
@@ -201,7 +215,7 @@ export function Shell() {
             <span className="size-1 rounded-full bg-primary" />
             {mode === 'demo'
               ? 'DEMO DATA · NO LIVE CONNECTIONS'
-              : 'LOCAL INVENTORY · MANUAL ENTRIES · HTTP CHECKS ONLY ON REQUEST'}
+              : 'LOCAL INVENTORY · MANUAL ENTRIES · HTTP CHECKS ONLY WHILE OPEN'}
           </span>
           <span>
             {mode === 'demo'

@@ -126,9 +126,17 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
         error,
         now,
         reload,
+        dataLocation: inventoryApi.dataLocation,
+        backupInventory: inventoryApi.backupInventory,
+        listBackups: inventoryApi.listBackups,
         saveResource: (input) => persist(inventoryApi.saveResource(input), 'Resource'),
         saveApplication: (input) => persist(inventoryApi.saveApplication(input), 'Application'),
+        deleteApplication: (id) =>
+          persist(inventoryApi.deleteApplication(id), 'Application deletion'),
+        deleteResource: (id) => persist(inventoryApi.deleteResource(id), 'Resource deletion'),
         recordObservation: (input) => persist(inventoryApi.recordObservation(input), 'Observation'),
+        olderObservations: inventoryApi.olderObservations,
+        olderEvents: inventoryApi.olderEvents,
         openIncident: (input) => persist(inventoryApi.openIncident(input), 'Incident'),
         updateIncidentStatus: (input) =>
           persist(inventoryApi.updateIncidentStatus(input), 'Incident change'),

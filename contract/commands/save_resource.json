@@ -1,0 +1,9 @@
+{
+  "input": {
+    "id": "host",
+    "name": "Host",
+    "kind": "workstation",
+    "description": "Rack 2",
+    "operatingSystem": "Debian 13"
+  }
+}

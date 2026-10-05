@@ -62,6 +62,7 @@ export function ApplicationDetailPage() {
   if (!app)
     return (
       <EmptyState
+        page
         title="Application not found"
         description="This application is not part of the current workspace."
         action={

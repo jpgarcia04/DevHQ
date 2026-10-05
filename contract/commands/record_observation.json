@@ -1,0 +1,9 @@
+{
+  "input": {
+    "subject": { "type": "resource", "id": "host" },
+    "result": "degraded",
+    "summary": "Disk at 85%",
+    "observedAt": "2026-01-01T09:30:00.000Z",
+    "validForMinutes": 60
+  }
+}

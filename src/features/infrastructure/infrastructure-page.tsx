@@ -6,6 +6,7 @@ import { HealthBadge } from '@/components/status-badge'
 import { AppLogo } from '@/components/app-logo'
 import { applications, incidents, resources } from '@/data/mock/scenario'
 import { activeIncidents, resourceApplications, resourceIncidents } from '@/domain/selectors'
+import { counted } from '@/shared/count'
 import { cn } from '@/shared/utils'
 import { IncidentList } from '@/features/incidents/incident-list'
 
@@ -27,7 +28,11 @@ export function InfrastructurePage() {
         eyebrow="The systems underneath"
         title="Infrastructure"
         description="Shared resources, the applications they support, and the issues that connect them."
-        action={<span className="text-xs text-muted-foreground">{resources.length} resources</span>}
+        action={
+          <span className="text-xs text-muted-foreground">
+            {counted(resources.length, 'resource')}
+          </span>
+        }
       />
       <div className="space-y-5">
         {resources.map((resource) => (

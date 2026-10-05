@@ -1,2 +1,3 @@
-# Auto detect text files and perform LF normalization
-* text=auto
+# Text files are LF in the repository and in every checkout. Git for Windows ships with
+# core.autocrlf=true, which would write CRLF, and Prettier (endOfLine "lf") fails on that.
+* text=auto eol=lf

@@ -1,0 +1,8 @@
+{
+  "input": {
+    "subject": { "type": "application", "id": "shop" },
+    "title": "Checkout fails",
+    "description": "Payments time out",
+    "severity": "critical"
+  }
+}

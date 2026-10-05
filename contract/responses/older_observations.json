@@ -1,0 +1,23 @@
+{
+  "observations": [
+    {
+      "id": "obs-timeout",
+      "subject": { "type": "resource", "id": "host" },
+      "result": "unhealthy",
+      "summary": "Timed out after 5 s",
+      "source": "http",
+      "observedAt": "2026-01-01T10:00:00Z",
+      "validUntil": "2026-01-01T10:15:00Z",
+      "recordedAt": "2026-01-01T10:00:00Z",
+      "http": {
+        "url": "http://host.example/health",
+        "expectedStatus": 200,
+        "status": null,
+        "latencyMs": 5000,
+        "error": "Timed out after 5 s",
+        "redirects": []
+      }
+    }
+  ],
+  "more": true
+}

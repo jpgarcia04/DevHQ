@@ -8,7 +8,9 @@ import { HttpCheckPanel } from './http-check'
 import { inventoryApi, type HttpCheck, type InventorySnapshot } from './inventory-api'
 import { InventoryContext, useInventory, type InventoryContextValue } from './inventory-context'
 import { InventoryProvider } from './inventory-provider'
-import { RealApplicationDetailPage, RealInfrastructurePage, RealOverviewPage } from './real-pages'
+import { RealApplicationDetailPage } from './real-application-detail-page'
+import { RealInfrastructurePage } from './real-infrastructure-page'
+import { RealOverviewPage } from './real-overview-page'
 import { RealActivityPage } from './records-pages'
 import { inventoryContext, minutesFromNow } from './test-context'
 
@@ -111,6 +113,7 @@ const snapshot: InventorySnapshot = {
   ],
   // The web check's URL changed after its last run.
   httpChecks: [check(web), check(shop, 'https://shop.example/health')],
+  automatedHistory: { limit: 200, truncated: [] },
 }
 
 function renderWith(ui: ReactNode, value: InventoryContextValue, path = '/') {
@@ -345,6 +348,33 @@ describe('running an HTTP check', () => {
     expect(region.getByText(automated)).toBeInTheDocument()
     expect(region.getByText('Connection refused: the target refused it')).toBeInTheDocument()
     expect(region.getByRole('button', { name: 'Run check' })).toBeEnabled()
+  })
+
+  it('drops what the last run said once the check is saved with another URL', async () => {
+    const list = vi.spyOn(inventoryApi, 'list').mockResolvedValue(configured)
+    vi.spyOn(inventoryApi, 'runHttpCheck').mockResolvedValue(refused)
+    const edited = check(db, 'https://db.example/ready')
+    const save = vi.spyOn(inventoryApi, 'saveHttpCheck').mockResolvedValue(edited)
+    const { user, region } = await renderRealInfrastructure()
+    list.mockResolvedValue({ ...configured, observations: [refused] })
+    await user.click(region.getByRole('button', { name: 'Run check' }))
+    expect(await region.findByText(/^Recorded as Unhealthy/)).toBeInTheDocument()
+
+    list.mockResolvedValue({ ...configured, httpChecks: [edited], observations: [refused] })
+    await user.click(region.getByRole('button', { name: 'Edit check' }))
+    const url = region.getByRole('textbox', { name: 'URL' })
+    await user.clear(url)
+    await user.type(url, 'https://db.example/ready')
+    await user.click(region.getByRole('button', { name: 'Save HTTP check' }))
+    expect(save).toHaveBeenCalledOnce()
+    expect(await region.findByText('GET https://db.example/ready')).toBeInTheDocument()
+    // That run checked the old URL; the evidence still says so, the button row no longer does.
+    expect(region.queryByText(/^Recorded as/)).not.toBeInTheDocument()
+    expect(
+      region.getByText(
+        'The current evidence checked http://127.0.0.1:9/ready; the URL has changed since.',
+      ),
+    ).toBeInTheDocument()
   })
 
   it('shows a DevHQ failure as a recoverable error and records nothing', async () => {

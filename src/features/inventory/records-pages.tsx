@@ -4,15 +4,17 @@ import { useSearchParams } from 'react-router-dom'
 import { EmptyState } from '@/components/empty-state'
 import { PageHeader } from '@/components/page-header'
 import { Button } from '@/components/ui/button'
-import { subjectKey } from '@/domain/evidence'
+import { subjectFromKey, subjectsOf } from '@/domain/evidence'
 import { incidentStatusLabels, severityLabels } from '@/domain/labels'
 import { activeIncidents } from '@/domain/selectors'
 import { deviceTimeZone, formatDate } from '@/shared/time'
-import { SubjectOptions } from './evidence'
+import { AutomatedWindowNote, OlderResults, SubjectOptions } from './evidence'
+import { beforeWindow, withinWindow } from './history'
 import { useInventory } from './inventory-context'
 import { InventoryState } from './inventory-state'
 import { EventForm, IncidentForm } from './record-forms'
 import { EventRecordList, IncidentRecordList } from './record-lists'
+import { useTimeline } from './timeline'
 
 export function RealIncidentsPage() {
   const { snapshot, loadState } = useInventory()
@@ -38,7 +40,7 @@ export function RealIncidentsPage() {
         description="Problems you have recorded, connected to the systems they affect."
         action={
           <div className="flex items-center gap-4">
-            {loadState === 'ready' && (
+            {snapshot && loadState !== 'error' && (
               <span className="text-xs text-amber-200">
                 {active} active {active === 1 ? 'incident' : 'incidents'}
               </span>
@@ -113,10 +115,21 @@ export function RealActivityPage() {
   const { snapshot, now } = useInventory()
   const [subject, setSubject] = useState('all')
   const [creating, setCreating] = useState(false)
-  const events = (snapshot?.events ?? []).filter(
-    (event) => subject === 'all' || subjectKey(event.subject) === subject,
+  const chosen = subjectFromKey(subject)
+  const timeline = useTimeline(subject, chosen ? [chosen] : snapshot ? subjectsOf(snapshot) : [])
+  const since = timeline.since
+  const events = timeline.events.filter((event) =>
+    withinWindow(event.source, event.occurredAt, since),
   )
   const days = [...new Set(events.map((event) => formatDate(event.occurredAt)))]
+  // The oldest day with records in the complete part: only its last run can reach the cut.
+  const cutDay = [...days]
+    .reverse()
+    .find((day) =>
+      events.some(
+        (event) => formatDate(event.occurredAt) === day && !beforeWindow(event.occurredAt, since),
+      ),
+    )
   const today = formatDate(new Date(now).toISOString())
   return (
     <div className="page-stack">
@@ -149,20 +162,45 @@ export function RealActivityPage() {
               </span>
             </div>
             <div className="max-w-4xl space-y-7">
-              {days.map((day) => (
-                <section key={day} aria-label={day}>
-                  <h2 className="eyebrow mb-4">{day === today ? `Today · ${day}` : day}</h2>
-                  <div className="panel px-5 py-5">
-                    <EventRecordList
-                      timeOnly
-                      items={events.filter((event) => formatDate(event.occurredAt) === day)}
-                    />
-                  </div>
-                </section>
-              ))}
+              {since && snapshot && (
+                <AutomatedWindowNote since={since} limit={snapshot.automatedHistory.limit} />
+              )}
+              {days.map((day) => {
+                const items = events.filter((event) => formatDate(event.occurredAt) === day)
+                // A day entirely before the window holds manual records only; say so.
+                const manualOnly = items.every((event) => beforeWindow(event.occurredAt, since))
+                return (
+                  <section key={day} aria-label={day}>
+                    <h2 className="eyebrow mb-4">
+                      {day === today ? `Today · ${day}` : day}
+                      {manualOnly && ' · manual records only'}
+                    </h2>
+                    <div className="panel px-5 py-5">
+                      <EventRecordList
+                        timeOnly
+                        foldRepeats
+                        items={items}
+                        automatedSince={since}
+                        reachesCut={day === cutDay}
+                      />
+                    </div>
+                  </section>
+                )
+              })}
               {!events.length && (
                 <p className="py-10 text-muted-foreground">No activity recorded for this system.</p>
               )}
+              <div className="space-y-3 empty:hidden">
+                <OlderResults
+                  limit={timeline.limit}
+                  offered={since !== null}
+                  loading={timeline.loading}
+                  error={timeline.error}
+                  complete={timeline.complete}
+                  scope={chosen ? 'this system' : 'these systems'}
+                  onLoad={() => void timeline.loadOlder()}
+                />
+              </div>
             </div>
           </>
         ) : (

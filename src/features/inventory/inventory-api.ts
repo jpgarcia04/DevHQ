@@ -74,6 +74,34 @@ export interface MonitorStatus {
   recorded: number
 }
 
+/**
+ * Supervision can add an automated result every 5 minutes, so a snapshot carries only the
+ * latest `limit` per application or resource; older ones stay in SQLite, untouched. Manual
+ * records are always complete.
+ */
+export interface AutomatedHistory {
+  limit: number
+  /**
+   * Subjects with older automated results than the snapshot carries. From `since` on, their
+   * automated observations and events are complete; before it, only manual records are loaded.
+   */
+  truncated: { subject: EntityRef; since: string }[]
+}
+
+/** Automated observations a snapshot left out, a page at a time, newest first. */
+export interface ObservationPage {
+  observations: Observation[]
+  /** Older automated observations remain after this page. */
+  more: boolean
+}
+
+/** Automated events a snapshot left out of a timeline, a page at a time, newest first. */
+export interface EventPage {
+  events: RecordedEvent[]
+  /** Older automated events of these systems remain after this page. */
+  more: boolean
+}
+
 /** One consistent read of SQLite. Records are newest first; times are UTC RFC 3339. */
 export interface InventorySnapshot {
   applications: InventoryApplication[]
@@ -82,6 +110,72 @@ export interface InventorySnapshot {
   incidents: RecordedIncident[]
   events: RecordedEvent[]
   httpChecks: HttpCheck[]
+  automatedHistory: AutomatedHistory
+}
+
+/** Where the inventory lives on this device, so that it can be backed up. */
+export interface DataLocation {
+  /** The SQLite file. Once DevHQ is closed it holds everything on its own. */
+  database: string
+  /** The folder it is in, which also holds its write-ahead log while DevHQ has it open. */
+  directory: string
+  /**
+   * Where the file system really keeps the file, when that is not `database`: through a link, or
+   * because Windows redirects AppData for a DevHQ started from a packaged app (the Claude or
+   * Codex desktop app, say). Other programs, File Explorer included, find it only there.
+   */
+  storedAt: string | null
+}
+
+/** Rows in a backup, by table. */
+export interface BackupCounts {
+  applications: number
+  components: number
+  resources: number
+  observations: number
+  incidents: number
+  events: number
+  httpChecks: number
+}
+
+/** A finished backup, as it was verified once written. */
+export interface Backup {
+  name: string
+  /** Where the file is, to copy it somewhere safer. */
+  path: string
+  /** Where the file system really keeps it, when that is not `path` (see `DataLocation`). */
+  storedAt: string | null
+  /** When the copy was taken (UTC), as its name says. */
+  takenAt: string
+  sizeBytes: number
+  /** What SQLite's quick_check said of the copy. Only an "ok" copy gets its final name. */
+  quickCheck: string
+  schemaVersion: number
+  counts: BackupCounts
+}
+
+/**
+ * A file in the backups folder, as found there. DevHQ vouches for none of them: a backup is
+ * verified once, when it is made, and anything can happen to the file afterwards.
+ */
+export interface BackupFile {
+  name: string
+  sizeBytes: number
+  /** When the file was last written, if the system says. */
+  modifiedAt: string | null
+  /** A copy that a backup was still writing, or that an interrupted one left behind. */
+  partial: boolean
+  /**
+   * Where the file system really keeps it, when that is not in the listed folder. Asked file by
+   * file: a folder Windows redirects for a packaged app can hold files kept in two places.
+   */
+  storedAt: string | null
+}
+
+export interface BackupFolder {
+  directory: string
+  /** Newest first. */
+  files: BackupFile[]
 }
 
 export type ResourceInput = Omit<InventoryResource, 'id'> & { id?: string }
@@ -123,11 +217,32 @@ export interface EventInput {
 
 export const inventoryApi = {
   list: () => invoke<InventorySnapshot>('list_inventory'),
+  dataLocation: () => invoke<DataLocation>('data_location'),
+  /**
+   * Copies the inventory into the backups folder next to it, verifies the copy and only then
+   * names it. Writes nothing to the inventory. One at a time: a second request is refused.
+   */
+  backupInventory: () => invoke<Backup>('backup_inventory'),
+  /** The files in the backups folder, as found there; it reads none of them. */
+  listBackups: () => invoke<BackupFolder>('list_backups'),
   saveResource: (input: ResourceInput) => invoke<InventoryResource>('save_resource', { input }),
   saveApplication: (input: ApplicationInput) =>
     invoke<InventoryApplication>('save_application', { input }),
+  /** Refused while it has records: DevHQ never erases history. */
+  deleteApplication: (id: string) => invoke<null>('delete_application', { id }),
+  /** Refused while it has records or a component runs on it. */
+  deleteResource: (id: string) => invoke<null>('delete_resource', { id }),
   recordObservation: (input: ObservationInput) =>
     invoke<Observation>('record_observation', { input }),
+  /** The subject's automated observations older than `before`, one of its own already shown. */
+  olderObservations: (subject: EntityRef, before: string) =>
+    invoke<ObservationPage>('older_observations', { subject, before }),
+  /**
+   * The automated events of every given subject older than `before`, one of their own already
+   * shown, newest first across all of them: a merged timeline pages through them together.
+   */
+  olderEvents: (subjects: EntityRef[], before: string) =>
+    invoke<EventPage>('older_events', { subjects, before }),
   openIncident: (input: IncidentInput) => invoke<RecordedIncident>('open_incident', { input }),
   updateIncidentStatus: (input: IncidentStatusInput) =>
     invoke<RecordedIncident>('update_incident_status', { input }),
