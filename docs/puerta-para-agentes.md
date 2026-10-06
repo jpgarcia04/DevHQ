@@ -4,9 +4,9 @@
 atención calculada en Rust, atada a la de la ventana) y 3 (`devhq --mcp` con las herramientas de
 lectura; ver «Puerta para agentes» en el README). Del paso 4, hechos el interruptor de acceso
 (esquema v8 y Settings → Agent gate) y las herramientas de escritura con `agent_log` (esquema v9);
-y ese log en Activity: el paso 4 está completo. Del paso 5, hecho: la ventana abierta nota lo que
-confirman otros procesos (`PRAGMA data_version`), y `status` dice si hay una ventana abierta (lock
-del sistema).
+y ese log en Activity: el paso 4 está completo. El paso 5 también está completo: la ventana abierta
+nota lo que confirman otros procesos (`PRAGMA data_version`), `status` dice si hay una ventana
+abierta (lock del sistema) y el recorrido nativo lo comprueba con la puerta real.
 Cuando una parte se implementa, su comportamiento pasa al README (que es la especificación) en el
 mismo commit, y este documento se recorta.
 

@@ -10,9 +10,13 @@
  *
  * Run it with `npm run e2e:native`, which builds the debug app first. DEVHQ_APP points it at
  * another build. Screenshots of every step land in test-results/native/.
+ *
+ * It also starts the same executable as the agent gate (`--mcp --database <its inventory>`) and
+ * speaks MCP with it as Claude Code does, to check that the open window shows by itself what an
+ * agent changes.
  */
 import assert from 'node:assert/strict'
-import type { ChildProcess } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { mkdir, readdir, rm, writeFile } from 'node:fs/promises'
 import { createServer, type RequestListener } from 'node:http'
@@ -163,6 +167,54 @@ async function healthServer() {
   const { port } = server.address() as { port: number }
   const scheme = pfx ? 'https' : 'http'
   return { url: `${scheme}://127.0.0.1:${port}/health`, requests, close: () => server.close() }
+}
+
+/**
+ * The agent gate of the executable under test, driven as an MCP client drives it: one JSON-RPC
+ * message per line on its stdin and stdout. It names itself `native-walk`, so what it writes is
+ * tagged «Agent · native-walk».
+ */
+function agentGate(binary: string, database: string, env: NodeJS.ProcessEnv) {
+  const child = spawn(binary, ['--mcp', '--database', database], {
+    env,
+    stdio: ['pipe', 'pipe', 'inherit'],
+  })
+  helpers.push(child)
+  const replies: { id: number; result?: Record<string, unknown>; error?: unknown }[] = []
+  let pending = ''
+  child.stdout!.on('data', (chunk: Buffer) => {
+    pending += chunk.toString()
+    for (let end = pending.indexOf('\n'); end >= 0; end = pending.indexOf('\n')) {
+      replies.push(JSON.parse(pending.slice(0, end)))
+      pending = pending.slice(end + 1)
+    }
+  })
+  const exited = new Promise<number | null>((resolve) => child.on('exit', resolve))
+  let last = 0
+  const request = async (method: string, params: Record<string, unknown> = {}) => {
+    const id = ++last
+    child.stdin!.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`)
+    const reply = await until(`the gate to answer ${method}`, () =>
+      replies.find((item) => item.id === id),
+    )
+    assert.equal(reply.error, undefined, `${method}: ${JSON.stringify(reply.error)}`)
+    return reply.result!
+  }
+  /** A tool's answer, which must not be an error. */
+  const tool = async (name: string, args: Record<string, unknown> = {}) => {
+    const result = await request('tools/call', { name, arguments: args })
+    assert.equal(result.isError, false, `${name}: ${JSON.stringify(result.content)}`)
+    return result.structuredContent as Record<string, unknown>
+  }
+  return {
+    request,
+    tool,
+    /** Closes its input, as a client does when its session ends: the gate must end. */
+    close: async () => {
+      child.stdin!.end()
+      return exited
+    },
+  }
 }
 
 const helpers: ChildProcess[] = []
@@ -353,6 +405,41 @@ try {
     }
   })
 
+  const gate = agentGate(binary, database, env)
+
+  await step('An agent adds an application through the gate and the window shows it', async () => {
+    await ui.go('Settings')
+    const access = "//section[@aria-labelledby='agent-gate-heading']"
+    await ui.click(
+      `${access}//label[.//span[normalize-space()='Read and write']]//input[@type='radio']`,
+    )
+    await ui.see('It applies at once', access)
+    await ui.go('Applications')
+    await ui.see('Status page')
+
+    await gate.request('initialize', {
+      protocolVersion: '2025-06-18',
+      capabilities: {},
+      clientInfo: { name: 'native-walk', version: '1' },
+    })
+    const status = await gate.tool('status')
+    assert.equal(status.access, 'write')
+    assert.equal(status.windowOpen, true, 'the gate sees the open window')
+    const saved = await gate.tool('save_application', {
+      name: 'Release notes',
+      lifecycle: 'development',
+      components: [{ name: 'site', kind: 'frontend', runsOn: 'Build server' }],
+    })
+    assert.equal((saved.change as { agent: string }).agent, 'native-walk')
+    // Nothing in the window is touched: it notices the gate's commit on its own.
+    await ui.see('1 component · 1 linked resource', "//main//a[@aria-label='Open Release notes']")
+    await ui.go('Activity')
+    await ui.see(
+      'Added application «Release notes» (development) with site (frontend, on Build server)',
+    )
+    await ui.see('Agent · native-walk')
+  })
+
   await step('Closing the window ends DevHQ and leaves one complete file', async () => {
     closeWindow(pid!, env)
     await until('DevHQ to exit', () => !alive(pid!), 20_000)
@@ -361,6 +448,9 @@ try {
     // The last connection folded the log back into the file, which stays in WAL mode.
     assert.equal(existsSync(`${database}-wal`), false, 'no write-ahead log is left behind')
     assert.equal(journalOf(database), 'wal')
+    // The system released the window's lock with its process.
+    assert.equal((await gate.tool('status')).windowOpen, false, 'the gate sees no window')
+    assert.equal(await gate.close(), 0, 'the gate ends when its input closes')
   })
 } catch (error) {
   failed = true

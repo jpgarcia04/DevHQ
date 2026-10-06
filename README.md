@@ -449,10 +449,16 @@ en `127.0.0.1` (esa ejecución y la recarga de su evidencia solo llegan a la ven
 archivo debe estar en `backups/`, sin `.partial`, con `quick_check` correcto, la versión del
 esquema y las filas del inventario, y la ventana debe listarlo sin ninguna copia incompleta (un
 antivirus que aún retuviera el `.partial` borrado mientras lo analiza lo dejaría a la vista en la
-lista). Por último cierra la ventana como
+lista). Luego hace de agente: elige Read and write en Settings → Agent gate, lanza el mismo
+ejecutable como puerta (`--mcp --database` con la base del recorrido), le habla MCP como un cliente
+que se llama `native-walk`, comprueba que `status` ve la ventana abierta y da de alta una aplicación
+con un componente sobre el recurso. Sin tocar la ventana, Applications debe mostrarla sola, y Activity
+su Change con la etiqueta «Agent · native-walk». Con la app sin el vigilante de `data_version`, ese
+paso no ve la aplicación en 15 s y falla. Por último cierra la ventana como
 lo hace su botón, nunca por WebDriver: con `WM_DELETE_WINDOW` en X11 (un script de Python que llama
 a libX11, porque bajo Xvfb no hay gestor de ventanas que lo envíe) o con `WM_CLOSE` en Windows. El
-proceso debe terminar, sin dejar `inventory.sqlite3-wal`, y el archivo debe haber pasado a WAL.
+proceso debe terminar, sin dejar `inventory.sqlite3-wal`, y el archivo debe haber pasado a WAL; la
+puerta, que sigue abierta, debe ver la ventana cerrada y terminar al cerrarse su entrada.
 Antes de hacer clic espera a que el elemento deje de moverse, porque el contenido que llega tarde
 empuja la página, y guarda una captura por paso en `test-results/native/`. `DEVHQ_APP` lo apunta a
 otro ejecutable.
