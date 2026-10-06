@@ -225,6 +225,26 @@ let pid: number | undefined
 let failed = false
 let count = 0
 
+/**
+ * Tells a slow native process from a slow page or driver: whether the page is visible, how long
+ * it has been loaded, and when each call into DevHQ was sent and answered, in ms since the page
+ * loaded. A call gets its entry only once answered, so one still waiting is missing; and none at
+ * all may also mean the WebView does not record these calls.
+ */
+const windowState = (session: Session) =>
+  session
+    .execute<string>(
+      `const calls = performance.getEntriesByType('resource')
+        .filter((entry) => entry.name.includes('ipc'))
+        .slice(-20)
+        .map((entry) => new URL(entry.name).pathname.slice(1) + ' ' + Math.round(entry.startTime) + '→' + Math.round(entry.responseEnd))
+      return [
+        'visibility ' + document.visibilityState + ', focus ' + document.hasFocus() + ', loaded ' + Math.round(performance.now()) + ' ms ago',
+        'answered calls into DevHQ: ' + (calls.join(', ') || 'none recorded'),
+      ].join('\\n')`,
+    )
+    .catch(() => '(the window did not answer)')
+
 async function step(name: string, body: () => Promise<void>) {
   const started = Date.now()
   count += 1
@@ -243,6 +263,7 @@ async function step(name: string, body: () => Promise<void>) {
         .execute<string>('return document.body.innerText')
         .catch(() => '(the window did not answer)')
       console.error(`--- window text ---\n${text}\n---`)
+      console.error(`--- window state ---\n${await windowState(session)}\n---`)
     }
     throw error
   }
@@ -278,7 +299,9 @@ try {
   assert.equal(journalOf(database), 'rollback')
   await display(env, helpers)
   console.log(`DevHQ: ${binary}\nData: ${dataDirectory}`)
+  const launched = Date.now()
   ;({ session, pid } = await launch(binary, env, helpers))
+  console.log(`The window could be driven ${Date.now() - launched} ms after DevHQ started`)
   const ui = window(session)
   const resource = region('Build server')
 
@@ -286,6 +309,8 @@ try {
     await ui.see('Nothing is registered yet.')
     await ui.find("//button[@aria-pressed='true' and normalize-space()='My inventory']")
     assert.ok(alive(pid!), 'DevHQ is running')
+    // How long the first load took, upgrade included: the baseline for a slow one.
+    console.log((await windowState(session!)).replaceAll(/^/gm, '  '))
   })
 
   await step('Settings shows the database path and copies it', async () => {
