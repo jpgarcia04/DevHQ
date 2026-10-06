@@ -385,8 +385,8 @@ Un fallo de un caso de uso vuelve como resultado con `isError` y el mismo mensaj
 ventana; un método o una herramienta desconocidos, como error de JSON-RPC.
 
 En Windows, una puerta lanzada desde una app empaquetada (MSIX), como la app de escritorio de Claude,
-ve `AppData` redirigido (ver [Arquitectura](#arquitectura)) y podría leer otro inventario: `status`
-lo dice con `storedAt`. Claude Code desde una terminal normal no está empaquetado. El workflow de
+ve `AppData` redirigido (ver [Arquitectura](#arquitectura)) y podría leer y escribir otro inventario,
+o no encontrar ninguno: `status` lo dice con `storedAt`, y la puerta no se niega a escribir. Claude Code desde una terminal normal no está empaquetado. El workflow de
 Windows instala DevHQ y habla con la puerta del ejecutable instalado como lo hace un cliente MCP:
 comprueba que responde por stdin y stdout aunque no tenga consola, que abre el inventario de
 `%APPDATA%`, que ve cerrada la ventana que acaba de cerrarse (Windows soltó su lock) y que termina al
@@ -694,10 +694,11 @@ cuentas, cloud, sync, telemetría, scanners, automation engine, Runner ni backgr
 1. Hecho: una comprobación HTTP(S) a petición con su propio `source`, sin cambiar la
    semántica de vigencia.
 2. Hecho: supervisión cancelable de esas comprobaciones, solo con DevHQ abierto.
-3. En curso: la [puerta para agentes](#puerta-para-agentes), con la que un agente lee y mantiene el
-   inventario cuando se lo pides, con su procedencia siempre visible. Ya lee y escribe, con el
-   acceso que eliges en Settings, sus cambios aparecen en Activity y la ventana abierta los nota
-   sola; lo pendiente está en [docs/puerta-para-agentes.md](docs/puerta-para-agentes.md).
+3. Hecho en Linux: la [puerta para agentes](#puerta-para-agentes), con la que un agente lee y
+   mantiene el inventario cuando se lo pides, con su procedencia siempre visible. Lee y escribe con
+   el acceso que eliges en Settings, sus cambios aparecen en Activity y la ventana abierta los nota
+   sola. Quedan comprobaciones en Windows y una decisión:
+   [docs/puerta-para-agentes.md](docs/puerta-para-agentes.md).
 4. Después, automatizaciones con resultado e historial, y seguridad con almacén nativo de
    credenciales y evidencias contextualizadas.
 5. A largo plazo, una supervisión que siga con la ventana cerrada y avise de lo que necesita
