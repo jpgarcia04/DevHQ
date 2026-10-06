@@ -180,8 +180,12 @@ impl Session {
             "save_resource" => self.save_resource(arguments),
             "delete_application" => self.delete("application", arguments),
             "delete_resource" => self.delete("resource", arguments),
-            "save_check" => self.save_check(arguments),
-            "set_check_paused" => self.set_check_paused(arguments),
+            "save_check" => self
+                .save_check(arguments)
+                .map(|value| self.window_note(value)),
+            "set_check_paused" => self
+                .set_check_paused(arguments)
+                .map(|value| self.window_note(value)),
             "remove_check" => self.remove_check(arguments),
             "run_check" => self.allow("write").and_then(|()| self.run_check(arguments)),
             "record_observation" => self
@@ -1329,7 +1333,37 @@ mod tests {
         let open = answer(&path, "status", json!({}));
         assert_eq!(open["windowOpen"], true);
         assert!(notes(&open).contains("within about 2 s"), "{open:#}");
+        // A check supervised now is the open window's to run, and the answer says so; one that
+        // only runs when asked is not.
+        crate::access::set_agent_access(&path, "write").unwrap();
+        let mut agent = session(&path, "claude-code");
+        let spare =
+            json!({ "type": "resource", "name": "Spare box", "url": "https://spare.example/" });
+        let on_demand = use_tool(&mut agent, "save_check", spare.clone()).unwrap();
+        assert_eq!(on_demand["note"], Value::Null);
+        let mut supervised = spare.clone();
+        supervised["supervisionIntervalMinutes"] = json!(15);
+        let noted = use_tool(&mut agent, "save_check", supervised.clone()).unwrap();
+        assert!(
+            noted["note"]
+                .as_str()
+                .unwrap()
+                .contains("run_check now would record a second"),
+            "{noted:#}"
+        );
+        let paused = json!({ "type": "resource", "name": "Spare box", "paused": true });
+        assert_eq!(
+            use_tool(&mut agent, "set_check_paused", paused).unwrap()["note"],
+            Value::Null
+        );
+        let resumed = json!({ "type": "resource", "name": "Spare box", "paused": false });
+        assert!(use_tool(&mut agent, "set_check_paused", resumed).unwrap()["note"].is_string());
         drop(window);
+        // Without a window, nothing runs it: no note.
+        assert_eq!(
+            use_tool(&mut agent, "save_check", supervised).unwrap()["note"],
+            Value::Null
+        );
         assert_eq!(answer(&path, "status", json!({}))["windowOpen"], false);
         remove(&path);
     }

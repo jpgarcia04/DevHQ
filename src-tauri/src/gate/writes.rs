@@ -536,6 +536,23 @@ impl Session {
         })
     }
 
+    /// A check left supervised while a DevHQ window is open on the inventory is that window's to
+    /// run: it notices the change within about 2 s and runs the check at once if it never ran or
+    /// is overdue. The answer says so, so that an agent asked to «set it up and run it» does not
+    /// record a second observation a moment later.
+    pub(super) fn window_note(&self, mut value: Value) -> Value {
+        let supervised = value.pointer("/httpCheck/monitor") == Some(&json!("active"));
+        if supervised && crate::window_lock::window_open(&self.database) == Some(true) {
+            if let Value::Object(object) = &mut value {
+                object.insert(
+                    "note".into(),
+                    json!("A DevHQ window is open on this inventory. Within about 2 s it supervises this check, and runs it at once if it never ran or its last run is older than the interval. run_check now would record a second observation."),
+                );
+            }
+        }
+        value
+    }
+
     pub(super) fn set_check_paused(
         &self,
         arguments: &Map<String, Value>,
@@ -838,7 +855,7 @@ pub(super) fn tools() -> Vec<Value> {
         tool(
             "save_check",
             "Set up or change an HTTP check",
-            "Sets up a system's only HTTP check, a read-only GET (url required; expectedStatus 200, timeoutSeconds 5 and validForMinutes 60 by default), or changes it, keeping what the change leaves out. supervisionIntervalMinutes (5 to 60) has DevHQ run it on that schedule while its window is open; null runs it only when asked; validity must outlast the interval. Logged as the agent's change.",
+            "Sets up a system's only HTTP check, a read-only GET (url required; expectedStatus 200, timeoutSeconds 5 and validForMinutes 60 by default), or changes it, keeping what the change leaves out. supervisionIntervalMinutes (5 to 60) has DevHQ run it on that schedule while its window is open; null runs it only when asked; validity must outlast the interval. With a DevHQ window open (status: windowOpen), that window runs a newly supervised check within about 2 s, and the answer's note says so. Logged as the agent's change.",
             with_system(json!({
                 "url": { "type": "string" },
                 "expectedStatus": { "type": "integer" },
@@ -868,7 +885,7 @@ pub(super) fn tools() -> Vec<Value> {
         tool(
             "run_check",
             "Run an HTTP check now",
-            "Runs a system's HTTP check once, as Run check does, and returns the observation it recorded (DevHQ's own evidence, source http). The request leaves this computer.",
+            "Runs a system's HTTP check once, as Run check does, and returns the observation it recorded (DevHQ's own evidence, source http). The request leaves this computer. Not needed right after save_check or set_check_paused answered with a note that an open DevHQ window runs it.",
             with_system(json!({})),
             &["type"],
             json!({ "destructiveHint": false, "idempotentHint": false, "openWorldHint": true }),

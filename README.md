@@ -365,9 +365,16 @@ matado), así que ningún archivo puede quedarse diciendo «abierta». Es compar
 sobre el mismo inventario lo tengan las dos. El archivo está vacío, DevHQ no lo borra y restaurar una
 copia no lo necesita; sin él (ninguna ventana abrió ese inventario desde que DevHQ lo usa), la ventana
 está cerrada, y la puerta nunca lo crea. Si el sistema no puede responder, `windowOpen` es `null` y
-`status` lo dice. Si un agente ejecuta una comprobación en el mismo instante en que la
-supervisión de la ventana corre la misma, quedan dos observaciones honestas; ninguna se pierde ni se
-inventa.
+`status` lo dice.
+
+Con una ventana abierta, una comprobación que el agente deja supervisada es de la ventana: la nota en
+unos 2 s y la ejecuta enseguida si nunca corrió o su última ejecución tiene más de un intervalo. Por
+eso `save_check` y `set_check_paused`, cuando la comprobación queda activa y hay una ventana abierta,
+lo dicen en una nota (`note`), y la descripción de `run_check` pide no ejecutarla otra vez: en la
+prueba con un Claude Code real, a quien se le pidió configurarla y ejecutarla, sin la nota quedaban dos
+observaciones con medio segundo de diferencia. Si aun así un agente ejecuta una comprobación en el
+mismo instante en que la supervisión de la ventana corre la misma, quedan dos observaciones honestas;
+ninguna se pierde ni se inventa.
 
 Las de lectura se declaran de solo lectura (`readOnlyHint`). Cada respuesta dice lo que la ventana diría: una
 lista recortada lleva el aviso de su ventana de historial y nada sin evidencia vigente se presenta
