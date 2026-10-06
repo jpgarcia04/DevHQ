@@ -361,7 +361,8 @@ algo verá lo que escribe y supervisará las comprobaciones. Lo sabe por un lock
 de la ventana abre `inventory.sqlite3.window-lock`, junto al inventario, y lo bloquea en modo
 compartido mientras vive; la puerta pide un bloqueo exclusivo sin esperar y, si se lo niegan, hay una
 ventana. El sistema suelta el lock cuando el proceso termina, de cualquier forma (cerrado, caído o
-matado), así que ningún archivo puede quedarse diciendo «abierta». Es compartido para que dos ventanas
+matado), así que ningún archivo puede quedarse diciendo «abierta»; Windows lo hace según le permiten
+sus recursos, y puede tardar un momento después de que el proceso desaparezca. Es compartido para que dos ventanas
 sobre el mismo inventario lo tengan las dos. El archivo está vacío, DevHQ no lo borra y restaurar una
 copia no lo necesita; sin él (ninguna ventana abrió ese inventario desde que DevHQ lo usa), la ventana
 está cerrada, y la puerta nunca lo crea. Si el sistema no puede responder, `windowOpen` es `null` y
@@ -465,7 +466,8 @@ paso no ve la aplicación en 15 s y falla. Por último cierra la ventana como
 lo hace su botón, nunca por WebDriver: con `WM_DELETE_WINDOW` en X11 (un script de Python que llama
 a libX11, porque bajo Xvfb no hay gestor de ventanas que lo envíe) o con `WM_CLOSE` en Windows. El
 proceso debe terminar, sin dejar `inventory.sqlite3-wal`, y el archivo debe haber pasado a WAL; la
-puerta, que sigue abierta, debe ver la ventana cerrada y terminar al cerrarse su entrada.
+puerta, que sigue abierta, debe ver la ventana cerrada en menos de 10 s (el recorrido anota cuánto
+tardó) y terminar al cerrarse su entrada.
 Antes de hacer clic espera a que el elemento deje de moverse, porque el contenido que llega tarde
 empuja la página, y guarda una captura por paso en `test-results/native/`. `DEVHQ_APP` lo apunta a
 otro ejecutable.

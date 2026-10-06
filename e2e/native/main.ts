@@ -448,8 +448,17 @@ try {
     // The last connection folded the log back into the file, which stays in WAL mode.
     assert.equal(existsSync(`${database}-wal`), false, 'no write-ahead log is left behind')
     assert.equal(journalOf(database), 'wal')
-    // The system released the window's lock with its process.
-    assert.equal((await gate.tool('status')).windowOpen, false, 'the gate sees no window')
+    // The system releases the window's lock with its process. Windows does it "as resources
+    // allow", which can be a moment after the process is gone: the first Windows run, under
+    // real-time protection, still saw the lock held right after DevHQ exited. The window lock's
+    // own test allows the same 10 s.
+    const exited = Date.now()
+    await until(
+      'the gate to see no window',
+      async () => (await gate.tool('status')).windowOpen === false,
+      10_000,
+    )
+    console.log(`  the gate saw no window ${Date.now() - exited} ms after DevHQ exited`)
     assert.equal(await gate.close(), 0, 'the gate ends when its input closes')
   })
 } catch (error) {
