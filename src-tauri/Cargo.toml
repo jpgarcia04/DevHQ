@@ -4,6 +4,8 @@ version = "0.1.0"
 description = "The operations home for a personal software ecosystem"
 authors = ["DevHQ"]
 edition = "2021"
+# File::try_lock and lock_shared, which tell the agent gate that a window is open.
+rust-version = "1.89"
 
 [lib]
 name = "devhq_lib"

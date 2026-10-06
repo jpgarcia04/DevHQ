@@ -5,7 +5,8 @@ atención calculada en Rust, atada a la de la ventana) y 3 (`devhq --mcp` con la
 lectura; ver «Puerta para agentes» en el README). Del paso 4, hechos el interruptor de acceso
 (esquema v8 y Settings → Agent gate) y las herramientas de escritura con `agent_log` (esquema v9);
 y ese log en Activity: el paso 4 está completo. Del paso 5, hecho: la ventana abierta nota lo que
-confirman otros procesos (`PRAGMA data_version`).
+confirman otros procesos (`PRAGMA data_version`), y `status` dice si hay una ventana abierta (lock
+del sistema).
 Cuando una parte se implementa, su comportamiento pasa al README (que es la especificación) en el
 mismo commit, y este documento se recorta.
 
@@ -141,10 +142,8 @@ escuchara peticiones de otros procesos, que es justo lo que no queremos. Así qu
 una comprobación en el mismo instante en que la supervisión la está corriendo, quedan dos
 observaciones honestas; ninguna se pierde ni se inventa. El README lo dirá así.
 
-Que la ventana esté abierta lo sabe la puerta por un lock del sistema que la app toma al arrancar
-sobre un archivo junto a la base (`File::try_lock`) y que el sistema suelta si la app muere. `status`
-lo informa. El estado en vivo de la supervisión (próxima ejecución, último error de DevHQ) solo
-existe en ese proceso, y la puerta dice que no lo conoce en vez de suponerlo.
+El estado en vivo de la supervisión (próxima ejecución, último error de DevHQ) solo existe en el
+proceso de la ventana, y la puerta dice que no lo conoce en vez de suponerlo.
 
 ## La atención, calculada en Rust y atada a la de la ventana
 

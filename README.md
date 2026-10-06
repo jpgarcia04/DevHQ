@@ -302,13 +302,13 @@ para que el agente pueda explicarte dónde abrirla; las demás herramientas resp
 para copiarlo; DevHQ nunca lo ejecuta ni toca la configuración de Claude Code. Para leer basta Read
 only:
 
-| Herramienta    | Qué responde                                                                                                                                                                                 |
-| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `status`       | Qué archivo abrió, dónde lo guarda de verdad el sistema (`storedAt`, como Settings), su versión de esquema, cuántos sistemas tiene y qué no puede saber                                      |
-| `attention`    | «¿Qué necesita mi atención?» con el mismo orden que Overview, la cobertura, lo nunca observado y lo que nada supervisa; el estado solo es `covered` si todo tiene evidencia vigente          |
-| `list_systems` | Cada aplicación y recurso con su estado de evidencia y última observación, incidencias activas, comprobación HTTP y relaciones                                                               |
-| `get_system`   | Una aplicación o recurso (por ID, o por nombre exacto sin distinguir mayúsculas) con sus observaciones, incidencias y eventos cargados, y desde cuándo su historial automático está completo |
-| `history`      | Los resultados automáticos anteriores de un sistema, de 200 en 200, como la carga bajo demanda de la ventana                                                                                 |
+| Herramienta    | Qué responde                                                                                                                                                                                                         |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `status`       | Qué archivo abrió, dónde lo guarda de verdad el sistema (`storedAt`, como Settings), su versión de esquema, si hay una ventana de DevHQ abierta sobre él (`windowOpen`), cuántos sistemas tiene y qué no puede saber |
+| `attention`    | «¿Qué necesita mi atención?» con el mismo orden que Overview, la cobertura, lo nunca observado y lo que nada supervisa; el estado solo es `covered` si todo tiene evidencia vigente                                  |
+| `list_systems` | Cada aplicación y recurso con su estado de evidencia y última observación, incidencias activas, comprobación HTTP y relaciones                                                                                       |
+| `get_system`   | Una aplicación o recurso (por ID, o por nombre exacto sin distinguir mayúsculas) con sus observaciones, incidencias y eventos cargados, y desde cuándo su historial automático está completo                         |
+| `history`      | Los resultados automáticos anteriores de un sistema, de 200 en 200, como la carga bajo demanda de la ventana                                                                                                         |
 
 Con Read and write, el agente también hace lo que tú haces en la ventana, pasando por los mismos
 casos de uso, con sus validaciones, límites y transacciones:
@@ -354,7 +354,18 @@ reinicia la espera como Run check) y la ventana relee el inventario sin estado d
 una ejecución supervisada. Leer no confirma nada, así que esa relectura no provoca otra; un cambio
 hecho en la propia ventana, que ya la relee al guardar, provoca una relectura silenciosa más, de unos
 8 ms. Si la conexión falla, se abre otra en la siguiente consulta y eso cuenta como cambio, porque no
-se sabe qué pasó entretanto. Si un agente ejecuta una comprobación en el mismo instante en que la
+se sabe qué pasó entretanto.
+
+`status` dice si hay una ventana de DevHQ abierta sobre ese inventario (`windowOpen`), y con ello si
+algo verá lo que escribe y supervisará las comprobaciones. Lo sabe por un lock del sistema: el proceso
+de la ventana abre `inventory.sqlite3.window-lock`, junto al inventario, y lo bloquea en modo
+compartido mientras vive; la puerta pide un bloqueo exclusivo sin esperar y, si se lo niegan, hay una
+ventana. El sistema suelta el lock cuando el proceso termina, de cualquier forma (cerrado, caído o
+matado), así que ningún archivo puede quedarse diciendo «abierta». Es compartido para que dos ventanas
+sobre el mismo inventario lo tengan las dos. El archivo está vacío, DevHQ no lo borra y restaurar una
+copia no lo necesita; sin él (ninguna ventana abrió ese inventario desde que DevHQ lo usa), la ventana
+está cerrada, y la puerta nunca lo crea. Si el sistema no puede responder, `windowOpen` es `null` y
+`status` lo dice. Si un agente ejecuta una comprobación en el mismo instante en que la
 supervisión de la ventana corre la misma, quedan dos observaciones honestas; ninguna se pierde ni se
 inventa.
 
@@ -371,7 +382,8 @@ ve `AppData` redirigido (ver [Arquitectura](#arquitectura)) y podría leer otro 
 lo dice con `storedAt`. Claude Code desde una terminal normal no está empaquetado. El workflow de
 Windows instala DevHQ y habla con la puerta del ejecutable instalado como lo hace un cliente MCP:
 comprueba que responde por stdin y stdout aunque no tenga consola, que abre el inventario de
-`%APPDATA%` y que termina al cerrarse su entrada.
+`%APPDATA%`, que ve cerrada la ventana que acaba de cerrarse (Windows soltó su lock) y que termina al
+cerrarse su entrada.
 
 ## Ejecutar
 
@@ -702,7 +714,9 @@ a la ejecución en vuelo, pausa, cancelación al quitar o cerrar (también de un
 ya estaba escribiendo su resultado al cerrar), fallos de DevHQ visibles
 que no detienen al resto, configuración ilegible que se reintenta y lo que otra conexión confirma
 (una ejecución, una pausa o una comprobación nueva surten efecto en la siguiente consulta, una
-lectura no cuenta como cambio y cerrar termina las consultas al instante y cierra su conexión); y, con peticiones
+lectura no cuenta como cambio y cerrar termina las consultas al instante y cierra su conexión), y el
+lock de la ventana: compartido entre dos ventanas, sin crear nada al preguntar, y soltado por el
+sistema cuando se mata el proceso que lo tenía; y, con peticiones
 reales a un servidor local, que la evidencia programada es idéntica a la manual; y, a través del manejador real de comandos sobre el
 runtime simulado de Tauri y desde un hilo sin runtime asíncrono como el principal, que la ventana puede
 abrir el `Channel` de estado. La ventana

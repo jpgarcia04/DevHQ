@@ -9,6 +9,7 @@ mod inventory;
 mod ipc_contract;
 mod monitor;
 mod records;
+mod window_lock;
 
 use monitor::{Monitor, MonitorStatus};
 use std::path::PathBuf;
@@ -257,6 +258,14 @@ pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             let path = app.path().app_data_dir()?.join("inventory.sqlite3");
+            // Tells the agent gate that a window is open on this inventory, for as long as this
+            // process lives. Without it the gate cannot know; the window works the same.
+            match window_lock::WindowLock::hold(&path) {
+                Ok(lock) => {
+                    app.manage(lock);
+                }
+                Err(error) => eprintln!("DevHQ could not hold its window lock: {error}"),
+            }
             // Supervision, and noticing what other processes change, live only as long as this
             // process: no service, no system task.
             let monitor = manage(app, path);

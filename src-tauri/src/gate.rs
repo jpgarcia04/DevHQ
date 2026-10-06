@@ -268,7 +268,14 @@ impl Session {
         } else {
             Value::Null
         };
+        let window_open = crate::window_lock::window_open(&self.database);
         let mut notes = vec![
+            match window_open {
+                Some(true) => "A DevHQ window is open on this inventory. It notices what the gate commits within about 2 s: it shows it, and its supervision follows a check configured, paused, removed or run here.",
+                Some(false) => "No DevHQ window is open on this inventory, so nothing supervises its HTTP checks: they run only when asked. What the gate writes is there when DevHQ opens.",
+                None => "The system could not say whether a DevHQ window is open on this inventory.",
+            }
+            .to_owned(),
             "Supervision's live state (runs in flight, next run, DevHQ's own run errors) exists only in the DevHQ window's process; the gate does not know it.".to_owned(),
         ];
         if let Some(stored_at) = &location.stored_at {
@@ -281,6 +288,7 @@ impl Session {
             "exists": exists,
             "schemaVersion": exists.then_some(inventory::SCHEMA_VERSION),
             "access": access,
+            "windowOpen": window_open,
             "counts": counts,
             "client": self.client,
             "notes": notes,
@@ -698,7 +706,7 @@ fn read_tools() -> Vec<Value> {
         read_only(
             "status",
             "DevHQ status",
-            "Which inventory file the gate opened, where the system really keeps it, its schema version, whether the person lets agents read or write through the gate (`access`: off, read or write), how many systems it holds, and what the gate cannot know. Always answered, even with the gate off.",
+"Which inventory file the gate opened, where the system really keeps it, its schema version, whether the person lets agents read or write through the gate (`access`: off, read or write), whether a DevHQ window is open on it (`windowOpen`; null when the system cannot say), how many systems it holds, and what the gate cannot know. Always answered, even with the gate off.",
             json!({}),
             &[],
         ),
@@ -1297,6 +1305,32 @@ mod tests {
                 .iter()
                 .any(|note| note.as_str().unwrap().contains("not where DevHQ asked")));
         }
+        remove(&path);
+    }
+
+    #[test]
+    fn says_whether_a_devhq_window_is_open_on_the_inventory() {
+        let path = path();
+        seed(&path);
+        crate::access::set_agent_access(&path, "off").unwrap();
+        let notes = |status: &Value| -> String {
+            status["notes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|note| note.as_str().unwrap())
+                .collect()
+        };
+        // Said even with the gate off: it tells nothing about what the inventory holds.
+        let closed = answer(&path, "status", json!({}));
+        assert_eq!(closed["windowOpen"], false);
+        assert!(notes(&closed).contains("nothing supervises"), "{closed:#}");
+        let window = crate::window_lock::WindowLock::hold(&path).unwrap();
+        let open = answer(&path, "status", json!({}));
+        assert_eq!(open["windowOpen"], true);
+        assert!(notes(&open).contains("within about 2 s"), "{open:#}");
+        drop(window);
+        assert_eq!(answer(&path, "status", json!({}))["windowOpen"], false);
         remove(&path);
     }
 

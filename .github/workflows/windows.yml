@@ -295,6 +295,8 @@ jobs:
           "Gate opened $($status.database.database) (stored at: $($status.database.storedAt))"
           if ($status.database.database -ne $expected) { throw "The gate opened $($status.database.database), not $expected" }
           if (-not $status.exists) { throw 'The gate found no inventory where the installed app keeps it' }
+          # The installed DevHQ was closed in the step before: Windows released its window lock.
+          if ($status.windowOpen -ne $false) { throw "windowOpen: $($status.windowOpen), with no DevHQ window open" }
           if ($replies[2].result.isError) { throw "attention: $out" }
           "Attention: $($replies[2].result.structuredContent.status)"
           if ($gate.ExitCode -ne 0) { throw 'The gate failed' }
