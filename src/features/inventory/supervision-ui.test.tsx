@@ -72,7 +72,8 @@ const snapshot: InventorySnapshot = {
     check(web),
     check(db, { url: 'https://db.example/ready', monitor: 'paused', monitorIntervalMinutes: 30 }),
   ],
-  agentChanges: [],
+  changes: [],
+  changesSince: null,
   automatedHistory: { limit: 200, truncated: [] },
 }
 

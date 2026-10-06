@@ -68,8 +68,9 @@ export interface ActivityEvent {
 // the agent gate reports records of its own. Only observations and their events are automated.
 export type RecordSource = 'manual' | 'http' | 'agent'
 export type ObservationResult = Exclude<HealthStatus, 'unknown'>
-// `change` is a configuration change an agent made through the agent gate, shown in timelines
-// among the events (see `timelineEvents`); the native process never stores an event of that kind.
+// `change` is a change to the configuration, by the person or by an agent through the agent gate,
+// shown in timelines among the events (see `timelineEvents`); the native process never stores an
+// event of that kind.
 export type RecordedEventKind =
   'observation' | 'incident' | 'deployment' | 'backup' | 'maintenance' | 'note' | 'change'
 export type ManualEventKind = Exclude<RecordedEventKind, 'observation' | 'incident' | 'change'>

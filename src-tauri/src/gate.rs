@@ -242,21 +242,6 @@ impl Session {
         inventory::list(&self.database)
     }
 
-    /// What agents changed in the subject's configuration, newest first.
-    fn agent_changes(
-        &self,
-        subject: &Subject,
-    ) -> Result<Vec<crate::agent_log::AgentChange>, ApiError> {
-        let mut db = inventory::open(&self.database)?;
-        let tx = db.transaction().map_err(ApiError::database)?;
-        let changes = crate::agent_log::load(&tx)?;
-        tx.commit().map_err(ApiError::database)?;
-        Ok(changes
-            .into_iter()
-            .filter(|change| &change.subject == subject)
-            .collect())
-    }
-
     fn status(&self) -> Result<Value, ApiError> {
         let location = inventory::DataLocation::of(&self.database);
         let exists = self.database.is_file();
@@ -410,7 +395,7 @@ impl Session {
             "observations": inventory.observations.iter().filter(|item| mine(&item.subject)).collect::<Vec<_>>(),
             "incidents": inventory.incidents.iter().filter(|item| mine(&item.subject)).collect::<Vec<_>>(),
             "events": inventory.events.iter().filter(|item| mine(&item.subject)).collect::<Vec<_>>(),
-            "agentChanges": self.agent_changes(&subject)?,
+            "changes": inventory.changes.iter().filter(|item| mine(&item.subject)).collect::<Vec<_>>(),
             "automatedCompleteSince": inventory
                 .automated_history
                 .truncated
@@ -596,7 +581,8 @@ fn history_note(inventory: &Inventory) -> Value {
     json!({
         "automatedResultsPerSystem": inventory.automated_history.limit,
         "cut": inventory.automated_history.truncated,
-        "note": "Manual and agent records are always complete. Automated HTTP results are the latest ones per system; for each system in `cut`, older ones are kept but only loaded through `history`.",
+        "changesCompleteSince": inventory.changes_since,
+        "note": "Manual and agent records are always complete. Automated HTTP results are the latest ones per system; for each system in `cut`, older ones are kept but only loaded through `history`. Configuration changes (`changes`), by the person or by an agent, are complete from `changesCompleteSince` on: before it, only agents' changes were logged (null: always complete).",
     })
 }
 
@@ -731,7 +717,7 @@ fn read_tools() -> Vec<Value> {
         read_only(
             "get_system",
             "System detail",
-            "One application or resource with every loaded observation, incident and event about it, newest first, and from when its automated results are complete.",
+            "One application or resource with every loaded observation, incident and event about it, every change to its configuration (who made it, and each field before and after), newest first, and from when its automated results are complete.",
             system_arguments(json!({})),
             &["type"],
         ),
@@ -1400,7 +1386,9 @@ mod tests {
     fn changes(path: &Path) -> Vec<(String, String, String)> {
         let db = inventory::open(path).unwrap();
         let mut statement = db
-            .prepare("SELECT agent, action, summary FROM agent_log ORDER BY rowid")
+            .prepare(
+                "SELECT agent, action, summary FROM change_log WHERE source = 'agent' ORDER BY rowid",
+            )
             .unwrap();
         let rows = statement
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
@@ -1618,7 +1606,7 @@ mod tests {
             json!({ "type": "application", "id": tienda }),
         )
         .unwrap();
-        let actions: Vec<_> = detail["system"]["agentChanges"]
+        let actions: Vec<_> = detail["system"]["changes"]
             .as_array()
             .unwrap()
             .iter()
@@ -1657,9 +1645,14 @@ mod tests {
             .iter()
             .all(|item| item.name != "Spare box"));
         // The window's snapshot carries the change, naming the resource that is gone.
-        assert_eq!(snapshot.agent_changes.len(), 1);
-        assert_eq!(snapshot.agent_changes[0].subject_name, "Spare box");
-        assert_eq!(snapshot.agent_changes[0].action, "deleted");
+        let by_agents: Vec<_> = snapshot
+            .changes
+            .iter()
+            .filter(|change| change.source == "agent")
+            .collect();
+        assert_eq!(by_agents.len(), 1);
+        assert_eq!(by_agents[0].subject_name, "Spare box");
+        assert_eq!(by_agents[0].action, "deleted");
         assert_eq!(
             changes(&path),
             [(

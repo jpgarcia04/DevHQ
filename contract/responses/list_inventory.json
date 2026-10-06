@@ -125,17 +125,42 @@
       "monitorIntervalMinutes": 5
     }
   ],
-  "agentChanges": [
+  "changes": [
     {
-      "id": "change-1",
+      "id": "change-2",
       "subject": { "type": "application", "id": "shop" },
       "subjectName": "Shop",
+      "source": "agent",
       "agent": "claude-code",
       "action": "updated",
       "summary": "Updated application «Shop»: version «1.9» → «2.0»",
+      "changes": [{ "field": "version", "before": "1.9", "after": "2.0" }],
       "occurredAt": "2026-01-01T09:35:00Z"
+    },
+    {
+      "id": "change-1",
+      "subject": { "type": "resource", "id": "host" },
+      "subjectName": "Host",
+      "source": "manual",
+      "agent": null,
+      "action": "check_removed",
+      "summary": "Removed the HTTP check of «Host» (http://host.example/old); the evidence it recorded stays",
+      "changes": [{ "field": "url", "before": "http://host.example/old", "after": null }],
+      "occurredAt": "2026-01-01T08:45:00Z"
+    },
+    {
+      "id": "change-0",
+      "subject": { "type": "application", "id": "shop" },
+      "subjectName": "Shop",
+      "source": "agent",
+      "agent": "codex",
+      "action": "created",
+      "summary": "Added application «Shop» (development)",
+      "changes": null,
+      "occurredAt": "2026-01-01T08:40:00Z"
     }
   ],
+  "changesSince": "2026-01-01T08:30:00Z",
   "automatedHistory": {
     "limit": 200,
     "truncated": [

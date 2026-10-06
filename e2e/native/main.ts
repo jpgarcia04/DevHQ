@@ -400,6 +400,15 @@ try {
       assert.equal(value('SELECT count(*) FROM http_checks'), 1)
       assert.equal(value("SELECT count(*) FROM observations WHERE source = 'manual'"), 1)
       assert.equal(value("SELECT count(*) FROM observations WHERE source = 'http'"), 2)
+      // What the person changed in the window is logged with it, and the walk's inventory was
+      // empty when v10 came, so the log is complete.
+      assert.equal(
+        value(
+          "SELECT group_concat(action, ' ') FROM (SELECT action FROM change_log WHERE source = 'manual' ORDER BY rowid)",
+        ),
+        'created created check_saved',
+      )
+      assert.equal(value('SELECT count(*) FROM change_log_start'), 0)
     } finally {
       copy.close()
     }

@@ -274,17 +274,43 @@ const snapshot: Answer<'list'> = {
       monitorIntervalMinutes: 5,
     },
   ],
-  agentChanges: [
+  changes: [
     {
-      id: 'change-1',
+      id: 'change-2',
       subject: shop,
       subjectName: 'Shop',
+      source: 'agent',
       agent: 'claude-code',
       action: 'updated',
       summary: 'Updated application «Shop»: version «1.9» → «2.0»',
+      changes: [{ field: 'version', before: '1.9', after: '2.0' }],
       occurredAt: at('09:35'),
     },
+    {
+      id: 'change-1',
+      subject: host,
+      subjectName: 'Host',
+      source: 'manual',
+      agent: null,
+      action: 'check_removed',
+      summary:
+        'Removed the HTTP check of «Host» (http://host.example/old); the evidence it recorded stays',
+      changes: [{ field: 'url', before: 'http://host.example/old', after: null }],
+      occurredAt: at('08:45'),
+    },
+    {
+      id: 'change-0',
+      subject: shop,
+      subjectName: 'Shop',
+      source: 'agent',
+      agent: 'codex',
+      action: 'created',
+      summary: 'Added application «Shop» (development)',
+      changes: null,
+      occurredAt: at('08:40'),
+    },
   ],
+  changesSince: at('08:30'),
   automatedHistory: { limit: 200, truncated: [{ subject: host, since: at('10:05') }] },
 }
 

@@ -1,21 +1,19 @@
 //! What an agent changes through the gate, when the person lets agents write. Every tool goes
 //! through the window's own use cases, with their validation, limits and transactions:
 //! - Records (observations, incidents, events) carry the agent as their source and name.
-//! - Configuration (applications, resources, components, HTTP checks) has no source, so each
-//!   change writes its entry in `agent_log` in the same transaction, after checking there, with
-//!   SQLite's write lock held, that the person still lets agents write.
+//! - Configuration (applications, resources, components, HTTP checks) has no source, so the use
+//!   case logs each change in the change log, as the agent's, in the same transaction, after the
+//!   gate checks there, with SQLite's write lock held, that the person still lets agents write.
 //! - Edits are partial: what an agent leaves out is kept, so that changing one field can never
 //!   erase another by omission. A component list, when given, is the complete list, as in the
 //!   window's form.
 
 use super::{pick, system_type, text, Session};
 use crate::access;
-use crate::agent_log;
 use crate::backup;
-use crate::http_check::{self, HttpCheck, HttpCheckInput};
-use crate::inventory::{
-    self, ApiError, Application, ApplicationInput, ComponentInput, Resource, ResourceInput,
-};
+use crate::change_log;
+use crate::http_check::{self, HttpCheckInput};
+use crate::inventory::{self, ApiError, ApplicationInput, ComponentInput, ResourceInput};
 use crate::records::{
     self, Actor, EventInput, IncidentInput, IncidentStatusInput, Lifeline, ObservationInput,
     Subject,
@@ -63,14 +61,6 @@ fn field<'a>(arguments: &'a Map<String, Value>, key: &str) -> Result<Field<'a>, 
         Some(_) => Err(ApiError::invalid(format!(
             "The argument {key} must be text or null."
         ))),
-    }
-}
-
-/// A value for a summary: «name» in quotes, «none» for nothing.
-fn quoted(value: Option<&str>) -> String {
-    match value {
-        Some(value) if !value.is_empty() => format!("«{value}»"),
-        _ => "none".to_owned(),
     }
 }
 
@@ -126,114 +116,6 @@ fn resource_id(tx: &Transaction, named: &str) -> Result<String, ApiError> {
     }
 }
 
-fn component_summary(application: &Application, resources: &[(String, String)]) -> Vec<String> {
-    application
-        .components
-        .iter()
-        .map(|component| {
-            let runs_on = component.resource_id.as_ref().map(|id| {
-                resources
-                    .iter()
-                    .find(|(resource, _)| resource == id)
-                    .map_or(id.as_str(), |(_, name)| name.as_str())
-            });
-            match runs_on {
-                Some(resource) => format!("{} ({}, on {resource})", component.name, component.kind),
-                None => format!("{} ({})", component.name, component.kind),
-            }
-        })
-        .collect()
-}
-
-/// What changed from `before` to `after`, field by field.
-fn application_changes(
-    before: &Application,
-    after: &Application,
-    resources: &[(String, String)],
-) -> Vec<String> {
-    let mut changes = Vec::new();
-    if before.name != after.name {
-        changes.push(format!(
-            "name {} → {}",
-            quoted(Some(&before.name)),
-            quoted(Some(&after.name))
-        ));
-    }
-    if before.lifecycle != after.lifecycle {
-        changes.push(format!(
-            "lifecycle {} → {}",
-            before.lifecycle, after.lifecycle
-        ));
-    }
-    if before.version != after.version {
-        changes.push(format!(
-            "version {} → {}",
-            quoted(before.version.as_deref()),
-            quoted(after.version.as_deref())
-        ));
-    }
-    if before.description != after.description {
-        changes.push("description changed".to_owned());
-    }
-    let (was, is) = (
-        component_summary(before, resources),
-        component_summary(after, resources),
-    );
-    if was != is {
-        changes.push(format!(
-            "components {} → {}",
-            if was.is_empty() {
-                "none".to_owned()
-            } else {
-                was.join(", ")
-            },
-            if is.is_empty() {
-                "none".to_owned()
-            } else {
-                is.join(", ")
-            },
-        ));
-    }
-    changes
-}
-
-fn resource_changes(before: &Resource, after: &Resource) -> Vec<String> {
-    let mut changes = Vec::new();
-    if before.name != after.name {
-        changes.push(format!(
-            "name {} → {}",
-            quoted(Some(&before.name)),
-            quoted(Some(&after.name))
-        ));
-    }
-    if before.kind != after.kind {
-        changes.push(format!("kind {} → {}", before.kind, after.kind));
-    }
-    if before.operating_system != after.operating_system {
-        changes.push(format!(
-            "operating system {} → {}",
-            quoted(Some(&before.operating_system)),
-            quoted(Some(&after.operating_system))
-        ));
-    }
-    if before.description != after.description {
-        changes.push("description changed".to_owned());
-    }
-    changes
-}
-
-fn check_summary(check: &HttpCheck) -> String {
-    let supervision = match (check.monitor.as_str(), check.monitor_interval_minutes) {
-        ("active", Some(minutes)) => format!("supervised every {minutes} min while DevHQ is open"),
-        ("paused", Some(minutes)) => format!("supervision paused (every {minutes} min)"),
-        _ => "run only when asked".to_owned(),
-    };
-    format!(
-        "GET {} expecting {} within {} s, valid {} min, {supervision}",
-        check.url, check.expected_status, check.timeout_seconds, check.valid_for_minutes
-    )
-}
-
 impl Session {
     /// The agent, by the name its client declared in `initialize`.
     fn actor(&self) -> Result<Actor, ApiError> {
@@ -250,7 +132,7 @@ impl Session {
     /// the gate in Settings can never race a change.
     fn change(
         &self,
-        apply: impl FnOnce(&Transaction, &str) -> Result<Value, ApiError>,
+        apply: impl FnOnce(&Transaction, &Actor) -> Result<Value, ApiError>,
     ) -> Result<Value, ApiError> {
         self.existing()?;
         let actor = self.actor()?;
@@ -259,7 +141,7 @@ impl Session {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(ApiError::database)?;
         super::permitted(&access::mode(&tx)?, "write")?;
-        let value = apply(&tx, actor.name().unwrap_or(UNNAMED))?;
+        let value = apply(&tx, &actor)?;
         tx.commit().map_err(ApiError::database)?;
         Ok(value)
     }
@@ -334,7 +216,7 @@ impl Session {
                     .collect::<Result<Vec<_>, ApiError>>()?,
                 Some(_) => return Err(ApiError::invalid("components must be a list.")),
             };
-            let saved = inventory::save_application_in(
+            let (saved, change) = inventory::save_application_in(
                 tx,
                 ApplicationInput {
                     id: existing.as_ref().map(|item| item.id.clone()),
@@ -344,36 +226,8 @@ impl Session {
                     version,
                     components,
                 },
+                agent,
             )?;
-            let resources = candidates(tx, "resource")?;
-            let (action, summary) = match &existing {
-                None => {
-                    let parts = component_summary(&saved, &resources);
-                    (
-                        "created",
-                        format!(
-                            "Added application «{}» ({}{}){}",
-                            saved.name,
-                            saved.lifecycle,
-                            saved.version.as_ref().map(|version| format!(", version {version}")).unwrap_or_default(),
-                            if parts.is_empty() { String::new() } else { format!(" with {}", parts.join(", ")) }
-                        ),
-                    )
-                }
-                Some(before) => {
-                    let changes = application_changes(before, &saved, &resources);
-                    (
-                        "updated",
-                        if changes.is_empty() {
-                            format!("Saved application «{}» without changes", saved.name)
-                        } else {
-                            format!("Updated application «{}»: {}", saved.name, changes.join("; "))
-                        },
-                    )
-                }
-            };
-            let subject = Subject::Application { id: saved.id.clone() };
-            let change = agent_log::record(tx, agent, action, &subject, &saved.name, &summary)?;
             Ok(json!({ "application": saved, "change": change }))
         })
     }
@@ -398,7 +252,7 @@ impl Session {
                     },
                 }
             };
-            let saved = inventory::save_resource_in(
+            let (saved, change) = inventory::save_resource_in(
                 tx,
                 ResourceInput {
                     id: existing.as_ref().map(|item| item.id.clone()),
@@ -419,31 +273,8 @@ impl Session {
                         None,
                     )?,
                 },
+                agent,
             )?;
-            let (action, summary) = match &existing {
-                None => (
-                    "created",
-                    format!(
-                        "Added resource «{}» ({}{})",
-                        saved.name,
-                        saved.kind,
-                        if saved.operating_system.is_empty() { String::new() } else { format!(", {}", saved.operating_system) }
-                    ),
-                ),
-                Some(before) => {
-                    let changes = resource_changes(before, &saved);
-                    (
-                        "updated",
-                        if changes.is_empty() {
-                            format!("Saved resource «{}» without changes", saved.name)
-                        } else {
-                            format!("Updated resource «{}»: {}", saved.name, changes.join("; "))
-                        },
-                    )
-                }
-            };
-            let subject = Subject::Resource { id: saved.id.clone() };
-            let change = agent_log::record(tx, agent, action, &subject, &saved.name, &summary)?;
             Ok(json!({ "resource": saved, "change": change }))
         })
     }
@@ -458,26 +289,18 @@ impl Session {
             let id = match &subject {
                 Subject::Application { id } | Subject::Resource { id } => id.clone(),
             };
-            let name = if kind == "application" {
-                inventory::delete_application_in(tx, &id)?
+            let (name, change) = if kind == "application" {
+                inventory::delete_application_in(tx, &id, agent)?
             } else {
-                inventory::delete_resource_in(tx, &id)?
+                inventory::delete_resource_in(tx, &id, agent)?
             };
-            let change = agent_log::record(
-                tx,
-                agent,
-                "deleted",
-                &subject,
-                &name,
-                &format!("Deleted {kind} «{name}», which had no history"),
-            )?;
             Ok(json!({ "deleted": { "type": kind, "id": id, "name": name }, "change": change }))
         })
     }
 
     pub(super) fn save_check(&self, arguments: &Map<String, Value>) -> Result<Value, ApiError> {
         self.change(|tx, agent| {
-            let (subject, name) = subject_in(tx, None, arguments)?;
+            let (subject, _) = subject_in(tx, None, arguments)?;
             let existing = http_check::find(tx, &subject)?;
             let url = match optional_text(arguments, "url")? {
                 Some(url) => url.to_owned(),
@@ -499,7 +322,7 @@ impl Session {
                 Some(Value::Null) => None,
                 Some(_) => optional_integer(arguments, "supervisionIntervalMinutes")?,
             };
-            let saved = http_check::save_http_check_in(
+            let (saved, change) = http_check::save_http_check_in(
                 tx,
                 HttpCheckInput {
                     subject: subject.clone(),
@@ -521,17 +344,8 @@ impl Session {
                     )?,
                     monitor_interval_minutes: interval,
                 },
+                agent,
             )?;
-            let summary = format!(
-                "{} the HTTP check of «{name}»: {}",
-                if existing.is_some() {
-                    "Changed"
-                } else {
-                    "Set up"
-                },
-                check_summary(&saved)
-            );
-            let change = agent_log::record(tx, agent, "check_saved", &subject, &name, &summary)?;
             Ok(json!({ "httpCheck": saved, "change": change }))
         })
     }
@@ -562,39 +376,17 @@ impl Session {
             .and_then(Value::as_bool)
             .ok_or_else(|| ApiError::invalid("The argument paused is required: true or false."))?;
         self.change(|tx, agent| {
-            let (subject, name) = subject_in(tx, None, arguments)?;
-            let saved = http_check::set_http_check_paused_in(tx, &subject, paused)?;
-            let (action, summary) = if paused {
-                (
-                    "check_paused",
-                    format!("Paused the supervision of «{name}»"),
-                )
-            } else {
-                (
-                    "check_resumed",
-                    format!(
-                        "Resumed the supervision of «{name}»: {}",
-                        check_summary(&saved)
-                    ),
-                )
-            };
-            let change = agent_log::record(tx, agent, action, &subject, &name, &summary)?;
+            let (subject, _) = subject_in(tx, None, arguments)?;
+            let (saved, change) =
+                http_check::set_http_check_paused_in(tx, &subject, paused, agent)?;
             Ok(json!({ "httpCheck": saved, "change": change }))
         })
     }
 
     pub(super) fn remove_check(&self, arguments: &Map<String, Value>) -> Result<Value, ApiError> {
         self.change(|tx, agent| {
-            let (subject, name) = subject_in(tx, None, arguments)?;
-            let removed = http_check::find(tx, &subject)?;
-            http_check::remove_http_check_in(tx, &subject)?;
-            let summary = format!(
-                "Removed the HTTP check of «{name}»{}; the evidence it recorded stays",
-                removed
-                    .map(|check| format!(" ({})", check.url))
-                    .unwrap_or_default()
-            );
-            let change = agent_log::record(tx, agent, "check_removed", &subject, &name, &summary)?;
+            let (subject, _) = subject_in(tx, None, arguments)?;
+            let change = http_check::remove_http_check_in(tx, &subject, agent)?;
             Ok(json!({ "removed": true, "change": change }))
         })
     }
@@ -614,15 +406,11 @@ impl Session {
             &Lifeline::default(),
         ))?;
         let change = self.change(|tx, agent| {
-            let (_, name) = subject_in(tx, None, arguments)?;
-            let summary = format!("Ran the HTTP check of «{name}»: {}", observation.summary);
-            Ok(json!(agent_log::record(
+            Ok(json!(change_log::check_run(
                 tx,
                 agent,
-                "check_run",
                 &subject,
-                &name,
-                &summary
+                &observation.summary
             )?))
         })?;
         Ok(json!({ "observation": observation, "change": change }))

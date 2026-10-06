@@ -33,8 +33,8 @@ const nothing = (view: string): Older => ({
  * snapshot left out loaded on demand, a page at a time. `view` names the timeline: what was
  * loaded for one never carries over to another.
  *
- * With `includeGone`, it also holds agents' changes to systems no longer in the inventory, which
- * no subject can name: the timeline of everything.
+ * With `includeGone`, it also holds the changes to systems no longer in the inventory, which no
+ * subject can name: the timeline of everything.
  *
  * `since` is the moment the timeline is complete from (null when it is complete): before it,
  * only manual and agent records are loaded. Pages are anchored on an event, never counted, so new

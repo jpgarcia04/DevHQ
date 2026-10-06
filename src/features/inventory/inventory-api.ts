@@ -11,6 +11,7 @@ import type {
   ObservationResult,
   RecordedEvent,
   RecordedIncident,
+  RecordSource,
 } from '@/domain/models'
 
 export interface InventoryResource {
@@ -117,22 +118,42 @@ export interface InventorySnapshot {
   incidents: RecordedIncident[]
   events: RecordedEvent[]
   httpChecks: HttpCheck[]
-  /** What agents changed in the configuration through the agent gate, newest first: all of it. */
-  agentChanges: AgentChange[]
+  /**
+   * Every change to the configuration, by the person in the window or by an agent through the
+   * agent gate, newest first: all of it.
+   */
+  changes: ConfigurationChange[]
+  /**
+   * From when the person's changes are in `changes`: DevHQ started logging them when it upgraded
+   * an inventory that already held systems. Null when the log was always complete.
+   */
+  changesSince: string | null
   automatedHistory: AutomatedHistory
 }
 
+/** One field of an application, resource or HTTP check, before and after a change. */
+export interface FieldChange {
+  /** The field as the window knows it: `version`, `components`, `url`… */
+  field: string
+  /** Null where it had no value, or did not exist (before a creation, after a deletion). */
+  before: unknown
+  after: unknown
+}
+
 /**
- * A change an agent made through the agent gate to what carries no source of its own:
- * applications, resources, components and HTTP checks. Written with the change, never altered.
+ * A change to what carries no source of its own (applications, resources, components and HTTP
+ * checks), by the person or by an agent through the agent gate. Written in the same transaction
+ * as the change, never altered.
  */
-export interface AgentChange {
+export interface ConfigurationChange {
   id: string
   subject: EntityRef
   /** The system's name when the change was made; it may since have been renamed or deleted. */
   subjectName: string
-  /** As the agent's client named itself; DevHQ cannot verify it. */
-  agent: string
+  /** Who made it: the person, in the window, or an agent. */
+  source: Exclude<RecordSource, 'http'>
+  /** As the agent's client named itself (DevHQ cannot verify it); null for the person. */
+  agent: string | null
   action:
     | 'created'
     | 'updated'
@@ -143,6 +164,8 @@ export interface AgentChange {
     | 'check_removed'
     | 'check_run'
   summary: string
+  /** Field by field; null only for agents' changes logged before DevHQ kept the fields. */
+  changes: FieldChange[] | null
   occurredAt: string
 }
 

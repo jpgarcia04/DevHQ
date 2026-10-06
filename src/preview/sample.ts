@@ -7,7 +7,7 @@ import type {
   RecordedIncident,
 } from '@/domain/models'
 import type {
-  AgentChange,
+  ConfigurationChange,
   BackupFile,
   HttpCheck,
   InventoryApplication,
@@ -26,7 +26,8 @@ export interface PreviewDatabase {
   incidents: RecordedIncident[]
   events: RecordedEvent[]
   httpChecks: HttpCheck[]
-  agentChanges: AgentChange[]
+  changes: ConfigurationChange[]
+  changesSince: string | null
   /** The files in the backups folder, newest first. */
   backups: BackupFile[]
   /** Reading fails, as it would with an unreadable database. */
@@ -64,7 +65,8 @@ function nothing(): PreviewDatabase {
     incidents: [],
     events: [],
     httpChecks: [],
-    agentChanges: [],
+    changes: [],
+    changesSince: null,
     backups: [],
     unavailable: false,
   }
@@ -335,27 +337,48 @@ export function sampleDatabase(scenario: Scenario, now: number): PreviewDatabase
     observations: byRecording(observations),
     incidents,
     events: byRecording(events),
-    // Changes an agent made through the agent gate: one to a system since deleted.
-    agentChanges: [
+    // Changes to the configuration, by the person and by an agent through the agent gate: one
+    // to a system since deleted. The log started when an upgrade found these systems in place.
+    changes: [
+      {
+        id: 'change-check',
+        subject: web,
+        subjectName: 'Web host',
+        source: 'manual',
+        agent: null,
+        action: 'check_saved',
+        summary:
+          'Changed the HTTP check of «Web host»: GET https://shop.example/health expecting 200 within 5 s, valid 60 min, supervised every 5 min while DevHQ is open',
+        changes: [{ field: 'timeoutSeconds', before: 10, after: 5 }],
+        occurredAt: time(30),
+      },
       {
         id: 'change-version',
         subject: shop,
         subjectName: 'Shop',
+        source: 'agent',
         agent: 'claude-code',
         action: 'updated',
         summary: 'Updated application «Shop»: version «2.4.0» → «2.4.1»',
+        changes: [{ field: 'version', before: '2.4.0', after: '2.4.1' }],
         occurredAt: time(68),
       },
       {
         id: 'change-gone',
         subject: { type: 'resource', id: 'old-box' },
         subjectName: 'Old box',
-        agent: 'claude-code',
+        source: 'manual',
+        agent: null,
         action: 'deleted',
         summary: 'Deleted resource «Old box», which had no history',
+        changes: [
+          { field: 'name', before: 'Old box', after: null },
+          { field: 'kind', before: 'workstation', after: null },
+        ],
         occurredAt: time(200),
       },
     ],
+    changesSince: time(60 * 24 * 3),
     httpChecks: [
       {
         subject: web,

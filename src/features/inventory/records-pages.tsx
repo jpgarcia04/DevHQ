@@ -8,7 +8,7 @@ import { subjectFromKey, subjectsOf } from '@/domain/evidence'
 import { incidentStatusLabels, severityLabels } from '@/domain/labels'
 import { activeIncidents } from '@/domain/selectors'
 import { deviceTimeZone, formatDate } from '@/shared/time'
-import { AutomatedWindowNote, OlderResults, SubjectOptions } from './evidence'
+import { AutomatedWindowNote, ChangesSinceNote, OlderResults, SubjectOptions } from './evidence'
 import { beforeWindow, withinWindow } from './history'
 import { useInventory } from './inventory-context'
 import { InventoryState } from './inventory-state'
@@ -140,7 +140,7 @@ export function RealActivityPage() {
       <PageHeader
         eyebrow="Local inventory · recorded activity"
         title="Activity"
-        description="Observations, incident changes and events recorded in DevHQ, newest first."
+        description="Observations, incident changes, events and configuration changes recorded in DevHQ, newest first."
         action={
           <Button onClick={() => setCreating(true)}>
             <Plus className="size-4" /> Log event
@@ -149,7 +149,7 @@ export function RealActivityPage() {
       />
       <InventoryState>
         {creating && <EventForm onDone={() => setCreating(false)} />}
-        {snapshot?.events.length || snapshot?.agentChanges.length ? (
+        {snapshot?.events.length || snapshot?.changes.length ? (
           <>
             <div className="flex flex-wrap items-center justify-between gap-3">
               <select
@@ -169,6 +169,7 @@ export function RealActivityPage() {
               {since && snapshot && (
                 <AutomatedWindowNote since={since} limit={snapshot.automatedHistory.limit} />
               )}
+              {snapshot?.changesSince && <ChangesSinceNote since={snapshot.changesSince} />}
               {days.map((day) => {
                 const items = events.filter((event) => formatDate(event.occurredAt) === day)
                 // A day entirely before the window holds manual and agent entries only; say so.
