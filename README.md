@@ -554,6 +554,11 @@ Estos son límites conceptuales, **no módulos vacíos ni integraciones implemen
 La dirección es UI → IPC/casos de uso → dominio. SQLite conserva contexto; las credenciales no deben
 vivir en componentes React, localStorage ni texto plano en SQLite.
 
+Más allá de estos pasos, [docs/vision.md](docs/vision.md) guarda la dirección a largo plazo (DevHQ
+como capa de contexto y memoria de todo el ecosistema de desarrollo, útil también con 50 proyectos)
+y las preguntas con que se valoran las funcionalidades y las decisiones de arquitectura. Es una guía,
+no una especificación ni un backlog: nada de lo que describe existe hasta que este README lo diga.
+
 Las pruebas cubren navegación, tabs/teclado, filtros, rutas desconocidas, relaciones
 compartidas, cronología de la demo, salud desconocida, persistencia tras reapertura,
 rechazo de referencias inválidas sin escrituras parciales, restricciones del esquema,

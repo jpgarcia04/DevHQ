@@ -14,6 +14,10 @@ behaviour, and update it in the same commit as the change.
   cannot be deleted, a schema change keeps every row.
 - DevHQ observes; it does not operate systems, run in the background or hold credentials.
 - Provenance (`source`), observed and recorded times, and validity are always visible.
+- `docs/vision.md` (in Spanish) holds the long-term direction and the questions to ask of any
+  new feature or architectural change; read it before proposing either. It guides and
+  authorizes nothing: the README stays the specification, and the rules above hold until a
+  change that must break one rewrites that rule, here and in the README, in the same commit.
 
 ## Checks
 

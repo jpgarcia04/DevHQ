@@ -1,0 +1,407 @@
+# Visión a largo plazo
+
+Este documento guarda hacia dónde quiere ir DevHQ y con qué criterios se valoran las funcionalidades
+y las decisiones de arquitectura que lo acerquen. **No es una especificación ni un backlog**: el
+[README](../README.md) describe lo que DevHQ hace y manda mientras no cambie, y nada de lo que se
+lee aquí existe hasta que el README lo diga. Muchas ideas cambiarán al avanzar el proyecto. Cuando
+una se construye, su comportamiento pasa al README en el mismo commit; cuando se corrige o se
+descarta, se cambia aquí, con su motivo.
+
+Nació el 6 oct 2026 de un planteamiento que se conserva íntegro al final (ver «Planteamiento
+original»), revisado contra lo que DevHQ era ese día: en `main`, el inventario en SQLite (esquema
+v6) con observaciones, incidencias, eventos y comprobaciones HTTP(S) supervisadas mientras la
+ventana está abierta; en la rama `claude/practical-hamilton-2tkqys`, aún sin fusionar, la puerta
+para agentes (`devhq --mcp`, esquema v9).
+
+## La idea
+
+DevHQ pasa, poco a poco, de inventario con evidencia a capa de **contexto y memoria** de todo tu
+ecosistema de desarrollo. Sabe qué existe, dónde está, cómo se relaciona, qué estado tiene, desde
+cuándo y según quién, y qué necesita tu atención; y se lo cuenta igual a ti, en la ventana, que a
+cualquier agente al que le pidas trabajar en él. No reemplaza a las herramientas que hacen el
+trabajo (git, GitHub, Docker, systemd, SSH, Nginx, tu editor, un agente) ni guarda lo que ya guardan
+ellas: sabe dónde está cada cosa y la relaciona con las demás.
+
+La prueba de que va bien: con 50 proyectos, DevHQ sigue respondiendo de un vistazo qué necesita
+atención, qué está desplegado y dónde, qué lleva meses sin actividad, qué depende de un servidor o
+de una base de datos, qué cambios no se han desplegado, dónde están los logs de lo que falla y qué
+debe saber un agente que entra a un proyecto. Hoy responde la primera y, en parte, la de las
+dependencias; el resto es la dirección (ver «Preguntas que debe poder responder»).
+
+## Principios
+
+1. **La atención manda.** Cada vista responde «¿Qué necesita mi atención?», y con 50 proyectos eso
+   significa priorizar y agregar, no listar.
+2. **El modelo es el producto.** Lo que existe, cómo se relaciona y qué se sabe de ello. Las
+   acciones, las integraciones y los agentes son adaptadores encima: si cambias Claude por otro
+   agente, GitHub por otra plataforma o Docker por otra tecnología, cambia un adaptador y el modelo
+   sigue teniendo sentido.
+3. **Conceptos, no proveedores.** Las entidades y sus tipos son repositorio, servidor, base de
+   datos, despliegue. GitHub, Docker o Claude aparecen como procedencia (`source`), como evidencia o
+   como referencia, nunca como la forma del modelo.
+4. **Conocer, no contener.** DevHQ guarda identidad, relaciones y evidencia, y sabe dónde está lo
+   demás: el código en su repositorio, los logs en su servidor, las métricas en su herramienta, los
+   secretos en el almacén del sistema.
+5. **Inventario, evidencia y estado derivado no se mezclan** (ver «El modelo a largo plazo»).
+6. **Nada desconocido parece sano.** Procedencia, momentos y vigencia siempre visibles; lo que
+   reporta alguien no se confunde con lo que DevHQ mide; una lista recortada dice dónde y por qué.
+7. **La historia no se reescribe.** Las observaciones son inmutables, lo que tiene historial no se
+   borra y un cambio de esquema conserva cada fila.
+8. **Observar antes que operar.** Si algún día DevHQ opera, cada acción es explícita, la inicias tú,
+   la ejecuta la herramienta que corresponde, queda registrada y se verifica.
+9. **La IA es un cliente intercambiable.** DevHQ funciona entero sin agentes; los agentes entran por
+   la puerta, con el acceso que decides.
+10. **Personal y local.** Un archivo SQLite que es tuyo, sin cuentas ni nube. Que DevHQ trabaje por
+    su cuenta con la ventana cerrada exige decidirlo de forma explícita.
+11. **Crecer por preguntas.** Una entidad, una relación o una fuente nueva llega cuando una pregunta
+    concreta la necesita, y esa pregunta es su prueba.
+
+## Revisión del planteamiento
+
+Qué se conserva, qué se adapta a la arquitectura actual y qué se pospone, y por qué.
+
+### Centro de control: torre de control, no orquestador
+
+En infraestructura, un _control plane_ decide y aplica el estado deseado: Kubernetes reconcilia,
+Terraform aplica. DevHQ observa y no opera, y esa regla es parte de su valor: puedes confiar en él
+porque no puede romper nada, y no necesita credenciales. Del _control plane_ encaja la mitad que
+sabe: el único lugar que conoce el estado de todo y sus relaciones, desde donde decides y saltas a
+la herramienta adecuada. La otra mitad, aplicar cambios, queda fuera mientras una decisión explícita
+no cambie la regla (ver «Tensiones con las reglas actuales»). Aquí, «centro de control» se lee como
+una torre de control: ve todo, sabe qué depende de qué y dice qué necesita atención; quien opera
+eres tú, o el agente que lanzas tú, con sus herramientas.
+
+### El modelo antes que los botones: se conserva, ya es el diseño
+
+DevHQ ya está construido así: sujetos con ID, relaciones por ID con claves foráneas, registros
+inmutables con procedencia, momentos y vigencia, y la atención calculada a partir de ellos (en la
+ventana y, para la puerta, en Rust, atadas por `contract/attention/`). Lo que la visión pide es que
+ese modelo crezca sin romperse (ver «Cómo crecer sin romperlo»).
+
+### «¿Sigue siendo útil con 50 proyectos?»: se adopta como criterio
+
+Se suma a «¿Qué necesita mi atención?» y a «si solo ahorra escribir un comando sencillo, no
+pertenece». Tiene tres consecuencias prácticas:
+
+- Las vistas priorizan y agregan. Con 50 proyectos nadie recorre 50 tarjetas: lo que no necesita
+  atención se resume (cuántos, con qué cobertura) y lo que sí, se ordena.
+- El coste de una consulta no crece con el historial, y lo que crece con el número de sistemas se
+  mide. Ya es regla (índices y pruebas de plan de consulta) y ya se mide con 5, 20 y 50 sistemas.
+- El dato tiene que poder mantenerse solo, o casi (ver «El inventario envejece»).
+
+Las comodidades pequeñas, como abrir la carpeta de un proyecto, se adaptan: caben como subproducto
+de algo que el modelo ya sabe (si DevHQ conoce la ruta local de un proyecto, ofrecer abrirla al lado
+es barato), nunca como motivo de una funcionalidad ni como una colección de lanzadores y atajos.
+
+### Proyectos: la aplicación ya es el proyecto
+
+No hace falta una entidad «proyecto» paralela. La unidad que mantienes en DevHQ es la aplicación:
+tiene lifecycle, versión, componentes, evidencia, incidencias y actividad. La visión la enriquece en
+vez de envolverla. Si llega un proyecto que una aplicación no representa bien (una librería, un
+monorepo con varias aplicaciones, unos dotfiles), primero se intenta con relaciones (el mismo
+repositorio referido desde varias aplicaciones) y, si hace falta, con otro nombre; un nivel nuevo,
+solo si eso no basta.
+
+### Servidores y el VPS: sí, por escalones de lo que exigen
+
+Un servidor ya es un recurso, con su propia comprobación HTTP(S), cada aplicación que corre en él
+tiene la suya y la demo ya muestra un servidor compartido con Docker, Nginx, SSH y Fail2ban. Lo que
+propone el planteamiento (servicios, contenedores, CPU, RAM, disco, Nginx, despliegues, health
+checks, logs y operaciones básicas) se adapta por escalones, según lo que cada uno exige de las
+reglas:
+
+1. **Sin credenciales, ya posible.** La comprobación HTTP(S) del servidor y la de cada aplicación
+   que corre en él (hoy, una por sujeto), observaciones y eventos a mano y, con la puerta para
+   agentes, un agente que ya tiene tu acceso SSH en tu terminal mira el servidor y registra lo que
+   vio como observación `agent`. DevHQ no abre conexiones ni guarda nada secreto, y la etiqueta dice
+   que es algo reportado, no medido.
+2. **Lectura con credenciales.** Un adaptador de solo lectura (por ejemplo SSH con comandos fijos
+   que define DevHQ: estado de servicios, contenedores, disco) que produce observaciones con su
+   propio `source`. Exige el almacén nativo de credenciales que el README ya prevé, verificar la
+   clave del servidor y revisar la regla «no guarda credenciales». Nunca una terminal remota dentro
+   de DevHQ ni comandos arbitrarios.
+3. **Operaciones**, como reiniciar un servicio o volver a desplegar: las últimas, si llegan. Chocan
+   con «no opera sistemas»; si se decide cambiar esa regla, cada acción sigue el principio 8 (el
+   Trigger → Condition → Action → Verification que ya anticipa la preview de Automations).
+
+Las métricas entran como evidencia, no como series: «disco al 91 % en /, umbral 85 %» es una
+observación con sus valores, su momento y su vigencia, y eso es lo que responde qué necesita
+atención. Las gráficas siguen en la herramienta que las tenga, y DevHQ sabe dónde está. Lo mismo con
+los logs: DevHQ sabe dónde están (una unidad de systemd, un contenedor, un archivo, una URL) y, como
+evidencia de una observación, guarda como mucho el fragmento acotado que la justifica; nunca el
+flujo, que además puede llevar secretos.
+
+### La capa de IA: se conserva, y es la dirección de la puerta
+
+La puerta para agentes ya sigue esta idea: el mismo ejecutable habla MCP, un protocolo abierto, así
+que Claude Code, Codex u otro cliente MCP leen y mantienen el inventario con el acceso que eliges en
+Settings, por los mismos casos de uso que la ventana, y lo que registran lleva su procedencia. Para
+que siga así:
+
+- Los agentes vienen a DevHQ. DevHQ no llama a modelos, no guarda claves de API y funciona entero
+  sin ningún agente. Ya se decidió que la supervisión con la ventana cerrada, si llega, la hará
+  DevHQ mismo y no un agente.
+- La puerta expone el modelo de DevHQ (sistemas, evidencia, atención), no conceptos de un proveedor.
+  Si MCP se sustituye, se sustituye el adaptador, no los casos de uso.
+- Lo que un agente reporta no es lo que DevHQ mide, y ninguna vista los confunde.
+
+### Contexto para agentes: el objetivo sí, la forma se adapta
+
+Que un agente entre a un proyecto sin empezar de cero es un buen objetivo, pero DevHQ no debe
+convertirse en otra copia de la documentación. La documentación, las convenciones y las
+instrucciones para agentes (README, `CLAUDE.md`, `AGENTS.md`) viven en el repositorio, versionadas
+con el código: una copia en DevHQ se desfasaría, y escribirlas en el repositorio por su cuenta sería
+operar. Es la misma razón por la que la puerta muestra el comando de registro para copiarlo y nunca
+toca la configuración de Claude Code.
+
+Lo que DevHQ aporta es lo que el repositorio no puede saber: dónde corre, qué depende de él y de qué
+depende, qué estado tiene y desde cuándo, qué incidencias siguen abiertas, qué se desplegó por
+última vez y con qué versión, qué otras aplicaciones comparten su servidor, dónde están su
+repositorio, su documentación y sus logs, y qué no se sabe. Cuando toque, la forma natural es un
+resumen por sistema en la puerta (una extensión de `get_system`, o un recurso o un prompt de MCP),
+compacto, con momentos y vigencia, que además señale las instrucciones del propio repositorio para
+que el agente las lea allí. Un resumen de arquitectura que escriba un agente puede guardarse como lo
+que es: algo reportado por ese agente, con su fecha.
+
+## El modelo a largo plazo
+
+Tres capas que no se mezclan:
+
+- **Inventario**: qué existe y cómo se relaciona. Aplicaciones, recursos, componentes y, más
+  adelante, referencias y más relaciones. Cambia poco, lo declaras tú o un agente, y es contexto, no
+  historial.
+- **Evidencia**: qué pasó y qué se vio. Observaciones, incidencias y eventos, inmutables, con
+  procedencia, momento observado y registrado, y vigencia. Los despliegues y la actividad de un
+  repositorio también son evidencia.
+- **Estado derivado**: lo que se calcula al leer y nunca se guarda como verdad. La atención, la
+  cobertura, «sin actividad desde hace cuatro meses», «hay commits sin desplegar», «si cae este
+  servidor, caen estas tres aplicaciones». Se calcula con las mismas reglas en la ventana y en la
+  puerta.
+
+Así, «abandonado» no es un estado que haya que mantener a mano: es la ausencia de actividad
+observada, derivada, y no dice nada de la salud, igual que lifecycle no expresa health. `Archived`
+sigue siendo una decisión tuya; «sin actividad» es algo que se observa.
+
+### Dónde encaja cada cosa
+
+| Cosa                            | Dónde encajaría                                                                                                       | Por qué                                                                                                   |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| Proyecto                        | La aplicación (existe)                                                                                                | Es la unidad que ya mantienes                                                                             |
+| Repositorio                     | Referencia de la aplicación y fuente de evidencia (commits, actividad)                                                | No es dónde corre sino dónde está el código; un monorepo es la misma referencia desde varias aplicaciones |
+| Copia local de trabajo          | Referencia ligada a una estación de trabajo: la ruta en esa máquina                                                   | El mismo proyecto puede estar clonado en varias máquinas                                                  |
+| Servidor, VPS, laptop           | Recurso `server` o `workstation` (existe)                                                                             | Es donde corren los componentes                                                                           |
+| Base de datos                   | Componente si es de una sola aplicación (existe); recurso si la comparten varias                                      | «Qué aplicaciones usan esta base de datos» exige que sea un recurso                                       |
+| Contenedor                      | Componente, el papel estable (existe, como `docker`); los contenedores concretos, como evidencia                      | Van y vienen: inventariarlos uno a uno envejecería en horas                                               |
+| Despliegue                      | Evento `deployment` (existe) con versión o commit, entorno y recurso de destino                                       | Es historia inmutable; lo desplegado se deriva del último                                                 |
+| Entorno                         | Hoy, el lifecycle de la aplicación, uno solo; varios, cuando hagan falta, como dimensión de componentes y despliegues | Una aplicación con producción y staging a la vez no se puede expresar hoy                                 |
+| Dominio                         | Recurso de un tipo nuevo, con su comprobación                                                                         | La caducidad del dominio y de su certificado es atención pura                                             |
+| API                             | Lo que expone una aplicación: una relación «usa» entre aplicaciones y la comprobación del endpoint                    | Responde qué se rompe si cambia o cae                                                                     |
+| Documentación                   | Referencia                                                                                                            | Vive en el repositorio o en la web                                                                        |
+| Logs                            | Referencia; un fragmento acotado como evidencia de una observación                                                    | Nunca el flujo                                                                                            |
+| CPU, RAM, disco                 | Evidencia: una observación con sus valores                                                                            | Nunca series                                                                                              |
+| Agentes de IA                   | Procedencia (`agent`) y clientes de la puerta                                                                         | No son inventario                                                                                         |
+| CI, paneles, otras herramientas | Fuentes de evidencia con su `source`, y referencias                                                                   | DevHQ las relaciona, no las sustituye                                                                     |
+
+### Cómo crecer sin romperlo
+
+Cada tabla que cuelga de un sujeto (`observations`, `incidents`, `events`, `http_checks` y, con la
+puerta, `agent_log`) lo señala con dos columnas, `application_id` y `resource_id`, y un CHECK que
+exige exactamente una. Un tercer tipo de sujeto añadiría una columna a cada una y obligaría a
+reconstruirlas, porque SQLite no cambia un CHECK con ALTER, como hicieron la v4 y la v7. Por eso lo
+nuevo que se observa entra, mientras quepa, como **tipo de recurso** (una base de datos compartida,
+un dominio…): hereda sin cambios las observaciones, las incidencias, la comprobación HTTP(S),
+Infrastructure y la atención. Una tabla genérica de sujetos solo se plantea cuando algo no quepa ni
+como aplicación ni como recurso, y entonces con una migración que conserve cada fila, como exigen
+las reglas del esquema.
+
+Las relaciones crecen igual: un tipo de relación nuevo (un recurso que corre en otro, una aplicación
+que usa otra) llega cuando una pregunta concreta lo necesita, con sus claves foráneas y su
+`RESTRICT` o `CASCADE` explícitos; no un motor genérico de grafos. Lo que nombra una tecnología en
+vez de un concepto, como el tipo de componente `docker`, se generaliza cuando se toque esa parte del
+modelo, no antes.
+
+### El inventario envejece
+
+Es el mayor riesgo a 50 proyectos: un mapa rico solo sirve si sigue siendo cierto, y uno desfasado
+es peor que ninguno, porque parece fiable. Nadie va a teclear a mano cada relación de 50 proyectos
+ni a mantenerla al día. Por eso:
+
+- Se prefiere lo que se puede observar a lo que hay que teclear.
+- Un agente puede hacer el tecleo cuando se lo pides, por la puerta, y sus cambios quedan en
+  Activity.
+- Si algún día DevHQ descubre cosas (repositorios en una carpeta, servicios en un servidor), propone
+  y tú aceptas; nunca cambia el inventario en silencio.
+- Queda abierto si cada cambio de configuración, también los tuyos, debería quedar registrado con su
+  momento, como ya hace `agent_log` con los de los agentes, para que el mapa diga cuándo se confirmó
+  cada cosa por última vez.
+
+## Preguntas que debe poder responder
+
+| Pregunta                                                 | Qué hace falta                                                                           | Hoy                                                                                                             |
+| -------------------------------------------------------- | ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| ¿Qué necesita mi atención?                               | Evidencia vigente y las reglas de atención                                               | Sí: Overview y, con la puerta, `attention`                                                                      |
+| ¿Qué está fallando?                                      | Observaciones vigentes                                                                   | Sí, en lo que tiene comprobación u observaciones; lo nunca observado se cuenta como hueco, no como sano         |
+| ¿Qué aplicaciones corren en este servidor?               | Componente → recurso                                                                     | Sí: Infrastructure y el detalle de cada recurso                                                                 |
+| ¿Qué se cae si cae este servidor?                        | Relaciones entre recursos y entre aplicaciones                                           | En parte: solo lo que corre directamente en él                                                                  |
+| ¿Qué aplicaciones usan esta base de datos?               | Bases de datos compartidas como recurso                                                  | No: un recurso solo es servidor o estación de trabajo, y una base de datos es componente de una sola aplicación |
+| ¿Qué está desplegado, dónde y con qué versión?           | Despliegues con versión o commit y destino                                               | En parte: lifecycle, la versión como texto y eventos de despliegue a mano, sin destino ni commit                |
+| ¿Qué tiene cambios sin desplegar?                        | El repositorio de cada aplicación, el commit del último despliegue y leer el repositorio | No                                                                                                              |
+| ¿Qué lleva meses sin actividad?                          | Actividad observada: commits, despliegues                                                | No: solo existe la actividad que se registra en DevHQ                                                           |
+| ¿Dónde están sus logs, su documentación, su repositorio? | Referencias                                                                              | No: solo la descripción libre                                                                                   |
+| ¿Qué dominio o certificado caduca pronto?                | Dominios como recurso y la caducidad del certificado como evidencia                      | No                                                                                                              |
+| ¿Qué debe saber un agente que entra a este proyecto?     | Un resumen por sistema con referencias, relaciones y estado                              | En parte: `get_system` de la puerta                                                                             |
+
+## Líneas de evolución posibles
+
+Sin fechas ni compromiso, ordenadas por lo que cada una necesita de las anteriores. Los pasos
+concretos y su orden están en «Evolución prevista» del README; este documento no los reordena.
+
+1. **Referencias**: dónde está cada cosa (repositorio, ruta local en cada estación de trabajo,
+   documentación, logs, panel del proveedor). Barato y sin credenciales; hace útiles los resúmenes
+   para agentes y comodidades como abrir la carpeta.
+2. **Más tipos de recurso y de relación**: bases de datos compartidas y dominios como recursos, un
+   recurso que corre en otro, una aplicación que usa otra. Responde qué se cae si cae algo.
+3. **Despliegues con estructura**: el evento de despliegue con versión o commit, entorno y recurso
+   de destino, registrado por ti, por un agente o, más adelante, por la CI. Responde qué está
+   desplegado y dónde.
+4. **Actividad local**: leer, cuando lo pides, los repositorios locales que el inventario ya conoce
+   (último commit, cambios sin confirmar, commits posteriores al último despliegue) como evidencia
+   con su propio `source`. Sin credenciales, pero choca con «no se implementan scanners».
+5. **Contexto para agentes**: el resumen por sistema en la puerta, más rico con cada paso anterior.
+6. **Fuentes con credenciales**: servidores por SSH de solo lectura, el estado de la CI en GitHub u
+   otra plataforma. Exige el almacén nativo de credenciales.
+7. **Acciones explícitas y verificadas**: las automatizaciones con resultado e historial que el
+   README ya anticipa. Exige cambiar «no opera sistemas».
+8. **Supervisión con la ventana cerrada**: exige cambiar «no funciona en segundo plano» y cuidar lo
+   que consume.
+
+## Tensiones con las reglas actuales
+
+Cada regla sigue vigente hasta que se decida cambiarla de forma explícita, y entonces el README
+cambia en el mismo commit que la funcionalidad que lo necesita.
+
+| Idea                                           | Regla o límite de hoy                                                               | Qué haría falta                                                                                                           |
+| ---------------------------------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| Operaciones básicas en servidores              | DevHQ observa; no opera sistemas                                                    | Cambiar la regla; cada acción iniciada por ti, delegada, registrada y verificada                                          |
+| Leer servidores o plataformas con credenciales | No guarda credenciales                                                              | El almacén nativo de credenciales que el README ya prevé; nunca en SQLite, React ni localStorage                          |
+| Vigilar con la ventana cerrada                 | No funciona en segundo plano                                                        | Revisar la regla y medir lo que consume; lo hace DevHQ, no un agente                                                      |
+| Descubrir repositorios o servicios             | No se implementan scanners                                                          | Que lo lances tú, de solo lectura, y que proponga cambios que aceptas                                                     |
+| Atajos como abrir una carpeta                  | Si solo ahorra un comando sencillo, no pertenece                                    | Solo como subproducto de una referencia que el modelo ya tiene                                                            |
+| Muchos tipos de cosas                          | Dos tipos de sujeto, con una columna cada uno en cada tabla que cuelga de un sujeto | Crecer por tipos de recurso; una tabla genérica de sujetos solo si algo no cabe, con una migración que conserve cada fila |
+
+## Lo que DevHQ no quiere ser
+
+- Un sustituto de GitHub, Docker, la terminal, el editor o un panel de monitorización: los observa,
+  los relaciona y sabe dónde están.
+- Un almacén de métricas o de logs: guarda veredictos con su evidencia, no series ni flujos.
+- Un gestor de secretos o un cliente SSH: si alguna vez necesita credenciales, viven en el almacén
+  del sistema.
+- Un producto de IA: funciona entero sin agentes, y los agentes son intercambiables.
+- Una base de datos de configuración que hay que teclear entera: lo que nadie mantiene, se desfasa.
+- Un servicio en la nube, multiusuario o con cuentas.
+- Una colección de botones y lanzadores.
+
+## Cómo usar este documento
+
+Ante una funcionalidad o un cambio de arquitectura:
+
+1. ¿Qué pregunta responde, y la sigue respondiendo con 50 proyectos?
+2. ¿Es inventario, evidencia o estado derivado, y en qué fila de «Dónde encaja cada cosa» cae? Si no
+   cae en ninguna, se revisa aquí primero.
+3. ¿Quién mantiene el dato con 50 proyectos: se observa, lo reporta un agente o hay que teclearlo?
+4. ¿Qué principio o regla actual toca? Si toca una regla, se decide de forma explícita y el README
+   cambia en el mismo commit.
+5. ¿Es lo más pequeño que responde la pregunta?
+
+Este documento se corrige cuando cambia la dirección, con una línea en «Historial».
+
+## Historial
+
+- 6 oct 2026: primera versión, a partir del planteamiento original y de su revisión contra `main`
+  (esquema v6) y la rama de la puerta para agentes (esquema v9).
+
+## Planteamiento original
+
+El texto con el que se propuso esta visión, el 6 oct 2026, dirigido a la sesión de Claude Code que
+escribió este documento. Se conserva sin cambios porque es la fuente de la intención; lo de arriba
+es su revisión.
+
+> Quiero dejar registrada una dirección de largo plazo para DevHQ, no como una lista de tareas que
+> haya que implementar ahora mismo, sino como una visión de producto que debería influir poco a poco
+> en la arquitectura y en las decisiones futuras del proyecto. Tú tienes mucho más contexto que yo
+> sobre cómo funciona actualmente DevHQ, qué está implementado, qué limitaciones existen y qué cosas
+> serían razonables o no dentro de la arquitectura actual, así que no quiero que asumas que todo lo
+> siguiente debe construirse tal cual ni de inmediato. Tómalo como intención, principios y posibles
+> líneas de evolución.
+>
+> La idea central es que DevHQ termine convirtiéndose en el centro de control de todo mi ecosistema
+> de desarrollo y, con el tiempo, de buena parte de mi entorno digital relacionado con proyectos.
+> Hoy pueden ser pocos proyectos, servicios y máquinas, pero quiero diseñarlo pensando en un futuro
+> en el que pueda tener decenas de repositorios, aplicaciones, bases de datos, contenedores,
+> servidores, despliegues, dominios, APIs, documentación, agentes de IA y herramientas distintas.
+> DevHQ no debería intentar reemplazar todas esas herramientas ni almacenar absolutamente todo
+> dentro de sí mismo. Su valor debería estar en saber qué existe, dónde está, cómo se relaciona, qué
+> estado tiene y cómo interactuar con ello desde un único lugar.
+>
+> Me gustaría pensar DevHQ como una especie de “control plane” personal. Cada proyecto debería poder
+> convertirse progresivamente en una entidad mucho más rica que simplemente una carpeta o un
+> repositorio: podría conocer su repositorio, ubicación local, tecnologías, servicios asociados,
+> entornos, bases de datos, despliegues, servidores, documentación, estado de salud, últimas
+> actividades y otras relaciones relevantes. La intención es que, si dentro de unos años existen 50
+> proyectos, DevHQ permita mantener una representación viva de todo el ecosistema sin perder el
+> rastro de qué depende de qué, qué sigue activo, qué está desplegado, qué lleva meses abandonado o
+> qué necesita atención.
+>
+> Un principio importante para valorar futuras funcionalidades podría ser preguntarnos: “¿Esto sigue
+> siendo realmente útil si tengo 50 proyectos?”. Funciones pequeñas como abrir una carpeta pueden
+> seguir siendo convenientes, pero el verdadero valor a largo plazo estaría en poder responder
+> preguntas más amplias: qué proyectos están desplegados, cuáles llevan meses sin actividad, qué
+> servicios dependen de cierto servidor, qué aplicaciones utilizan determinada base de datos, qué
+> repositorios tienen cambios sin desplegar, qué servicios están fallando, dónde están los logs
+> relevantes, qué componentes dependen entre sí, etc.
+>
+> El VPS también debería poder integrarse en esta visión. No necesariamente ahora ni de una forma
+> concreta, pero me gustaría que DevHQ eventualmente pudiera representar servidores como parte
+> natural del ecosistema: conocer qué servicios están corriendo, contenedores, uso de CPU/RAM/disco,
+> estado de Nginx u otros servicios, despliegues asociados, health checks, logs y operaciones
+> básicas. La intención no es reinventar SSH, Docker, systemd, GitHub u otras herramientas, sino que
+> DevHQ actúe como una capa de control sobre ellas. Por ejemplo, un proyecto podría estar
+> relacionado con un repositorio de GitHub, un workspace local, un contenedor Docker, una base de
+> datos y un deployment en un VPS, y DevHQ sería quien entienda y muestre esas relaciones.
+>
+> La capa de IA también me interesa mucho, especialmente con el trabajo actual para crear una
+> “puerta” mediante la cual Codex, Claude u otros agentes puedan acceder a DevHQ con el mismo
+> contexto y datos que yo. Pero no quiero que DevHQ dependa estructuralmente de una IA concreta.
+> Preferiría que primero exista una capa sólida y estructurada de información sobre mis proyectos,
+> servicios e infraestructura, y que encima de ella puedan conectarse distintos agentes. Así, un
+> agente podría recibir contexto real de DevHQ y entender algo como: “este proyecto está en este
+> repositorio, actualmente corre en este servidor, utiliza estos servicios, este deployment
+> corresponde a este commit y estos son sus últimos logs”. La IA debería ser una capa intercambiable
+> que aprovecha el conocimiento de DevHQ, no el fundamento del sistema.
+>
+> A largo plazo incluso me gustaría que DevHQ ayudara a preparar contexto para los propios agentes:
+> documentación del proyecto, resúmenes de arquitectura, información sobre dependencias,
+> convenciones, instrucciones para agentes, estado actual del sistema, etc. Sería interesante que
+> pudiera facilitar que Codex, Claude u otro agente entren a un proyecto sin empezar prácticamente
+> desde cero cada vez.
+>
+> También quiero evitar que DevHQ se convierta únicamente en una colección de botones o accesos
+> directos. Las acciones son importantes, pero el corazón del proyecto debería ser el modelo de
+> información y las relaciones entre las cosas. Si el día de mañana cambio Claude por otro agente,
+> GitHub por otra plataforma, Docker por otra tecnología o una base de datos por otra, DevHQ debería
+> seguir teniendo sentido porque está construido alrededor de mis proyectos y mi infraestructura, no
+> alrededor de proveedores concretos.
+>
+> En resumen, la dirección que quiero explorar es que DevHQ evolucione gradualmente desde una
+> herramienta para gestionar proyectos hacia una capa de control, contexto y memoria de todo mi
+> ecosistema de desarrollo. No hace falta implementar todo esto ahora. De hecho, probablemente
+> muchas ideas cambien conforme avance el proyecto. Lo que sí me gustaría es que esta visión quede
+> registrada en el README o, preferiblemente, en algún documento de ideas/roadmap/vision a futuro
+> para que podamos consultarla cuando haya que tomar decisiones arquitectónicas y valorar nuevas
+> funcionalidades.
+>
+> Con el contexto que ya tienes del proyecto actual, revisa estas ideas críticamente: conserva lo
+> que tenga sentido, adapta lo que choque con la arquitectura actual y evita introducir complejidad
+> prematura. Si consideras que esta visión merece un archivo específico dentro del repositorio, crea
+> o actualiza el documento que mejor encaje, pero trátalo principalmente como una guía de dirección
+> futura y no como un backlog inmediato.
