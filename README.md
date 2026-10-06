@@ -285,7 +285,18 @@ sesión y la termina al cerrarla (al cerrarse stdin): no abre ningún puerto, no
 queda nada corriendo ni guarda credenciales. Abre el mismo `inventory.sqlite3` que la app, en el
 directorio de datos que Tauri le da (`%APPDATA%\com.devhq.desktop` en Windows; un test lo compara con
 el que resuelve Tauri), o el que se le indique con `--database <ruta>`. Si ahí no hay inventario, lo
-dice y no crea uno vacío donde tu DevHQ no lo encontraría. Por ahora solo lee:
+dice y no crea uno vacío donde tu DevHQ no lo encontraría.
+
+Hasta dónde llega un agente lo decides tú en Settings → **Agent gate**: **Off** (por defecto, también
+tras actualizar), **Read only** o **Read and write**. La elección se guarda en el inventario
+(`agent_access`), porque la ventana la cambia y la puerta, otro proceso, la lee en cada llamada: se
+aplica de inmediato, también a una sesión ya abierta. No es una barrera de seguridad (el archivo es
+tuyo y está en tu disco) sino de intención: ningún agente lee ni escribe en tu inventario sin que lo
+hayas decidido. Con la puerta cerrada solo responde `status`, sin decir qué contiene el inventario,
+para que el agente pueda explicarte dónde abrirla; las demás herramientas responden
+`access_denied`. Settings también muestra el comando de registro con la ruta real del ejecutable,
+para copiarlo; DevHQ nunca lo ejecuta ni toca la configuración de Claude Code. Por ahora la puerta
+solo lee, así que Read and write funciona como Read only:
 
 | Herramienta    | Qué responde                                                                                                                                                                                 |
 | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -528,7 +539,7 @@ asíncrono porque lanza la tarea que alimenta el `Channel`: Tauri ejecuta un com
 que recibe la petición (el principal), que no tiene runtime de Tokio, y lanzarla desde ahí provocaba un
 pánico que en Linux abortaba el proceso al abrir Mi inventario (lo comprueba `npm run e2e:native`). Abre
 `inventory.sqlite3` en el directorio de datos de la aplicación que proporciona Tauri; las
-migraciones transaccionales v1→v7 usan `PRAGMA user_version` y una versión más nueva se
+migraciones transaccionales v1→v8 usan `PRAGMA user_version` y una versión más nueva se
 rechaza en vez de adivinarse. Cada apertura solo lee esa versión: únicamente una base antigua
 toma el lock de escritura para migrar, y dentro vuelve a leerla por si otra conexión ya lo
 hizo. La base usa write-ahead logging (WAL): un lector trabaja sobre el último estado
@@ -573,7 +584,8 @@ añade dos índices parciales sobre los registros manuales; ninguna fila cambia.
 `observations`, `incidents` y `events` como la v4 para admitir el origen `agent` y la columna
 `agent`, que un CHECK exige exactamente con ese origen; las filas existentes conservan su origen
 sin agente. Sus índices parciales pasan a cubrir los registros manuales y de agentes, que se cargan
-siempre completos. Los
+siempre completos. La v8 solo añade `agent_access`, una fila como mucho con el modo de la puerta
+para agentes; ninguna fila cambia y, sin fila, la puerta está cerrada. Los
 registros usan dos columnas con clave foránea (`application_id`/`resource_id`) y un CHECK
 que exige exactamente una; las referencias de historial son `ON DELETE RESTRICT`, así que
 nada puede borrar un sujeto y dejar evidencia huérfana; los casos de uso de borrado lo
@@ -605,8 +617,8 @@ cuentas, cloud, sync, telemetría, scanners, automation engine, Runner ni backgr
    semántica de vigencia.
 2. Hecho: supervisión cancelable de esas comprobaciones, solo con DevHQ abierto.
 3. En curso: la [puerta para agentes](#puerta-para-agentes), con la que un agente lee y mantiene el
-   inventario cuando se lo pides, con su procedencia siempre visible. Ya lee; escribir, el
-   interruptor de acceso y que la ventana abierta note sus cambios siguen en diseño:
+   inventario cuando se lo pides, con su procedencia siempre visible. Ya lee, con el acceso que
+   eliges en Settings; escribir y que la ventana abierta note sus cambios siguen en diseño:
    [docs/puerta-para-agentes.md](docs/puerta-para-agentes.md).
 4. Después, automatizaciones con resultado e historial, y seguridad con almacén nativo de
    credenciales y evidencias contextualizadas.
@@ -621,7 +633,7 @@ vivir en componentes React, localStorage ni texto plano en SQLite.
 Las pruebas cubren navegación, tabs/teclado, filtros, rutas desconocidas, relaciones
 compartidas, cronología de la demo, salud desconocida, persistencia tras reapertura,
 rechazo de referencias inválidas sin escrituras parciales, restricciones del esquema,
-migraciones v1/v2→v3, v3→v4, v4→v5, v5→v6 y v6→v7 (incluida la negativa a confirmar relaciones rotas),
+migraciones v1/v2→v3, v3→v4, v4→v5, v5→v6, v6→v7 y v7→v8 (incluida la negativa a confirmar relaciones rotas),
 vigencia y sustitución de observaciones de ambos orígenes, orden de atención, errores de
 carga visibles y recuperables, comprobaciones contra un servidor local (estado esperado,
 500, redirect, bucle de redirects, tiempo agotado, conexión rechazada, dominio `.invalid`

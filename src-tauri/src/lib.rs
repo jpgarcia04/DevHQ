@@ -1,3 +1,4 @@
+mod access;
 mod attention;
 mod backup;
 pub mod gate;
@@ -44,6 +45,22 @@ async fn list_backups(
     path: tauri::State<'_, InventoryPath>,
 ) -> Result<backup::BackupFolder, inventory::ApiError> {
     backup::list(&path.0)
+}
+
+/// Whether agents may use the agent gate, and the executable that registers it.
+#[tauri::command]
+fn agent_access(
+    path: tauri::State<'_, InventoryPath>,
+) -> Result<access::AgentAccess, inventory::ApiError> {
+    access::agent_access(&path.0)
+}
+
+#[tauri::command]
+fn set_agent_access(
+    path: tauri::State<'_, InventoryPath>,
+    mode: String,
+) -> Result<access::AgentAccess, inventory::ApiError> {
+    access::set_agent_access(&path.0, &mode)
 }
 
 #[tauri::command]
@@ -205,6 +222,8 @@ fn commands<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Sen
         data_location,
         backup_inventory,
         list_backups,
+        agent_access,
+        set_agent_access,
         save_resource,
         save_application,
         delete_application,

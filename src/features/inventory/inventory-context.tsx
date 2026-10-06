@@ -1,6 +1,8 @@
 import { createContext, useContext } from 'react'
 import type { EntityRef, Observation } from '@/domain/models'
 import type {
+  AgentAccess,
+  AgentAccessMode,
   ApplicationInput,
   Backup,
   BackupFolder,
@@ -35,6 +37,9 @@ export interface InventoryContextValue {
   backupInventory: () => Promise<Backup>
   /** The files in the backups folder; it reads none of them. */
   listBackups: () => Promise<BackupFolder>
+  /** Whether agents may use the agent gate; it reads nothing else. */
+  agentAccess: () => Promise<AgentAccess>
+  setAgentAccess: (mode: AgentAccessMode) => Promise<AgentAccess>
   saveResource: (input: ResourceInput) => Promise<void>
   saveApplication: (input: ApplicationInput) => Promise<void>
   deleteApplication: (id: string) => Promise<void>

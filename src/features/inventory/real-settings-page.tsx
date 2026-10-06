@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { PageHeader } from '@/components/page-header'
 import { Button } from '@/components/ui/button'
+import { AgentGate } from './agent-gate'
 import { Backups } from './backups'
 import { inventoryError, type DataLocation } from './inventory-api'
 import { useInventory } from './inventory-context'
@@ -123,6 +124,7 @@ export function RealSettingsPage() {
         description="Your data is stored locally on this device."
       />
       <DatabaseFile />
+      <AgentGate />
       <section className="panel max-w-3xl p-6">
         <h2 className="section-heading">Data source</h2>
         <p className="mt-4 text-xs leading-6 text-muted-foreground">

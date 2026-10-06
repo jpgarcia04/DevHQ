@@ -33,6 +33,8 @@ const calls: Record<keyof typeof inventoryApi, () => Promise<unknown>> = {
   dataLocation: () => inventoryApi.dataLocation(),
   backupInventory: () => inventoryApi.backupInventory(),
   listBackups: () => inventoryApi.listBackups(),
+  agentAccess: () => inventoryApi.agentAccess(),
+  setAgentAccess: () => inventoryApi.setAgentAccess('read'),
   saveResource: () =>
     inventoryApi.saveResource({
       id: 'host',
@@ -330,6 +332,12 @@ const dataLocation: Answer<'dataLocation'> = {
   storedAt: `${packaged}\\inventory.sqlite3`,
 }
 
+const agentAccess: Answer<'agentAccess'> = {
+  mode: 'read',
+  changedAt: at('09:15'),
+  executable: 'C:\\Users\\Juan Pablo\\AppData\\Local\\DevHQ\\devhq.exe',
+}
+
 const backup: Answer<'backupInventory'> = {
   name: 'inventory-20260101T100500.123Z.sqlite3',
   path: `${folder}\\backups\\inventory-20260101T100500.123Z.sqlite3`,
@@ -391,6 +399,7 @@ const answers: Record<string, unknown> = {
   data_location: dataLocation,
   backup_inventory: backup,
   list_backups: backups,
+  agent_access: agentAccess,
   watch_http_monitor: supervision,
 }
 

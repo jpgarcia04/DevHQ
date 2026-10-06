@@ -8,6 +8,7 @@
 //! transport); stderr is free for diagnostics. Every tool goes through the same use cases as the
 //! window's commands, with the same validation, limits and transactions.
 
+use crate::access;
 use crate::attention::{self, AttentionItem};
 use crate::http_check::HttpCheck;
 use crate::inventory::{self, ApiError, Inventory};
@@ -165,11 +166,12 @@ impl Session {
             Some(_) => return Err((INVALID_PARAMS, "Tool arguments must be an object.".into())),
         };
         let outcome = match name {
+            // Always answered, so that an agent can tell the person how to open the gate.
             "status" => self.status(),
-            "attention" => self.attention(),
-            "list_systems" => self.list_systems(),
-            "get_system" => self.get_system(arguments),
-            "history" => self.history(arguments),
+            "attention" => self.allow("read").and_then(|()| self.attention()),
+            "list_systems" => self.allow("read").and_then(|()| self.list_systems()),
+            "get_system" => self.allow("read").and_then(|()| self.get_system(arguments)),
+            "history" => self.allow("read").and_then(|()| self.history(arguments)),
             other => return Err((INVALID_PARAMS, format!("Unknown tool {other}."))),
         };
         // A tool that fails tells the agent why, as the window would tell the person; it is a
@@ -187,22 +189,53 @@ impl Session {
         })
     }
 
-    /// The inventory, but only one that exists: the gate never creates an empty inventory where
-    /// the person's DevHQ would not find it.
-    fn inventory(&self) -> Result<Inventory, ApiError> {
-        if !self.database.is_file() {
-            return Err(ApiError::invalid(format!(
+    /// The gate never creates an empty inventory where the person's DevHQ would not find it.
+    fn existing(&self) -> Result<(), ApiError> {
+        if self.database.is_file() {
+            Ok(())
+        } else {
+            Err(ApiError::invalid(format!(
                 "There is no DevHQ inventory at {}. Open DevHQ once to create it, or start the gate with --database <path>.",
                 self.database.display()
-            )));
+            )))
         }
+    }
+
+    /// Whether the person lets agents `read` or `write` through the gate, checked on every call
+    /// so that a change in Settings applies at once.
+    fn allow(&self, need: &str) -> Result<(), ApiError> {
+        self.existing()?;
+        let mode = access::mode(&inventory::open(&self.database)?)?;
+        let enough = match need {
+            "read" => mode != "off",
+            _ => mode == "write",
+        };
+        match (enough, mode.as_str()) {
+            (true, _) => Ok(()),
+            (false, "off") => Err(ApiError::denied(
+                "The person has not opened the agent gate. They can choose Read only or Read and write in DevHQ, under Settings → Agent gate.",
+            )),
+            (false, _) => Err(ApiError::denied(
+                "The person opened the agent gate for reading only. To let agents change the inventory, they can choose Read and write in DevHQ, under Settings → Agent gate.",
+            )),
+        }
+    }
+
+    fn inventory(&self) -> Result<Inventory, ApiError> {
+        self.existing()?;
         inventory::list(&self.database)
     }
 
     fn status(&self) -> Result<Value, ApiError> {
         let location = inventory::DataLocation::of(&self.database);
         let exists = self.database.is_file();
-        let counts = if exists {
+        let access = if exists {
+            Some(access::mode(&inventory::open(&self.database)?)?)
+        } else {
+            None
+        };
+        // What the inventory holds is for agents the person let in.
+        let counts = if access.as_deref().is_some_and(|mode| mode != "off") {
             let inventory = self.inventory()?;
             json!({ "applications": inventory.applications.len(), "resources": inventory.resources.len() })
         } else {
@@ -220,6 +253,7 @@ impl Session {
             "database": location,
             "exists": exists,
             "schemaVersion": exists.then_some(inventory::SCHEMA_VERSION),
+            "access": access,
             "counts": counts,
             "client": self.client,
             "notes": notes,
@@ -602,7 +636,7 @@ fn tools() -> Vec<Value> {
         read_only(
             "status",
             "DevHQ status",
-            "Which inventory file the gate opened, where the system really keeps it, its schema version and how many systems it holds, and what the gate cannot know.",
+            "Which inventory file the gate opened, where the system really keeps it, its schema version, whether the person lets agents read or write through the gate (`access`: off, read or write), how many systems it holds, and what the gate cannot know. Always answered, even with the gate off.",
             json!({}),
             &[],
         ),
@@ -753,6 +787,7 @@ mod tests {
             },
         )
         .unwrap();
+        crate::access::set_agent_access(path, "read").unwrap();
         (shop.id, host.id)
     }
 
@@ -1093,6 +1128,46 @@ mod tests {
             json!({ "type": "resource", "id": host, "records": "notes", "before": "x" })
         )
         .contains("records must be"));
+        remove(&path);
+    }
+
+    #[test]
+    fn answers_only_as_far_as_the_person_opened_the_gate() {
+        let path = path();
+        seed(&path);
+        crate::access::set_agent_access(&path, "off").unwrap();
+        // Off: only status answers, and says how to open the gate, without what it holds.
+        let status = answer(&path, "status", json!({}));
+        assert_eq!(status["access"], "off");
+        assert_eq!(status["counts"], Value::Null);
+        for tool in ["attention", "list_systems"] {
+            let refused = refusal(&path, tool, json!({}));
+            assert!(refused.contains("Settings → Agent gate"), "{refused}");
+            assert!(refused.contains("access_denied"), "{refused}");
+        }
+        assert!(refusal(
+            &path,
+            "get_system",
+            json!({ "type": "resource", "name": "Web host" })
+        )
+        .contains("not opened the agent gate"));
+        // A change in Settings applies to the very next call of a session already running.
+        let mut session = Session {
+            database: path.clone(),
+            client: None,
+        };
+        let attention =
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": { "name": "attention" } })
+                .to_string();
+        assert_eq!(
+            session.handle(&attention).unwrap()["result"]["isError"],
+            true
+        );
+        crate::access::set_agent_access(&path, "read").unwrap();
+        let opened = session.handle(&attention).unwrap();
+        assert_eq!(opened["result"]["isError"], false);
+        assert_eq!(opened["result"]["structuredContent"]["status"], "attention");
+        assert_eq!(answer(&path, "status", json!({}))["access"], "read");
         remove(&path);
     }
 

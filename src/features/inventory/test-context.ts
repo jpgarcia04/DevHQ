@@ -46,6 +46,16 @@ export function inventoryContext(
       directory: '/home/you/.local/share/com.devhq.desktop/backups',
       files: [],
     })),
+    agentAccess: vi.fn(async () => ({
+      mode: 'off' as const,
+      changedAt: null,
+      executable: '/opt/devhq/devhq',
+    })),
+    setAgentAccess: vi.fn(async (mode: 'off' | 'read' | 'write') => ({
+      mode,
+      changedAt: new Date(testNow).toISOString(),
+      executable: '/opt/devhq/devhq',
+    })),
     saveResource: vi.fn(async () => {}),
     saveApplication: vi.fn(async () => {}),
     deleteApplication: vi.fn(async () => {}),

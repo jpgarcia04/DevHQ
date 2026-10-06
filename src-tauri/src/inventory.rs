@@ -39,6 +39,13 @@ impl ApiError {
             message: message.into(),
         }
     }
+    /// The person has not opened the agent gate for this (see `access`). Nothing was done.
+    pub(crate) fn denied(message: impl Into<String>) -> Self {
+        Self {
+            code: "access_denied",
+            message: message.into(),
+        }
+    }
     /// No backup was made, or one is already being made. The inventory itself is untouched.
     pub(crate) fn backup(message: impl Into<String>) -> Self {
         Self {
@@ -177,7 +184,7 @@ pub fn stored_at(path: &Path) -> Option<String> {
 
 /// Windows resolves to a verbatim path (`\\?\C:\…`, `\\?\UNC\server\share\…`); File Explorer and
 /// people use the plain form.
-fn plain(path: &Path) -> String {
+pub(crate) fn plain(path: &Path) -> String {
     let text = path.display().to_string();
     if let Some(share) = text.strip_prefix(r"\\?\UNC\") {
         format!(r"\\{share}")
@@ -188,8 +195,8 @@ fn plain(path: &Path) -> String {
     }
 }
 
-pub(crate) const SCHEMA_VERSION: i64 = 7;
-const MIGRATIONS: [(i64, &str); 7] = [
+pub(crate) const SCHEMA_VERSION: i64 = 8;
+const MIGRATIONS: [(i64, &str); 8] = [
     (1, include_str!("../migrations/001_inventory.sql")),
     (2, include_str!("../migrations/002_inventory_details.sql")),
     (3, include_str!("../migrations/003_operational_records.sql")),
@@ -197,6 +204,7 @@ const MIGRATIONS: [(i64, &str); 7] = [
     (5, include_str!("../migrations/005_http_monitoring.sql")),
     (6, include_str!("../migrations/006_history_window.sql")),
     (7, include_str!("../migrations/007_agent_provenance.sql")),
+    (8, include_str!("../migrations/008_agent_access.sql")),
 ];
 
 /// Opens the inventory, upgrading its schema first if it is older than this build's.
@@ -2046,7 +2054,7 @@ pub(crate) mod tests {
         let version: i64 = db
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 7);
+        assert_eq!(version, SCHEMA_VERSION);
         for (table, rows) in tables.iter().zip(&before) {
             assert_eq!(&dump(&db, table), rows, "{table}");
         }
@@ -2162,6 +2170,59 @@ pub(crate) mod tests {
             "SELECT name FROM pragma_table_info('events') WHERE name = 'agent'"
         )
         .is_empty());
+        drop(db);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn upgrades_v7_closed_to_agents_without_changing_any_row() {
+        let path = path();
+        let db = database_at(&path, 7);
+        db.execute_batch(
+            "INSERT INTO resources (id, name, kind, description, operating_system) VALUES ('host', 'Host', 'server', '', 'Linux');
+             INSERT INTO applications (id, name, lifecycle, description, version) VALUES ('shop', 'Shop', 'production', 'Store', '2.0');
+             INSERT INTO components (id, application_id, name, kind, resource_id) VALUES ('api', 'shop', 'API', 'backend', 'host');
+             INSERT INTO observations (id, resource_id, result, summary, source, observed_at, valid_until, recorded_at, agent)
+               VALUES ('obs-agent', 'host', 'healthy', 'Looked fine', 'agent', 500, 900, 600, 'claude-code');
+             INSERT INTO events (id, resource_id, kind, outcome, title, detail, source, observation_id, occurred_at, recorded_at, agent)
+               VALUES ('evt-agent', 'host', 'observation', 'success', 'Observation: Healthy', 'Looked fine', 'agent', 'obs-agent', 500, 600, 'claude-code');
+             INSERT INTO incidents (id, application_id, title, description, severity, status, source, opened_at, updated_at)
+               VALUES ('inc', 'shop', 'Down', '', 'critical', 'open', 'manual', 700, 700);
+             INSERT INTO http_checks (resource_id, url, expected_status, timeout_seconds, valid_for_minutes, updated_at, monitor, monitor_interval_minutes)
+               VALUES ('host', 'http://host/health', 200, 5, 15, 800, 'active', 5);",
+        )
+        .unwrap();
+        let tables = [
+            "resources",
+            "applications",
+            "components",
+            "observations",
+            "incidents",
+            "events",
+            "http_checks",
+        ];
+        let before: Vec<_> = tables.iter().map(|table| dump(&db, table)).collect();
+        drop(db);
+
+        // Upgraded, the inventory is closed to agents until the person opens it.
+        assert_eq!(crate::access::agent_access(&path).unwrap().mode, "off");
+        let db = Connection::open(&path).unwrap();
+        let version: i64 = db
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 8);
+        for (table, rows) in tables.iter().zip(&before) {
+            assert_eq!(&dump(&db, table), rows, "{table}");
+        }
+        assert!(dump(&db, "agent_access").is_empty());
+        drop(db);
+        let db = open(&path).unwrap();
+        assert!(db
+            .execute("INSERT INTO agent_access VALUES (1, 'admin', 0)", [])
+            .is_err());
+        assert!(db
+            .execute("INSERT INTO agent_access VALUES (1, 'read', 0)", [])
+            .is_ok());
         drop(db);
         std::fs::remove_file(path).unwrap();
     }

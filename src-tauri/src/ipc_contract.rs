@@ -13,6 +13,7 @@
 //!   must equal it; Vitest checks that a value of the type the window expects equals it too.
 
 use super::{commands, manage};
+use crate::access::AgentAccess;
 use crate::backup::{Backup, BackupCounts, BackupFile, BackupFolder};
 use crate::http_check::{HttpCheck, HttpCheckInput};
 use crate::inventory::{
@@ -159,7 +160,9 @@ fn arguments(command: &str) -> Vec<(&'static str, Reader)> {
     let subject: Reader = read_completely::<Subject>;
     let text: Reader = read_completely::<String>;
     match command {
-        "list_inventory" | "data_location" | "backup_inventory" | "list_backups" => vec![],
+        "list_inventory" | "data_location" | "backup_inventory" | "list_backups"
+        | "agent_access" => vec![],
+        "set_agent_access" => vec![("mode", text)],
         "save_resource" => vec![("input", read_completely::<ResourceInput>)],
         "save_application" => vec![("input", read_completely::<ApplicationInput>)],
         "delete_application" | "delete_resource" => vec![("id", text)],
@@ -476,6 +479,14 @@ fn every_answer_has_the_shape_the_window_expects() {
                 database: format!(r"{folder}\inventory.sqlite3"),
                 directory: folder.into(),
                 stored_at: Some(format!(r"{packaged}\inventory.sqlite3")),
+            }),
+        ),
+        (
+            "agent_access".to_owned(),
+            value(&AgentAccess {
+                mode: "read".into(),
+                changed_at: Some(at("09:15")),
+                executable: Some(r"C:\Users\Juan Pablo\AppData\Local\DevHQ\devhq.exe".into()),
             }),
         ),
         ("watch_http_monitor".to_owned(), value(&supervision)),

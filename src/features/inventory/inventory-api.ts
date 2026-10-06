@@ -114,6 +114,17 @@ export interface InventorySnapshot {
   automatedHistory: AutomatedHistory
 }
 
+/** How far agents may act through the agent gate (`devhq --mcp`). Off until the person opens it. */
+export type AgentAccessMode = 'off' | 'read' | 'write'
+
+export interface AgentAccess {
+  mode: AgentAccessMode
+  /** When the person last changed it; null while it was never changed (and is off). */
+  changedAt: string | null
+  /** This executable, for the command that registers the gate; null if the system cannot say. */
+  executable: string | null
+}
+
 /** Where the inventory lives on this device, so that it can be backed up. */
 export interface DataLocation {
   /** The SQLite file. Once DevHQ is closed it holds everything on its own. */
@@ -226,6 +237,9 @@ export const inventoryApi = {
   backupInventory: () => invoke<Backup>('backup_inventory'),
   /** The files in the backups folder, as found there; it reads none of them. */
   listBackups: () => invoke<BackupFolder>('list_backups'),
+  agentAccess: () => invoke<AgentAccess>('agent_access'),
+  /** The gate reads it on every call, so the change applies at once. */
+  setAgentAccess: (mode: AgentAccessMode) => invoke<AgentAccess>('set_agent_access', { mode }),
   saveResource: (input: ResourceInput) => invoke<InventoryResource>('save_resource', { input }),
   saveApplication: (input: ApplicationInput) =>
     invoke<InventoryApplication>('save_application', { input }),

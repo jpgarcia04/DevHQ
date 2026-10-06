@@ -129,6 +129,8 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
         dataLocation: inventoryApi.dataLocation,
         backupInventory: inventoryApi.backupInventory,
         listBackups: inventoryApi.listBackups,
+        agentAccess: inventoryApi.agentAccess,
+        setAgentAccess: inventoryApi.setAgentAccess,
         saveResource: (input) => persist(inventoryApi.saveResource(input), 'Resource'),
         saveApplication: (input) => persist(inventoryApi.saveApplication(input), 'Application'),
         deleteApplication: (id) =>
