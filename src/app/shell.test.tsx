@@ -20,6 +20,7 @@ const incident: RecordedIncident = {
   openedAt: minutesFromNow(-5),
   updatedAt: minutesFromNow(-5),
   resolvedAt: null,
+  agent: null,
 }
 
 function incidentsLink(value: InventoryContextValue) {

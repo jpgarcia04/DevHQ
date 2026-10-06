@@ -47,6 +47,7 @@ function observation(
     validUntil: minutesFromNow(validUntilMinutes),
     recordedAt: minutesFromNow(-observedMinutesAgo),
     http,
+    agent: null,
   }
 }
 
@@ -63,6 +64,7 @@ function eventFor(item: Observation, title: string): RecordedEvent {
     incidentId: null,
     occurredAt: item.observedAt,
     recordedAt: item.recordedAt,
+    agent: null,
   }
 }
 

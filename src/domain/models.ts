@@ -64,8 +64,9 @@ export interface ActivityEvent {
 }
 
 // Records kept by DevHQ for the real inventory. A person types manual entries; an HTTP
-// check the person runs produces automated observations. Incidents are always manual.
-export type RecordSource = 'manual' | 'http'
+// check DevHQ runs produces automated observations; an agent the person asks to act through
+// the agent gate reports records of its own. Only observations and their events are automated.
+export type RecordSource = 'manual' | 'http' | 'agent'
 export type ObservationResult = Exclude<HealthStatus, 'unknown'>
 export type RecordedEventKind =
   'observation' | 'incident' | 'deployment' | 'backup' | 'maintenance' | 'note'
@@ -81,8 +82,10 @@ export interface Observation {
   observedAt: string
   validUntil: string
   recordedAt: string
-  /** Technical evidence of an HTTP check; null for manual entries. */
+  /** Technical evidence of an HTTP check; null for every other source. */
   http: HttpEvidence | null
+  /** The agent that reported it, as its client named itself; null unless the source is agent. */
+  agent: string | null
 }
 
 /** A redirect the check followed: the status that sent it and where it pointed. */
@@ -112,10 +115,12 @@ export interface RecordedIncident {
   description: string
   severity: IncidentSeverity
   status: IncidentStatus
-  source: 'manual'
+  /** Who opened it; each later change of status is an event with its own source. */
+  source: Exclude<RecordSource, 'http'>
   openedAt: string
   updatedAt: string
   resolvedAt: string | null
+  agent: string | null
 }
 
 export interface RecordedEvent {
@@ -130,6 +135,7 @@ export interface RecordedEvent {
   incidentId: string | null
   occurredAt: string
   recordedAt: string
+  agent: string | null
 }
 
 export interface Automation {

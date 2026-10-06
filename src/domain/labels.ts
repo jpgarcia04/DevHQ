@@ -33,6 +33,7 @@ export const incidentStatusLabels: Record<IncidentStatus, string> = {
 export const sourceLabels: Record<RecordSource, string> = {
   manual: 'Manual entry',
   http: 'Automated · HTTP check',
+  agent: 'Agent',
 }
 export const eventKindLabels: Record<RecordedEventKind, string> = {
   observation: 'Observation',

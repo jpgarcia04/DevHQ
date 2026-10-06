@@ -323,6 +323,7 @@ pub async fn run_http_check(
             valid_for_minutes: check.valid_for_minutes,
             recorded_at: observed_at,
             http: Some(&evidence),
+            reporter: None,
             lifeline: Some(lifeline),
         },
     )
@@ -1090,6 +1091,7 @@ pub(crate) mod tests {
                     error: None,
                     redirects: vec![],
                 }),
+                reporter: None,
                 lifeline: None,
             },
         )
@@ -1125,6 +1127,7 @@ pub(crate) mod tests {
                     valid_for_minutes: 60,
                     recorded_at: records::now_ms(),
                     http: Some(&evidence),
+                    reporter: None,
                     lifeline: Some(lifeline),
                 },
             )

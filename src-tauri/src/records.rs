@@ -18,17 +18,61 @@ const INCIDENT_STATUSES: &[&str] = &["open", "investigating", "resolved"];
 // Observation and incident events are written by their own use cases, never by hand.
 const MANUAL_EVENT_KINDS: &[&str] = &["deployment", "backup", "maintenance", "note"];
 const EVENT_OUTCOMES: &[&str] = &["success", "warning", "failure", "info"];
-// Who produced a record: a person, or DevHQ running an HTTP check the person asked for.
-// Incidents and hand-logged events are always manual.
+// Who produced a record: a person, DevHQ running an HTTP check, or an agent the person asked to
+// act through the agent gate. HTTP checks only produce observations and their events.
 pub(crate) const MANUAL: &str = "manual";
 pub(crate) const HTTP: &str = "http";
+pub(crate) const AGENT: &str = "agent";
+/// Longest agent name kept, in characters as the window counts them.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the agent gate is what acts as an agent")
+)]
+pub(crate) const MAX_AGENT: usize = 120;
 pub(crate) const MAX_VALIDITY_MINUTES: i64 = 30 * 24 * 60;
 // Tolerates small clock differences; anything later is a claim about the future.
 const CLOCK_SKEW_MS: i64 = 60_000;
 
-const OBSERVATION_SELECT: &str = "SELECT id, application_id, resource_id, result, summary, source, observed_at, valid_until, recorded_at, http_url, http_expected_status, http_status, http_latency_ms, http_error, http_redirects FROM observations";
-const INCIDENT_SELECT: &str = "SELECT id, application_id, resource_id, title, description, severity, status, source, opened_at, updated_at, resolved_at FROM incidents";
-const EVENT_SELECT: &str = "SELECT id, application_id, resource_id, kind, outcome, title, detail, source, observation_id, incident_id, occurred_at, recorded_at FROM events";
+const OBSERVATION_SELECT: &str = "SELECT id, application_id, resource_id, result, summary, source, observed_at, valid_until, recorded_at, http_url, http_expected_status, http_status, http_latency_ms, http_error, http_redirects, agent FROM observations";
+const INCIDENT_SELECT: &str = "SELECT id, application_id, resource_id, title, description, severity, status, source, opened_at, updated_at, resolved_at, agent FROM incidents";
+const EVENT_SELECT: &str = "SELECT id, application_id, resource_id, kind, outcome, title, detail, source, observation_id, incident_id, occurred_at, recorded_at, agent FROM events";
+
+/// Who reports a record: the person at the window, or an agent acting for them through the
+/// agent gate, named as its client declared itself (unverified, and shown as such).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Actor {
+    Person,
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the agent gate is what acts as an agent")
+    )]
+    Agent(String),
+}
+
+impl Actor {
+    /// An agent, by the name its client declared: trimmed, and refused if empty or too long.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the agent gate is what acts as an agent")
+    )]
+    pub(crate) fn agent(name: &str) -> Result<Self, ApiError> {
+        required_text(name, MAX_AGENT, "Agent name").map(Actor::Agent)
+    }
+
+    pub(crate) fn source(&self) -> &'static str {
+        match self {
+            Actor::Person => MANUAL,
+            Actor::Agent(_) => AGENT,
+        }
+    }
+
+    pub(crate) fn name(&self) -> Option<&str> {
+        match self {
+            Actor::Person => None,
+            Actor::Agent(name) => Some(name),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(tag = "type", rename_all = "camelCase")]
@@ -88,8 +132,10 @@ pub struct Observation {
     pub observed_at: String,
     pub valid_until: String,
     pub recorded_at: String,
-    /// Technical evidence of an HTTP check; absent for manual entries.
+    /// Technical evidence of an HTTP check; absent for every other source.
     pub http: Option<HttpEvidence>,
+    /// The agent that reported it, as its client named itself; only for the agent source.
+    pub agent: Option<String>,
 }
 
 /// What an HTTP check requested and what came back. `status` is the last status received
@@ -149,6 +195,8 @@ pub struct Incident {
     pub opened_at: String,
     pub updated_at: String,
     pub resolved_at: Option<String>,
+    /// The agent that opened it; only for the agent source.
+    pub agent: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -186,6 +234,8 @@ pub struct Event {
     pub incident_id: Option<String>,
     pub occurred_at: String,
     pub recorded_at: String,
+    /// The agent that reported it; only for the agent source.
+    pub agent: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -277,6 +327,7 @@ fn observation_from_row(row: &Row) -> rusqlite::Result<Observation> {
         valid_until: time_at(row, 7)?,
         recorded_at: time_at(row, 8)?,
         http,
+        agent: row.get(15)?,
     })
 }
 
@@ -292,6 +343,7 @@ fn incident_from_row(row: &Row) -> rusqlite::Result<Incident> {
         opened_at: time_at(row, 8)?,
         updated_at: time_at(row, 9)?,
         resolved_at: optional_time_at(row, 10)?,
+        agent: row.get(11)?,
     })
 }
 
@@ -308,6 +360,7 @@ fn event_from_row(row: &Row) -> rusqlite::Result<Event> {
         incident_id: row.get(9)?,
         occurred_at: time_at(row, 10)?,
         recorded_at: time_at(row, 11)?,
+        agent: row.get(12)?,
     })
 }
 
@@ -344,10 +397,11 @@ pub(crate) struct Records {
     pub automated_history: AutomatedHistory,
 }
 
-/// Automated results a snapshot carries per application or resource. Manual records grow as
-/// fast as a person types and are always loaded in full; supervision can add a result every
-/// 5 minutes for as long as DevHQ is open, so a snapshot carries only the latest ones. Older
-/// results stay in the database, untouched.
+/// Automated results a snapshot carries per application or resource. Reported records (by the
+/// person, or by an agent the person asked) grow only when someone reports something and are
+/// always loaded in full; supervision can add a result every 5 minutes for as long as DevHQ is
+/// open, so a snapshot carries only the latest ones. Older results stay in the database,
+/// untouched.
 pub(crate) const AUTOMATED_HISTORY_LIMIT: i64 = 200;
 
 /// What a snapshot leaves out, so that the window can say so instead of implying there is
@@ -361,7 +415,7 @@ pub struct AutomatedHistory {
 }
 
 /// From `since` on, the subject's automated observations and their events are complete;
-/// before it, only its manual records are loaded.
+/// before it, only its reported records (manual or by an agent) are loaded.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct TruncatedHistory {
@@ -388,13 +442,14 @@ const WINDOW_EVENTS: [&str; 2] = [
     "SELECT rowid FROM events WHERE resource_id = ?1 AND source = 'http' AND occurred_at >= ?2
        AND +observation_id IN (SELECT id FROM observations WHERE rowid IN (SELECT value FROM json_each(?3)))",
 ];
-// Every manual record, plus the automated ones chosen above (a JSON array of rowids).
+// Every reported record, by the person or an agent, plus the automated ones chosen above (a
+// JSON array of rowids). The condition is the one of the partial indexes, word for word.
 const WINDOWED_OBSERVATIONS: &str = "WHERE rowid IN (
-       SELECT rowid FROM observations WHERE source = 'manual'
+       SELECT rowid FROM observations WHERE source IN ('manual', 'agent')
        UNION ALL SELECT value FROM json_each(?1))
      ORDER BY observed_at DESC, recorded_at DESC, rowid DESC";
 const WINDOWED_EVENTS: &str = "WHERE rowid IN (
-       SELECT rowid FROM events WHERE source = 'manual'
+       SELECT rowid FROM events WHERE source IN ('manual', 'agent')
        UNION ALL SELECT value FROM json_each(?1))
      ORDER BY occurred_at DESC, recorded_at DESC, rowid DESC";
 
@@ -502,6 +557,7 @@ pub(crate) fn ensure_subject(tx: &Transaction, subject: &Subject) -> Result<(), 
 struct NewEvent<'a> {
     subject: &'a Subject,
     source: &'a str,
+    agent: Option<&'a str>,
     kind: &'a str,
     outcome: &'a str,
     title: String,
@@ -516,9 +572,9 @@ fn insert_event(tx: &Transaction, event: NewEvent) -> Result<String, ApiError> {
     let id = Uuid::new_v4().to_string();
     let (application_id, resource_id) = event.subject.columns();
     tx.execute(
-        "INSERT INTO events (id, application_id, resource_id, kind, outcome, title, detail, source, observation_id, incident_id, occurred_at, recorded_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-        params![id, application_id, resource_id, event.kind, event.outcome, event.title, event.detail, event.source, event.observation_id, event.incident_id, event.occurred_at, event.recorded_at],
+        "INSERT INTO events (id, application_id, resource_id, kind, outcome, title, detail, source, observation_id, incident_id, occurred_at, recorded_at, agent)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+        params![id, application_id, resource_id, event.kind, event.outcome, event.title, event.detail, event.source, event.observation_id, event.incident_id, event.occurred_at, event.recorded_at, event.agent],
     )
     .map_err(ApiError::database)?;
     Ok(id)
@@ -558,6 +614,8 @@ pub(crate) struct NewObservation<'a> {
     pub valid_for_minutes: i64,
     pub recorded_at: i64,
     pub http: Option<&'a HttpEvidence>,
+    /// Who reported it, for anything but an HTTP check's evidence, which DevHQ produces itself.
+    pub reporter: Option<&'a Actor>,
     /// For a run of supervision: it commits only while supervision is alive.
     pub lifeline: Option<&'a Lifeline>,
 }
@@ -585,9 +643,14 @@ impl Lifeline {
 
 pub(crate) fn store_observation(path: &Path, new: NewObservation) -> Result<Observation, ApiError> {
     let valid_until = new.observed_at + new.valid_for_minutes * 60_000;
-    let (source, title) = match new.http {
-        Some(_) => (HTTP, "HTTP check"),
-        None => (MANUAL, "Observation"),
+    let (source, agent, title) = match (new.http, new.reporter) {
+        (Some(_), None) => (HTTP, None, "HTTP check"),
+        (None, Some(actor)) => (actor.source(), actor.name(), "Observation"),
+        _ => {
+            return Err(ApiError::database(
+                "An observation is either an HTTP check's evidence or reported by someone.",
+            ))
+        }
     };
     let redirects = new
         .http
@@ -622,8 +685,8 @@ pub(crate) fn store_observation(path: &Path, new: NewObservation) -> Result<Obse
     let id = Uuid::new_v4().to_string();
     tx.execute(
         "INSERT INTO observations (id, application_id, resource_id, result, summary, source, observed_at, valid_until, recorded_at,
-                                   http_url, http_expected_status, http_status, http_latency_ms, http_error, http_redirects)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                                   http_url, http_expected_status, http_status, http_latency_ms, http_error, http_redirects, agent)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
         params![
             id,
             application_id,
@@ -640,6 +703,7 @@ pub(crate) fn store_observation(path: &Path, new: NewObservation) -> Result<Obse
             new.http.map(|http| http.latency_ms),
             new.http.and_then(|http| http.error.as_ref()),
             redirects,
+            agent,
         ],
     )
     .map_err(ApiError::database)?;
@@ -648,6 +712,7 @@ pub(crate) fn store_observation(path: &Path, new: NewObservation) -> Result<Obse
         NewEvent {
             subject: new.subject,
             source,
+            agent,
             kind: "observation",
             outcome: result_outcome(new.result),
             title: format!("{title}: {}", result_label(new.result)),
@@ -908,8 +973,17 @@ pub fn older_events(
     Ok(EventPage { events, more })
 }
 
-/// Stores a manual observation and its timeline event atomically.
+/// Stores an observation the person reports, and its timeline event, atomically.
 pub fn record_observation(path: &Path, input: ObservationInput) -> Result<Observation, ApiError> {
+    record_observation_by(path, input, &Actor::Person)
+}
+
+/// Stores a reported observation and its timeline event atomically, with its reporter.
+pub fn record_observation_by(
+    path: &Path,
+    input: ObservationInput,
+    actor: &Actor,
+) -> Result<Observation, ApiError> {
     allowed(&input.result, OBSERVATION_RESULTS, "observation result")?;
     let summary = required_text(&input.summary, MAX_SUMMARY, "Observation summary")?;
     if !(1..=MAX_VALIDITY_MINUTES).contains(&input.valid_for_minutes) {
@@ -929,13 +1003,23 @@ pub fn record_observation(path: &Path, input: ObservationInput) -> Result<Observ
             valid_for_minutes: input.valid_for_minutes,
             recorded_at,
             http: None,
+            reporter: Some(actor),
             lifeline: None,
         },
     )
 }
 
-/// Opens a manual incident and records the opening in the timeline atomically.
+/// Opens an incident for the person and records the opening in the timeline atomically.
 pub fn open_incident(path: &Path, input: IncidentInput) -> Result<Incident, ApiError> {
+    open_incident_by(path, input, &Actor::Person)
+}
+
+/// Opens an incident and records the opening in the timeline atomically, with who opened it.
+pub fn open_incident_by(
+    path: &Path,
+    input: IncidentInput,
+    actor: &Actor,
+) -> Result<Incident, ApiError> {
     let title = required_text(&input.title, MAX_TITLE, "Incident title")?;
     allowed(&input.severity, SEVERITIES, "incident severity")?;
     let description = bounded_text(&input.description, MAX_DESCRIPTION, "Incident description")?;
@@ -948,16 +1032,17 @@ pub fn open_incident(path: &Path, input: IncidentInput) -> Result<Incident, ApiE
     let id = Uuid::new_v4().to_string();
     let (application_id, resource_id) = input.subject.columns();
     tx.execute(
-        "INSERT INTO incidents (id, application_id, resource_id, title, description, severity, status, source, opened_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'open', ?7, ?8, ?8)",
-        params![id, application_id, resource_id, title, description, input.severity, MANUAL, now],
+        "INSERT INTO incidents (id, application_id, resource_id, title, description, severity, status, source, opened_at, updated_at, agent)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'open', ?7, ?8, ?8, ?9)",
+        params![id, application_id, resource_id, title, description, input.severity, actor.source(), now, actor.name()],
     )
     .map_err(ApiError::database)?;
     insert_event(
         &tx,
         NewEvent {
             subject: &input.subject,
-            source: MANUAL,
+            source: actor.source(),
+            agent: actor.name(),
             kind: "incident",
             outcome: severity_outcome(&input.severity),
             title: format!("Incident opened: {title}"),
@@ -974,10 +1059,20 @@ pub fn open_incident(path: &Path, input: IncidentInput) -> Result<Incident, ApiE
     Ok(incident)
 }
 
-/// Moves an incident to another status and keeps the change, with its note, in the timeline.
+/// Moves an incident to another status for the person and keeps the change in the timeline.
 pub fn update_incident_status(
     path: &Path,
     input: IncidentStatusInput,
+) -> Result<Incident, ApiError> {
+    update_incident_status_by(path, input, &Actor::Person)
+}
+
+/// Moves an incident to another status and keeps the change, with its note and who made it,
+/// in the timeline. The incident keeps the source of whoever opened it.
+pub fn update_incident_status_by(
+    path: &Path,
+    input: IncidentStatusInput,
+    actor: &Actor,
 ) -> Result<Incident, ApiError> {
     allowed(&input.status, INCIDENT_STATUSES, "incident status")?;
     let note = bounded_text(&input.note, MAX_SUMMARY, "Status note")?;
@@ -1009,7 +1104,8 @@ pub fn update_incident_status(
         &tx,
         NewEvent {
             subject: &current.subject,
-            source: MANUAL,
+            source: actor.source(),
+            agent: actor.name(),
             kind: "incident",
             outcome,
             title: format!("Incident {change}: {}", current.title),
@@ -1026,8 +1122,13 @@ pub fn update_incident_status(
     Ok(incident)
 }
 
-/// Logs something that happened to an application or resource, as reported by a person.
+/// Logs something that happened to an application or resource, as reported by the person.
 pub fn record_event(path: &Path, input: EventInput) -> Result<Event, ApiError> {
+    record_event_by(path, input, &Actor::Person)
+}
+
+/// Logs something that happened to an application or resource, with who reported it.
+pub fn record_event_by(path: &Path, input: EventInput, actor: &Actor) -> Result<Event, ApiError> {
     allowed(&input.kind, MANUAL_EVENT_KINDS, "event kind")?;
     allowed(&input.outcome, EVENT_OUTCOMES, "event outcome")?;
     let title = required_text(&input.title, MAX_TITLE, "Event title")?;
@@ -1043,7 +1144,8 @@ pub fn record_event(path: &Path, input: EventInput) -> Result<Event, ApiError> {
         &tx,
         NewEvent {
             subject: &input.subject,
-            source: MANUAL,
+            source: actor.source(),
+            agent: actor.name(),
             kind: &input.kind,
             outcome: &input.outcome,
             title,
@@ -1412,6 +1514,77 @@ mod tests {
     }
 
     #[test]
+    fn agent_records_keep_who_reported_them() {
+        let path = path();
+        let (application_id, _) = seed(&path);
+        let shop = Subject::Application { id: application_id };
+        let agent = Actor::agent("  claude-code ").unwrap();
+        assert_eq!(agent, Actor::Agent("claude-code".into()));
+        let observed = record_observation_by(&path, observation(shop.clone()), &agent).unwrap();
+        assert_eq!(
+            (observed.source.as_str(), observed.agent.as_deref()),
+            (AGENT, Some("claude-code"))
+        );
+        let opened = open_incident_by(&path, incident(shop.clone()), &agent).unwrap();
+        assert_eq!(
+            (opened.source.as_str(), opened.agent.as_deref()),
+            (AGENT, Some("claude-code"))
+        );
+        // The person resolves what the agent opened: the incident keeps who opened it, and the
+        // change is the person's.
+        let resolved = update_incident_status(
+            &path,
+            IncidentStatusInput {
+                id: opened.id.clone(),
+                status: "resolved".into(),
+                note: "Fixed".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            (resolved.source.as_str(), resolved.agent.as_deref()),
+            (AGENT, Some("claude-code"))
+        );
+        let noted = record_event_by(&path, event(shop.clone()), &agent).unwrap();
+        assert_eq!(
+            (noted.source.as_str(), noted.agent.as_deref()),
+            (AGENT, Some("claude-code"))
+        );
+
+        let snapshot = list(&path).unwrap();
+        let sources: Vec<_> = snapshot
+            .events
+            .iter()
+            .map(|item| {
+                (
+                    item.kind.as_str(),
+                    item.title.split(':').next().unwrap(),
+                    item.source.as_str(),
+                    item.agent.as_deref(),
+                )
+            })
+            .collect();
+        for expected in [
+            ("observation", "Observation", AGENT, Some("claude-code")),
+            ("incident", "Incident opened", AGENT, Some("claude-code")),
+            ("incident", "Incident resolved", MANUAL, None),
+            ("deployment", "Deployed 1.5", AGENT, Some("claude-code")),
+        ] {
+            assert!(sources.contains(&expected), "{expected:?} in {sources:#?}");
+        }
+        assert_eq!(snapshot.observations, [observed]);
+        // The window's own records name no agent.
+        let mine = record_event(&path, event(shop)).unwrap();
+        assert_eq!((mine.source.as_str(), mine.agent), (MANUAL, None));
+
+        let blank = Actor::agent(" ").unwrap_err();
+        assert_eq!(blank.code, "invalid_input");
+        assert!(Actor::agent(&"a".repeat(MAX_AGENT)).is_ok());
+        assert!(Actor::agent(&"a".repeat(MAX_AGENT + 1)).is_err());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn schema_rejects_broken_relationships() {
         let path = path();
         let (application_id, resource_id) = seed(&path);
@@ -1464,8 +1637,26 @@ mod tests {
                 [&application_id]
             )
             .is_err(),
-            "only manual sources exist in this schema version"
+            "unknown source"
         );
+        let reported = |source: &str, agent: Option<&str>| {
+            db.execute(
+                "INSERT INTO events (id, application_id, kind, outcome, title, source, occurred_at, recorded_at, agent)
+                 VALUES (?1, ?2, 'note', 'info', 'Noted', ?3, 1, 1, ?4)",
+                params![Uuid::new_v4().to_string(), application_id, source, agent],
+            )
+        };
+        assert!(reported("agent", None).is_err(), "an agent names itself");
+        assert!(reported("agent", Some("  ")).is_err(), "with a name");
+        assert!(
+            reported("manual", Some("claude-code")).is_err(),
+            "only an agent has an agent name"
+        );
+        assert!(
+            reported("http", None).is_err(),
+            "a check only writes its observation's event"
+        );
+        assert!(reported("agent", Some("claude-code")).is_ok());
         assert!(
             db.execute("DELETE FROM applications WHERE id = ?1", [&application_id])
                 .is_err(),
@@ -1510,7 +1701,7 @@ mod tests {
     }
 
     #[test]
-    fn a_snapshot_carries_every_manual_record_but_only_the_latest_automated_results() {
+    fn a_snapshot_carries_every_reported_record_but_only_the_latest_automated_results() {
         let path = path();
         let (application_id, resource_id) = seed(&path);
         let shop = Subject::Application { id: application_id };
@@ -1548,6 +1739,16 @@ mod tests {
         )
         .unwrap();
         let opened = open_incident(&path, incident(host.clone())).unwrap();
+        // What an agent reports is loaded in full too, however old.
+        let by_agent = record_observation_by(
+            &path,
+            ObservationInput {
+                observed_at: format_time(first - minutes(90)),
+                ..observation(host.clone())
+            },
+            &Actor::agent("claude-code").unwrap(),
+        )
+        .unwrap();
 
         let snapshot = list(&path).unwrap();
         let automated_of = |subject: &Subject| -> Vec<String> {
@@ -1564,6 +1765,7 @@ mod tests {
         assert_eq!(automated_of(&shop).len(), shop_runs.len());
         assert!(snapshot.observations.contains(&old_observation));
         assert!(snapshot.observations.contains(&among_left_out));
+        assert!(snapshot.observations.contains(&by_agent));
         // Every loaded automated observation brings its event, and no other automated event.
         let mut loaded: Vec<_> = snapshot
             .observations
@@ -1944,8 +2146,8 @@ mod tests {
                 &[&"host", &9, &"[]"],
                 "events_resource_id (resource_id=? AND occurred_at>?)",
             ),
-            (&observations, &[&"[]"], "observations_manual"),
-            (&events, &[&"[]"], "events_manual"),
+            (&observations, &[&"[]"], "observations_reported"),
+            (&events, &[&"[]"], "events_reported"),
             (&events, &[&"[]"], "INTEGER PRIMARY KEY"),
             (&older[0], &[&"app", &9, &9, &9, &1], "observed_at<"),
             (&older[1], &[&"host", &9, &9, &9, &1], "observed_at<"),
@@ -1974,11 +2176,11 @@ mod tests {
                     steps.iter().any(|step| step.contains(index)),
                     "{sql}\n{steps:#?}"
                 );
-                // Only the manual records are ever read in full.
+                // Only the reported records are ever read in full.
                 assert!(
                     steps.iter().all(|step| {
                         !(step.starts_with("SCAN observations") || step.starts_with("SCAN events"))
-                            || step.contains("_manual")
+                            || step.contains("_reported")
                     }),
                     "{sql}\n{steps:#?}"
                 );

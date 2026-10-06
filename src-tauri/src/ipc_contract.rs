@@ -307,6 +307,7 @@ fn every_answer_has_the_shape_the_window_expects() {
                 valid_until: at("10:20"),
                 recorded_at: at("10:05"),
                 http: Some(checked),
+                agent: None,
             },
             Observation {
                 id: "obs-manual".into(),
@@ -318,6 +319,7 @@ fn every_answer_has_the_shape_the_window_expects() {
                 valid_until: at("10:30"),
                 recorded_at: at("09:45"),
                 http: None,
+                agent: None,
             },
         ],
         incidents: vec![Incident {
@@ -331,6 +333,7 @@ fn every_answer_has_the_shape_the_window_expects() {
             opened_at: at("09:00"),
             updated_at: at("09:50"),
             resolved_at: Some(at("09:50")),
+            agent: None,
         }],
         events: vec![
             Event {
@@ -345,6 +348,7 @@ fn every_answer_has_the_shape_the_window_expects() {
                 incident_id: None,
                 occurred_at: at("10:05"),
                 recorded_at: at("10:05"),
+                agent: None,
             },
             Event {
                 id: "evt-incident".into(),
@@ -358,6 +362,21 @@ fn every_answer_has_the_shape_the_window_expects() {
                 incident_id: Some("incident-1".into()),
                 occurred_at: at("09:50"),
                 recorded_at: at("09:50"),
+                agent: None,
+            },
+            Event {
+                id: "evt-agent".into(),
+                subject: shop(),
+                kind: "deployment".into(),
+                outcome: "success".into(),
+                title: "Deployed 2.4.1".into(),
+                detail: "Noted while the person watched".into(),
+                source: "agent".into(),
+                observation_id: None,
+                incident_id: None,
+                occurred_at: at("09:40"),
+                recorded_at: at("09:41"),
+                agent: Some("claude-code".into()),
             },
         ],
         http_checks: vec![HttpCheck {
@@ -395,6 +414,7 @@ fn every_answer_has_the_shape_the_window_expects() {
             error: Some("Timed out after 5 s".into()),
             redirects: vec![],
         }),
+        agent: None,
     };
     let its_event = Event {
         id: "evt-timeout".into(),
@@ -408,6 +428,7 @@ fn every_answer_has_the_shape_the_window_expects() {
         incident_id: None,
         occurred_at: at("10:00"),
         recorded_at: at("10:00"),
+        agent: None,
     };
     let folder = r"C:\Users\Juan Pablo\AppData\Roaming\com.devhq.desktop";
     // Where Windows keeps that folder's files for a DevHQ started from a packaged app.

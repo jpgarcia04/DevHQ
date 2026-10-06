@@ -24,6 +24,7 @@ const note: RecordedEvent = {
   incidentId: null,
   occurredAt: minutesFromNow(-5),
   recordedAt: minutesFromNow(-5),
+  agent: null,
 }
 
 const snapshot: InventorySnapshot = {

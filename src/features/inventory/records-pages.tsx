@@ -167,13 +167,13 @@ export function RealActivityPage() {
               )}
               {days.map((day) => {
                 const items = events.filter((event) => formatDate(event.occurredAt) === day)
-                // A day entirely before the window holds manual records only; say so.
+                // A day entirely before the window holds manual and agent entries only; say so.
                 const manualOnly = items.every((event) => beforeWindow(event.occurredAt, since))
                 return (
                   <section key={day} aria-label={day}>
                     <h2 className="eyebrow mb-4">
                       {day === today ? `Today · ${day}` : day}
-                      {manualOnly && ' · manual records only'}
+                      {manualOnly && ' · manual and agent entries only'}
                     </h2>
                     <div className="panel px-5 py-5">
                       <EventRecordList

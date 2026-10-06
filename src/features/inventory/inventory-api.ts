@@ -76,14 +76,15 @@ export interface MonitorStatus {
 
 /**
  * Supervision can add an automated result every 5 minutes, so a snapshot carries only the
- * latest `limit` per application or resource; older ones stay in SQLite, untouched. Manual
- * records are always complete.
+ * latest `limit` per application or resource; older ones stay in SQLite, untouched. Manual and
+ * agent records are always complete.
  */
 export interface AutomatedHistory {
   limit: number
   /**
    * Subjects with older automated results than the snapshot carries. From `since` on, their
-   * automated observations and events are complete; before it, only manual records are loaded.
+   * automated observations and events are complete; before it, only manual and agent records
+   * are loaded.
    */
   truncated: { subject: EntityRef; since: string }[]
 }

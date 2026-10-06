@@ -72,7 +72,7 @@ function OverviewContent() {
     ],
     covered: [
       'Every system has current healthy evidence.',
-      'Based on manual entries and HTTP checks that are still within their validity.',
+      'Based on manual entries, agent entries and HTTP checks that are still within their validity.',
     ],
   }[status]
   return (
@@ -157,7 +157,7 @@ function OverviewContent() {
                     <span className="text-[11px] text-muted-foreground">
                       {coverageNote(item.evidence, now)}
                     </span>
-                    {item.evidence.latest && <SourceTag source={item.evidence.latest.source} />}
+                    {item.evidence.latest && <SourceTag record={item.evidence.latest} />}
                     <EvidenceBadge state={item.evidence.state} compact />
                   </li>
                 ))}

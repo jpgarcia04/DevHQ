@@ -213,7 +213,7 @@ function ApplicationDetail({ app }: { app: InventoryApplication }) {
                       {evidence.latest ? (
                         <>
                           {relativeTime(evidence.latest.observedAt, now)}
-                          <SourceTag source={evidence.latest.source} />
+                          <SourceTag record={evidence.latest} />
                         </>
                       ) : (
                         'None recorded'

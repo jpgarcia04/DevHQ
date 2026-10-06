@@ -16,7 +16,8 @@
         "latencyMs": 5000,
         "error": "Timed out after 5 s",
         "redirects": []
-      }
+      },
+      "agent": null
     }
   ],
   "more": true

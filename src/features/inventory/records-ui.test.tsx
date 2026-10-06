@@ -29,6 +29,7 @@ function observation(
     validUntil: minutesFromNow(validUntilMinutes),
     recordedAt: minutesFromNow(-observedMinutesAgo),
     http: null,
+    agent: null,
   }
 }
 
@@ -43,6 +44,7 @@ const openIncident: RecordedIncident = {
   openedAt: minutesFromNow(-20),
   updatedAt: minutesFromNow(-20),
   resolvedAt: null,
+  agent: null,
 }
 
 const events: RecordedEvent[] = [
@@ -58,6 +60,7 @@ const events: RecordedEvent[] = [
     incidentId: null,
     occurredAt: minutesFromNow(-15),
     recordedAt: minutesFromNow(-15),
+    agent: null,
   },
   {
     id: 'evt-1',
@@ -72,6 +75,7 @@ const events: RecordedEvent[] = [
     occurredAt: minutesFromNow(-10),
     // Typed in well after it happened: the timeline says so.
     recordedAt: minutesFromNow(-1),
+    agent: null,
   },
 ]
 
@@ -153,6 +157,41 @@ describe('real operational records', () => {
     // Demo events never leak into the real timeline.
     expect(screen.queryByText('Backup verified')).not.toBeInTheDocument()
     expect(screen.queryByText('Deployment failed')).not.toBeInTheDocument()
+  })
+
+  it('mixes what an agent reported into activity and incidents, naming the agent', async () => {
+    const user = userEvent.setup()
+    const byAgent: RecordedEvent = {
+      ...events[0]!,
+      id: 'evt-agent',
+      title: 'Deployed 1.6',
+      source: 'agent',
+      agent: 'claude-code',
+      occurredAt: minutesFromNow(-5),
+      recordedAt: minutesFromNow(-5),
+    }
+    const opened: RecordedIncident = { ...openIncident, source: 'agent', agent: 'claude-code' }
+    const { unmount } = renderWith(
+      <RealActivityPage />,
+      inventoryContext({ snapshot: { ...snapshot, events: [byAgent, ...events] } }),
+    )
+    // One timeline: the agent's entry sits among the person's, with its own provenance.
+    expect(screen.getByText('Deployed 1.6')).toBeInTheDocument()
+    expect(screen.getByText('Deployed 1.5 by hand')).toBeInTheDocument()
+    expect(screen.getAllByText('Manual entry')).toHaveLength(2)
+    const tag = screen.getByText('Agent · claude-code')
+    expect(tag.closest('[title]')).toHaveAttribute(
+      'title',
+      expect.stringContaining('DevHQ cannot verify it'),
+    )
+    unmount()
+    renderWith(
+      <RealIncidentsPage />,
+      inventoryContext({ snapshot: { ...snapshot, incidents: [opened] } }),
+    )
+    await user.click(screen.getByText('Checkout returns 502'))
+    expect(screen.getByText('Agent · claude-code')).toBeInTheDocument()
+    expect(screen.queryByText('Manual entry')).not.toBeInTheDocument()
   })
 
   it('lists recorded incidents with their affected system', async () => {

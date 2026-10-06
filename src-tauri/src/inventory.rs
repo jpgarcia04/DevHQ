@@ -188,14 +188,15 @@ fn plain(path: &Path) -> String {
     }
 }
 
-pub(crate) const SCHEMA_VERSION: i64 = 6;
-const MIGRATIONS: [(i64, &str); 6] = [
+pub(crate) const SCHEMA_VERSION: i64 = 7;
+const MIGRATIONS: [(i64, &str); 7] = [
     (1, include_str!("../migrations/001_inventory.sql")),
     (2, include_str!("../migrations/002_inventory_details.sql")),
     (3, include_str!("../migrations/003_operational_records.sql")),
     (4, include_str!("../migrations/004_http_checks.sql")),
     (5, include_str!("../migrations/005_http_monitoring.sql")),
     (6, include_str!("../migrations/006_history_window.sql")),
+    (7, include_str!("../migrations/007_agent_provenance.sql")),
 ];
 
 /// Opens the inventory, upgrading its schema first if it is older than this build's.
@@ -1140,6 +1141,7 @@ pub(crate) mod tests {
                     error: None,
                     redirects: vec![],
                 }),
+                reporter: None,
                 lifeline: None,
             },
         )
@@ -1650,13 +1652,13 @@ pub(crate) mod tests {
                 "components_resource_id",
                 "events_application_id",
                 "events_incident_id",
-                "events_manual",
                 "events_observation_id",
+                "events_reported",
                 "events_resource_id",
                 "incidents_application_id",
                 "incidents_resource_id",
                 "observations_application_id",
-                "observations_manual",
+                "observations_reported",
                 "observations_resource_id",
             ]
         );
@@ -1739,6 +1741,27 @@ pub(crate) mod tests {
             .unwrap()
     }
 
+    /// The tables of reported and automated records, which v7 rebuilds with an `agent` column.
+    const RECORDS: [&str; 3] = ["observations", "incidents", "events"];
+
+    /// Rows dumped before v7, as v7 keeps them: the same values, followed by an empty agent.
+    fn no_agent(rows: &[String]) -> Vec<String> {
+        rows.iter().map(|row| format!("{row} | Null")).collect()
+    }
+
+    /// A database as an earlier release (schema `version`) left it, with enforcement off.
+    fn database_at(path: &Path, version: i64) -> Connection {
+        let db = Connection::open(path).unwrap();
+        db.pragma_update(None, "foreign_keys", "OFF").unwrap();
+        for (number, sql) in &MIGRATIONS {
+            if *number <= version {
+                db.execute_batch(sql).unwrap();
+            }
+        }
+        db.pragma_update(None, "user_version", version).unwrap();
+        db
+    }
+
     /// A database as the previous release (schema v4) left it, with enforcement off.
     fn v4_database(path: &Path) -> Connection {
         let db = Connection::open(path).unwrap();
@@ -1778,15 +1801,9 @@ pub(crate) mod tests {
                VALUES ('shop', 'https://shop.example/ready', 204, 10, 60, 900);",
         )
         .unwrap();
-        let unchanged = [
-            "resources",
-            "applications",
-            "components",
-            "observations",
-            "incidents",
-            "events",
-        ];
+        let unchanged = ["resources", "applications", "components"];
         let before: Vec<_> = unchanged.iter().map(|table| dump(&db, table)).collect();
+        let records_before: Vec<_> = RECORDS.iter().map(|table| dump(&db, table)).collect();
         let checks_before = dump(&db, "http_checks");
         drop(db);
 
@@ -1812,6 +1829,9 @@ pub(crate) mod tests {
         assert_eq!(version, SCHEMA_VERSION);
         for (table, rows) in unchanged.iter().zip(&before) {
             assert_eq!(&dump(&db, table), rows, "{table}");
+        }
+        for (table, rows) in RECORDS.iter().zip(&records_before) {
+            assert_eq!(dump(&db, table), no_agent(rows), "{table}");
         }
         // The same rows and values, followed by the two new columns.
         assert_eq!(
@@ -1943,16 +1963,9 @@ pub(crate) mod tests {
                VALUES ('host', 'http://host/health', 200, 5, 15, 800, 'active', 5);",
         )
         .unwrap();
-        let tables = [
-            "resources",
-            "applications",
-            "components",
-            "observations",
-            "incidents",
-            "events",
-            "http_checks",
-        ];
+        let tables = ["resources", "applications", "components", "http_checks"];
         let before: Vec<_> = tables.iter().map(|table| dump(&db, table)).collect();
+        let records_before: Vec<_> = RECORDS.iter().map(|table| dump(&db, table)).collect();
         drop(db);
 
         let upgraded = list(&path).unwrap();
@@ -1965,21 +1978,190 @@ pub(crate) mod tests {
         let version: i64 = db
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 6);
+        assert_eq!(version, SCHEMA_VERSION);
         for (table, rows) in tables.iter().zip(&before) {
             assert_eq!(&dump(&db, table), rows, "{table}");
         }
-        // Partial: they hold only the manual records.
+        // v7 rebuilds the records, and with them these indexes (see its own test).
+        for (table, rows) in RECORDS.iter().zip(&records_before) {
+            assert_eq!(dump(&db, table), no_agent(rows), "{table}");
+        }
+        drop(db);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn upgrades_v6_records_for_agents_without_losing_anything() {
+        let path = path();
+        let db = database_at(&path, 6);
+        db.execute_batch(
+            "INSERT INTO resources (id, name, kind, description, operating_system) VALUES ('host', 'Host', 'server', '', 'Linux');
+             INSERT INTO applications (id, name, lifecycle, description, version) VALUES ('shop', 'Shop', 'production', 'Store', '2.0');
+             INSERT INTO components (id, application_id, name, kind, resource_id) VALUES ('api', 'shop', 'API', 'backend', 'host');
+             -- Equal times: only the rowid orders these two, and it must survive the rebuild.
+             INSERT INTO observations (id, resource_id, result, summary, source, observed_at, valid_until, recorded_at)
+               VALUES ('obs-b', 'host', 'healthy', 'First', 'manual', 1000, 2000, 1000),
+                      ('obs-a', 'host', 'unhealthy', 'Second', 'manual', 1000, 2000, 1000);
+             INSERT INTO observations (id, application_id, result, summary, source, observed_at, valid_until, recorded_at,
+                                       http_url, http_expected_status, http_status, http_latency_ms, http_error, http_redirects)
+               VALUES ('obs-http', 'shop', 'unhealthy', 'Timed out after 5 s', 'http', 1100, 2000, 1100,
+                       'https://shop.example/', 200, NULL, 5000, 'Timed out after 5 s', '[]');
+             INSERT INTO incidents (id, application_id, title, description, severity, status, source, opened_at, updated_at, resolved_at)
+               VALUES ('inc-done', 'shop', 'Slow', '', 'warning', 'resolved', 'manual', 600, 650, 650),
+                      ('inc', 'shop', 'Down', 'Checkout', 'critical', 'open', 'manual', 700, 700, NULL);
+             INSERT INTO events (id, resource_id, kind, outcome, title, detail, source, observation_id, occurred_at, recorded_at)
+               VALUES ('evt-b', 'host', 'observation', 'success', 'Observation: Healthy', 'First', 'manual', 'obs-b', 1000, 1000),
+                      ('evt-a', 'host', 'observation', 'failure', 'Observation: Unhealthy', 'Second', 'manual', 'obs-a', 1000, 1000);
+             INSERT INTO events (id, application_id, kind, outcome, title, detail, source, observation_id, incident_id, occurred_at, recorded_at)
+               VALUES ('evt-http', 'shop', 'observation', 'failure', 'HTTP check: Unhealthy', 'Timed out after 5 s', 'http', 'obs-http', NULL, 1100, 1100),
+                      ('evt-inc', 'shop', 'incident', 'failure', 'Incident opened: Down', '', 'manual', NULL, 'inc', 700, 700),
+                      ('evt-note', 'shop', 'note', 'info', 'Noted', 'By hand', 'manual', NULL, NULL, 800, 800);
+             INSERT INTO http_checks (application_id, url, expected_status, timeout_seconds, valid_for_minutes, updated_at, monitor, monitor_interval_minutes)
+               VALUES ('shop', 'https://shop.example/', 200, 5, 15, 800, 'active', 5);",
+        )
+        .unwrap();
+        let tables = ["resources", "applications", "components", "http_checks"];
+        let before: Vec<_> = tables.iter().map(|table| dump(&db, table)).collect();
+        let records_before: Vec<_> = RECORDS.iter().map(|table| dump(&db, table)).collect();
+        drop(db);
+
+        let upgraded = list(&path).unwrap();
+        assert_eq!(
+            upgraded
+                .observations
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            ["obs-http", "obs-a", "obs-b"]
+        );
+        assert!(upgraded
+            .observations
+            .iter()
+            .all(|item| item.agent.is_none()));
+        assert!(upgraded.incidents.iter().all(|item| item.agent.is_none()));
+        assert!(upgraded.events.iter().all(|item| item.agent.is_none()));
+        assert_eq!(upgraded.events.len(), 5);
+
+        let db = Connection::open(&path).unwrap();
+        let version: i64 = db
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 7);
+        for (table, rows) in tables.iter().zip(&before) {
+            assert_eq!(&dump(&db, table), rows, "{table}");
+        }
+        // Every row keeps its rowid, ID, source and values, and names no agent.
+        for (table, rows) in RECORDS.iter().zip(&records_before) {
+            assert_eq!(dump(&db, table), no_agent(rows), "{table}");
+        }
+        assert!(strings(&db, "SELECT \"table\" FROM pragma_foreign_key_check").is_empty());
+        assert!(strings(&db, "SELECT name FROM sqlite_master WHERE name LIKE '%_v7'").is_empty());
         assert_eq!(
             strings(
                 &db,
-                "SELECT name || ': ' || substr(sql, instr(sql, 'WHERE')) FROM sqlite_master WHERE name LIKE '%_manual' ORDER BY name"
+                "SELECT DISTINCT \"table\" || ' ' || on_delete FROM pragma_foreign_key_list('events') ORDER BY 1"
             ),
             [
-                "events_manual: WHERE source = 'manual'",
-                "observations_manual: WHERE source = 'manual'",
+                "applications RESTRICT",
+                "incidents RESTRICT",
+                "observations RESTRICT",
+                "resources RESTRICT",
             ]
         );
+        for table in ["observations", "incidents"] {
+            assert_eq!(
+                strings(
+                    &db,
+                    &format!("SELECT DISTINCT \"table\" || ' ' || on_delete FROM pragma_foreign_key_list('{table}') ORDER BY 1")
+                ),
+                ["applications RESTRICT", "resources RESTRICT"],
+                "{table}"
+            );
+        }
+        // Partial: they hold the reported records, by the person or an agent.
+        assert_eq!(
+            strings(
+                &db,
+                "SELECT name || ': ' || substr(sql, instr(sql, 'WHERE')) FROM sqlite_master WHERE name LIKE '%_reported' ORDER BY name"
+            ),
+            [
+                "events_reported: WHERE source IN ('manual', 'agent')",
+                "observations_reported: WHERE source IN ('manual', 'agent')",
+            ]
+        );
+        assert!(strings(
+            &db,
+            "SELECT name FROM sqlite_master WHERE name LIKE '%_manual'"
+        )
+        .is_empty());
+        drop(db);
+        // The rebuilt tables enforce their relationships and the new rules.
+        let db = open(&path).unwrap();
+        assert!(db
+            .execute("DELETE FROM observations WHERE id = 'obs-a'", [])
+            .is_err());
+        assert!(db
+            .execute("DELETE FROM incidents WHERE id = 'inc'", [])
+            .is_err());
+        let incident = |source: &str, agent: Option<&str>| {
+            db.execute(
+                "INSERT INTO incidents (id, application_id, title, severity, status, source, opened_at, updated_at, agent)
+                 VALUES (?1, 'shop', 'Reported', 'info', 'open', ?2, 1, 1, ?3)",
+                rusqlite::params![uuid::Uuid::new_v4().to_string(), source, agent],
+            )
+        };
+        assert!(incident("http", None).is_err(), "a check opens no incident");
+        assert!(incident("agent", None).is_err(), "an agent names itself");
+        assert!(incident("manual", Some("codex")).is_err());
+        assert!(incident("agent", Some("codex")).is_ok());
+        let observation = |source: &str, agent: Option<&str>| {
+            db.execute(
+                "INSERT INTO observations (id, application_id, result, summary, source, observed_at, valid_until, recorded_at, agent)
+                 VALUES (?1, 'shop', 'healthy', 'Looked fine', ?2, 1, 2, 1, ?3)",
+                rusqlite::params![uuid::Uuid::new_v4().to_string(), source, agent],
+            )
+        };
+        assert!(observation("agent", None).is_err());
+        assert!(
+            observation("agent", Some(&"a".repeat(121))).is_err(),
+            "name too long"
+        );
+        assert!(observation("agent", Some("claude-code")).is_ok());
+        drop(db);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn refuses_a_v7_upgrade_that_would_keep_broken_relationships() {
+        let path = path();
+        let db = database_at(&path, 6);
+        // An event of an incident that no longer exists, written with enforcement off.
+        db.execute_batch(
+            "INSERT INTO applications (id, name, lifecycle) VALUES ('shop', 'Shop', 'production');
+             INSERT INTO events (id, application_id, kind, outcome, title, source, incident_id, occurred_at, recorded_at)
+               VALUES ('orphan', 'shop', 'incident', 'failure', 'Incident opened: Gone', 'manual', 'gone', 1, 1);",
+        )
+        .unwrap();
+        drop(db);
+        let error = list(&path).unwrap_err();
+        assert_eq!(error.code, "database_error");
+        assert!(
+            error.message.contains("1 broken relationships"),
+            "{}",
+            error.message
+        );
+        // The whole upgrade was rolled back.
+        let db = Connection::open(&path).unwrap();
+        let version: i64 = db
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 6);
+        assert_eq!(strings(&db, "SELECT id FROM events"), ["orphan"]);
+        assert!(strings(
+            &db,
+            "SELECT name FROM pragma_table_info('events') WHERE name = 'agent'"
+        )
+        .is_empty());
         drop(db);
         std::fs::remove_file(path).unwrap();
     }

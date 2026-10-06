@@ -131,12 +131,13 @@ export function RealSettingsPage() {
           fixed example and is never imported automatically.
         </p>
         <p className="mt-3 text-xs leading-6 text-muted-foreground">
-          Observations come from two sources, always labelled: manual entries you type, and HTTP
-          checks that DevHQ runs when you press Run check or, if you turn supervision on, on a
-          schedule while DevHQ is open. There is no background service, retry, event collection or
-          automation execution. Incidents and events are manual entries. An observation vouches for
-          a result only until its validity ends; after that it is shown as expired, whatever its
-          source.
+          Records come from three sources, always labelled: manual entries you type, HTTP checks
+          that DevHQ runs when you press Run check or, if you turn supervision on, on a schedule
+          while DevHQ is open, and entries an agent reports when you ask it to act through the agent
+          gate, tagged with the name its client gives itself. There is no background service, retry,
+          event collection or automation execution. Incidents and events are entries by you or by an
+          agent. An observation vouches for a result only until its validity ends; after that it is
+          shown as expired, whatever its source.
         </p>
       </section>
       <section className="panel max-w-3xl p-6">

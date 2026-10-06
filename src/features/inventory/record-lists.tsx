@@ -120,7 +120,7 @@ export function IncidentRecordList({
                   <span className="text-[11px] text-muted-foreground">
                     {incidentStatusLabels[incident.status]}
                   </span>
-                  <SourceTag source={incident.source} />
+                  <SourceTag record={incident} />
                 </span>
               </span>
               <time
@@ -231,7 +231,7 @@ function EventItem({
           <SubjectLink subject={event.subject} />
           <span aria-hidden="true">·</span>
           <span>{eventKindLabels[event.kind]}</span>
-          <SourceTag source={event.source} />
+          <SourceTag record={event} />
           {late && (
             <span className="text-[11px]">
               recorded <time dateTime={event.recordedAt}>{formatDateTime(event.recordedAt)}</time>
@@ -281,7 +281,7 @@ function RepeatedResults({
             {events.length}
             {continues && '+'} consecutive results
           </span>
-          <SourceTag source={latest.source} />
+          <SourceTag record={latest} />
           <Button size="xs" variant="ghost" aria-expanded={open} onClick={() => setOpen(!open)}>
             {open ? 'Hide them' : `Show all ${events.length}`}
           </Button>
@@ -396,7 +396,7 @@ export function AttentionList({ items }: { items: AttentionItem[] }) {
                 <SeverityBadge severity={item.incident.severity} />
                 <span>Incident · {incidentStatusLabels[item.incident.status]}</span>
                 <SubjectLink subject={item.subject} />
-                <SourceTag source={item.incident.source} />
+                <SourceTag record={item.incident} />
                 <span>
                   opened{' '}
                   <time dateTime={item.incident.openedAt}>

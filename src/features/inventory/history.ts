@@ -55,9 +55,9 @@ export function automatedSince(history: AutomatedHistory, subjects: EntityRef[])
   return since
 }
 
-/** Manual records always belong; automated ones only from `since` on. */
+/** Reported records (manual or by an agent) always belong; automated ones only from `since` on. */
 export const withinWindow = (source: RecordSource, time: string, since: string | null) =>
-  since === null || source === 'manual' || Date.parse(time) >= Date.parse(since)
+  since === null || source !== 'http' || Date.parse(time) >= Date.parse(since)
 
 /** Whether a record is older than the moment a view is complete from. */
 export const beforeWindow = (time: string, since: string | null) =>

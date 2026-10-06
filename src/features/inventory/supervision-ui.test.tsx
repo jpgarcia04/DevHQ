@@ -313,6 +313,7 @@ describe('status pushed by the native process', () => {
       error: null,
       redirects: [],
     },
+    agent: null,
   }
 
   async function renderLive() {

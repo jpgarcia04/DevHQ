@@ -78,10 +78,17 @@ origen (`source`), siempre visible:
 | -------- | ---------------------- | --------------------------------------------------------------- |
 | `manual` | Manual entry           | Tú. Incidencias y eventos registrados a mano                    |
 | `http`   | Automated · HTTP check | DevHQ, al ejecutar la comprobación que tú lanzaste o supervisas |
+| `agent`  | Agent · _nombre_       | Un agente al que le pediste actuar por la puerta para agentes   |
 
 Solo las observaciones (y el evento que las acompaña) pueden ser `http`; el esquema lo
 impone con CHECK. Una observación automática sigue exactamente la misma semántica de
-vigencia, sustitución y atención que una manual.
+vigencia, sustitución y atención que una manual. Un registro `agent` guarda además, en
+`agent`, el nombre que el cliente del agente declaró (por ejemplo `claude-code`); DevHQ no
+puede verificarlo y la etiqueta lo dice al pasar el cursor. Se presenta mezclado con lo tuyo en
+cada vista, con su propia etiqueta, y sigue la misma semántica que un registro manual: es algo
+reportado, no medido por DevHQ. Una incidencia conserva quién la abrió; cada cambio de estado es
+un evento con la procedencia de quien lo hizo. La puerta todavía no existe (ver [Evolución
+prevista](#evolución-prevista)), así que hoy nada escribe registros `agent`.
 
 - **Observación**: resultado (healthy/degraded/unhealthy), qué se vio, momento observado,
   momento registrado y vigencia (1 h–30 días). Es inmutable; se corrige registrando otra.
@@ -176,11 +183,11 @@ ejecución, que es idéntica a la de Run check y sigue la misma semántica de vi
   que la configuración sigue existiendo, así que un resultado tardío nunca se registra.
 - El bucle vuelve a planificar al menos cada 30 s, para notar un cambio de reloj o la
   vuelta de una suspensión sin fiarse de un temporizador largo.
-- Cada lectura del inventario lleva **todos** los registros manuales, pero solo los últimos
+- Cada lectura del inventario lleva **todos** los registros manuales y de agentes, pero solo los últimos
   200 resultados automáticos de cada aplicación o recurso (con sus eventos): la supervisión
   puede añadir uno cada 5 min durante meses. Los anteriores siguen en SQLite, intactos, y la
   UI lo dice: una nota indica desde cuándo los resultados automáticos están completos y una
-  línea marca dónde una lista pasa a tener solo registros manuales. En el historial de
+  línea marca dónde una lista pasa a tener solo registros manuales y de agentes. En el historial de
   observaciones de un sistema, los anteriores se cargan bajo demanda, de 200 en 200, anclados
   al más antiguo ya mostrado para que los resultados nuevos no causen saltos ni duplicados. Una vista que mezcla
   sistemas (Activity) solo muestra resultados automáticos desde el momento en que los de
@@ -480,7 +487,7 @@ asíncrono porque lanza la tarea que alimenta el `Channel`: Tauri ejecuta un com
 que recibe la petición (el principal), que no tiene runtime de Tokio, y lanzarla desde ahí provocaba un
 pánico que en Linux abortaba el proceso al abrir Mi inventario (lo comprueba `npm run e2e:native`). Abre
 `inventory.sqlite3` en el directorio de datos de la aplicación que proporciona Tauri; las
-migraciones transaccionales v1→v6 usan `PRAGMA user_version` y una versión más nueva se
+migraciones transaccionales v1→v7 usan `PRAGMA user_version` y una versión más nueva se
 rechaza en vez de adivinarse. Cada apertura solo lee esa versión: únicamente una base antigua
 toma el lock de escritura para migrar, y dentro vuelve a leerla por si otra conexión ya lo
 hizo. La base usa write-ahead logging (WAL): un lector trabaja sobre el último estado
@@ -521,7 +528,11 @@ un CHECK con ALTER) conservando filas, IDs, `rowid` (desempate de orden), claves
 referencia) para añadir el estado y el intervalo de supervisión con sus CHECK, conservando
 el `rowid` que ordena la lista. Ambas se ejecutan con las claves foráneas desactivadas y
 solo se confirman si `PRAGMA foreign_key_check` no encuentra relaciones rotas. La v6 solo
-añade dos índices parciales sobre los registros manuales; ninguna fila cambia. Los
+añade dos índices parciales sobre los registros manuales; ninguna fila cambia. La v7 reconstruye
+`observations`, `incidents` y `events` como la v4 para admitir el origen `agent` y la columna
+`agent`, que un CHECK exige exactamente con ese origen; las filas existentes conservan su origen
+sin agente. Sus índices parciales pasan a cubrir los registros manuales y de agentes, que se cargan
+siempre completos. Los
 registros usan dos columnas con clave foránea (`application_id`/`resource_id`) y un CHECK
 que exige exactamente una; las referencias de historial son `ON DELETE RESTRICT`, así que
 nada puede borrar un sujeto y dejar evidencia huérfana; los casos de uso de borrado lo
@@ -563,7 +574,7 @@ vivir en componentes React, localStorage ni texto plano en SQLite.
 Las pruebas cubren navegación, tabs/teclado, filtros, rutas desconocidas, relaciones
 compartidas, cronología de la demo, salud desconocida, persistencia tras reapertura,
 rechazo de referencias inválidas sin escrituras parciales, restricciones del esquema,
-migraciones v1/v2→v3, v3→v4, v4→v5 y v5→v6 (incluida la negativa a confirmar relaciones rotas),
+migraciones v1/v2→v3, v3→v4, v4→v5, v5→v6 y v6→v7 (incluida la negativa a confirmar relaciones rotas),
 vigencia y sustitución de observaciones de ambos orígenes, orden de atención, errores de
 carga visibles y recuperables, comprobaciones contra un servidor local (estado esperado,
 500, redirect, bucle de redirects, tiempo agotado, conexión rechazada, dominio `.invalid`

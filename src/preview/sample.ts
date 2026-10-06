@@ -115,6 +115,7 @@ export function sampleDatabase(scenario: Scenario, now: number): PreviewDatabase
       validUntil: time(minutesAgo - validForMinutes),
       recordedAt: observedAt,
       http,
+      agent: null,
     })
     const [label, outcome] = resultTitles[result]
     event({
@@ -128,6 +129,7 @@ export function sampleDatabase(scenario: Scenario, now: number): PreviewDatabase
       observationId: id,
       incidentId: null,
       occurredAt: observedAt,
+      agent: null,
     })
   }
 
@@ -179,6 +181,7 @@ export function sampleDatabase(scenario: Scenario, now: number): PreviewDatabase
       openedAt: time(45),
       updatedAt: time(30),
       resolvedAt: null,
+      agent: null,
     },
     {
       id: 'inc-checkout',
@@ -191,6 +194,7 @@ export function sampleDatabase(scenario: Scenario, now: number): PreviewDatabase
       openedAt: time(75),
       updatedAt: time(40),
       resolvedAt: time(40),
+      agent: null,
     },
   ]
   const incidentEvent = (
@@ -212,6 +216,7 @@ export function sampleDatabase(scenario: Scenario, now: number): PreviewDatabase
       observationId: null,
       incidentId: incident.id,
       occurredAt: time(minutesAgo),
+      agent: null,
     })
   incidentEvent('evt-checkout-open', incidents[1]!, 75, 'Incident opened', 'failure', '')
   incidentEvent(
@@ -238,6 +243,7 @@ export function sampleDatabase(scenario: Scenario, now: number): PreviewDatabase
     minutesAgo: number,
     title: string,
     detail: string,
+    agent: string | null = null,
   ) =>
     event({
       id,
@@ -246,12 +252,23 @@ export function sampleDatabase(scenario: Scenario, now: number): PreviewDatabase
       outcome: kind === 'note' ? 'info' : 'success',
       title,
       detail,
-      source: 'manual',
+      source: agent ? 'agent' : 'manual',
       observationId: null,
       incidentId: null,
       occurredAt: time(minutesAgo),
+      agent,
     })
   logged('evt-deploy', shop, 'deployment', 70, 'Deployed 2.4.1', 'Checkout fixes')
+  // Noted by an agent the person asked through the agent gate.
+  logged(
+    'evt-agent-note',
+    shop,
+    'note',
+    12,
+    'Checkout latency back under 300 ms',
+    'Compared the last three HTTP results after the 2.4.1 deployment',
+    'claude-code',
+  )
   logged(
     'evt-backup',
     db,

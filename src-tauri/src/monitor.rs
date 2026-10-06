@@ -598,6 +598,7 @@ mod tests {
             valid_until: records::format_time(now + 60 * MINUTE_MS).unwrap(),
             recorded_at: records::format_time(now).unwrap(),
             http: None,
+            agent: None,
         }
     }
 
@@ -842,6 +843,7 @@ mod tests {
                         error: None,
                         redirects: vec![],
                     }),
+                    reporter: None,
                     lifeline: None,
                 },
             )
@@ -1306,6 +1308,7 @@ mod tests {
                                 valid_for_minutes: 15,
                                 recorded_at: now,
                                 http: Some(&evidence),
+                                reporter: None,
                                 lifeline: Some(&lifeline),
                             },
                         )

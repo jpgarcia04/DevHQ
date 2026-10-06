@@ -1,7 +1,8 @@
 # Puerta para agentes (diseño)
 
-**Estado: diseño, nada implementado todavía.** Cuando una parte se implemente, su comportamiento
-pasa al README (que es la especificación) en el mismo commit, y este documento se recorta.
+**Estado: en construcción.** Hecho: el paso 1 del plan (esquema v7 y procedencia `agent` en la UI).
+Cuando una parte se implementa, su comportamiento pasa al README (que es la especificación) en el
+mismo commit, y este documento se recorta.
 
 ## Qué resuelve
 
@@ -162,18 +163,14 @@ comando de la ventana y sigue los mismos índices, así que su coste depende de 
 historial acumulado. La vigilancia de `data_version` en la app es una consulta trivial cada 2 s, solo
 con la ventana abierta.
 
-## Esquema v7
+## Esquema
 
-- `observations`, `incidents` y `events` se reconstruyen (SQLite no cambia un CHECK con ALTER) como
-  en la v4, conservando filas, IDs, `rowid`, claves foráneas e índices: `source` admite `'agent'`, y
-  la columna `agent` se exige exactamente cuando `source = 'agent'`. El CHECK de eventos pasa a
-  «solo `http` está limitado a eventos de observación».
-- `agent_log`, solo de inserción, con índices por sistema y por tiempo para que Activity lo lea por
-  índice como el resto de la historia.
-- `settings` con el modo de acceso (`off` por defecto).
-
-Lleva su test de actualización que compara volcados fila por fila y tests de plan de consulta para
-`agent_log`.
+- v7 (hecha, ver el README): `observations`, `incidents` y `events` admiten `source = 'agent'` con
+  su columna `agent`, y los índices parciales cubren los registros manuales y de agentes.
+- v8, con las herramientas de escritura: `agent_log`, solo de inserción, con índices por sistema y
+  por tiempo para que Activity lo lea por índice como el resto de la historia, y el modo de acceso
+  (`off` por defecto). Lleva su test de actualización que compara volcados fila por fila y tests de
+  plan de consulta para `agent_log`.
 
 ## Pruebas
 
@@ -188,10 +185,10 @@ Lleva su test de actualización que compara volcados fila por fila y tests de pl
 
 ## Plan por commits
 
-1. Esquema v7 y procedencia `agent` visible en la UI.
+1. Hecho: esquema v7 y procedencia `agent` visible en la UI.
 2. Atención en Rust atada a la de TypeScript por fixtures.
 3. Modo `--mcp` con `status` y las herramientas de lectura.
-4. Herramientas de escritura, `agent_log` y el modo de acceso.
+4. Herramientas de escritura, `agent_log` y el modo de acceso (esquema v8).
 5. La app nota los cambios de otros procesos (`data_version`) y el lock de «ventana abierta».
 6. Settings: la sección de la puerta y el comando para conectarla; README y recorrido nativo.
 

@@ -11,7 +11,8 @@
       "observationId": "obs-timeout",
       "incidentId": null,
       "occurredAt": "2026-01-01T10:00:00Z",
-      "recordedAt": "2026-01-01T10:00:00Z"
+      "recordedAt": "2026-01-01T10:00:00Z",
+      "agent": null
     }
   ],
   "more": false
