@@ -79,10 +79,14 @@ No son requisitos rígidos sino criterios: sirven para decidir qué entra, cómo
     reporta alguien no se confunde con lo que DevHQ mide; una lista recortada dice dónde y por qué.
 11. **La historia no se reescribe.** Las observaciones son inmutables, lo que tiene historial no se
     borra y un cambio de esquema conserva cada fila.
-12. **Trazabilidad.** Cada acción relevante deja rastro: qué se hizo, cuándo, sobre qué aplicación o
-    recurso, quién o qué agente la hizo y con qué resultado, sobre todo cuando interviene un agente.
-    Hoy lo cumplen la procedencia de cada registro y, con la puerta, `agent_log`; los cambios de
-    configuración que haces tú en la ventana todavía no dejan rastro (ver «El inventario envejece»).
+12. **Trazabilidad, igual para todos.** Es una propiedad del sistema, no de la puerta: cada cambio
+    significativo deja rastro, lo haga un agente o lo hagas tú desde la ventana. Qué cambió, cuándo,
+    sobre qué aplicación o recurso, el valor anterior y el que quedó cuando aplica, quién lo hizo
+    (tú, o qué agente) y con qué resultado. Significativo no es cada clic: crear, editar o borrar
+    algo del inventario, cambiar una relación o una comprobación, abrir o cerrar una incidencia, sí;
+    abrir una vista o cambiar un filtro, no. Hoy lo cumplen la procedencia de cada registro y, con
+    la puerta, `agent_log` para los agentes; tus cambios de configuración todavía no dejan rastro
+    (ver «Estado actual e historia»).
 13. **La observabilidad es la base.** Las capacidades operativas, si se incorporan, se construyen
     poco a poco sobre esa base y son explícitas, seguras, controlables y auditables, las uses tú
     directamente o un agente al que hayas autorizado. «DevHQ observa, no opera» es una regla del
@@ -119,8 +123,8 @@ Cada capacidad operativa que se incorpore cumple cuatro condiciones:
   anticipa la preview de Automations.
 - **Controlable**: tú decides quién puede usarla, tú o un agente, y hasta dónde, y puedes retirar
   ese permiso al instante.
-- **Auditable**: queda en la línea de tiempo con su procedencia, quién la pidió, qué se hizo y qué
-  resultó, y no se puede borrar ni reescribir.
+- **Auditable**: queda en el mismo registro que cualquier otro cambio, con quién la pidió, qué se
+  hizo y qué resultó, y no se puede borrar ni reescribir.
 
 La puerta para agentes ya sigue este patrón en pequeño, dentro del propio inventario: un agente
 cambia datos con capacidades parecidas a las tuyas, solo con el acceso que eliges en Settings, por
@@ -226,8 +230,8 @@ que es: algo reportado por ese agente, con su fecha.
 Tres capas que no se mezclan:
 
 - **Inventario**: qué existe y cómo se relaciona. Aplicaciones, recursos, componentes y, más
-  adelante, referencias y más relaciones. Cambia poco, lo declaras tú o un agente, y es contexto, no
-  historial.
+  adelante, referencias y más relaciones. Cambia poco y lo declaras tú o un agente. Guarda cómo está
+  cada cosa ahora; su historia vive en el registro de cambios (ver «Estado actual e historia»).
 - **Evidencia**: qué pasó y qué se vio. Observaciones, incidencias y eventos, inmutables, con
   procedencia, momento observado y registrado, y vigencia. Los despliegues y la actividad de un
   repositorio también son evidencia.
@@ -239,6 +243,28 @@ Tres capas que no se mezclan:
 Así, «abandonado» no es un estado que haya que mantener a mano: es la ausencia de actividad
 observada, derivada, y no dice nada de la salud, igual que lifecycle no expresa health. `Archived`
 sigue siendo una decisión tuya; «sin actividad» es algo que se observa.
+
+### Estado actual e historia
+
+Historial no es lo mismo que estado actual. DevHQ debe poder decir cómo está algo ahora y, cuando
+importa, cómo llegó ahí: qué configuración tenía una aplicación antes del último cambio, qué se
+desplegó antes de lo que corre hoy, cómo evolucionó una incidencia, desde cuándo un componente corre
+en otro servidor, qué cambió un agente y qué quedó después.
+
+La evidencia ya es historia: una observación, una incidencia con el historial de sus estados o un
+evento no se reescriben, y el estado actual se deriva de ellos. El inventario no: guarda solo cómo
+está cada cosa ahora, y editarlo pisa el valor anterior. Su historia es un **registro de cambios**
+que, en la misma transacción que cada cambio significativo, guarda qué cambió, el valor anterior y
+el posterior cuando aplica, cuándo y quién: tú o un agente, con su nombre. Lo que ya es evidencia no
+se repite en él, porque ya dice quién lo escribió.
+
+Ese registro es **uno solo para ti y para los agentes**, con el actor como un dato más, no dos
+mecanismos separados. `agent_log`, en la rama de la puerta, ya cubre lo que cambian los agentes: si
+se diseña un sistema de eventos o de auditoría, crece desde él hacia un registro común en vez de
+levantar otro al lado. Hoy el valor anterior y el posterior solo forman parte de su resumen en texto
+(«version «1.3.0» → «1.4.0»»); el común los necesita estructurados para responder «cómo llegó a
+esto» y no solo «quién tocó esto». Como todo historial, se lee por índice, para que su coste no
+crezca con los años, y se muestra en Activity mezclado con lo demás, con la etiqueta de su actor.
 
 ### Dónde encaja cada cosa
 
@@ -289,49 +315,53 @@ ni a mantenerla al día. Por eso:
   Activity.
 - Si algún día DevHQ descubre cosas (repositorios en una carpeta, servicios en un servidor), propone
   y tú aceptas; nunca cambia el inventario en silencio.
-- Queda abierto si cada cambio de configuración, también los tuyos, debería quedar registrado con su
-  momento, como ya hace `agent_log` con los de los agentes, para que el mapa diga cuándo se confirmó
-  cada cosa por última vez.
+- Cada cambio significativo, tuyo o de un agente, queda en el registro de cambios común (ver «Estado
+  actual e historia»), así que el mapa puede decir cuándo y quién tocó cada cosa por última vez.
 
 ## Preguntas que debe poder responder
 
-| Pregunta                                                 | Qué hace falta                                                                           | Hoy                                                                                                             |
-| -------------------------------------------------------- | ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| ¿Qué necesita mi atención?                               | Evidencia vigente y las reglas de atención                                               | Sí: Overview y, con la puerta, `attention`                                                                      |
-| ¿Qué está fallando?                                      | Observaciones vigentes                                                                   | Sí, en lo que tiene comprobación u observaciones; lo nunca observado se cuenta como hueco, no como sano         |
-| ¿Qué aplicaciones corren en este servidor?               | Componente → recurso                                                                     | Sí: Infrastructure y el detalle de cada recurso                                                                 |
-| ¿Qué se cae si cae este servidor?                        | Relaciones entre recursos y entre aplicaciones                                           | En parte: solo lo que corre directamente en él                                                                  |
-| ¿Qué aplicaciones usan esta base de datos?               | Bases de datos compartidas como recurso                                                  | No: un recurso solo es servidor o estación de trabajo, y una base de datos es componente de una sola aplicación |
-| ¿Qué está desplegado, dónde y con qué versión?           | Despliegues con versión o commit y destino                                               | En parte: lifecycle, la versión como texto y eventos de despliegue a mano, sin destino ni commit                |
-| ¿Qué tiene cambios sin desplegar?                        | El repositorio de cada aplicación, el commit del último despliegue y leer el repositorio | No                                                                                                              |
-| ¿Qué lleva meses sin actividad?                          | Actividad observada: commits, despliegues                                                | No: solo existe la actividad que se registra en DevHQ                                                           |
-| ¿Dónde están sus logs, su documentación, su repositorio? | Referencias                                                                              | No: solo la descripción libre                                                                                   |
-| ¿Qué dominio o certificado caduca pronto?                | Dominios como recurso y la caducidad del certificado como evidencia                      | No                                                                                                              |
-| ¿Qué debe saber un agente que entra a este proyecto?     | Un resumen por sistema con referencias, relaciones y estado                              | En parte: `get_system` de la puerta                                                                             |
+| Pregunta                                                 | Qué hace falta                                                                           | Hoy                                                                                                                       |
+| -------------------------------------------------------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| ¿Qué necesita mi atención?                               | Evidencia vigente y las reglas de atención                                               | Sí: Overview y, con la puerta, `attention`                                                                                |
+| ¿Qué está fallando?                                      | Observaciones vigentes                                                                   | Sí, en lo que tiene comprobación u observaciones; lo nunca observado se cuenta como hueco, no como sano                   |
+| ¿Qué aplicaciones corren en este servidor?               | Componente → recurso                                                                     | Sí: Infrastructure y el detalle de cada recurso                                                                           |
+| ¿Qué se cae si cae este servidor?                        | Relaciones entre recursos y entre aplicaciones                                           | En parte: solo lo que corre directamente en él                                                                            |
+| ¿Qué aplicaciones usan esta base de datos?               | Bases de datos compartidas como recurso                                                  | No: un recurso solo es servidor o estación de trabajo, y una base de datos es componente de una sola aplicación           |
+| ¿Qué está desplegado, dónde y con qué versión?           | Despliegues con versión o commit y destino                                               | En parte: lifecycle, la versión como texto y eventos de despliegue a mano, sin destino ni commit                          |
+| ¿Qué tiene cambios sin desplegar?                        | El repositorio de cada aplicación, el commit del último despliegue y leer el repositorio | No                                                                                                                        |
+| ¿Qué lleva meses sin actividad?                          | Actividad observada: commits, despliegues                                                | No: solo existe la actividad que se registra en DevHQ                                                                     |
+| ¿Dónde están sus logs, su documentación, su repositorio? | Referencias                                                                              | No: solo la descripción libre                                                                                             |
+| ¿Qué dominio o certificado caduca pronto?                | Dominios como recurso y la caducidad del certificado como evidencia                      | No                                                                                                                        |
+| ¿Cómo llegó esto a su estado actual?                     | La evidencia y un registro de cambios común                                              | En parte: la evidencia y el historial de cada incidencia; de la configuración, solo los cambios de agentes, con la puerta |
+| ¿Qué debe saber un agente que entra a este proyecto?     | Un resumen por sistema con referencias, relaciones y estado                              | En parte: `get_system` de la puerta                                                                                       |
 
 ## Líneas de evolución posibles
 
 Sin fechas ni compromiso, ordenadas por lo que cada una necesita de las anteriores. Los pasos
 concretos y su orden están en «Evolución prevista» del README; este documento no los reordena.
 
-1. **Referencias**: dónde está cada cosa (repositorio, ruta local en cada estación de trabajo,
+1. **Registro de cambios común**: lo que cambias tú en la ventana deja rastro igual que lo que
+   cambia un agente, en un único registro con el actor, el valor anterior y el posterior. Sin
+   credenciales ni operaciones; es la base de la trazabilidad que pedirán las capacidades
+   operativas.
+2. **Referencias**: dónde está cada cosa (repositorio, ruta local en cada estación de trabajo,
    documentación, logs, panel del proveedor). Barato y sin credenciales; hace útiles los resúmenes
    para agentes y comodidades como abrir la carpeta.
-2. **Más tipos de recurso y de relación**: bases de datos compartidas y dominios como recursos, un
+3. **Más tipos de recurso y de relación**: bases de datos compartidas y dominios como recursos, un
    recurso que corre en otro, una aplicación que usa otra. Responde qué se cae si cae algo.
-3. **Despliegues con estructura**: el evento de despliegue con versión o commit, entorno y recurso
+4. **Despliegues con estructura**: el evento de despliegue con versión o commit, entorno y recurso
    de destino, registrado por ti, por un agente o, más adelante, por la CI. Responde qué está
    desplegado y dónde.
-4. **Actividad local**: leer, cuando lo pides, los repositorios locales que el inventario ya conoce
+5. **Actividad local**: leer, cuando lo pides, los repositorios locales que el inventario ya conoce
    (último commit, cambios sin confirmar, commits posteriores al último despliegue) como evidencia
    con su propio `source`. Sin credenciales, pero choca con «no se implementan scanners».
-5. **Contexto para agentes**: el resumen por sistema en la puerta, más rico con cada paso anterior.
-6. **Fuentes con credenciales**: servidores por SSH de solo lectura, el estado de la CI en GitHub u
+6. **Contexto para agentes**: el resumen por sistema en la puerta, más rico con cada paso anterior.
+7. **Fuentes con credenciales**: servidores por SSH de solo lectura, el estado de la CI en GitHub u
    otra plataforma. Exige el almacén nativo de credenciales.
-7. **Capacidades operativas**: las automatizaciones con resultado e historial que el README ya
+8. **Capacidades operativas**: las automatizaciones con resultado e historial que el README ya
    anticipa y acciones sobre servidores y despliegues, lanzadas por ti o por un agente autorizado,
    cada una explícita, segura, controlable y auditable. Exige cambiar «no opera sistemas».
-8. **Supervisión con la ventana cerrada**: exige cambiar «no funciona en segundo plano» y cuidar lo
+9. **Supervisión con la ventana cerrada**: exige cambiar «no funciona en segundo plano» y cuidar lo
    que consume.
 
 ## Tensiones con las reglas actuales
@@ -388,6 +418,9 @@ Este documento se corrige cuando cambia la dirección, con una línea en «Histo
 - 6 oct 2026: la frase de rumbo y los principios agrupados: representación viva, conceptos y no
   proveedores, integrar y no reemplazar, lo que el repositorio no sabe, escala, lo observable antes
   que lo tecleado, trazabilidad y la IA como capa.
+- 6 oct 2026: la trazabilidad pasa a ser una propiedad del sistema, igual para ti que para los
+  agentes, y se distingue el estado actual de la historia de cómo se llegó a él, con un único
+  registro de cambios común en vez de dos mecanismos.
 
 ## Planteamiento original
 
