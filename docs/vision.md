@@ -1,5 +1,8 @@
 # Visión a largo plazo
 
+> «DevHQ no es un launcher de proyectos; es la capa de contexto y control de mi ecosistema de
+> desarrollo.»
+
 Este documento guarda hacia dónde quiere ir DevHQ y con qué criterios se valoran las funcionalidades
 y las decisiones de arquitectura que lo acerquen. **No es una especificación ni un backlog**: el
 [README](../README.md) describe lo que DevHQ hace y manda mientras no cambie, y nada de lo que se
@@ -15,12 +18,13 @@ para agentes (`devhq --mcp`, esquema v9).
 
 ## La idea
 
-DevHQ pasa, poco a poco, de inventario con evidencia a capa de **contexto y memoria** de todo tu
-ecosistema de desarrollo. Sabe qué existe, dónde está, cómo se relaciona, qué estado tiene, desde
-cuándo y según quién, y qué necesita tu atención; y se lo cuenta igual a ti, en la ventana, que a
-cualquier agente al que le pidas trabajar en él. No reemplaza a las herramientas que hacen el
-trabajo (git, GitHub, Docker, systemd, SSH, Nginx, tu editor, un agente) ni guarda lo que ya guardan
-ellas: sabe dónde está cada cosa y la relaciona con las demás.
+DevHQ pasa, poco a poco, de inventario con evidencia a capa de **contexto, control y memoria** de
+todo tu ecosistema de desarrollo: una **representación viva** de ese ecosistema, no un inventario
+estático. Sabe qué existe, dónde está, cómo se relaciona, qué estado tiene, desde cuándo y según
+quién, y qué necesita tu atención; y se lo cuenta igual a ti, en la ventana, que a cualquier agente
+al que le pidas trabajar en él. No reemplaza a las herramientas especializadas que hacen el trabajo
+(git, GitHub, Docker, systemd, SSH, Nginx, una base de datos, tu editor, un agente) ni guarda lo que
+ya guardan ellas: las integra, las pone en contexto y ofrece una visión común sobre ellas.
 
 La prueba de que va bien: con 50 proyectos, DevHQ sigue respondiendo de un vistazo qué necesita
 atención, qué está desplegado y dónde, qué lleva meses sin actividad, qué depende de un servidor o
@@ -30,33 +34,65 @@ dependencias; el resto es la dirección (ver «Preguntas que debe poder responde
 
 ## Principios
 
-1. **La atención manda.** Cada vista responde «¿Qué necesita mi atención?», y con 50 proyectos eso
-   significa priorizar y agregar, no listar.
-2. **El modelo es el producto.** Lo que existe, cómo se relaciona y qué se sabe de ello. Las
-   acciones, las integraciones y los agentes son adaptadores encima: si cambias Claude por otro
-   agente, GitHub por otra plataforma o Docker por otra tecnología, cambia un adaptador y el modelo
-   sigue teniendo sentido.
-3. **Conceptos, no proveedores.** Las entidades y sus tipos son repositorio, servidor, base de
-   datos, despliegue. GitHub, Docker o Claude aparecen como procedencia (`source`), como evidencia o
-   como referencia, nunca como la forma del modelo.
-4. **Conocer, no contener.** DevHQ guarda identidad, relaciones y evidencia, y sabe dónde está lo
-   demás: el código en su repositorio, los logs en su servidor, las métricas en su herramienta, los
-   secretos en el almacén del sistema.
-5. **Inventario, evidencia y estado derivado no se mezclan** (ver «El modelo a largo plazo»).
-6. **Nada desconocido parece sano.** Procedencia, momentos y vigencia siempre visibles; lo que
-   reporta alguien no se confunde con lo que DevHQ mide; una lista recortada dice dónde y por qué.
-7. **La historia no se reescribe.** Las observaciones son inmutables, lo que tiene historial no se
-   borra y un cambio de esquema conserva cada fila.
-8. **La observabilidad es la base.** Las capacidades operativas, si se incorporan, se construyen
-   poco a poco sobre esa base y son explícitas, seguras, controlables y auditables, las uses tú
-   directamente o un agente al que hayas autorizado. «DevHQ observa, no opera» es una regla del
-   estado actual, no un límite permanente de la visión (ver «Centro de control»).
-9. **La IA es un cliente intercambiable.** DevHQ funciona entero sin agentes; los agentes entran por
-   la puerta, con el acceso que decides.
-10. **Personal y local.** Un archivo SQLite que es tuyo, sin cuentas ni nube. Que DevHQ trabaje por
+No son requisitos rígidos sino criterios: sirven para decidir qué entra, cómo y en qué orden.
+
+### Qué es DevHQ
+
+1. **Una representación viva, no un inventario estático.** Lo que se observa se renueva solo, lo que
+   caduca se ve caducado y lo que se deriva (la atención, lo que depende de qué, lo que lleva meses
+   parado) se calcula al leer. Inventario, evidencia y estado derivado no se mezclan (ver «El modelo
+   a largo plazo»).
+2. **Entender antes que acumular botones.** El valor está en entender bien el ecosistema y las
+   relaciones entre sus partes, no en sumar acciones o accesos directos. Las acciones, las
+   integraciones y los agentes son adaptadores sobre el modelo.
+3. **Conceptos, no proveedores.** El núcleo gira alrededor de aplicaciones, recursos, relaciones,
+   estado, historial y contexto. Claude, Codex, GitHub, Docker, Oracle o cualquier otro proveedor
+   son integraciones sustituibles: aparecen como procedencia (`source`), como evidencia o como
+   referencia, nunca como la forma del modelo. Si cambias de agente, de plataforma, de tecnología o
+   de base de datos, cambia un adaptador y DevHQ sigue teniendo sentido.
+4. **Integrar, no reemplazar.** DevHQ no sustituye sin necesidad a las herramientas especializadas:
+   las integra, las pone en contexto y ofrece una visión común sobre ellas. Guarda identidad,
+   relaciones y evidencia, y sabe dónde está lo demás: el código en su repositorio, los logs en su
+   servidor, las métricas en su herramienta, los secretos en el almacén del sistema.
+5. **Lo que el repositorio no sabe.** A ti y a los agentes, DevHQ les aporta sobre todo el contexto
+   que el repositorio no puede conocer por sí solo: dónde corre algo, qué depende de qué, qué
+   versión está desplegada, qué estado tiene, qué incidencias hay abiertas y qué recursos tiene
+   asociados.
+
+### Cómo se valora lo que entra
+
+6. **La atención manda.** Cada vista responde «¿Qué necesita mi atención?», y a escala eso significa
+   priorizar y agregar, no listar.
+7. **Pensado para escala.** Toda funcionalidad pasa por la pregunta «¿esto sigue siendo útil si hay
+   50 aplicaciones, varios servidores y muchos recursos asociados?». Abrir una carpeta puede ser
+   cómodo; responder qué está desplegado, qué depende de qué o qué falla en todo el ecosistema es lo
+   que vale.
+8. **Observable antes que tecleado.** Siempre que se pueda, la información que se observa o se
+   verifica automáticamente gana a la que depende de mantenimiento manual: un dato que nadie
+   mantiene se desfasa y, con 50 aplicaciones, nadie los mantiene todos.
+9. **Crecer por preguntas.** Una entidad, una relación o una fuente nueva llega cuando una pregunta
+   concreta la necesita, y esa pregunta es su prueba.
+
+### Qué se garantiza
+
+10. **Nada desconocido parece sano.** Procedencia, momentos y vigencia siempre visibles; lo que
+    reporta alguien no se confunde con lo que DevHQ mide; una lista recortada dice dónde y por qué.
+11. **La historia no se reescribe.** Las observaciones son inmutables, lo que tiene historial no se
+    borra y un cambio de esquema conserva cada fila.
+12. **Trazabilidad.** Cada acción relevante deja rastro: qué se hizo, cuándo, sobre qué aplicación o
+    recurso, quién o qué agente la hizo y con qué resultado, sobre todo cuando interviene un agente.
+    Hoy lo cumplen la procedencia de cada registro y, con la puerta, `agent_log`; los cambios de
+    configuración que haces tú en la ventana todavía no dejan rastro (ver «El inventario envejece»).
+13. **La observabilidad es la base.** Las capacidades operativas, si se incorporan, se construyen
+    poco a poco sobre esa base y son explícitas, seguras, controlables y auditables, las uses tú
+    directamente o un agente al que hayas autorizado. «DevHQ observa, no opera» es una regla del
+    estado actual, no un límite permanente de la visión (ver «Centro de control»).
+14. **La IA es una capa, no el fundamento.** DevHQ tiene valor entero sin agentes y lo conserva
+    aunque cambien por completo los agentes o los proveedores. Los agentes trabajan con el mismo
+    estado y contexto operativo que ve DevHQ, por los mismos casos de uso que la ventana, pero sus
+    capacidades son explícitas, auditables y sujetas al acceso que les concedes.
+15. **Personal y local.** Un archivo SQLite que es tuyo, sin cuentas ni nube. Que DevHQ trabaje por
     su cuenta con la ventana cerrada exige decidirlo de forma explícita.
-11. **Crecer por preguntas.** Una entidad, una relación o una fuente nueva llega cuando una pregunta
-    concreta la necesita, y esa pregunta es su prueba.
 
 ## Revisión del planteamiento
 
@@ -328,13 +364,16 @@ cambia en el mismo commit que la funcionalidad que lo necesita.
 
 Ante una funcionalidad o un cambio de arquitectura:
 
-1. ¿Qué pregunta responde, y la sigue respondiendo con 50 proyectos?
+1. ¿Qué pregunta responde, y la sigue respondiendo con 50 aplicaciones, varios servidores y muchos
+   recursos asociados?
 2. ¿Es inventario, evidencia o estado derivado, y en qué fila de «Dónde encaja cada cosa» cae? Si no
    cae en ninguna, se revisa aquí primero.
 3. ¿Quién mantiene el dato con 50 proyectos: se observa, lo reporta un agente o hay que teclearlo?
-4. ¿Qué principio o regla actual toca? Si toca una regla, se decide de forma explícita y el README
+4. ¿Seguiría teniendo sentido si cambiaras de agente, de plataforma o de tecnología? ¿Deja rastro de
+   qué se hizo, cuándo, sobre qué, quién y con qué resultado?
+5. ¿Qué principio o regla actual toca? Si toca una regla, se decide de forma explícita y el README
    cambia en el mismo commit.
-5. ¿Es lo más pequeño que responde la pregunta?
+6. ¿Es lo más pequeño que responde la pregunta?
 
 Este documento se corrige cuando cambia la dirección, con una línea en «Historial».
 
@@ -346,6 +385,9 @@ Este documento se corrige cuando cambia la dirección, con una línea en «Histo
   de la visión. La observabilidad es la base; las capacidades operativas, tuyas o de agentes
   autorizados, quedan abiertas a largo plazo si se construyen sobre ella y son explícitas, seguras,
   controlables y auditables.
+- 6 oct 2026: la frase de rumbo y los principios agrupados: representación viva, conceptos y no
+  proveedores, integrar y no reemplazar, lo que el repositorio no sabe, escala, lo observable antes
+  que lo tecleado, trazabilidad y la IA como capa.
 
 ## Planteamiento original
 
