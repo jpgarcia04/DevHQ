@@ -399,3 +399,68 @@ describe('Back up now', () => {
     await screen.findByText(database)
   })
 })
+
+describe('the agent gate in Settings', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  const gate = () => within(screen.getByRole('region', { name: 'Agent gate' }))
+
+  it('starts off, says so, and gives the command that connects Claude Code once', async () => {
+    const user = userEvent.setup()
+    const writeText = vi.fn(async () => {})
+    vi.stubGlobal('navigator', { clipboard: { writeText } })
+    renderSettings(inventoryContext())
+    expect(await gate().findByRole('radio', { name: /^Off/ })).toBeChecked()
+    expect(gate().getByRole('radio', { name: /^Read only/ })).not.toBeChecked()
+    expect(gate().getByText('Never opened: agents cannot read or change anything.')).toBeVisible()
+    const command = 'claude mcp add --scope user devhq -- "/opt/devhq/devhq" --mcp'
+    expect(gate().getByText(command)).toBeInTheDocument()
+    await user.click(gate().getByRole('button', { name: 'Copy command' }))
+    expect(writeText).toHaveBeenCalledWith(command)
+    expect(gate().getByText('Command copied.')).toBeInTheDocument()
+  })
+
+  it('opens the gate as the person chooses and says when it changed', async () => {
+    const user = userEvent.setup()
+    const value = inventoryContext()
+    renderSettings(value)
+    await user.click(await gate().findByRole('radio', { name: /^Read only/ }))
+    expect(value.setAgentAccess).toHaveBeenCalledWith('read')
+    expect(gate().getByRole('radio', { name: /^Read only/ })).toBeChecked()
+    expect(await gate().findByText(/^Changed .+ It applies at once/)).toBeInTheDocument()
+    // Choosing what is already in force asks for nothing.
+    await user.click(gate().getByRole('radio', { name: /^Read only/ }))
+    expect(value.setAgentAccess).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the access in force when changing it fails', async () => {
+    const user = userEvent.setup()
+    const value = inventoryContext({
+      setAgentAccess: vi.fn(async () => {
+        throw { code: 'database_error', message: 'Inventory database error: locked' }
+      }),
+    })
+    renderSettings(value)
+    await user.click(await gate().findByRole('radio', { name: /^Read and write/ }))
+    expect(await gate().findByRole('alert')).toHaveTextContent(
+      'The access could not be changed. Inventory database error: locked',
+    )
+    expect(gate().getByRole('radio', { name: /^Off/ })).toBeChecked()
+  })
+
+  it('says when it cannot read the access, instead of showing it off', async () => {
+    renderSettings(
+      inventoryContext({
+        agentAccess: vi.fn(async () => {
+          throw { code: 'database_error', message: 'Inventory database error: disk I/O error' }
+        }),
+      }),
+    )
+    expect(await gate().findByRole('alert')).toHaveTextContent(
+      'DevHQ could not read whether agents may use the gate. Inventory database error: disk I/O error',
+    )
+    expect(gate().queryByRole('radio')).not.toBeInTheDocument()
+  })
+})

@@ -39,6 +39,13 @@ impl ApiError {
             message: message.into(),
         }
     }
+    /// The person has not opened the agent gate for this (see `access`). Nothing was done.
+    pub(crate) fn denied(message: impl Into<String>) -> Self {
+        Self {
+            code: "access_denied",
+            message: message.into(),
+        }
+    }
     /// No backup was made, or one is already being made. The inventory itself is untouched.
     pub(crate) fn backup(message: impl Into<String>) -> Self {
         Self {
@@ -124,6 +131,8 @@ pub struct Inventory {
     pub incidents: Vec<records::Incident>,
     pub events: Vec<records::Event>,
     pub http_checks: Vec<http_check::HttpCheck>,
+    /// What agents changed in the configuration through the agent gate, newest first: all of it.
+    pub agent_changes: Vec<crate::agent_log::AgentChange>,
     /// Which automated results the snapshot leaves out. Manual records are always complete.
     pub automated_history: records::AutomatedHistory,
 }
@@ -177,7 +186,7 @@ pub fn stored_at(path: &Path) -> Option<String> {
 
 /// Windows resolves to a verbatim path (`\\?\C:\…`, `\\?\UNC\server\share\…`); File Explorer and
 /// people use the plain form.
-fn plain(path: &Path) -> String {
+pub(crate) fn plain(path: &Path) -> String {
     let text = path.display().to_string();
     if let Some(share) = text.strip_prefix(r"\\?\UNC\") {
         format!(r"\\{share}")
@@ -188,14 +197,17 @@ fn plain(path: &Path) -> String {
     }
 }
 
-pub(crate) const SCHEMA_VERSION: i64 = 6;
-const MIGRATIONS: [(i64, &str); 6] = [
+pub(crate) const SCHEMA_VERSION: i64 = 9;
+const MIGRATIONS: [(i64, &str); 9] = [
     (1, include_str!("../migrations/001_inventory.sql")),
     (2, include_str!("../migrations/002_inventory_details.sql")),
     (3, include_str!("../migrations/003_operational_records.sql")),
     (4, include_str!("../migrations/004_http_checks.sql")),
     (5, include_str!("../migrations/005_http_monitoring.sql")),
     (6, include_str!("../migrations/006_history_window.sql")),
+    (7, include_str!("../migrations/007_agent_provenance.sql")),
+    (8, include_str!("../migrations/008_agent_access.sql")),
+    (9, include_str!("../migrations/009_agent_log.sql")),
 ];
 
 /// Opens the inventory, upgrading its schema first if it is older than this build's.
@@ -412,6 +424,7 @@ pub fn list(path: &Path) -> Result<Inventory, ApiError> {
         automated_history,
     } = records::load(&tx, &subjects)?;
     let http_checks = http_check::load(&tx)?;
+    let agent_changes = crate::agent_log::load(&tx)?;
     tx.commit().map_err(ApiError::database)?;
     Ok(Inventory {
         applications,
@@ -420,20 +433,31 @@ pub fn list(path: &Path) -> Result<Inventory, ApiError> {
         incidents,
         events,
         http_checks,
+        agent_changes,
         automated_history,
     })
 }
 
 pub fn save_resource(path: &Path, input: ResourceInput) -> Result<Resource, ApiError> {
+    let mut db = open(path)?;
+    let tx = db
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(ApiError::database)?;
+    let resource = save_resource_in(&tx, input)?;
+    tx.commit().map_err(ApiError::database)?;
+    Ok(resource)
+}
+
+/// Saves a resource inside the caller's write transaction, which the caller commits.
+pub(crate) fn save_resource_in(
+    tx: &Transaction,
+    input: ResourceInput,
+) -> Result<Resource, ApiError> {
     allowed(&input.kind, &["server", "workstation"], "resource kind")?;
     let id = input.id.unwrap_or_else(|| Uuid::new_v4().to_string());
     if id.is_empty() {
         return Err(ApiError::invalid("Resource ID is required."));
     }
-    let mut db = open(path)?;
-    let tx = db
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(ApiError::database)?;
     let (kept_name, kept_description, kept_system): (String, String, String) = tx
         .query_row(
             "SELECT name, description, operating_system FROM resources WHERE id = ?1",
@@ -462,7 +486,6 @@ pub fn save_resource(path: &Path, input: ResourceInput) -> Result<Resource, ApiE
         params![id, name, input.kind, description, operating_system],
     )
     .map_err(ApiError::database)?;
-    tx.commit().map_err(ApiError::database)?;
     Ok(Resource {
         id,
         name,
@@ -473,6 +496,21 @@ pub fn save_resource(path: &Path, input: ResourceInput) -> Result<Resource, ApiE
 }
 
 pub fn save_application(path: &Path, input: ApplicationInput) -> Result<Application, ApiError> {
+    let mut db = open(path)?;
+    let tx = db
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(ApiError::database)?;
+    let application = save_application_in(&tx, input)?;
+    tx.commit().map_err(ApiError::database)?;
+    Ok(application)
+}
+
+/// Saves an application and its complete component list inside the caller's write
+/// transaction, which the caller commits.
+pub(crate) fn save_application_in(
+    tx: &Transaction,
+    input: ApplicationInput,
+) -> Result<Application, ApiError> {
     allowed(
         &input.lifecycle,
         &["development", "testing", "production", "archived"],
@@ -507,10 +545,6 @@ pub fn save_application(path: &Path, input: ApplicationInput) -> Result<Applicat
         component.id = Some(component_id);
         parts.push(component);
     }
-    let mut db = open(path)?;
-    let tx = db
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(ApiError::database)?;
     let (kept_name, kept_description, kept_version): (String, String, Option<String>) = tx
         .query_row(
             "SELECT name, description, version FROM applications WHERE id = ?1",
@@ -591,7 +625,6 @@ pub fn save_application(path: &Path, input: ApplicationInput) -> Result<Applicat
         tx.execute("INSERT INTO components (id, application_id, name, kind, resource_id) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![component.id, id, component.name, component.kind, component.resource_id]).map_err(ApiError::database)?;
     }
-    tx.commit().map_err(ApiError::database)?;
     Ok(Application {
         id,
         name,
@@ -600,6 +633,66 @@ pub fn save_application(path: &Path, input: ApplicationInput) -> Result<Applicat
         version,
         components,
     })
+}
+
+/// The application as stored, with its components in their order, read inside the caller's
+/// transaction; None if there is none with that ID.
+pub(crate) fn application_in(tx: &Transaction, id: &str) -> Result<Option<Application>, ApiError> {
+    let Some(mut application) = tx
+        .query_row(
+            "SELECT id, name, description, lifecycle, version FROM applications WHERE id = ?1",
+            [id],
+            |row| {
+                Ok(Application {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    description: row.get(2)?,
+                    lifecycle: row.get(3)?,
+                    version: row.get(4)?,
+                    components: Vec::new(),
+                })
+            },
+        )
+        .optional()
+        .map_err(ApiError::database)?
+    else {
+        return Ok(None);
+    };
+    let mut statement = tx
+        .prepare("SELECT id, name, kind, resource_id FROM components WHERE application_id = ?1 ORDER BY rowid")
+        .map_err(ApiError::database)?;
+    application.components = statement
+        .query_map([id], |row| {
+            Ok(Component {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                kind: row.get(2)?,
+                resource_id: row.get(3)?,
+            })
+        })
+        .map_err(ApiError::database)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(ApiError::database)?;
+    Ok(Some(application))
+}
+
+/// The resource as stored, read inside the caller's transaction; None if there is none.
+pub(crate) fn resource_in(tx: &Transaction, id: &str) -> Result<Option<Resource>, ApiError> {
+    tx.query_row(
+        "SELECT id, name, kind, description, operating_system FROM resources WHERE id = ?1",
+        [id],
+        |row| {
+            Ok(Resource {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                kind: row.get(2)?,
+                description: row.get(3)?,
+                operating_system: row.get(4)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(ApiError::database)
 }
 
 /// Which kinds of record reference a subject. History is never deleted, so any keeps it.
@@ -636,6 +729,12 @@ pub fn delete_application(path: &Path, id: &str) -> Result<(), ApiError> {
     let tx = db
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(ApiError::database)?;
+    delete_application_in(&tx, id)?;
+    tx.commit().map_err(ApiError::database)
+}
+
+/// Deletes the application inside the caller's write transaction; returns the name it had.
+pub(crate) fn delete_application_in(tx: &Transaction, id: &str) -> Result<String, ApiError> {
     let name: String = tx
         .query_row("SELECT name FROM applications WHERE id = ?1", [id], |row| {
             row.get(0)
@@ -643,7 +742,7 @@ pub fn delete_application(path: &Path, id: &str) -> Result<(), ApiError> {
         .optional()
         .map_err(ApiError::database)?
         .ok_or_else(|| ApiError::invalid(format!("The application {id} does not exist.")))?;
-    let history = history_of(&tx, "application_id", id)?;
+    let history = history_of(tx, "application_id", id)?;
     if !history.is_empty() {
         return Err(ApiError::invalid(format!(
             "{name} has recorded {}. DevHQ keeps history, so it cannot be deleted; set its lifecycle to Archived instead.",
@@ -653,7 +752,7 @@ pub fn delete_application(path: &Path, id: &str) -> Result<(), ApiError> {
     // Its components and its HTTP check go with it (ON DELETE CASCADE).
     tx.execute("DELETE FROM applications WHERE id = ?1", [id])
         .map_err(ApiError::database)?;
-    tx.commit().map_err(ApiError::database)
+    Ok(name)
 }
 
 /// Deletes a resource that no component runs on and that has no records, with its HTTP check.
@@ -662,6 +761,12 @@ pub fn delete_resource(path: &Path, id: &str) -> Result<(), ApiError> {
     let tx = db
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(ApiError::database)?;
+    delete_resource_in(&tx, id)?;
+    tx.commit().map_err(ApiError::database)
+}
+
+/// Deletes the resource inside the caller's write transaction; returns the name it had.
+pub(crate) fn delete_resource_in(tx: &Transaction, id: &str) -> Result<String, ApiError> {
     let name: String = tx
         .query_row("SELECT name FROM resources WHERE id = ?1", [id], |row| {
             row.get(0)
@@ -690,7 +795,7 @@ pub fn delete_resource(path: &Path, id: &str) -> Result<(), ApiError> {
             listed(&users)
         )));
     }
-    let history = history_of(&tx, "resource_id", id)?;
+    let history = history_of(tx, "resource_id", id)?;
     if !history.is_empty() {
         return Err(ApiError::invalid(format!(
             "{name} has recorded {}. DevHQ keeps history, so it cannot be deleted.",
@@ -700,7 +805,7 @@ pub fn delete_resource(path: &Path, id: &str) -> Result<(), ApiError> {
     // Its HTTP check goes with it (ON DELETE CASCADE).
     tx.execute("DELETE FROM resources WHERE id = ?1", [id])
         .map_err(ApiError::database)?;
-    tx.commit().map_err(ApiError::database)
+    Ok(name)
 }
 
 #[cfg(test)]
@@ -1140,6 +1245,7 @@ pub(crate) mod tests {
                     error: None,
                     redirects: vec![],
                 }),
+                reporter: None,
                 lifeline: None,
             },
         )
@@ -1646,17 +1752,19 @@ pub(crate) mod tests {
         assert_eq!(
             strings(&db, "SELECT name FROM sqlite_master WHERE type = 'index' AND name NOT LIKE 'sqlite_autoindex%' ORDER BY name"),
             [
+                "agent_log_application_id",
+                "agent_log_resource_id",
                 "components_application_id",
                 "components_resource_id",
                 "events_application_id",
                 "events_incident_id",
-                "events_manual",
                 "events_observation_id",
+                "events_reported",
                 "events_resource_id",
                 "incidents_application_id",
                 "incidents_resource_id",
                 "observations_application_id",
-                "observations_manual",
+                "observations_reported",
                 "observations_resource_id",
             ]
         );
@@ -1739,6 +1847,27 @@ pub(crate) mod tests {
             .unwrap()
     }
 
+    /// The tables of reported and automated records, which v7 rebuilds with an `agent` column.
+    const RECORDS: [&str; 3] = ["observations", "incidents", "events"];
+
+    /// Rows dumped before v7, as v7 keeps them: the same values, followed by an empty agent.
+    fn no_agent(rows: &[String]) -> Vec<String> {
+        rows.iter().map(|row| format!("{row} | Null")).collect()
+    }
+
+    /// A database as an earlier release (schema `version`) left it, with enforcement off.
+    fn database_at(path: &Path, version: i64) -> Connection {
+        let db = Connection::open(path).unwrap();
+        db.pragma_update(None, "foreign_keys", "OFF").unwrap();
+        for (number, sql) in &MIGRATIONS {
+            if *number <= version {
+                db.execute_batch(sql).unwrap();
+            }
+        }
+        db.pragma_update(None, "user_version", version).unwrap();
+        db
+    }
+
     /// A database as the previous release (schema v4) left it, with enforcement off.
     fn v4_database(path: &Path) -> Connection {
         let db = Connection::open(path).unwrap();
@@ -1778,15 +1907,9 @@ pub(crate) mod tests {
                VALUES ('shop', 'https://shop.example/ready', 204, 10, 60, 900);",
         )
         .unwrap();
-        let unchanged = [
-            "resources",
-            "applications",
-            "components",
-            "observations",
-            "incidents",
-            "events",
-        ];
+        let unchanged = ["resources", "applications", "components"];
         let before: Vec<_> = unchanged.iter().map(|table| dump(&db, table)).collect();
+        let records_before: Vec<_> = RECORDS.iter().map(|table| dump(&db, table)).collect();
         let checks_before = dump(&db, "http_checks");
         drop(db);
 
@@ -1812,6 +1935,9 @@ pub(crate) mod tests {
         assert_eq!(version, SCHEMA_VERSION);
         for (table, rows) in unchanged.iter().zip(&before) {
             assert_eq!(&dump(&db, table), rows, "{table}");
+        }
+        for (table, rows) in RECORDS.iter().zip(&records_before) {
+            assert_eq!(dump(&db, table), no_agent(rows), "{table}");
         }
         // The same rows and values, followed by the two new columns.
         assert_eq!(
@@ -1943,16 +2069,9 @@ pub(crate) mod tests {
                VALUES ('host', 'http://host/health', 200, 5, 15, 800, 'active', 5);",
         )
         .unwrap();
-        let tables = [
-            "resources",
-            "applications",
-            "components",
-            "observations",
-            "incidents",
-            "events",
-            "http_checks",
-        ];
+        let tables = ["resources", "applications", "components", "http_checks"];
         let before: Vec<_> = tables.iter().map(|table| dump(&db, table)).collect();
+        let records_before: Vec<_> = RECORDS.iter().map(|table| dump(&db, table)).collect();
         drop(db);
 
         let upgraded = list(&path).unwrap();
@@ -1965,21 +2084,324 @@ pub(crate) mod tests {
         let version: i64 = db
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 6);
+        assert_eq!(version, SCHEMA_VERSION);
         for (table, rows) in tables.iter().zip(&before) {
             assert_eq!(&dump(&db, table), rows, "{table}");
         }
-        // Partial: they hold only the manual records.
+        // v7 rebuilds the records, and with them these indexes (see its own test).
+        for (table, rows) in RECORDS.iter().zip(&records_before) {
+            assert_eq!(dump(&db, table), no_agent(rows), "{table}");
+        }
+        drop(db);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn upgrades_v6_records_for_agents_without_losing_anything() {
+        let path = path();
+        let db = database_at(&path, 6);
+        db.execute_batch(
+            "INSERT INTO resources (id, name, kind, description, operating_system) VALUES ('host', 'Host', 'server', '', 'Linux');
+             INSERT INTO applications (id, name, lifecycle, description, version) VALUES ('shop', 'Shop', 'production', 'Store', '2.0');
+             INSERT INTO components (id, application_id, name, kind, resource_id) VALUES ('api', 'shop', 'API', 'backend', 'host');
+             -- Equal times: only the rowid orders these two, and it must survive the rebuild.
+             INSERT INTO observations (id, resource_id, result, summary, source, observed_at, valid_until, recorded_at)
+               VALUES ('obs-b', 'host', 'healthy', 'First', 'manual', 1000, 2000, 1000),
+                      ('obs-a', 'host', 'unhealthy', 'Second', 'manual', 1000, 2000, 1000);
+             INSERT INTO observations (id, application_id, result, summary, source, observed_at, valid_until, recorded_at,
+                                       http_url, http_expected_status, http_status, http_latency_ms, http_error, http_redirects)
+               VALUES ('obs-http', 'shop', 'unhealthy', 'Timed out after 5 s', 'http', 1100, 2000, 1100,
+                       'https://shop.example/', 200, NULL, 5000, 'Timed out after 5 s', '[]');
+             INSERT INTO incidents (id, application_id, title, description, severity, status, source, opened_at, updated_at, resolved_at)
+               VALUES ('inc-done', 'shop', 'Slow', '', 'warning', 'resolved', 'manual', 600, 650, 650),
+                      ('inc', 'shop', 'Down', 'Checkout', 'critical', 'open', 'manual', 700, 700, NULL);
+             INSERT INTO events (id, resource_id, kind, outcome, title, detail, source, observation_id, occurred_at, recorded_at)
+               VALUES ('evt-b', 'host', 'observation', 'success', 'Observation: Healthy', 'First', 'manual', 'obs-b', 1000, 1000),
+                      ('evt-a', 'host', 'observation', 'failure', 'Observation: Unhealthy', 'Second', 'manual', 'obs-a', 1000, 1000);
+             INSERT INTO events (id, application_id, kind, outcome, title, detail, source, observation_id, incident_id, occurred_at, recorded_at)
+               VALUES ('evt-http', 'shop', 'observation', 'failure', 'HTTP check: Unhealthy', 'Timed out after 5 s', 'http', 'obs-http', NULL, 1100, 1100),
+                      ('evt-inc', 'shop', 'incident', 'failure', 'Incident opened: Down', '', 'manual', NULL, 'inc', 700, 700),
+                      ('evt-note', 'shop', 'note', 'info', 'Noted', 'By hand', 'manual', NULL, NULL, 800, 800);
+             INSERT INTO http_checks (application_id, url, expected_status, timeout_seconds, valid_for_minutes, updated_at, monitor, monitor_interval_minutes)
+               VALUES ('shop', 'https://shop.example/', 200, 5, 15, 800, 'active', 5);",
+        )
+        .unwrap();
+        let tables = ["resources", "applications", "components", "http_checks"];
+        let before: Vec<_> = tables.iter().map(|table| dump(&db, table)).collect();
+        let records_before: Vec<_> = RECORDS.iter().map(|table| dump(&db, table)).collect();
+        drop(db);
+
+        let upgraded = list(&path).unwrap();
+        assert_eq!(
+            upgraded
+                .observations
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            ["obs-http", "obs-a", "obs-b"]
+        );
+        assert!(upgraded
+            .observations
+            .iter()
+            .all(|item| item.agent.is_none()));
+        assert!(upgraded.incidents.iter().all(|item| item.agent.is_none()));
+        assert!(upgraded.events.iter().all(|item| item.agent.is_none()));
+        assert_eq!(upgraded.events.len(), 5);
+
+        let db = Connection::open(&path).unwrap();
+        let version: i64 = db
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        for (table, rows) in tables.iter().zip(&before) {
+            assert_eq!(&dump(&db, table), rows, "{table}");
+        }
+        // Every row keeps its rowid, ID, source and values, and names no agent.
+        for (table, rows) in RECORDS.iter().zip(&records_before) {
+            assert_eq!(dump(&db, table), no_agent(rows), "{table}");
+        }
+        assert!(strings(&db, "SELECT \"table\" FROM pragma_foreign_key_check").is_empty());
+        assert!(strings(&db, "SELECT name FROM sqlite_master WHERE name LIKE '%_v7'").is_empty());
         assert_eq!(
             strings(
                 &db,
-                "SELECT name || ': ' || substr(sql, instr(sql, 'WHERE')) FROM sqlite_master WHERE name LIKE '%_manual' ORDER BY name"
+                "SELECT DISTINCT \"table\" || ' ' || on_delete FROM pragma_foreign_key_list('events') ORDER BY 1"
             ),
             [
-                "events_manual: WHERE source = 'manual'",
-                "observations_manual: WHERE source = 'manual'",
+                "applications RESTRICT",
+                "incidents RESTRICT",
+                "observations RESTRICT",
+                "resources RESTRICT",
             ]
         );
+        for table in ["observations", "incidents"] {
+            assert_eq!(
+                strings(
+                    &db,
+                    &format!("SELECT DISTINCT \"table\" || ' ' || on_delete FROM pragma_foreign_key_list('{table}') ORDER BY 1")
+                ),
+                ["applications RESTRICT", "resources RESTRICT"],
+                "{table}"
+            );
+        }
+        // Partial: they hold the reported records, by the person or an agent.
+        assert_eq!(
+            strings(
+                &db,
+                "SELECT name || ': ' || substr(sql, instr(sql, 'WHERE')) FROM sqlite_master WHERE name LIKE '%_reported' ORDER BY name"
+            ),
+            [
+                "events_reported: WHERE source IN ('manual', 'agent')",
+                "observations_reported: WHERE source IN ('manual', 'agent')",
+            ]
+        );
+        assert!(strings(
+            &db,
+            "SELECT name FROM sqlite_master WHERE name LIKE '%_manual'"
+        )
+        .is_empty());
+        drop(db);
+        // The rebuilt tables enforce their relationships and the new rules.
+        let db = open(&path).unwrap();
+        assert!(db
+            .execute("DELETE FROM observations WHERE id = 'obs-a'", [])
+            .is_err());
+        assert!(db
+            .execute("DELETE FROM incidents WHERE id = 'inc'", [])
+            .is_err());
+        let incident = |source: &str, agent: Option<&str>| {
+            db.execute(
+                "INSERT INTO incidents (id, application_id, title, severity, status, source, opened_at, updated_at, agent)
+                 VALUES (?1, 'shop', 'Reported', 'info', 'open', ?2, 1, 1, ?3)",
+                rusqlite::params![uuid::Uuid::new_v4().to_string(), source, agent],
+            )
+        };
+        assert!(incident("http", None).is_err(), "a check opens no incident");
+        assert!(incident("agent", None).is_err(), "an agent names itself");
+        assert!(incident("manual", Some("codex")).is_err());
+        assert!(incident("agent", Some("codex")).is_ok());
+        let observation = |source: &str, agent: Option<&str>| {
+            db.execute(
+                "INSERT INTO observations (id, application_id, result, summary, source, observed_at, valid_until, recorded_at, agent)
+                 VALUES (?1, 'shop', 'healthy', 'Looked fine', ?2, 1, 2, 1, ?3)",
+                rusqlite::params![uuid::Uuid::new_v4().to_string(), source, agent],
+            )
+        };
+        assert!(observation("agent", None).is_err());
+        assert!(
+            observation("agent", Some(&"a".repeat(121))).is_err(),
+            "name too long"
+        );
+        assert!(observation("agent", Some("claude-code")).is_ok());
+        drop(db);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn refuses_a_v7_upgrade_that_would_keep_broken_relationships() {
+        let path = path();
+        let db = database_at(&path, 6);
+        // An event of an incident that no longer exists, written with enforcement off.
+        db.execute_batch(
+            "INSERT INTO applications (id, name, lifecycle) VALUES ('shop', 'Shop', 'production');
+             INSERT INTO events (id, application_id, kind, outcome, title, source, incident_id, occurred_at, recorded_at)
+               VALUES ('orphan', 'shop', 'incident', 'failure', 'Incident opened: Gone', 'manual', 'gone', 1, 1);",
+        )
+        .unwrap();
+        drop(db);
+        let error = list(&path).unwrap_err();
+        assert_eq!(error.code, "database_error");
+        assert!(
+            error.message.contains("1 broken relationships"),
+            "{}",
+            error.message
+        );
+        // The whole upgrade was rolled back.
+        let db = Connection::open(&path).unwrap();
+        let version: i64 = db
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 6);
+        assert_eq!(strings(&db, "SELECT id FROM events"), ["orphan"]);
+        assert!(strings(
+            &db,
+            "SELECT name FROM pragma_table_info('events') WHERE name = 'agent'"
+        )
+        .is_empty());
+        drop(db);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn upgrades_v7_closed_to_agents_without_changing_any_row() {
+        let path = path();
+        let db = database_at(&path, 7);
+        db.execute_batch(
+            "INSERT INTO resources (id, name, kind, description, operating_system) VALUES ('host', 'Host', 'server', '', 'Linux');
+             INSERT INTO applications (id, name, lifecycle, description, version) VALUES ('shop', 'Shop', 'production', 'Store', '2.0');
+             INSERT INTO components (id, application_id, name, kind, resource_id) VALUES ('api', 'shop', 'API', 'backend', 'host');
+             INSERT INTO observations (id, resource_id, result, summary, source, observed_at, valid_until, recorded_at, agent)
+               VALUES ('obs-agent', 'host', 'healthy', 'Looked fine', 'agent', 500, 900, 600, 'claude-code');
+             INSERT INTO events (id, resource_id, kind, outcome, title, detail, source, observation_id, occurred_at, recorded_at, agent)
+               VALUES ('evt-agent', 'host', 'observation', 'success', 'Observation: Healthy', 'Looked fine', 'agent', 'obs-agent', 500, 600, 'claude-code');
+             INSERT INTO incidents (id, application_id, title, description, severity, status, source, opened_at, updated_at)
+               VALUES ('inc', 'shop', 'Down', '', 'critical', 'open', 'manual', 700, 700);
+             INSERT INTO http_checks (resource_id, url, expected_status, timeout_seconds, valid_for_minutes, updated_at, monitor, monitor_interval_minutes)
+               VALUES ('host', 'http://host/health', 200, 5, 15, 800, 'active', 5);",
+        )
+        .unwrap();
+        let tables = [
+            "resources",
+            "applications",
+            "components",
+            "observations",
+            "incidents",
+            "events",
+            "http_checks",
+        ];
+        let before: Vec<_> = tables.iter().map(|table| dump(&db, table)).collect();
+        drop(db);
+
+        // Upgraded, the inventory is closed to agents until the person opens it.
+        assert_eq!(crate::access::agent_access(&path).unwrap().mode, "off");
+        let db = Connection::open(&path).unwrap();
+        let version: i64 = db
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        for (table, rows) in tables.iter().zip(&before) {
+            assert_eq!(&dump(&db, table), rows, "{table}");
+        }
+        assert!(dump(&db, "agent_access").is_empty());
+        drop(db);
+        let db = open(&path).unwrap();
+        assert!(db
+            .execute("INSERT INTO agent_access VALUES (1, 'admin', 0)", [])
+            .is_err());
+        assert!(db
+            .execute("INSERT INTO agent_access VALUES (1, 'read', 0)", [])
+            .is_ok());
+        drop(db);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn upgrades_v8_with_an_empty_agent_log_without_changing_any_row() {
+        let path = path();
+        let db = database_at(&path, 8);
+        db.execute_batch(
+            "INSERT INTO resources (id, name, kind, description, operating_system) VALUES ('host', 'Host', 'server', '', 'Linux');
+             INSERT INTO applications (id, name, lifecycle, description, version) VALUES ('shop', 'Shop', 'production', 'Store', '2.0');
+             INSERT INTO components (id, application_id, name, kind, resource_id) VALUES ('api', 'shop', 'API', 'backend', 'host');
+             INSERT INTO observations (id, resource_id, result, summary, source, observed_at, valid_until, recorded_at, agent)
+               VALUES ('obs-agent', 'host', 'healthy', 'Looked fine', 'agent', 500, 900, 600, 'claude-code');
+             INSERT INTO events (id, resource_id, kind, outcome, title, detail, source, observation_id, occurred_at, recorded_at, agent)
+               VALUES ('evt-agent', 'host', 'observation', 'success', 'Observation: Healthy', 'Looked fine', 'agent', 'obs-agent', 500, 600, 'claude-code');
+             INSERT INTO http_checks (resource_id, url, expected_status, timeout_seconds, valid_for_minutes, updated_at)
+               VALUES ('host', 'http://host/health', 200, 5, 15, 800);
+             INSERT INTO agent_access VALUES (1, 'write', 900);",
+        )
+        .unwrap();
+        let tables = [
+            "resources",
+            "applications",
+            "components",
+            "observations",
+            "incidents",
+            "events",
+            "http_checks",
+            "agent_access",
+        ];
+        let before: Vec<_> = tables.iter().map(|table| dump(&db, table)).collect();
+        drop(db);
+
+        list(&path).unwrap();
+        let db = Connection::open(&path).unwrap();
+        let version: i64 = db
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 9);
+        for (table, rows) in tables.iter().zip(&before) {
+            assert_eq!(&dump(&db, table), rows, "{table}");
+        }
+        assert!(dump(&db, "agent_log").is_empty());
+        // Nothing references or is referenced: an entry never keeps a subject from going.
+        assert!(strings(
+            &db,
+            "SELECT \"table\" FROM pragma_foreign_key_list('agent_log')"
+        )
+        .is_empty());
+        assert_eq!(
+            strings(&db, "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'agent_log' AND name NOT LIKE 'sqlite_autoindex%' ORDER BY name"),
+            ["agent_log_application_id", "agent_log_resource_id"]
+        );
+        drop(db);
+        let db = open(&path).unwrap();
+        let entry = |application: Option<&str>,
+                     resource: Option<&str>,
+                     agent: &str,
+                     action: &str| {
+            db.execute(
+                "INSERT INTO agent_log (id, application_id, resource_id, subject_name, agent, action, summary, occurred_at)
+                 VALUES (?1, ?2, ?3, 'Shop', ?4, ?5, 'Changed', 1)",
+                rusqlite::params![Uuid::new_v4().to_string(), application, resource, agent, action],
+            )
+        };
+        assert!(
+            entry(Some("shop"), Some("host"), "codex", "updated").is_err(),
+            "two subjects"
+        );
+        assert!(entry(None, None, "codex", "updated").is_err(), "no subject");
+        assert!(
+            entry(Some("shop"), None, " ", "updated").is_err(),
+            "an agent names itself"
+        );
+        assert!(
+            entry(Some("shop"), None, "codex", "dropped").is_err(),
+            "unknown action"
+        );
+        // A deleted subject's entry stays.
+        assert!(entry(Some("gone"), None, "codex", "deleted").is_ok());
         drop(db);
         std::fs::remove_file(path).unwrap();
     }

@@ -15,10 +15,17 @@
 //! - Shutting down cancels every run in flight and ends the loop. Nothing is recorded once it
 //!   has returned: a run whose request already ended cannot be aborted while it writes, so its
 //!   write checks the supervision's lifeline in its transaction (see `records::Lifeline`).
+//!
+//! Other processes change the inventory too: the agent gate (`devhq --mcp`) can configure, pause,
+//! remove and run checks. `notice_changes` looks every 2 s at `PRAGMA data_version` on a
+//! connection of its own; when another connection has committed, supervision reads its
+//! configuration again (a run recorded elsewhere restarts the wait, as a manual run does) and
+//! the window is told to read the inventory again.
 
 use crate::http_check::{self, HttpCheck};
 use crate::inventory::ApiError;
 use crate::records::{self, Lifeline, Observation, Subject};
+use rusqlite::Connection;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::future::Future;
@@ -36,6 +43,9 @@ const MAX_SLEEP_MS: i64 = 30_000;
 /// On launch, overdue checks start after this delay and this far apart.
 const LAUNCH_DELAY_MS: i64 = 10_000;
 const LAUNCH_SPACING_MS: i64 = 10_000;
+/// How often the process looks for what other connections committed. The look is one pragma
+/// on a connection that stays open: it reads no table.
+const NOTICE_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Milliseconds since the Unix epoch. Tests pass a simulated clock.
 pub(crate) type Clock = Arc<dyn Fn() -> i64 + Send + Sync>;
@@ -55,6 +65,10 @@ pub struct MonitorStatus {
     pub error: Option<String>,
     /// Observations recorded by runs since launch; the window reloads when it grows.
     pub recorded: u64,
+    /// Commits by other connections noticed since launch: the agent gate's, another program's,
+    /// and this process's own commands', since each opens its own connection. The window
+    /// reloads when it grows.
+    pub changes: u64,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -92,6 +106,20 @@ struct Inner {
     refresh: Mutex<()>,
     wake: Notify,
     status: watch::Sender<MonitorStatus>,
+    /// The connection `notice_changes` looks through. `shutdown` closes it, so that the last
+    /// connection to close folds the write-ahead log back into the file.
+    noticing: Mutex<Noticing>,
+    /// Ends `notice_changes` at once on `shutdown`.
+    stop: Notify,
+}
+
+#[derive(Default)]
+struct Noticing {
+    /// The connection and the `data_version` it last answered.
+    open: Option<(Connection, i64)>,
+    /// Whether a connection was opened before: opening another one, after a failure, cannot
+    /// tell what changed meanwhile.
+    opened_before: bool,
 }
 
 #[derive(Default)]
@@ -102,6 +130,7 @@ struct State {
     entries: Vec<Entry>,
     error: Option<String>,
     recorded: u64,
+    changes: u64,
     next_run_id: u64,
     watcher: Option<AbortHandle>,
 }
@@ -159,7 +188,9 @@ fn stagger(entries: &mut [Entry], now: i64) {
 }
 
 /// Applies the stored configuration. A check whose supervision changed is planned again from
-/// its last run; a removed check's run in flight is cancelled.
+/// its last run; a removed check's run in flight is cancelled. A run recorded by another process
+/// (the agent gate's `run_check`) after the last one known here restarts the wait, as a manual
+/// run does.
 fn apply(state: &mut State, checks: Vec<HttpCheck>, last_runs: &HashMap<Subject, i64>, now: i64) {
     let mut previous = std::mem::take(&mut state.entries);
     let mut entries = Vec::with_capacity(checks.len());
@@ -178,7 +209,19 @@ fn apply(state: &mut State, checks: Vec<HttpCheck>, last_runs: &HashMap<Subject,
                 last_runs.get(&check.subject).copied(),
             ),
         };
-        let replan = !entry.configured || entry.schedule != schedule;
+        let mut replan = !entry.configured || entry.schedule != schedule;
+        if let Some(&recorded_elsewhere) = last_runs.get(&check.subject) {
+            // A run of this process ends after its observation's time, so only another
+            // process's run can be newer than the last run known here.
+            if entry.run.is_none()
+                && entry
+                    .last_run_at
+                    .is_none_or(|last| recorded_elsewhere > last)
+            {
+                entry.last_run_at = Some(recorded_elsewhere);
+                replan = true;
+            }
+        }
         entry.configured = true;
         entry.schedule = schedule;
         if replan && entry.run.is_none() {
@@ -216,6 +259,7 @@ fn status_of(state: &State) -> MonitorStatus {
             .collect(),
         error: state.error.clone(),
         recorded: state.recorded,
+        changes: state.changes,
     }
 }
 
@@ -250,6 +294,8 @@ impl Monitor {
                 refresh: Mutex::default(),
                 wake: Notify::new(),
                 status: watch::Sender::new(MonitorStatus::default()),
+                noticing: Mutex::default(),
+                stop: Notify::new(),
             }),
         }
     }
@@ -322,6 +368,73 @@ impl Monitor {
             Err(error) => state.error = Some(error.message),
         }
         self.publish(&state);
+    }
+
+    /// Notices what other connections commit, every 2 s until `shutdown`. On each commit (or
+    /// several since the last look) supervision reads its configuration again and the window is
+    /// told through `changes`. Reading the inventory commits nothing, so the window's reload
+    /// never causes another; a write of the window's own causes one more quiet reload.
+    pub async fn notice_changes(self) {
+        loop {
+            // Enabled before looking, so that a shutdown from here on ends the wait below.
+            let stop = self.inner.stop.notified();
+            tokio::pin!(stop);
+            stop.as_mut().enable();
+            if self.database_changed() {
+                self.read_configuration();
+                self.inner.wake.notify_one();
+                let mut state = self.lock();
+                if !state.stopped {
+                    state.changes += 1;
+                    self.publish(&state);
+                }
+            }
+            if self.lock().stopped {
+                return;
+            }
+            tokio::select! {
+                () = tokio::time::sleep(NOTICE_INTERVAL) => {}
+                () = &mut stop => return,
+            }
+        }
+    }
+
+    /// Whether another connection committed anything since the last look: `PRAGMA
+    /// data_version` answers something else exactly then, on a connection that stays open. The
+    /// first look only notes where the database stands. A connection that fails is closed and
+    /// opened again on the next look, which counts as a change: what happened meanwhile is
+    /// unknown.
+    fn database_changed(&self) -> bool {
+        let mut noticing = self
+            .inner
+            .noticing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if self.lock().stopped {
+            noticing.open = None;
+            return false;
+        }
+        if let Some((db, seen)) = &mut noticing.open {
+            match data_version(db) {
+                Ok(version) => {
+                    let changed = version != *seen;
+                    *seen = version;
+                    return changed;
+                }
+                Err(_) => {
+                    noticing.open = None;
+                    return false;
+                }
+            }
+        }
+        let Ok(db) = crate::inventory::open(&self.inner.path) else {
+            return false;
+        };
+        let Ok(version) = data_version(&db) else {
+            return false;
+        };
+        noticing.open = Some((db, version));
+        std::mem::replace(&mut noticing.opened_before, true)
     }
 
     /// Starts every due check and says how long to wait before planning again; None once
@@ -453,10 +566,11 @@ impl Monitor {
         }
     }
 
-    /// Stops supervision for good: cancels every run in flight and ends the loop. Nothing a
-    /// cancelled run was doing is recorded, and nothing at all once this returns. A run already
-    /// committing its result is waited for (it holds the lifeline only from SQLite's write lock
-    /// to its connection closing); any later write is refused in its transaction.
+    /// Stops supervision for good: cancels every run in flight, ends both loops and closes the
+    /// connection that notices changes. Nothing a cancelled run was doing is recorded, and
+    /// nothing at all once this returns. A run already committing its result is waited for (it
+    /// holds the lifeline only from SQLite's write lock to its connection closing); any later
+    /// write is refused in its transaction.
     pub fn shutdown(&self) {
         // Before the state lock, which a finishing run takes: never hold it while waiting.
         self.inner.lifeline.end();
@@ -472,7 +586,19 @@ impl Monitor {
         }
         drop(state);
         self.inner.wake.notify_one();
+        // After `stopped`, which a look checks while it holds this lock: no look opens the
+        // connection again.
+        self.inner
+            .noticing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .open = None;
+        self.inner.stop.notify_waiters();
     }
+}
+
+fn data_version(db: &Connection) -> rusqlite::Result<i64> {
+    db.query_row("PRAGMA data_version", [], |row| row.get(0))
 }
 
 async fn outcome(mut receiver: watch::Receiver<RunResult>) -> Result<Observation, ApiError> {
@@ -598,6 +724,7 @@ mod tests {
             valid_until: records::format_time(now + 60 * MINUTE_MS).unwrap(),
             recorded_at: records::format_time(now).unwrap(),
             http: None,
+            agent: None,
         }
     }
 
@@ -842,6 +969,7 @@ mod tests {
                         error: None,
                         redirects: vec![],
                     }),
+                    reporter: None,
                     lifeline: None,
                 },
             )
@@ -1106,6 +1234,96 @@ mod tests {
         std::fs::remove_file(path).unwrap();
     }
 
+    /// What another process (the agent gate) commits while DevHQ is open reaches supervision
+    /// within one look, without anything calling `refresh`, and the window is told of it.
+    #[tokio::test(start_paused = true)]
+    async fn notices_what_other_connections_commit_and_follows_it() {
+        let path = path();
+        let (followed, added) = (resource(&path), resource(&path));
+        supervise(&path, &followed, "http://x.invalid/", Some(5), 15);
+        let harness = Harness::launch(path.clone());
+        let noticing = tokio::spawn(harness.monitor.clone().notice_changes());
+        let since = |at: i64| at - harness.origin;
+        sleep(11 * SECOND).await;
+        assert_eq!(harness.script.starts(&followed, harness.origin), [10 * S]);
+        assert_eq!(harness.monitor.status().changes, 0, "nothing committed yet");
+
+        // Reading commits nothing: neither the window's reload nor supervision's own reads.
+        list(&path).unwrap();
+        harness.monitor.refresh();
+        sleep(5 * SECOND).await;
+        assert_eq!(harness.monitor.status().changes, 0);
+
+        // An agent runs the check through the gate: the wait restarts from that run.
+        sleep(MINUTE).await;
+        let ran_at = (harness.clock)();
+        records::store_observation(
+            &path,
+            NewObservation {
+                subject: &followed,
+                result: "healthy",
+                summary: "HTTP 200 as expected",
+                observed_at: ran_at,
+                valid_for_minutes: 15,
+                recorded_at: ran_at,
+                http: Some(&HttpEvidence {
+                    url: "http://x.invalid/".into(),
+                    expected_status: 200,
+                    status: Some(200),
+                    latency_ms: 3,
+                    error: None,
+                    redirects: vec![],
+                }),
+                reporter: None,
+                lifeline: None,
+            },
+        )
+        .unwrap();
+        sleep(2 * SECOND).await;
+        assert_eq!(harness.monitor.status().changes, 1);
+        let status = harness.check(&followed);
+        assert_eq!(harness.at(&status.last_run_at), Some(since(ran_at)));
+        assert_eq!(harness.at(&status.next_run_at), Some(since(ran_at) + 5 * M));
+        sleep(5 * MINUTE).await;
+        assert_eq!(
+            harness.script.starts(&followed, harness.origin),
+            [10 * S, since(ran_at) + 5 * M]
+        );
+
+        // It pauses that check and supervises another, which is due at once.
+        set_http_check_paused(&path, &followed, true).unwrap();
+        sleep(2 * SECOND).await;
+        assert_eq!(harness.check(&followed).next_run_at, None);
+        let added_at = since((harness.clock)());
+        supervise(&path, &added, "http://y.invalid/", Some(10), 30);
+        sleep(2 * SECOND).await;
+        let starts = harness.script.starts(&added, harness.origin);
+        assert_eq!(starts.len(), 1);
+        assert!(starts[0] - added_at <= 2 * S, "{starts:?} {added_at}");
+        sleep(30 * MINUTE).await;
+        assert_eq!(harness.script.starts(&followed, harness.origin).len(), 2);
+        // At once, then every 10 min.
+        assert_eq!(harness.script.starts(&added, harness.origin).len(), 4);
+        assert_eq!(harness.monitor.status().changes, 3);
+
+        // Closing ends the looks at once and closes their connection, the last one open: it
+        // folds the write-ahead log back into the file.
+        let wal = PathBuf::from(format!("{}-wal", path.display()));
+        assert!(wal.exists(), "the looks keep their connection open");
+        // Between two looks, so that only `shutdown` can end the wait.
+        sleep(SECOND).await;
+        let before = Instant::now();
+        harness.monitor.shutdown();
+        noticing.await.unwrap();
+        harness.task.await.unwrap();
+        assert_eq!(before.elapsed(), Duration::ZERO, "no simulated time passed");
+        assert!(!wal.exists(), "the connection was closed");
+        supervise(&path, &added, "http://z.invalid/", Some(10), 30);
+        sleep(MINUTE).await;
+        assert_eq!(harness.monitor.status().changes, 3);
+        remove_once_closed(&path);
+    }
+
     /// Waits (for real) until the status matches.
     async fn until(monitor: &Monitor, check: impl FnMut(&MonitorStatus) -> bool) -> MonitorStatus {
         let mut receiver = monitor.inner.status.subscribe();
@@ -1306,6 +1524,7 @@ mod tests {
                                 valid_for_minutes: 15,
                                 recorded_at: now,
                                 http: Some(&evidence),
+                                reporter: None,
                                 lifeline: Some(&lifeline),
                             },
                         )

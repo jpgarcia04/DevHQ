@@ -1,0 +1,41 @@
+{
+  "about": "Nothing needs attention, but one subject was never observed: the workspace is not covered.",
+  "now": "2026-09-30T12:00:00Z",
+  "subjects": [
+    {
+      "type": "application",
+      "id": "shop"
+    },
+    {
+      "type": "resource",
+      "id": "spare"
+    }
+  ],
+  "observations": [
+    {
+      "id": "shop-1",
+      "subject": {
+        "type": "application",
+        "id": "shop"
+      },
+      "result": "healthy",
+      "summary": "healthy as seen",
+      "source": "manual",
+      "observedAt": "2026-09-30T11:00:00Z",
+      "validUntil": "2026-09-30T13:00:00Z",
+      "recordedAt": "2026-09-30T11:00:00Z",
+      "http": null,
+      "agent": null
+    }
+  ],
+  "incidents": [],
+  "expected": {
+    "attention": [],
+    "coverage": {
+      "current": 1,
+      "stale": 0,
+      "unobserved": 1
+    },
+    "status": "unobserved"
+  }
+}

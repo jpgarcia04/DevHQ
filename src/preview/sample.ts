@@ -7,6 +7,7 @@ import type {
   RecordedIncident,
 } from '@/domain/models'
 import type {
+  AgentChange,
   BackupFile,
   HttpCheck,
   InventoryApplication,
@@ -25,6 +26,7 @@ export interface PreviewDatabase {
   incidents: RecordedIncident[]
   events: RecordedEvent[]
   httpChecks: HttpCheck[]
+  agentChanges: AgentChange[]
   /** The files in the backups folder, newest first. */
   backups: BackupFile[]
   /** Reading fails, as it would with an unreadable database. */
@@ -62,6 +64,7 @@ function nothing(): PreviewDatabase {
     incidents: [],
     events: [],
     httpChecks: [],
+    agentChanges: [],
     backups: [],
     unavailable: false,
   }
@@ -115,6 +118,7 @@ export function sampleDatabase(scenario: Scenario, now: number): PreviewDatabase
       validUntil: time(minutesAgo - validForMinutes),
       recordedAt: observedAt,
       http,
+      agent: null,
     })
     const [label, outcome] = resultTitles[result]
     event({
@@ -128,6 +132,7 @@ export function sampleDatabase(scenario: Scenario, now: number): PreviewDatabase
       observationId: id,
       incidentId: null,
       occurredAt: observedAt,
+      agent: null,
     })
   }
 
@@ -179,6 +184,7 @@ export function sampleDatabase(scenario: Scenario, now: number): PreviewDatabase
       openedAt: time(45),
       updatedAt: time(30),
       resolvedAt: null,
+      agent: null,
     },
     {
       id: 'inc-checkout',
@@ -191,6 +197,7 @@ export function sampleDatabase(scenario: Scenario, now: number): PreviewDatabase
       openedAt: time(75),
       updatedAt: time(40),
       resolvedAt: time(40),
+      agent: null,
     },
   ]
   const incidentEvent = (
@@ -212,6 +219,7 @@ export function sampleDatabase(scenario: Scenario, now: number): PreviewDatabase
       observationId: null,
       incidentId: incident.id,
       occurredAt: time(minutesAgo),
+      agent: null,
     })
   incidentEvent('evt-checkout-open', incidents[1]!, 75, 'Incident opened', 'failure', '')
   incidentEvent(
@@ -238,6 +246,7 @@ export function sampleDatabase(scenario: Scenario, now: number): PreviewDatabase
     minutesAgo: number,
     title: string,
     detail: string,
+    agent: string | null = null,
   ) =>
     event({
       id,
@@ -246,12 +255,23 @@ export function sampleDatabase(scenario: Scenario, now: number): PreviewDatabase
       outcome: kind === 'note' ? 'info' : 'success',
       title,
       detail,
-      source: 'manual',
+      source: agent ? 'agent' : 'manual',
       observationId: null,
       incidentId: null,
       occurredAt: time(minutesAgo),
+      agent,
     })
   logged('evt-deploy', shop, 'deployment', 70, 'Deployed 2.4.1', 'Checkout fixes')
+  // Noted by an agent the person asked through the agent gate.
+  logged(
+    'evt-agent-note',
+    shop,
+    'note',
+    12,
+    'Checkout latency back under 300 ms',
+    'Compared the last three HTTP results after the 2.4.1 deployment',
+    'claude-code',
+  )
   logged(
     'evt-backup',
     db,
@@ -315,6 +335,27 @@ export function sampleDatabase(scenario: Scenario, now: number): PreviewDatabase
     observations: byRecording(observations),
     incidents,
     events: byRecording(events),
+    // Changes an agent made through the agent gate: one to a system since deleted.
+    agentChanges: [
+      {
+        id: 'change-version',
+        subject: shop,
+        subjectName: 'Shop',
+        agent: 'claude-code',
+        action: 'updated',
+        summary: 'Updated application «Shop»: version «2.4.0» → «2.4.1»',
+        occurredAt: time(68),
+      },
+      {
+        id: 'change-gone',
+        subject: { type: 'resource', id: 'old-box' },
+        subjectName: 'Old box',
+        agent: 'claude-code',
+        action: 'deleted',
+        summary: 'Deleted resource «Old box», which had no history',
+        occurredAt: time(200),
+      },
+    ],
     httpChecks: [
       {
         subject: web,

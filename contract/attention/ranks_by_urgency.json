@@ -1,0 +1,308 @@
+{
+  "about": "Every rank once, a resolved incident and a current healthy result that need no attention, a never observed subject that is only a coverage gap, a newer observation that supersedes a still valid one, recordedAt deciding between equal observedAt, and two degraded results ordered newest first.",
+  "now": "2026-09-30T12:00:00Z",
+  "subjects": [
+    {
+      "type": "application",
+      "id": "shop"
+    },
+    {
+      "type": "resource",
+      "id": "host"
+    },
+    {
+      "type": "resource",
+      "id": "db"
+    },
+    {
+      "type": "resource",
+      "id": "web"
+    },
+    {
+      "type": "resource",
+      "id": "cache"
+    },
+    {
+      "type": "resource",
+      "id": "spare"
+    },
+    {
+      "type": "application",
+      "id": "ok"
+    }
+  ],
+  "observations": [
+    {
+      "id": "host-old",
+      "subject": {
+        "type": "resource",
+        "id": "host"
+      },
+      "result": "healthy",
+      "summary": "healthy as seen",
+      "source": "manual",
+      "observedAt": "2026-09-30T11:00:00Z",
+      "validUntil": "2026-09-30T14:00:00Z",
+      "recordedAt": "2026-09-30T11:00:00Z",
+      "http": null,
+      "agent": null
+    },
+    {
+      "id": "host-new",
+      "subject": {
+        "type": "resource",
+        "id": "host"
+      },
+      "result": "unhealthy",
+      "summary": "unhealthy as seen",
+      "source": "manual",
+      "observedAt": "2026-09-30T11:40:00Z",
+      "validUntil": "2026-09-30T13:00:00Z",
+      "recordedAt": "2026-09-30T11:40:00Z",
+      "http": null,
+      "agent": null
+    },
+    {
+      "id": "db-1",
+      "subject": {
+        "type": "resource",
+        "id": "db"
+      },
+      "result": "degraded",
+      "summary": "degraded as seen",
+      "source": "manual",
+      "observedAt": "2026-09-30T11:45:00Z",
+      "validUntil": "2026-09-30T13:00:00Z",
+      "recordedAt": "2026-09-30T11:45:00Z",
+      "http": null,
+      "agent": null
+    },
+    {
+      "id": "shop-late",
+      "subject": {
+        "type": "application",
+        "id": "shop"
+      },
+      "result": "degraded",
+      "summary": "degraded as seen",
+      "source": "agent",
+      "observedAt": "2026-09-30T11:00:00Z",
+      "validUntil": "2026-09-30T13:00:00Z",
+      "recordedAt": "2026-09-30T11:05:00Z",
+      "http": null,
+      "agent": "claude-code"
+    },
+    {
+      "id": "shop-early",
+      "subject": {
+        "type": "application",
+        "id": "shop"
+      },
+      "result": "healthy",
+      "summary": "healthy as seen",
+      "source": "manual",
+      "observedAt": "2026-09-30T11:00:00Z",
+      "validUntil": "2026-09-30T13:00:00Z",
+      "recordedAt": "2026-09-30T11:01:00Z",
+      "http": null,
+      "agent": null
+    },
+    {
+      "id": "web-1",
+      "subject": {
+        "type": "resource",
+        "id": "web"
+      },
+      "result": "unhealthy",
+      "summary": "unhealthy as seen",
+      "source": "manual",
+      "observedAt": "2026-09-30T09:00:00Z",
+      "validUntil": "2026-09-30T10:00:00Z",
+      "recordedAt": "2026-09-30T09:00:00Z",
+      "http": null,
+      "agent": null
+    },
+    {
+      "id": "cache-1",
+      "subject": {
+        "type": "resource",
+        "id": "cache"
+      },
+      "result": "healthy",
+      "summary": "healthy as seen",
+      "source": "manual",
+      "observedAt": "2026-09-30T08:00:00Z",
+      "validUntil": "2026-09-30T09:00:00Z",
+      "recordedAt": "2026-09-30T08:00:00Z",
+      "http": null,
+      "agent": null
+    },
+    {
+      "id": "ok-1",
+      "subject": {
+        "type": "application",
+        "id": "ok"
+      },
+      "result": "healthy",
+      "summary": "healthy as seen",
+      "source": "http",
+      "observedAt": "2026-09-30T11:55:00Z",
+      "validUntil": "2026-09-30T12:10:00Z",
+      "recordedAt": "2026-09-30T11:55:00Z",
+      "http": {
+        "url": "https://ok.example/health",
+        "expectedStatus": 200,
+        "status": 200,
+        "latencyMs": 40,
+        "error": null,
+        "redirects": []
+      },
+      "agent": null
+    }
+  ],
+  "incidents": [
+    {
+      "id": "inc-info",
+      "subject": {
+        "type": "resource",
+        "id": "db"
+      },
+      "title": "Incident inc-info",
+      "description": "",
+      "severity": "info",
+      "status": "open",
+      "source": "manual",
+      "openedAt": "2026-09-30T11:50:00Z",
+      "updatedAt": "2026-09-30T11:50:00Z",
+      "resolvedAt": null,
+      "agent": null
+    },
+    {
+      "id": "inc-warn",
+      "subject": {
+        "type": "resource",
+        "id": "host"
+      },
+      "title": "Incident inc-warn",
+      "description": "",
+      "severity": "warning",
+      "status": "investigating",
+      "source": "agent",
+      "openedAt": "2026-09-30T11:30:00Z",
+      "updatedAt": "2026-09-30T11:30:00Z",
+      "resolvedAt": null,
+      "agent": "claude-code"
+    },
+    {
+      "id": "inc-done",
+      "subject": {
+        "type": "application",
+        "id": "shop"
+      },
+      "title": "Incident inc-done",
+      "description": "",
+      "severity": "critical",
+      "status": "resolved",
+      "source": "manual",
+      "openedAt": "2026-09-30T10:00:00Z",
+      "updatedAt": "2026-09-30T10:00:00Z",
+      "resolvedAt": "2026-09-30T10:00:00Z",
+      "agent": null
+    },
+    {
+      "id": "inc-crit",
+      "subject": {
+        "type": "application",
+        "id": "shop"
+      },
+      "title": "Incident inc-crit",
+      "description": "",
+      "severity": "critical",
+      "status": "open",
+      "source": "manual",
+      "openedAt": "2026-09-30T11:00:00Z",
+      "updatedAt": "2026-09-30T11:00:00Z",
+      "resolvedAt": null,
+      "agent": null
+    }
+  ],
+  "expected": {
+    "attention": [
+      {
+        "kind": "incident",
+        "subject": {
+          "type": "application",
+          "id": "shop"
+        },
+        "incidentId": "inc-crit"
+      },
+      {
+        "kind": "evidence",
+        "subject": {
+          "type": "resource",
+          "id": "host"
+        },
+        "state": "unhealthy",
+        "observationId": "host-new"
+      },
+      {
+        "kind": "incident",
+        "subject": {
+          "type": "resource",
+          "id": "host"
+        },
+        "incidentId": "inc-warn"
+      },
+      {
+        "kind": "evidence",
+        "subject": {
+          "type": "resource",
+          "id": "db"
+        },
+        "state": "degraded",
+        "observationId": "db-1"
+      },
+      {
+        "kind": "evidence",
+        "subject": {
+          "type": "application",
+          "id": "shop"
+        },
+        "state": "degraded",
+        "observationId": "shop-late"
+      },
+      {
+        "kind": "evidence",
+        "subject": {
+          "type": "resource",
+          "id": "web"
+        },
+        "state": "stale",
+        "observationId": "web-1"
+      },
+      {
+        "kind": "incident",
+        "subject": {
+          "type": "resource",
+          "id": "db"
+        },
+        "incidentId": "inc-info"
+      },
+      {
+        "kind": "evidence",
+        "subject": {
+          "type": "resource",
+          "id": "cache"
+        },
+        "state": "stale",
+        "observationId": "cache-1"
+      }
+    ],
+    "coverage": {
+      "current": 4,
+      "stale": 2,
+      "unobserved": 1
+    },
+    "status": "attention"
+  }
+}

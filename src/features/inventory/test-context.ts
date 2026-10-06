@@ -28,6 +28,7 @@ export function inventoryContext(
       incidents: [],
       events: [],
       httpChecks: [],
+      agentChanges: [],
       automatedHistory: { limit: 200, truncated: [] },
     },
     loadState: 'ready',
@@ -46,6 +47,16 @@ export function inventoryContext(
       directory: '/home/you/.local/share/com.devhq.desktop/backups',
       files: [],
     })),
+    agentAccess: vi.fn(async () => ({
+      mode: 'off' as const,
+      changedAt: null,
+      executable: '/opt/devhq/devhq',
+    })),
+    setAgentAccess: vi.fn(async (mode: 'off' | 'read' | 'write') => ({
+      mode,
+      changedAt: new Date(testNow).toISOString(),
+      executable: '/opt/devhq/devhq',
+    })),
     saveResource: vi.fn(async () => {}),
     saveApplication: vi.fn(async () => {}),
     deleteApplication: vi.fn(async () => {}),
@@ -63,7 +74,7 @@ export function inventoryContext(
       throw new Error('runHttpCheck is not mocked in this test')
     }),
     checking: [],
-    monitor: { checks: [], error: null, recorded: 0 },
+    monitor: { checks: [], error: null, recorded: 0, changes: 0 },
     monitorError: null,
     ...overrides,
   }

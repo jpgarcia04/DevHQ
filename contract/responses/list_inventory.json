@@ -38,7 +38,8 @@
         "latencyMs": 42,
         "error": null,
         "redirects": [{ "status": 301, "location": "https://host.example/health" }]
-      }
+      },
+      "agent": null
     },
     {
       "id": "obs-manual",
@@ -49,7 +50,8 @@
       "observedAt": "2026-01-01T09:30:00Z",
       "validUntil": "2026-01-01T10:30:00Z",
       "recordedAt": "2026-01-01T09:45:00Z",
-      "http": null
+      "http": null,
+      "agent": null
     }
   ],
   "incidents": [
@@ -63,7 +65,8 @@
       "source": "manual",
       "openedAt": "2026-01-01T09:00:00Z",
       "updatedAt": "2026-01-01T09:50:00Z",
-      "resolvedAt": "2026-01-01T09:50:00Z"
+      "resolvedAt": "2026-01-01T09:50:00Z",
+      "agent": null
     }
   ],
   "events": [
@@ -78,7 +81,8 @@
       "observationId": "obs-http",
       "incidentId": null,
       "occurredAt": "2026-01-01T10:05:00Z",
-      "recordedAt": "2026-01-01T10:05:00Z"
+      "recordedAt": "2026-01-01T10:05:00Z",
+      "agent": null
     },
     {
       "id": "evt-incident",
@@ -91,7 +95,22 @@
       "observationId": null,
       "incidentId": "incident-1",
       "occurredAt": "2026-01-01T09:50:00Z",
-      "recordedAt": "2026-01-01T09:50:00Z"
+      "recordedAt": "2026-01-01T09:50:00Z",
+      "agent": null
+    },
+    {
+      "id": "evt-agent",
+      "subject": { "type": "application", "id": "shop" },
+      "kind": "deployment",
+      "outcome": "success",
+      "title": "Deployed 2.4.1",
+      "detail": "Noted while the person watched",
+      "source": "agent",
+      "observationId": null,
+      "incidentId": null,
+      "occurredAt": "2026-01-01T09:40:00Z",
+      "recordedAt": "2026-01-01T09:41:00Z",
+      "agent": "claude-code"
     }
   ],
   "httpChecks": [
@@ -104,6 +123,17 @@
       "updatedAt": "2026-01-01T08:00:00Z",
       "monitor": "active",
       "monitorIntervalMinutes": 5
+    }
+  ],
+  "agentChanges": [
+    {
+      "id": "change-1",
+      "subject": { "type": "application", "id": "shop" },
+      "subjectName": "Shop",
+      "agent": "claude-code",
+      "action": "updated",
+      "summary": "Updated application «Shop»: version «1.9» → «2.0»",
+      "occurredAt": "2026-01-01T09:35:00Z"
     }
   ],
   "automatedHistory": {

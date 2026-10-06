@@ -13,6 +13,8 @@
 //!   must equal it; Vitest checks that a value of the type the window expects equals it too.
 
 use super::{commands, manage};
+use crate::access::AgentAccess;
+use crate::agent_log::AgentChange;
 use crate::backup::{Backup, BackupCounts, BackupFile, BackupFolder};
 use crate::http_check::{HttpCheck, HttpCheckInput};
 use crate::inventory::{
@@ -104,7 +106,7 @@ fn the_window_can_watch_supervision_from_a_thread_without_a_runtime() {
 }
 
 /// The fixtures in `contract/<kind>/`, by file name without `.json`.
-fn fixtures(kind: &str) -> BTreeMap<String, Value> {
+pub(crate) fn fixtures(kind: &str) -> BTreeMap<String, Value> {
     let folder = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../contract")
         .join(kind);
@@ -159,7 +161,9 @@ fn arguments(command: &str) -> Vec<(&'static str, Reader)> {
     let subject: Reader = read_completely::<Subject>;
     let text: Reader = read_completely::<String>;
     match command {
-        "list_inventory" | "data_location" | "backup_inventory" | "list_backups" => vec![],
+        "list_inventory" | "data_location" | "backup_inventory" | "list_backups"
+        | "agent_access" => vec![],
+        "set_agent_access" => vec![("mode", text)],
         "save_resource" => vec![("input", read_completely::<ResourceInput>)],
         "save_application" => vec![("input", read_completely::<ApplicationInput>)],
         "delete_application" | "delete_resource" => vec![("id", text)],
@@ -307,6 +311,7 @@ fn every_answer_has_the_shape_the_window_expects() {
                 valid_until: at("10:20"),
                 recorded_at: at("10:05"),
                 http: Some(checked),
+                agent: None,
             },
             Observation {
                 id: "obs-manual".into(),
@@ -318,6 +323,7 @@ fn every_answer_has_the_shape_the_window_expects() {
                 valid_until: at("10:30"),
                 recorded_at: at("09:45"),
                 http: None,
+                agent: None,
             },
         ],
         incidents: vec![Incident {
@@ -331,6 +337,7 @@ fn every_answer_has_the_shape_the_window_expects() {
             opened_at: at("09:00"),
             updated_at: at("09:50"),
             resolved_at: Some(at("09:50")),
+            agent: None,
         }],
         events: vec![
             Event {
@@ -345,6 +352,7 @@ fn every_answer_has_the_shape_the_window_expects() {
                 incident_id: None,
                 occurred_at: at("10:05"),
                 recorded_at: at("10:05"),
+                agent: None,
             },
             Event {
                 id: "evt-incident".into(),
@@ -358,6 +366,21 @@ fn every_answer_has_the_shape_the_window_expects() {
                 incident_id: Some("incident-1".into()),
                 occurred_at: at("09:50"),
                 recorded_at: at("09:50"),
+                agent: None,
+            },
+            Event {
+                id: "evt-agent".into(),
+                subject: shop(),
+                kind: "deployment".into(),
+                outcome: "success".into(),
+                title: "Deployed 2.4.1".into(),
+                detail: "Noted while the person watched".into(),
+                source: "agent".into(),
+                observation_id: None,
+                incident_id: None,
+                occurred_at: at("09:40"),
+                recorded_at: at("09:41"),
+                agent: Some("claude-code".into()),
             },
         ],
         http_checks: vec![HttpCheck {
@@ -369,6 +392,15 @@ fn every_answer_has_the_shape_the_window_expects() {
             updated_at: at("08:00"),
             monitor: "active".into(),
             monitor_interval_minutes: Some(5),
+        }],
+        agent_changes: vec![AgentChange {
+            id: "change-1".into(),
+            subject: shop(),
+            subject_name: "Shop".into(),
+            agent: "claude-code".into(),
+            action: "updated".into(),
+            summary: "Updated application «Shop»: version «1.9» → «2.0»".into(),
+            occurred_at: at("09:35"),
         }],
         automated_history: AutomatedHistory {
             limit: 200,
@@ -395,6 +427,7 @@ fn every_answer_has_the_shape_the_window_expects() {
             error: Some("Timed out after 5 s".into()),
             redirects: vec![],
         }),
+        agent: None,
     };
     let its_event = Event {
         id: "evt-timeout".into(),
@@ -408,6 +441,7 @@ fn every_answer_has_the_shape_the_window_expects() {
         incident_id: None,
         occurred_at: at("10:00"),
         recorded_at: at("10:00"),
+        agent: None,
     };
     let folder = r"C:\Users\Juan Pablo\AppData\Roaming\com.devhq.desktop";
     // Where Windows keeps that folder's files for a DevHQ started from a packaged app.
@@ -425,6 +459,7 @@ fn every_answer_has_the_shape_the_window_expects() {
         }],
         error: None,
         recorded: 3,
+        changes: 7,
     };
     // A refusal, as the window receives it through the real handler.
     let path = path();
@@ -455,6 +490,14 @@ fn every_answer_has_the_shape_the_window_expects() {
                 database: format!(r"{folder}\inventory.sqlite3"),
                 directory: folder.into(),
                 stored_at: Some(format!(r"{packaged}\inventory.sqlite3")),
+            }),
+        ),
+        (
+            "agent_access".to_owned(),
+            value(&AgentAccess {
+                mode: "read".into(),
+                changed_at: Some(at("09:15")),
+                executable: Some(r"C:\Users\Juan Pablo\AppData\Local\DevHQ\devhq.exe".into()),
             }),
         ),
         ("watch_http_monitor".to_owned(), value(&supervision)),

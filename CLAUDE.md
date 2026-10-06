@@ -109,8 +109,24 @@ progress, because a new push cancels it.
   `contract/responses/` what Rust answers. `src/features/inventory/ipc-contract.test.ts` and
   `src-tauri/src/ipc_contract.rs` check each side against them. A new command or argument
   needs its fixture, its call in the TS test and its readers in `arguments()` in Rust.
+- `contract/attention/` holds cases of «what needs my attention» (inventory, instant, expected
+  ranking, coverage and status). `src/domain/attention-contract.test.ts` and
+  `src-tauri/src/attention.rs` check the window's rules and their Rust copy (for the agent
+  gate) against them: change a rule on both sides and in the cases together.
 - Tauri runs a synchronous command on the thread that received the request: the main thread,
   which has no Tokio runtime. A command that spawns a task or waits must be `async`.
+
+## Agent gate
+
+`devhq --mcp` (`src-tauri/src/gate.rs`) serves the inventory to an MCP client over stdio: no
+window, no port, alive only while the client keeps stdin open. Every tool calls the same use cases
+as the window's commands; never give it a shortcut around their validation. It never creates an
+inventory that does not exist. While a window is open, its process notices what other connections
+commit (`Monitor::notice_changes`, `PRAGMA data_version` every 2 s) and holds the lock that tells
+`status` a window is open (`window_lock.rs`). The native walk drives the gate as a child process.
+What remains to check or decide: `docs/puerta-para-agentes.md`. To try it
+with a real client: `claude -p "..." --mcp-config <json> --strict-mcp-config --allowedTools
+"mcp__devhq__*"` with the server's `--database` pointing at a test inventory.
 
 ## Schema
 

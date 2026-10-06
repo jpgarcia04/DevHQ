@@ -30,6 +30,7 @@ function observation(
     validUntil: at(validMinutes - observedMinutesAgo),
     recordedAt: at(-observedMinutesAgo),
     http: null,
+    agent: null,
   }
 }
 
@@ -71,6 +72,7 @@ function incident(
     openedAt: at(-30),
     updatedAt: at(-30),
     resolvedAt: status === 'resolved' ? at(-5) : null,
+    agent: null,
   }
 }
 

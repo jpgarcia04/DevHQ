@@ -29,6 +29,7 @@ function observation(
     validUntil: minutesFromNow(validUntilMinutes),
     recordedAt: minutesFromNow(-observedMinutesAgo),
     http: null,
+    agent: null,
   }
 }
 
@@ -43,6 +44,7 @@ const openIncident: RecordedIncident = {
   openedAt: minutesFromNow(-20),
   updatedAt: minutesFromNow(-20),
   resolvedAt: null,
+  agent: null,
 }
 
 const events: RecordedEvent[] = [
@@ -58,6 +60,7 @@ const events: RecordedEvent[] = [
     incidentId: null,
     occurredAt: minutesFromNow(-15),
     recordedAt: minutesFromNow(-15),
+    agent: null,
   },
   {
     id: 'evt-1',
@@ -72,6 +75,7 @@ const events: RecordedEvent[] = [
     occurredAt: minutesFromNow(-10),
     // Typed in well after it happened: the timeline says so.
     recordedAt: minutesFromNow(-1),
+    agent: null,
   },
 ]
 
@@ -100,6 +104,7 @@ const snapshot: InventorySnapshot = {
   incidents: [],
   events: [],
   httpChecks: [],
+  agentChanges: [],
   automatedHistory: { limit: 200, truncated: [] },
 }
 
@@ -153,6 +158,128 @@ describe('real operational records', () => {
     // Demo events never leak into the real timeline.
     expect(screen.queryByText('Backup verified')).not.toBeInTheDocument()
     expect(screen.queryByText('Deployment failed')).not.toBeInTheDocument()
+  })
+
+  it('mixes what an agent reported into activity and incidents, naming the agent', async () => {
+    const user = userEvent.setup()
+    const byAgent: RecordedEvent = {
+      ...events[0]!,
+      id: 'evt-agent',
+      title: 'Deployed 1.6',
+      source: 'agent',
+      agent: 'claude-code',
+      occurredAt: minutesFromNow(-5),
+      recordedAt: minutesFromNow(-5),
+    }
+    const opened: RecordedIncident = { ...openIncident, source: 'agent', agent: 'claude-code' }
+    const { unmount } = renderWith(
+      <RealActivityPage />,
+      inventoryContext({ snapshot: { ...snapshot, events: [byAgent, ...events] } }),
+    )
+    // One timeline: the agent's entry sits among the person's, with its own provenance.
+    expect(screen.getByText('Deployed 1.6')).toBeInTheDocument()
+    expect(screen.getByText('Deployed 1.5 by hand')).toBeInTheDocument()
+    expect(screen.getAllByText('Manual entry')).toHaveLength(2)
+    const tag = screen.getByText('Agent · claude-code')
+    expect(tag.closest('[title]')).toHaveAttribute(
+      'title',
+      expect.stringContaining('DevHQ cannot verify it'),
+    )
+    unmount()
+    renderWith(
+      <RealIncidentsPage />,
+      inventoryContext({ snapshot: { ...snapshot, incidents: [opened] } }),
+    )
+    await user.click(screen.getByText('Checkout returns 502'))
+    expect(screen.getByText('Agent · claude-code')).toBeInTheDocument()
+    expect(screen.queryByText('Manual entry')).not.toBeInTheDocument()
+  })
+
+  it('mixes the configuration changes an agent made into the timeline, kept when a system is gone', async () => {
+    const user = userEvent.setup()
+    const changes: InventorySnapshot['agentChanges'] = [
+      {
+        id: 'c1',
+        subject: { type: 'application', id: 'shop' },
+        subjectName: 'Shop',
+        agent: 'claude-code',
+        action: 'updated',
+        summary: 'Updated application «Shop»: version «1.4» → «1.5»',
+        occurredAt: minutesFromNow(-12),
+      },
+      {
+        id: 'c2',
+        subject: { type: 'resource', id: 'old-box' },
+        subjectName: 'Old box',
+        agent: 'claude-code',
+        action: 'deleted',
+        summary: 'Deleted resource «Old box», which had no history',
+        occurredAt: minutesFromNow(-30),
+      },
+    ]
+    const { unmount } = renderWith(
+      <RealActivityPage />,
+      inventoryContext({ snapshot: { ...snapshot, events, agentChanges: changes } }),
+    )
+    // In time order among the person's entries: after evt-1 (10 min ago), before evt-2 (15).
+    const titles = screen
+      .getAllByRole('listitem')
+      .map((item) => item.querySelector('p')?.textContent)
+    expect(titles).toEqual([
+      'Observation: Unhealthy',
+      'Updated application «Shop»: version «1.4» → «1.5»',
+      'Deployed 1.5 by hand',
+      'Deleted resource «Old box», which had no history',
+    ])
+    expect(screen.getAllByText('Change')).toHaveLength(2)
+    expect(screen.getAllByText('Agent · claude-code')).toHaveLength(2)
+    // A system that is gone keeps the name the change gave it, without a link that leads nowhere.
+    expect(screen.getByText('Old box · no longer in the inventory')).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /Old box/ })).not.toBeInTheDocument()
+    // One system's activity holds its own changes only.
+    await user.selectOptions(
+      screen.getByRole('combobox', { name: 'Filter activity by system' }),
+      'Shop',
+    )
+    expect(
+      screen.getByText('Updated application «Shop»: version «1.4» → «1.5»'),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/Old box/)).not.toBeInTheDocument()
+    unmount()
+
+    // Changes alone are activity too, and the overview's recent activity shows them.
+    renderWith(
+      <RealActivityPage />,
+      inventoryContext({ snapshot: { ...snapshot, events: [], agentChanges: changes } }),
+    )
+    expect(screen.queryByRole('heading', { name: 'No activity recorded' })).not.toBeInTheDocument()
+    expect(screen.getByText('Deleted resource «Old box», which had no history')).toBeInTheDocument()
+  })
+
+  it('shows an agent’s changes among the overview’s recent activity', () => {
+    renderWith(
+      <RealOverviewPage />,
+      inventoryContext({
+        snapshot: {
+          ...snapshot,
+          agentChanges: [
+            {
+              id: 'c1',
+              subject: { type: 'resource', id: 'spare' },
+              subjectName: 'Spare box',
+              agent: 'codex',
+              action: 'created',
+              summary: 'Added resource «Spare box» (server)',
+              occurredAt: minutesFromNow(-3),
+            },
+          ],
+        },
+      }),
+    )
+    const recent = screen.getByRole('region', { name: 'Recent activity' })
+    expect(within(recent).getByText('Added resource «Spare box» (server)')).toBeInTheDocument()
+    expect(within(recent).getByText('Agent · codex')).toBeInTheDocument()
+    expect(within(recent).queryByText('No activity recorded yet.')).not.toBeInTheDocument()
   })
 
   it('lists recorded incidents with their affected system', async () => {

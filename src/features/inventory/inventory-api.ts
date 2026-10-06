@@ -72,18 +72,25 @@ export interface MonitorStatus {
   error: string | null
   /** Observations recorded by runs since launch; grows when there is new evidence. */
   recorded: number
+  /**
+   * Commits by other connections the native process noticed since launch (it looks every 2 s):
+   * an agent's through the agent gate, another program's, and the window's own writes. Grows
+   * when the inventory may have changed.
+   */
+  changes: number
 }
 
 /**
  * Supervision can add an automated result every 5 minutes, so a snapshot carries only the
- * latest `limit` per application or resource; older ones stay in SQLite, untouched. Manual
- * records are always complete.
+ * latest `limit` per application or resource; older ones stay in SQLite, untouched. Manual and
+ * agent records are always complete.
  */
 export interface AutomatedHistory {
   limit: number
   /**
    * Subjects with older automated results than the snapshot carries. From `since` on, their
-   * automated observations and events are complete; before it, only manual records are loaded.
+   * automated observations and events are complete; before it, only manual and agent records
+   * are loaded.
    */
   truncated: { subject: EntityRef; since: string }[]
 }
@@ -110,7 +117,44 @@ export interface InventorySnapshot {
   incidents: RecordedIncident[]
   events: RecordedEvent[]
   httpChecks: HttpCheck[]
+  /** What agents changed in the configuration through the agent gate, newest first: all of it. */
+  agentChanges: AgentChange[]
   automatedHistory: AutomatedHistory
+}
+
+/**
+ * A change an agent made through the agent gate to what carries no source of its own:
+ * applications, resources, components and HTTP checks. Written with the change, never altered.
+ */
+export interface AgentChange {
+  id: string
+  subject: EntityRef
+  /** The system's name when the change was made; it may since have been renamed or deleted. */
+  subjectName: string
+  /** As the agent's client named itself; DevHQ cannot verify it. */
+  agent: string
+  action:
+    | 'created'
+    | 'updated'
+    | 'deleted'
+    | 'check_saved'
+    | 'check_paused'
+    | 'check_resumed'
+    | 'check_removed'
+    | 'check_run'
+  summary: string
+  occurredAt: string
+}
+
+/** How far agents may act through the agent gate (`devhq --mcp`). Off until the person opens it. */
+export type AgentAccessMode = 'off' | 'read' | 'write'
+
+export interface AgentAccess {
+  mode: AgentAccessMode
+  /** When the person last changed it; null while it was never changed (and is off). */
+  changedAt: string | null
+  /** This executable, for the command that registers the gate; null if the system cannot say. */
+  executable: string | null
 }
 
 /** Where the inventory lives on this device, so that it can be backed up. */
@@ -225,6 +269,9 @@ export const inventoryApi = {
   backupInventory: () => invoke<Backup>('backup_inventory'),
   /** The files in the backups folder, as found there; it reads none of them. */
   listBackups: () => invoke<BackupFolder>('list_backups'),
+  agentAccess: () => invoke<AgentAccess>('agent_access'),
+  /** The gate reads it on every call, so the change applies at once. */
+  setAgentAccess: (mode: AgentAccessMode) => invoke<AgentAccess>('set_agent_access', { mode }),
   saveResource: (input: ResourceInput) => invoke<InventoryResource>('save_resource', { input }),
   saveApplication: (input: ApplicationInput) =>
     invoke<InventoryApplication>('save_application', { input }),

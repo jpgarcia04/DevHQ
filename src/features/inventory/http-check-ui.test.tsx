@@ -47,6 +47,7 @@ function observation(
     validUntil: minutesFromNow(validUntilMinutes),
     recordedAt: minutesFromNow(-observedMinutesAgo),
     http,
+    agent: null,
   }
 }
 
@@ -63,6 +64,7 @@ function eventFor(item: Observation, title: string): RecordedEvent {
     incidentId: null,
     occurredAt: item.observedAt,
     recordedAt: item.recordedAt,
+    agent: null,
   }
 }
 
@@ -113,6 +115,7 @@ const snapshot: InventorySnapshot = {
   ],
   // The web check's URL changed after its last run.
   httpChecks: [check(web), check(shop, 'https://shop.example/health')],
+  agentChanges: [],
   automatedHistory: { limit: 200, truncated: [] },
 }
 

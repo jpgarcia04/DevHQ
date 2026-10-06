@@ -1,10 +1,15 @@
+mod access;
+mod agent_log;
+mod attention;
 mod backup;
+pub mod gate;
 mod http_check;
 mod inventory;
 #[cfg(test)]
 mod ipc_contract;
 mod monitor;
 mod records;
+mod window_lock;
 
 use monitor::{Monitor, MonitorStatus};
 use std::path::PathBuf;
@@ -42,6 +47,22 @@ async fn list_backups(
     path: tauri::State<'_, InventoryPath>,
 ) -> Result<backup::BackupFolder, inventory::ApiError> {
     backup::list(&path.0)
+}
+
+/// Whether agents may use the agent gate, and the executable that registers it.
+#[tauri::command]
+fn agent_access(
+    path: tauri::State<'_, InventoryPath>,
+) -> Result<access::AgentAccess, inventory::ApiError> {
+    access::agent_access(&path.0)
+}
+
+#[tauri::command]
+fn set_agent_access(
+    path: tauri::State<'_, InventoryPath>,
+    mode: String,
+) -> Result<access::AgentAccess, inventory::ApiError> {
+    access::set_agent_access(&path.0, &mode)
 }
 
 #[tauri::command]
@@ -203,6 +224,8 @@ fn commands<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Sen
         data_location,
         backup_inventory,
         list_backups,
+        agent_access,
+        set_agent_access,
         save_resource,
         save_application,
         delete_application,
@@ -235,8 +258,19 @@ pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             let path = app.path().app_data_dir()?.join("inventory.sqlite3");
-            // Supervision lives only as long as this process: no service, no system task.
-            tauri::async_runtime::spawn(manage(app, path).run());
+            // Tells the agent gate that a window is open on this inventory, for as long as this
+            // process lives. Without it the gate cannot know; the window works the same.
+            match window_lock::WindowLock::hold(&path) {
+                Ok(lock) => {
+                    app.manage(lock);
+                }
+                Err(error) => eprintln!("DevHQ could not hold its window lock: {error}"),
+            }
+            // Supervision, and noticing what other processes change, live only as long as this
+            // process: no service, no system task.
+            let monitor = manage(app, path);
+            tauri::async_runtime::spawn(monitor.clone().run());
+            tauri::async_runtime::spawn(monitor.notice_changes());
             Ok(())
         })
         .invoke_handler(commands())
@@ -244,7 +278,8 @@ pub fn run() {
         .expect("error while building DevHQ")
         .run(|app, event| {
             // Closing the window ends supervision: runs in flight are cancelled, none start, and
-            // nothing is recorded once shutdown returns (it waits for a commit in progress).
+            // nothing is recorded once shutdown returns (it waits for a commit in progress). It
+            // also stops noticing changes and closes the connection that did.
             if let RunEvent::ExitRequested { .. } | RunEvent::Exit = event {
                 if let Some(monitor) = app.try_state::<Monitor>() {
                     monitor.shutdown();

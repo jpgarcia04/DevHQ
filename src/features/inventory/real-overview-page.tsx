@@ -14,7 +14,7 @@ import {
 import { relativeTime } from '@/shared/time'
 import { cn } from '@/shared/utils'
 import { EvidenceBadge, SourceTag, SubjectLink } from './evidence'
-import { automatedSince } from './history'
+import { automatedSince, timelineEvents } from './history'
 import { useInventory } from './inventory-context'
 import { InventoryState } from './inventory-state'
 import { AttentionList, EventRecordList } from './record-lists'
@@ -72,7 +72,7 @@ function OverviewContent() {
     ],
     covered: [
       'Every system has current healthy evidence.',
-      'Based on manual entries and HTTP checks that are still within their validity.',
+      'Based on manual entries, agent entries and HTTP checks that are still within their validity.',
     ],
   }[status]
   return (
@@ -157,7 +157,7 @@ function OverviewContent() {
                     <span className="text-[11px] text-muted-foreground">
                       {coverageNote(item.evidence, now)}
                     </span>
-                    {item.evidence.latest && <SourceTag source={item.evidence.latest.source} />}
+                    {item.evidence.latest && <SourceTag record={item.evidence.latest} />}
                     <EvidenceBadge state={item.evidence.state} compact />
                   </li>
                 ))}
@@ -181,9 +181,9 @@ function OverviewContent() {
               </Link>
             </div>
             <div className="panel p-5">
-              {snapshot.events.length ? (
+              {snapshot.events.length || snapshot.agentChanges.length ? (
                 <EventRecordList
-                  items={snapshot.events}
+                  items={timelineEvents(snapshot)}
                   foldRepeats
                   maxRows={5}
                   detailed={false}

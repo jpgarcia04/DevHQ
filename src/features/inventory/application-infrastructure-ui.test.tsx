@@ -22,6 +22,7 @@ function observation(
     validUntil: minutesFromNow(validUntilMinutes),
     recordedAt: minutesFromNow(-30),
     http: null,
+    agent: null,
   }
 }
 
@@ -36,6 +37,7 @@ const diskFull: RecordedIncident = {
   openedAt: minutesFromNow(-45),
   updatedAt: minutesFromNow(-45),
   resolvedAt: null,
+  agent: null,
 }
 
 const snapshot: InventorySnapshot = {
@@ -96,6 +98,7 @@ const snapshot: InventorySnapshot = {
       monitorIntervalMinutes: 15,
     },
   ],
+  agentChanges: [],
   automatedHistory: { limit: 200, truncated: [] },
 }
 

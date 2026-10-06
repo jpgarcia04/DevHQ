@@ -78,10 +78,17 @@ origen (`source`), siempre visible:
 | -------- | ---------------------- | --------------------------------------------------------------- |
 | `manual` | Manual entry           | Tú. Incidencias y eventos registrados a mano                    |
 | `http`   | Automated · HTTP check | DevHQ, al ejecutar la comprobación que tú lanzaste o supervisas |
+| `agent`  | Agent · _nombre_       | Un agente al que le pediste actuar por la puerta para agentes   |
 
 Solo las observaciones (y el evento que las acompaña) pueden ser `http`; el esquema lo
 impone con CHECK. Una observación automática sigue exactamente la misma semántica de
-vigencia, sustitución y atención que una manual.
+vigencia, sustitución y atención que una manual. Un registro `agent` guarda además, en
+`agent`, el nombre que el cliente del agente declaró (por ejemplo `claude-code`); DevHQ no
+puede verificarlo y la etiqueta lo dice al pasar el cursor. Se presenta mezclado con lo tuyo en
+cada vista, con su propia etiqueta, y sigue la misma semántica que un registro manual: es algo
+reportado, no medido por DevHQ. Una incidencia conserva quién la abrió; cada cambio de estado es
+un evento con la procedencia de quien lo hizo. Solo la [puerta para agentes](#puerta-para-agentes)
+escribe registros `agent`.
 
 - **Observación**: resultado (healthy/degraded/unhealthy), qué se vio, momento observado,
   momento registrado y vigencia (1 h–30 días). Es inmutable; se corrige registrando otra.
@@ -159,7 +166,8 @@ ejecución, que es idéntica a la de Run check y sigue la misma semántica de vi
   commit en llegar al disco y su conexión en cerrarse, nunca a otro escritor). No hay servicio,
   tarea del sistema ni arranque solo.
 - La siguiente ejecución toca **un intervalo después de que terminó la anterior**, la
-  lanzara quien la lanzara: un Run check también reinicia la espera. Las ejecuciones
+  lanzara quien la lanzara: un Run check también reinicia la espera, y también un `run_check` de
+  la [puerta para agentes](#puerta-para-agentes), que la supervisión nota en unos 2 s. Las ejecuciones
   perdidas no se recuperan: tras una pausa, la app cerrada o una ejecución lenta, una
   comprobación atrasada corre **una** vez.
 - Al abrir DevHQ, el ritmo continúa desde la última observación `http` guardada. Las
@@ -176,11 +184,11 @@ ejecución, que es idéntica a la de Run check y sigue la misma semántica de vi
   que la configuración sigue existiendo, así que un resultado tardío nunca se registra.
 - El bucle vuelve a planificar al menos cada 30 s, para notar un cambio de reloj o la
   vuelta de una suspensión sin fiarse de un temporizador largo.
-- Cada lectura del inventario lleva **todos** los registros manuales, pero solo los últimos
+- Cada lectura del inventario lleva **todos** los registros manuales y de agentes, pero solo los últimos
   200 resultados automáticos de cada aplicación o recurso (con sus eventos): la supervisión
   puede añadir uno cada 5 min durante meses. Los anteriores siguen en SQLite, intactos, y la
   UI lo dice: una nota indica desde cuándo los resultados automáticos están completos y una
-  línea marca dónde una lista pasa a tener solo registros manuales. En el historial de
+  línea marca dónde una lista pasa a tener solo registros manuales y de agentes. En el historial de
   observaciones de un sistema, los anteriores se cargan bajo demanda, de 200 en 200, anclados
   al más antiguo ya mostrado para que los resultados nuevos no causen saltos ni duplicados. Una vista que mezcla
   sistemas (Activity) solo muestra resultados automáticos desde el momento en que los de
@@ -214,9 +222,12 @@ ejecución, que es idéntica a la de Run check y sigue la misma semántica de vi
   sistemas, con los mismos 855 y 79 KB hacia la ventana: más lento que en Linux, pero igual de
   independiente de lo lejos que esté la página.
 - El proceso nativo empuja el estado a la ventana por un `Channel` de Tauri: ejecución en
-  curso, última y siguiente ejecución y último error de DevHQ. Cuando una ejecución
-  registra evidencia, la ventana relee el inventario sin estado de carga, así que los
-  formularios abiertos y los registros desplegados se conservan.
+  curso, última y siguiente ejecución y último error de DevHQ, y dos contadores desde que abrió:
+  cuántas ejecuciones registraron evidencia (`recorded`) y cuántas veces notó que otra conexión
+  confirmó algo (`changes`, ver [Puerta para agentes](#puerta-para-agentes)). Cuando uno crece,
+  la ventana relee el inventario sin estado de carga, así que los formularios abiertos y los
+  registros desplegados se conservan. Si dos lecturas se cruzan, aplica solo la que empezó
+  después: nunca vuelve a un estado anterior al que ya muestra.
 
 ### Respaldo
 
@@ -261,6 +272,126 @@ de ningún sistema.
   las dos carpetas.
 - Se restauran como cualquier copia (ver [Arquitectura](#arquitectura)). La preview rechaza el
   respaldo como toda escritura y muestra una carpeta de ejemplo.
+
+### Puerta para agentes
+
+`devhq --mcp` arranca la puerta para agentes: el mismo ejecutable, sin ventana ni WebView, habla el
+Model Context Protocol (JSON-RPC 2.0, un mensaje por línea en stdin y stdout) con un agente como
+Claude Code, para que haga lo que tú haces en la ventana cuando se lo pides. Se registra una sola vez,
+con alcance de usuario, y desde entonces cualquier sesión local de Claude Code la tiene:
+
+```sh
+claude mcp add --scope user devhq -- "<ruta del ejecutable de DevHQ>" --mcp
+```
+
+El instalador pone el ejecutable en `%LOCALAPPDATA%\DevHQ`. El cliente lanza la puerta al empezar una
+sesión y la termina al cerrarla (al cerrarse stdin): no abre ningún puerto, no acepta conexiones, no
+queda nada corriendo ni guarda credenciales. Abre el mismo `inventory.sqlite3` que la app, en el
+directorio de datos que Tauri le da (`%APPDATA%\com.devhq.desktop` en Windows; un test lo compara con
+el que resuelve Tauri), o el que se le indique con `--database <ruta>`. Si ahí no hay inventario, lo
+dice y no crea uno vacío donde tu DevHQ no lo encontraría.
+
+Hasta dónde llega un agente lo decides tú en Settings → **Agent gate**: **Off** (por defecto, también
+tras actualizar), **Read only** o **Read and write**. La elección se guarda en el inventario
+(`agent_access`), porque la ventana la cambia y la puerta, otro proceso, la lee en cada llamada: se
+aplica de inmediato, también a una sesión ya abierta. No es una barrera de seguridad (el archivo es
+tuyo y está en tu disco) sino de intención: ningún agente lee ni escribe en tu inventario sin que lo
+hayas decidido. Con la puerta cerrada solo responde `status`, sin decir qué contiene el inventario,
+para que el agente pueda explicarte dónde abrirla; las demás herramientas responden
+`access_denied`. Settings también muestra el comando de registro con la ruta real del ejecutable,
+para copiarlo; DevHQ nunca lo ejecuta ni toca la configuración de Claude Code. Para leer basta Read
+only:
+
+| Herramienta    | Qué responde                                                                                                                                                                                                         |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `status`       | Qué archivo abrió, dónde lo guarda de verdad el sistema (`storedAt`, como Settings), su versión de esquema, si hay una ventana de DevHQ abierta sobre él (`windowOpen`), cuántos sistemas tiene y qué no puede saber |
+| `attention`    | «¿Qué necesita mi atención?» con el mismo orden que Overview, la cobertura, lo nunca observado y lo que nada supervisa; el estado solo es `covered` si todo tiene evidencia vigente                                  |
+| `list_systems` | Cada aplicación y recurso con su estado de evidencia y última observación, incidencias activas, comprobación HTTP y relaciones                                                                                       |
+| `get_system`   | Una aplicación o recurso (por ID, o por nombre exacto sin distinguir mayúsculas) con sus observaciones, incidencias y eventos cargados, y desde cuándo su historial automático está completo                         |
+| `history`      | Los resultados automáticos anteriores de un sistema, de 200 en 200, como la carga bajo demanda de la ventana                                                                                                         |
+
+Con Read and write, el agente también hace lo que tú haces en la ventana, pasando por los mismos
+casos de uso, con sus validaciones, límites y transacciones:
+
+| Herramienta                                      | Qué hace                                                                                                                                           |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `save_application`, `save_resource`              | Dar de alta (nombre y lifecycle, o nombre y tipo) o editar por ID                                                                                  |
+| `delete_application`, `delete_resource`          | Borrar lo que no tiene historial; lo demás se rechaza con el mismo motivo que en la ventana                                                        |
+| `record_observation`, `record_event`             | Registrar una observación (resultado, qué vio, vigencia) o un despliegue, respaldo, mantenimiento o nota                                           |
+| `open_incident`, `update_incident`               | Abrir una incidencia o cambiar su estado con una nota                                                                                              |
+| `save_check`, `set_check_paused`, `remove_check` | Configurar la comprobación HTTP(S) de un sistema (200, 5 s y 60 min por defecto, como el formulario), pausar o reanudar su supervisión, o quitarla |
+| `run_check`                                      | Ejecutarla ahora, como Run check: la observación es evidencia de DevHQ (`http`)                                                                    |
+| `backup`                                         | Back up now                                                                                                                                        |
+
+Una edición es **parcial**: lo que el agente no manda se conserva, para que cambiar la versión nunca
+borre los componentes por omisión. La lista de componentes, cuando se manda, es la lista completa,
+como en el formulario, y un componente apunta a su recurso por ID o por nombre exacto. Los registros
+que escribe llevan `source = agent` y su nombre. La configuración (aplicaciones, recursos, componentes
+y comprobaciones) no tiene `source`, así que cada cambio deja una entrada en `agent_log` (quién,
+qué, cuándo, sobre qué sistema y un resumen como «Updated application «Tienda»: version «1.3.0» →
+«1.4.0»») **en la misma transacción** que el cambio, después de comprobar ahí, con el lock de
+escritura de SQLite, que sigues permitiendo escribir. Las entradas nunca se modifican ni se borran;
+no tienen claves foráneas, así que no impiden borrar un sistema sin historial y le sobreviven con
+el nombre que tenía. `get_system` devuelve las de cada sistema, y la ventana las muestra en
+Activity (global y de cada sistema) y en la actividad reciente de Overview, **mezcladas con tus
+entradas** en orden de tiempo, como entradas de tipo Change con la etiqueta «Agent · _nombre_».
+Igual que los registros manuales, se cargan siempre completas. La de un sistema que ya no existe
+conserva su nombre, con «no longer in the inventory» en vez de un enlace que no lleva a nada, y
+sigue en la Activity de todos los sistemas. Los registros no se repiten en ese
+log: ya dicen quién los escribió. Ejecutar una comprobación deja en el log qué agente la pidió. Un
+rechazo no cambia nada ni deja entrada. Las herramientas que sobrescriben o quitan configuración se
+declaran destructivas (`destructiveHint`) y `run_check`, que sale de tu computadora, de mundo
+abierto (`openWorldHint`), así que el cliente pide confirmación según cómo lo tengas configurado.
+
+Con la ventana de DevHQ abierta, lo que cambia un agente aparece solo, en unos 2 s. Mientras la
+ventana vive, su proceso mantiene una conexión SQLite propia y cada 2 s le pregunta
+`PRAGMA data_version`, que cambia exactamente cuando otra conexión confirmó algo: la puerta, otro
+programa o los comandos de la propia ventana, que abren cada uno la suya. Es una consulta trivial que
+no lee ninguna tabla; cerrar la ventana la termina junto con la supervisión y cierra esa conexión, y
+con la ventana cerrada no existe. Cuando cambia, la supervisión relee su configuración (una
+comprobación que el agente configuró, pausó, reanudó o quitó surte efecto, y una ejecución que pidió
+reinicia la espera como Run check) y la ventana relee el inventario sin estado de carga, como tras
+una ejecución supervisada. Leer no confirma nada, así que esa relectura no provoca otra; un cambio
+hecho en la propia ventana, que ya la relee al guardar, provoca una relectura silenciosa más, de unos
+8 ms. Si la conexión falla, se abre otra en la siguiente consulta y eso cuenta como cambio, porque no
+se sabe qué pasó entretanto.
+
+`status` dice si hay una ventana de DevHQ abierta sobre ese inventario (`windowOpen`), y con ello si
+algo verá lo que escribe y supervisará las comprobaciones. Lo sabe por un lock del sistema: el proceso
+de la ventana abre `inventory.sqlite3.window-lock`, junto al inventario, y lo bloquea en modo
+compartido mientras vive; la puerta pide un bloqueo exclusivo sin esperar y, si se lo niegan, hay una
+ventana. El sistema suelta el lock cuando el proceso termina, de cualquier forma (cerrado, caído o
+matado), así que ningún archivo puede quedarse diciendo «abierta»; Windows lo hace según le permiten
+sus recursos, y puede tardar un momento después de que el proceso desaparezca. Es compartido para que dos ventanas
+sobre el mismo inventario lo tengan las dos. El archivo está vacío, DevHQ no lo borra y restaurar una
+copia no lo necesita; sin él (ninguna ventana abrió ese inventario desde que DevHQ lo usa), la ventana
+está cerrada, y la puerta nunca lo crea. Si el sistema no puede responder, `windowOpen` es `null` y
+`status` lo dice.
+
+Con una ventana abierta, una comprobación que el agente deja supervisada es de la ventana: la nota en
+unos 2 s y la ejecuta enseguida si nunca corrió o su última ejecución tiene más de un intervalo. Por
+eso `save_check` y `set_check_paused`, cuando la comprobación queda activa y hay una ventana abierta,
+lo dicen en una nota (`note`), y la descripción de `run_check` pide no ejecutarla otra vez: en la
+prueba con un Claude Code real, a quien se le pidió configurarla y ejecutarla, sin la nota quedaban dos
+observaciones con medio segundo de diferencia. Si aun así un agente ejecuta una comprobación en el
+mismo instante en que la supervisión de la ventana corre la misma, quedan dos observaciones honestas;
+ninguna se pierde ni se inventa.
+
+Las de lectura se declaran de solo lectura (`readOnlyHint`). Cada respuesta dice lo que la ventana diría: una
+lista recortada lleva el aviso de su ventana de historial y nada sin evidencia vigente se presenta
+como sano. La atención se calcula con la copia en Rust de las reglas de la ventana, atada a ellas por
+`contract/attention/`. El estado en vivo de la supervisión (ejecución en curso, siguiente, último
+error de DevHQ) solo existe en el proceso de la ventana, y `status` dice que la puerta no lo conoce.
+Un fallo de un caso de uso vuelve como resultado con `isError` y el mismo mensaje que vería la
+ventana; un método o una herramienta desconocidos, como error de JSON-RPC.
+
+En Windows, una puerta lanzada desde una app empaquetada (MSIX), como la app de escritorio de Claude,
+ve `AppData` redirigido (ver [Arquitectura](#arquitectura)) y podría leer y escribir otro inventario,
+o no encontrar ninguno: `status` lo dice con `storedAt`, y la puerta no se niega a escribir. Claude Code desde una terminal normal no está empaquetado. El workflow de
+Windows instala DevHQ y habla con la puerta del ejecutable instalado como lo hace un cliente MCP:
+comprueba que responde por stdin y stdout aunque no tenga consola, que abre el inventario de
+`%APPDATA%`, que ve cerrada la ventana que acaba de cerrarse (Windows soltó su lock) y que termina al
+cerrarse su entrada.
 
 ## Ejecutar
 
@@ -326,10 +457,17 @@ en `127.0.0.1` (esa ejecución y la recarga de su evidencia solo llegan a la ven
 archivo debe estar en `backups/`, sin `.partial`, con `quick_check` correcto, la versión del
 esquema y las filas del inventario, y la ventana debe listarlo sin ninguna copia incompleta (un
 antivirus que aún retuviera el `.partial` borrado mientras lo analiza lo dejaría a la vista en la
-lista). Por último cierra la ventana como
+lista). Luego hace de agente: elige Read and write en Settings → Agent gate, lanza el mismo
+ejecutable como puerta (`--mcp --database` con la base del recorrido), le habla MCP como un cliente
+que se llama `native-walk`, comprueba que `status` ve la ventana abierta y da de alta una aplicación
+con un componente sobre el recurso. Sin tocar la ventana, Applications debe mostrarla sola, y Activity
+su Change con la etiqueta «Agent · native-walk». Con la app sin el vigilante de `data_version`, ese
+paso no ve la aplicación en 15 s y falla. Por último cierra la ventana como
 lo hace su botón, nunca por WebDriver: con `WM_DELETE_WINDOW` en X11 (un script de Python que llama
 a libX11, porque bajo Xvfb no hay gestor de ventanas que lo envíe) o con `WM_CLOSE` en Windows. El
-proceso debe terminar, sin dejar `inventory.sqlite3-wal`, y el archivo debe haber pasado a WAL.
+proceso debe terminar, sin dejar `inventory.sqlite3-wal`, y el archivo debe haber pasado a WAL; la
+puerta, que sigue abierta, debe ver la ventana cerrada en menos de 10 s (el recorrido anota cuánto
+tardó) y terminar al cerrarse su entrada.
 Antes de hacer clic espera a que el elemento deje de moverse, porque el contenido que llega tarde
 empuja la página, y guarda una captura por paso en `test-results/native/`. `DEVHQ_APP` lo apunta a
 otro ejecutable.
@@ -460,7 +598,7 @@ src/
   shared/          Utilidades de estilos y tiempo
   test/            Configuración de pruebas
 src-tauri/         Host Rust/Tauri 2, SQLite, migraciones, IPC, ventana y CSP
-contract/          Argumentos y respuestas del IPC que comprueban los tests de ambos lados
+contract/          Argumentos y respuestas del IPC, y casos de atención, que comprueban los tests de ambos lados
 ```
 
 React + TypeScript estricto + Vite + Tailwind CSS 4. El estado de filtros es local;
@@ -481,7 +619,7 @@ asíncrono porque lanza la tarea que alimenta el `Channel`: Tauri ejecuta un com
 que recibe la petición (el principal), que no tiene runtime de Tokio, y lanzarla desde ahí provocaba un
 pánico que en Linux abortaba el proceso al abrir Mi inventario (lo comprueba `npm run e2e:native`). Abre
 `inventory.sqlite3` en el directorio de datos de la aplicación que proporciona Tauri; las
-migraciones transaccionales v1→v6 usan `PRAGMA user_version` y una versión más nueva se
+migraciones transaccionales v1→v9 usan `PRAGMA user_version` y una versión más nueva se
 rechaza en vez de adivinarse. Cada apertura solo lee esa versión: únicamente una base antigua
 toma el lock de escritura para migrar, y dentro vuelve a leerla por si otra conexión ya lo
 hizo. La base usa write-ahead logging (WAL): un lector trabaja sobre el último estado
@@ -522,7 +660,13 @@ un CHECK con ALTER) conservando filas, IDs, `rowid` (desempate de orden), claves
 referencia) para añadir el estado y el intervalo de supervisión con sus CHECK, conservando
 el `rowid` que ordena la lista. Ambas se ejecutan con las claves foráneas desactivadas y
 solo se confirman si `PRAGMA foreign_key_check` no encuentra relaciones rotas. La v6 solo
-añade dos índices parciales sobre los registros manuales; ninguna fila cambia. Los
+añade dos índices parciales sobre los registros manuales; ninguna fila cambia. La v7 reconstruye
+`observations`, `incidents` y `events` como la v4 para admitir el origen `agent` y la columna
+`agent`, que un CHECK exige exactamente con ese origen; las filas existentes conservan su origen
+sin agente. Sus índices parciales pasan a cubrir los registros manuales y de agentes, que se cargan
+siempre completos. La v8 solo añade `agent_access`, una fila como mucho con el modo de la puerta
+para agentes; ninguna fila cambia y, sin fila, la puerta está cerrada. La v9 solo añade
+`agent_log`, sin claves foráneas y con un índice por sistema; ninguna fila cambia. Los
 registros usan dos columnas con clave foránea (`application_id`/`resource_id`) y un CHECK
 que exige exactamente una; las referencias de historial son `ON DELETE RESTRICT`, así que
 nada puede borrar un sujeto y dejar evidencia huérfana; los casos de uso de borrado lo
@@ -539,7 +683,12 @@ aceptar esos nombres de argumentos y esos valores (los de los enums pasan su val
 bien, y cada argumento debe leerse entero, porque serde ignora una clave que no conoce y leería como
 ausente un campo opcional renombrado (una edición se volvería un alta). Su serialización de cada
 respuesta debe ser igual al fixture. Renombrar un campo, un argumento, un comando o un valor en
-cualquiera de los dos lados rompe un test. Se conserva la barra nativa de ventana. La CSP limita recursos y las
+cualquiera de los dos lados rompe un test. La respuesta a «¿Qué necesita mi atención?» (orden de
+urgencia, cobertura y estado global) también se calcula en Rust (`attention.rs`) para la puerta para
+agentes, que no tiene ventana a la que preguntar; `contract/attention/` guarda casos con un
+inventario, un instante y el resultado esperado, y Vitest y Rust comprueban contra ellos sus dos
+versiones, empates y fin exacto de la vigencia incluidos, así que la puerta nunca responde distinto
+que la ventana. Se conserva la barra nativa de ventana. La CSP limita recursos y las
 capabilities no conceden permisos adicionales. No se implementan autenticación,
 cuentas, cloud, sync, telemetría, scanners, automation engine, Runner ni background service.
 
@@ -548,8 +697,16 @@ cuentas, cloud, sync, telemetría, scanners, automation engine, Runner ni backgr
 1. Hecho: una comprobación HTTP(S) a petición con su propio `source`, sin cambiar la
    semántica de vigencia.
 2. Hecho: supervisión cancelable de esas comprobaciones, solo con DevHQ abierto.
-3. Después, automatizaciones con resultado e historial, y seguridad con almacén nativo de
+3. Hecho en Linux: la [puerta para agentes](#puerta-para-agentes), con la que un agente lee y
+   mantiene el inventario cuando se lo pides, con su procedencia siempre visible. Lee y escribe con
+   el acceso que eliges en Settings, sus cambios aparecen en Activity y la ventana abierta los nota
+   sola. Quedan comprobaciones en Windows:
+   [docs/puerta-para-agentes.md](docs/puerta-para-agentes.md).
+4. Después, automatizaciones con resultado e historial, y seguridad con almacén nativo de
    credenciales y evidencias contextualizadas.
+5. A largo plazo, una supervisión que siga con la ventana cerrada y avise de lo que necesita
+   atención, hecha por DevHQ mismo y no por un agente. Contradice que DevHQ no funcione en segundo plano, así que exige revisar esa regla y
+   cuidar lo que consume.
 
 Estos son límites conceptuales, **no módulos vacíos ni integraciones implementadas**.
 La dirección es UI → IPC/casos de uso → dominio. SQLite conserva contexto; las credenciales no deben
@@ -563,12 +720,12 @@ no una especificación ni un backlog: nada de lo que describe existe hasta que e
 Las pruebas cubren navegación, tabs/teclado, filtros, rutas desconocidas, relaciones
 compartidas, cronología de la demo, salud desconocida, persistencia tras reapertura,
 rechazo de referencias inválidas sin escrituras parciales, restricciones del esquema,
-migraciones v1/v2→v3, v3→v4, v4→v5 y v5→v6 (incluida la negativa a confirmar relaciones rotas),
+migraciones v1/v2→v3, v3→v4, v4→v5, v5→v6, v6→v7, v7→v8 y v8→v9 (incluida la negativa a confirmar relaciones rotas),
 vigencia y sustitución de observaciones de ambos orígenes, orden de atención, errores de
 carga visibles y recuperables, comprobaciones contra un servidor local (estado esperado,
 500, redirect, bucle de redirects, tiempo agotado, conexión rechazada, dominio `.invalid`
 y fallo TLS), configuraciones inválidas sin escrituras parciales, errores de DevHQ que
-no producen observación, la distinción de origen en cada vista real, el contrato IPC de cada comando, el respaldo
+no producen observación, la distinción de origen en cada vista real, el contrato IPC de cada comando, el contrato de atención, el respaldo
 (las mismas filas que el origen comparadas una a una, sin lo no confirmado y sin esperar a un escritor,
 sin reemplazar ni borrar un archivo ajeno, uno a la vez, y una copia dañada que se descarta sin nombre
 final) y el borrado (qué lo
@@ -577,7 +734,11 @@ prueba sobre un reloj simulado de Tokio, sin esperas reales: ritmo por intervalo
 continuidad tras reabrir, una sola ejecución por atraso, sin solapes, Run check que se une
 a la ejecución en vuelo, pausa, cancelación al quitar o cerrar (también de una ejecución que
 ya estaba escribiendo su resultado al cerrar), fallos de DevHQ visibles
-que no detienen al resto y configuración ilegible que se reintenta; y, con peticiones
+que no detienen al resto, configuración ilegible que se reintenta y lo que otra conexión confirma
+(una ejecución, una pausa o una comprobación nueva surten efecto en la siguiente consulta, una
+lectura no cuenta como cambio y cerrar termina las consultas al instante y cierra su conexión), y el
+lock de la ventana: compartido entre dos ventanas, sin crear nada al preguntar, y soltado por el
+sistema cuando se mata el proceso que lo tenía; y, con peticiones
 reales a un servidor local, que la evidencia programada es idéntica a la manual; y, a través del manejador real de comandos sobre el
 runtime simulado de Tauri y desde un hilo sin runtime asíncrono como el principal, que la ventana puede
 abrir el `Channel` de estado. La ventana

@@ -1,7 +1,7 @@
 import { useState } from 'react'
-import { sameSubject } from '@/domain/evidence'
+import { sameSubject, subjectsOf } from '@/domain/evidence'
 import type { EntityRef, RecordedEvent } from '@/domain/models'
-import { automatedSince, mergeTimeline, windowCut } from './history'
+import { automatedSince, mergeTimeline, timelineEvents, windowCut } from './history'
 import { inventoryError } from './inventory-api'
 import { useInventory } from './inventory-context'
 
@@ -33,16 +33,26 @@ const nothing = (view: string): Older => ({
  * snapshot left out loaded on demand, a page at a time. `view` names the timeline: what was
  * loaded for one never carries over to another.
  *
+ * With `includeGone`, it also holds agents' changes to systems no longer in the inventory, which
+ * no subject can name: the timeline of everything.
+ *
  * `since` is the moment the timeline is complete from (null when it is complete): before it,
- * only manual records are loaded. Pages are anchored on an event, never counted, so new
+ * only manual and agent records are loaded. Pages are anchored on an event, never counted, so new
  * results arriving meanwhile cause neither gaps nor duplicates.
  */
-export function useTimeline(view: string, subjects: EntityRef[]) {
+export function useTimeline(view: string, subjects: EntityRef[], includeGone = false) {
   const { snapshot, olderEvents } = useInventory()
   const [state, setState] = useState(() => nothing(view))
   const older = state.view === view ? state : nothing(view)
   const inView = (subject: EntityRef) => subjects.some((item) => sameSubject(item, subject))
-  const own = (snapshot?.events ?? []).filter((event) => inView(event.subject))
+  const known = snapshot ? subjectsOf(snapshot) : []
+  const own = (snapshot ? timelineEvents(snapshot) : []).filter(
+    (event) =>
+      inView(event.subject) ||
+      (includeGone &&
+        event.kind === 'change' &&
+        !known.some((subject) => sameSubject(subject, event.subject))),
+  )
   const history = snapshot?.automatedHistory ?? { limit: 0, truncated: [] }
   const since = !older.pages
     ? automatedSince(history, subjects)

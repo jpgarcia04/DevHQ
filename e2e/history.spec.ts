@@ -7,12 +7,12 @@ test('Activity loads older automated results until every one is shown', async ({
   await page.goto('/preview.html#/activity')
   const note = page.getByText(/are kept in the local database but not loaded/)
   await expect(note).toBeVisible()
-  await expect(page.getByText(/manual records only/).first()).toBeVisible()
+  await expect(page.getByText(/manual and agent entries only/).first()).toBeVisible()
 
   await page.getByRole('button', { name: 'Show 200 older automated results' }).click()
   await expect(page.getByText('Every automated result of these systems is shown.')).toBeVisible()
   await expect(note).toHaveCount(0)
-  await expect(page.getByText(/manual records only/)).toHaveCount(0)
+  await expect(page.getByText(/manual and agent entries only/)).toHaveCount(0)
   await expect(page.getByRole('button', { name: /older automated results/ })).toHaveCount(0)
 })
 

@@ -1,5 +1,13 @@
 import { Fragment, useId, useState } from 'react'
-import { ChevronDown, CircleDashed, History, PenLine, Radar, type LucideIcon } from 'lucide-react'
+import {
+  Bot,
+  ChevronDown,
+  CircleDashed,
+  History,
+  PenLine,
+  Radar,
+  type LucideIcon,
+} from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { healthLabels, sourceLabels } from '@/domain/labels'
 import type { EntityRef, HttpEvidence, Observation, RecordSource } from '@/domain/models'
@@ -54,24 +62,38 @@ export function EvidenceBadge({
   )
 }
 
-// Who produced a record. Each source has its own words, icon and outline, and neither uses
-// a health colour, so provenance can never be read as a result.
+// Who produced a record. Each source has its own words, icon and outline, and none uses a
+// health colour, so provenance can never be read as a result.
 const sourceStyles: Record<RecordSource, { icon: LucideIcon; className: string }> = {
   manual: { icon: PenLine, className: 'border-dashed text-muted-foreground' },
   http: { icon: Radar, className: 'border-sky-300/30 bg-sky-300/5 text-sky-200' },
+  agent: { icon: Bot, className: 'border-violet-300/30 bg-violet-300/5 text-violet-200' },
 }
 
-export function SourceTag({ source }: { source: RecordSource }) {
+/**
+ * A record's provenance. An agent's records also say which agent, by the name its client gave
+ * itself: DevHQ cannot verify it, and the tooltip says so.
+ */
+export function SourceTag({ record }: { record: { source: RecordSource; agent: string | null } }) {
+  const { source, agent } = record
   const { icon: Icon, className } = sourceStyles[source]
   return (
     <span
       className={cn(
-        'inline-flex shrink-0 items-center gap-1 rounded border px-1.5 py-0.5 text-[10px]',
+        'inline-flex max-w-full min-w-0 shrink-0 items-center gap-1 rounded border px-1.5 py-0.5 text-[10px]',
         className,
       )}
+      title={
+        source === 'agent'
+          ? 'Reported by an agent you asked to act through the agent gate. The name is the one its client declared; DevHQ cannot verify it.'
+          : undefined
+      }
     >
-      <Icon className="size-2.5" aria-hidden="true" />
-      {sourceLabels[source]}
+      <Icon className="size-2.5 shrink-0" aria-hidden="true" />
+      <span className="truncate">
+        {sourceLabels[source]}
+        {source === 'agent' && agent ? ` · ${agent}` : ''}
+      </span>
     </span>
   )
 }
@@ -133,16 +155,17 @@ export function AutomatedWindowNote({ since, limit }: { since: string; limit: nu
   return (
     <p className="rounded-md border border-dashed px-3 py-2 text-[11px] leading-5 text-muted-foreground">
       Automated HTTP check results before <Moment value={since} /> are kept in the local database
-      but not loaded: DevHQ loads the latest {limit} per system. Manual records are always complete.
+      but not loaded: DevHQ loads the latest {limit} per system. Manual and agent entries are always
+      complete.
     </p>
   )
 }
 
-/** Marks where a list stops being complete: older entries are manual records only. */
+/** Marks where a list stops being complete: older entries are manual and agent entries only. */
 export function WindowBoundary({ since }: { since: string }) {
   return (
     <li className="py-3 text-center text-[10px] text-muted-foreground">
-      Before <Moment value={since} /> · manual records only
+      Before <Moment value={since} /> · manual and agent entries only
     </li>
   )
 }
@@ -163,7 +186,7 @@ function ObservationMeta({ observation, now }: { observation: Observation; now: 
 function ObservationTimes({ observation, now }: { observation: Observation; now: number }) {
   return (
     <p className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
-      <SourceTag source={observation.source} />
+      <SourceTag record={observation} />
       <span>
         Observed <Moment value={observation.observedAt} /> (
         {relativeTime(observation.observedAt, now).toLowerCase()})
@@ -207,11 +230,26 @@ export function EvidenceDetail({ evidence, now }: { evidence: Evidence; now: num
   )
 }
 
-export function SubjectLink({ subject, className }: { subject: EntityRef; className?: string }) {
+export function SubjectLink({
+  subject,
+  className,
+  formerName,
+}: {
+  subject: EntityRef
+  className?: string
+  /** What a record called the system, said instead of a broken link once it is gone. */
+  formerName?: string
+}) {
   const { snapshot } = useInventory()
   const name = (
     subject.type === 'application' ? snapshot?.applications : snapshot?.resources
   )?.find((item) => item.id === subject.id)?.name
+  if (!name && formerName)
+    return (
+      <span className={cn('text-muted-foreground', className)}>
+        {formerName} · no longer in the inventory
+      </span>
+    )
   return (
     <Link
       className={cn(

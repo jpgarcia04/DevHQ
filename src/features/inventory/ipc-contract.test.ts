@@ -33,6 +33,8 @@ const calls: Record<keyof typeof inventoryApi, () => Promise<unknown>> = {
   dataLocation: () => inventoryApi.dataLocation(),
   backupInventory: () => inventoryApi.backupInventory(),
   listBackups: () => inventoryApi.listBackups(),
+  agentAccess: () => inventoryApi.agentAccess(),
+  setAgentAccess: () => inventoryApi.setAgentAccess('read'),
   saveResource: () =>
     inventoryApi.saveResource({
       id: 'host',
@@ -186,6 +188,7 @@ const snapshot: Answer<'list'> = {
         error: null,
         redirects: [{ status: 301, location: 'https://host.example/health' }],
       },
+      agent: null,
     },
     {
       id: 'obs-manual',
@@ -197,6 +200,7 @@ const snapshot: Answer<'list'> = {
       validUntil: at('10:30'),
       recordedAt: at('09:45'),
       http: null,
+      agent: null,
     },
   ],
   incidents: [
@@ -211,6 +215,7 @@ const snapshot: Answer<'list'> = {
       openedAt: at('09:00'),
       updatedAt: at('09:50'),
       resolvedAt: at('09:50'),
+      agent: null,
     },
   ],
   events: [
@@ -226,6 +231,7 @@ const snapshot: Answer<'list'> = {
       incidentId: null,
       occurredAt: at('10:05'),
       recordedAt: at('10:05'),
+      agent: null,
     },
     {
       id: 'evt-incident',
@@ -239,6 +245,21 @@ const snapshot: Answer<'list'> = {
       incidentId: 'incident-1',
       occurredAt: at('09:50'),
       recordedAt: at('09:50'),
+      agent: null,
+    },
+    {
+      id: 'evt-agent',
+      subject: shop,
+      kind: 'deployment',
+      outcome: 'success',
+      title: 'Deployed 2.4.1',
+      detail: 'Noted while the person watched',
+      source: 'agent',
+      observationId: null,
+      incidentId: null,
+      occurredAt: at('09:40'),
+      recordedAt: at('09:41'),
+      agent: 'claude-code',
     },
   ],
   httpChecks: [
@@ -251,6 +272,17 @@ const snapshot: Answer<'list'> = {
       updatedAt: at('08:00'),
       monitor: 'active',
       monitorIntervalMinutes: 5,
+    },
+  ],
+  agentChanges: [
+    {
+      id: 'change-1',
+      subject: shop,
+      subjectName: 'Shop',
+      agent: 'claude-code',
+      action: 'updated',
+      summary: 'Updated application «Shop»: version «1.9» → «2.0»',
+      occurredAt: at('09:35'),
     },
   ],
   automatedHistory: { limit: 200, truncated: [{ subject: host, since: at('10:05') }] },
@@ -275,6 +307,7 @@ const olderObservations: Answer<'olderObservations'> = {
         error: 'Timed out after 5 s',
         redirects: [],
       },
+      agent: null,
     },
   ],
   more: true,
@@ -294,6 +327,7 @@ const olderEvents: Answer<'olderEvents'> = {
       incidentId: null,
       occurredAt: at('10:00'),
       recordedAt: at('10:00'),
+      agent: null,
     },
   ],
   more: false,
@@ -307,6 +341,12 @@ const dataLocation: Answer<'dataLocation'> = {
   database: `${folder}\\inventory.sqlite3`,
   directory: folder,
   storedAt: `${packaged}\\inventory.sqlite3`,
+}
+
+const agentAccess: Answer<'agentAccess'> = {
+  mode: 'read',
+  changedAt: at('09:15'),
+  executable: 'C:\\Users\\Juan Pablo\\AppData\\Local\\DevHQ\\devhq.exe',
 }
 
 const backup: Answer<'backupInventory'> = {
@@ -361,6 +401,7 @@ const supervision: MonitorStatus = {
   ],
   error: null,
   recorded: 3,
+  changes: 7,
 }
 
 const answers: Record<string, unknown> = {
@@ -370,6 +411,7 @@ const answers: Record<string, unknown> = {
   data_location: dataLocation,
   backup_inventory: backup,
   list_backups: backups,
+  agent_access: agentAccess,
   watch_http_monitor: supervision,
 }
 

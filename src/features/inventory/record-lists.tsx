@@ -6,6 +6,7 @@ import {
   Database,
   Eye,
   NotebookPen,
+  Settings2,
   Wrench,
   type LucideIcon,
 } from 'lucide-react'
@@ -120,7 +121,7 @@ export function IncidentRecordList({
                   <span className="text-[11px] text-muted-foreground">
                     {incidentStatusLabels[incident.status]}
                   </span>
-                  <SourceTag source={incident.source} />
+                  <SourceTag record={incident} />
                 </span>
               </span>
               <time
@@ -178,6 +179,7 @@ const kindIcons: Record<RecordedEventKind, LucideIcon> = {
   backup: Database,
   maintenance: Wrench,
   note: NotebookPen,
+  change: Settings2,
 }
 // Entries typed in well after the fact say so; the timeline keeps both moments.
 const lateEntryMs = 5 * 60_000
@@ -228,10 +230,10 @@ function EventItem({
           </time>
         </div>
         <p className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-muted-foreground">
-          <SubjectLink subject={event.subject} />
+          <SubjectLink subject={event.subject} formerName={event.subjectName} />
           <span aria-hidden="true">·</span>
           <span>{eventKindLabels[event.kind]}</span>
-          <SourceTag source={event.source} />
+          <SourceTag record={event} />
           {late && (
             <span className="text-[11px]">
               recorded <time dateTime={event.recordedAt}>{formatDateTime(event.recordedAt)}</time>
@@ -281,7 +283,7 @@ function RepeatedResults({
             {events.length}
             {continues && '+'} consecutive results
           </span>
-          <SourceTag source={latest.source} />
+          <SourceTag record={latest} />
           <Button size="xs" variant="ghost" aria-expanded={open} onClick={() => setOpen(!open)}>
             {open ? 'Hide them' : `Show all ${events.length}`}
           </Button>
@@ -396,7 +398,7 @@ export function AttentionList({ items }: { items: AttentionItem[] }) {
                 <SeverityBadge severity={item.incident.severity} />
                 <span>Incident · {incidentStatusLabels[item.incident.status]}</span>
                 <SubjectLink subject={item.subject} />
-                <SourceTag source={item.incident.source} />
+                <SourceTag record={item.incident} />
                 <span>
                   opened{' '}
                   <time dateTime={item.incident.openedAt}>

@@ -1,0 +1,16 @@
+{
+  "about": "An inventory without applications or resources is empty, never healthy.",
+  "now": "2026-09-30T12:00:00Z",
+  "subjects": [],
+  "observations": [],
+  "incidents": [],
+  "expected": {
+    "attention": [],
+    "coverage": {
+      "current": 0,
+      "stale": 0,
+      "unobserved": 0
+    },
+    "status": "empty"
+  }
+}

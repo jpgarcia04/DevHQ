@@ -48,6 +48,7 @@ function observation(
             redirects: [],
           }
         : null,
+    agent: null,
   }
 }
 
@@ -69,6 +70,7 @@ function event(
     incidentId: null,
     occurredAt: minutesFromNow(-minutesAgo),
     recordedAt: minutesFromNow(-minutesAgo),
+    agent: null,
   }
 }
 
@@ -108,6 +110,7 @@ const snapshot: InventorySnapshot = {
     event(db, 'http', 3500, 'Database run two days before'),
   ],
   httpChecks: [],
+  agentChanges: [],
   automatedHistory: { limit: 200, truncated: [{ subject: web, since }] },
 }
 
@@ -120,8 +123,8 @@ function renderWith(ui: ReactNode, value: InventoryContextValue, path = '/') {
 }
 
 const note =
-  /^Automated HTTP check results before .+ are kept in the local database but not loaded: DevHQ loads the latest 200 per system\. Manual records are always complete\.$/
-const boundaryText = `Before ${formatDateTime(since)} · manual records only`
+  /^Automated HTTP check results before .+ are kept in the local database but not loaded: DevHQ loads the latest 200 per system\. Manual and agent entries are always complete\.$/
+const boundaryText = `Before ${formatDateTime(since)} · manual and agent entries only`
 
 /** Matches an element by its whole text, which a <time> inside splits into several nodes. */
 const whole = (tag: string, text: RegExp | string) => (_: string, element: Element | null) =>
@@ -151,6 +154,7 @@ describe('the automated history window', () => {
     expect(withinWindow('http', minutesFromNow(-61), since)).toBe(false)
     expect(withinWindow('http', since, since)).toBe(true)
     expect(withinWindow('manual', minutesFromNow(-6000), since)).toBe(true)
+    expect(withinWindow('agent', minutesFromNow(-6000), since)).toBe(true)
     expect(withinWindow('http', minutesFromNow(-6000), null)).toBe(true)
   })
 
@@ -186,7 +190,7 @@ describe('the automated history window', () => {
     expect(within(today).getByText(theBoundary)).toBeInTheDocument()
     const dayBefore = formatDate(minutesFromNow(-2000))
     expect(
-      screen.getByRole('heading', { name: `${dayBefore} · manual records only` }),
+      screen.getByRole('heading', { name: `${dayBefore} · manual and agent entries only` }),
     ).toBeInTheDocument()
     expect(
       screen.queryByRole('region', { name: formatDate(minutesFromNow(-3500)) }),
@@ -197,7 +201,7 @@ describe('the automated history window', () => {
     expect(screen.getByText('Database run at -120')).toBeInTheDocument()
     expect(screen.getByText('Database run two days before')).toBeInTheDocument()
     expect(screen.queryByText(theNote)).not.toBeInTheDocument()
-    expect(screen.queryByText(/manual records only/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/manual and agent entries only/)).not.toBeInTheDocument()
   })
 
   it('applies to an application’s activity through the resources it runs on', () => {
@@ -417,7 +421,7 @@ describe('older automated results', () => {
     await user.click(screen.getByRole('button', { name: 'Show 200 older automated results' }))
     expect(olderObservations).toHaveBeenCalledWith(web, 'obs-web-host-60')
     // Complete down to the oldest result loaded; the manual one at -90 is now inside.
-    const boundary = `Before ${formatDateTime(minutesFromNow(-95))} · manual records only`
+    const boundary = `Before ${formatDateTime(minutesFromNow(-95))} · manual and agent entries only`
     let items = itemTexts(screen.getByRole('list'))
     expect(
       items.map((item) => item.match(/Run at -\d+|Checked by hand at -90/)?.[0] ?? item),
@@ -530,7 +534,7 @@ describe('older automated events in a timeline', () => {
   const page = (events: RecordedEvent[], more: boolean) => ({ events, more })
   const today = () => screen.getByRole('region', { name: formatDate(minutesFromNow(-10)) })
   const boundaryAt = (minutesAgo: number) =>
-    `Before ${formatDateTime(minutesFromNow(-minutesAgo))} · manual records only`
+    `Before ${formatDateTime(minutesFromNow(-minutesAgo))} · manual and agent entries only`
 
   it('start where the systems stop being complete and merge them without gaps', () => {
     const second = { ...snapshot.automatedHistory.truncated[0]!, subject: db }
@@ -582,7 +586,7 @@ describe('older automated events in a timeline', () => {
     await user.click(screen.getByRole('button', { name: 'Show 200 older automated results' }))
     expect(olderEvents).toHaveBeenLastCalledWith([web], 'evt-web-host-130')
     items = itemTexts(today())
-    expect(items.some((item) => item.includes('manual records only'))).toBe(false)
+    expect(items.some((item) => item.includes('manual and agent entries only'))).toBe(false)
     expect(screen.queryByText(/kept in the local database but not loaded/)).not.toBeInTheDocument()
     expect(screen.getByText('Database run two days before')).toBeInTheDocument()
     expect(screen.getByText('Web run long ago')).toBeInTheDocument()

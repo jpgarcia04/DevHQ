@@ -2,6 +2,7 @@ import type { Channel } from '@tauri-apps/api/core'
 import { sameSubject, subjectsOf } from '@/domain/evidence'
 import type { EntityRef, Observation, RecordedEvent } from '@/domain/models'
 import type {
+  AgentAccess,
   BackupFolder,
   DataLocation,
   EventPage,
@@ -92,6 +93,7 @@ export function previewBackend(database: PreviewDatabase) {
         (item) => !automated(item) || (item.observationId !== null && kept.has(item.observationId)),
       ),
       httpChecks: database.httpChecks,
+      agentChanges: database.agentChanges,
       automatedHistory: { limit, truncated },
     }
   }
@@ -142,6 +144,7 @@ export function previewBackend(database: PreviewDatabase) {
       }),
       error: null,
       recorded: 0,
+      changes: 0,
     }
   }
 
@@ -158,6 +161,13 @@ export function previewBackend(database: PreviewDatabase) {
       // Listing reads the folder, not the inventory. Backing up writes, so it is refused.
       case 'list_backups':
         return { directory: `${folder}\\backups`, files: database.backups } satisfies BackupFolder
+      // The preview's sample is closed to agents; opening it writes, so it is refused.
+      case 'agent_access':
+        return {
+          mode: 'off',
+          changedAt: null,
+          executable: 'C:\\Users\\Juan Pablo\\AppData\\Local\\DevHQ\\devhq.exe',
+        } satisfies AgentAccess
       case 'older_observations':
         return olderObservations(args.subject as EntityRef, args.before as string)
       case 'older_events':
