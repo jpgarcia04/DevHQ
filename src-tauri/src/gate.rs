@@ -758,8 +758,12 @@ mod tests {
     use crate::records::{open_incident, record_observation, IncidentInput, ObservationInput};
 
     /// An inventory path in a folder of its own.
+    /// A fresh inventory path in the temporary folder as the file system names it, so that only
+    /// a link the test makes, never a short 8.3 name in `TMP` (as on a Windows runner), can put
+    /// the file somewhere else than asked.
     fn path() -> PathBuf {
-        let folder = std::env::temp_dir().join(format!("devhq-gate-test-{}", uuid::Uuid::new_v4()));
+        let folder = crate::inventory::tests::resolved_temp_dir()
+            .join(format!("devhq-gate-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&folder).unwrap();
         folder.join("inventory.sqlite3")
     }
@@ -1020,6 +1024,7 @@ mod tests {
         );
         assert_eq!(replies[1]["error"]["code"], PARSE_ERROR);
         assert_eq!(replies.len(), 2);
+        remove(&path);
     }
 
     #[test]
