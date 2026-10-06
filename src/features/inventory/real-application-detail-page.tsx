@@ -15,6 +15,7 @@ import { ApplicationForm } from './application-form'
 import { ApplicationInfrastructure } from './application-infrastructure'
 import {
   AutomatedWindowNote,
+  ChangesSinceNote,
   EvidenceBadge,
   ObservationHistory,
   OlderResults,
@@ -292,6 +293,11 @@ function ApplicationDetail({ app }: { app: InventoryApplication }) {
             {timeline.since && (
               <div className="mb-5">
                 <AutomatedWindowNote since={timeline.since} limit={timeline.limit} />
+              </div>
+            )}
+            {snapshot?.changesSince && (
+              <div className="mb-5">
+                <ChangesSinceNote since={snapshot.changesSince} />
               </div>
             )}
             {timeline.events.length ? (

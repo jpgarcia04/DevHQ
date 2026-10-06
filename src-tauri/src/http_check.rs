@@ -4,14 +4,15 @@
 //! unexpected status) is evidence: an unhealthy observation. A failure of DevHQ itself (invalid
 //! or missing configuration, SQLite) is an error and is never recorded.
 
+use crate::change_log::{self, Change};
 use crate::inventory::{open, ApiError};
 use crate::records::{
-    self, HttpEvidence, Lifeline, NewObservation, Observation, Redirect, Subject,
+    self, Actor, HttpEvidence, Lifeline, NewObservation, Observation, Redirect, Subject,
 };
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use reqwest::header::LOCATION;
 use reqwest::{redirect, Client, Url};
-use rusqlite::{params, Connection, OptionalExtension, Row, Transaction, TransactionBehavior};
+use rusqlite::{params, OptionalExtension, Row, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::error::Error as StdError;
@@ -174,20 +175,22 @@ pub fn save_http_check(path: &Path, input: HttpCheckInput) -> Result<HttpCheck, 
     let tx = db
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(ApiError::database)?;
-    let check = save_http_check_in(&tx, input)?;
+    let (check, _) = save_http_check_in(&tx, input, &Actor::Person)?;
     tx.commit().map_err(ApiError::database)?;
     Ok(check)
 }
 
-/// Saves the subject's check inside the caller's write transaction, which the caller commits.
+/// Saves the subject's check inside the caller's write transaction, which the caller commits,
+/// and logs the change there as `by`'s: None when the save changed nothing.
 pub(crate) fn save_http_check_in(
     tx: &Transaction,
     input: HttpCheckInput,
-) -> Result<HttpCheck, ApiError> {
+    by: &Actor,
+) -> Result<(HttpCheck, Option<Change>), ApiError> {
     let url = validate(&input)?;
     records::ensure_subject(tx, &input.subject)?;
     let previous = find(tx, &input.subject)?;
-    let monitor = match (input.monitor_interval_minutes, previous) {
+    let monitor = match (input.monitor_interval_minutes, &previous) {
         (None, _) => "off",
         (Some(_), Some(previous)) if previous.monitor == "paused" => "paused",
         (Some(_), _) => "active",
@@ -214,7 +217,10 @@ pub(crate) fn save_http_check_in(
         ],
     )
     .map_err(ApiError::database)?;
-    find(tx, &input.subject)?.ok_or_else(|| ApiError::database("HTTP check was not saved."))
+    let saved =
+        find(tx, &input.subject)?.ok_or_else(|| ApiError::database("HTTP check was not saved."))?;
+    let change = change_log::check_saved(tx, by, previous.as_ref(), &saved)?;
+    Ok((saved, change))
 }
 
 /// Pauses or resumes the supervision of the subject's HTTP check. It keeps its interval.
@@ -227,17 +233,19 @@ pub fn set_http_check_paused(
     let tx = db
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(ApiError::database)?;
-    let check = set_http_check_paused_in(&tx, subject, paused)?;
+    let (check, _) = set_http_check_paused_in(&tx, subject, paused, &Actor::Person)?;
     tx.commit().map_err(ApiError::database)?;
     Ok(check)
 }
 
-/// Pauses or resumes inside the caller's write transaction, which the caller commits.
+/// Pauses or resumes inside the caller's write transaction, which the caller commits, and logs
+/// the change there as `by`'s: None when it already was so.
 pub(crate) fn set_http_check_paused_in(
     tx: &Transaction,
     subject: &Subject,
     paused: bool,
-) -> Result<HttpCheck, ApiError> {
+    by: &Actor,
+) -> Result<(HttpCheck, Option<Change>), ApiError> {
     let check = find(tx, subject)?.ok_or_else(|| not_configured(subject))?;
     if check.monitor == "off" {
         return Err(ApiError::invalid(
@@ -254,7 +262,9 @@ pub(crate) fn set_http_check_paused_in(
         ],
     )
     .map_err(ApiError::database)?;
-    find(tx, subject)?.ok_or_else(|| not_configured(subject))
+    let saved = find(tx, subject)?.ok_or_else(|| not_configured(subject))?;
+    let change = change_log::check_paused(tx, by, &check, &saved)?;
+    Ok((saved, change))
 }
 
 /// What supervision needs to plan: every check, and when each subject's check last recorded
@@ -291,22 +301,29 @@ pub(crate) fn supervision(
 
 /// Removes the subject's HTTP check. The observations it produced are evidence and stay.
 pub fn remove_http_check(path: &Path, subject: Subject) -> Result<(), ApiError> {
-    remove_http_check_in(&open(path)?, &subject)
+    let mut db = open(path)?;
+    let tx = db
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(ApiError::database)?;
+    remove_http_check_in(&tx, &subject, &Actor::Person)?;
+    tx.commit().map_err(ApiError::database)
 }
 
-/// Removes the subject's check with the caller's connection or transaction.
-pub(crate) fn remove_http_check_in(db: &Connection, subject: &Subject) -> Result<(), ApiError> {
+/// Removes the subject's check inside the caller's write transaction, which the caller commits,
+/// and logs it there as `by`'s, with every field it had.
+pub(crate) fn remove_http_check_in(
+    tx: &Transaction,
+    subject: &Subject,
+    by: &Actor,
+) -> Result<Change, ApiError> {
+    let removed = find(tx, subject)?.ok_or_else(|| not_configured(subject))?;
     let (application_id, resource_id) = subject.columns();
-    let removed = db
-        .execute(
-            &format!("DELETE FROM http_checks {SUBJECT_FILTER}"),
-            params![application_id, resource_id],
-        )
-        .map_err(ApiError::database)?;
-    if removed == 0 {
-        return Err(not_configured(subject));
-    }
-    Ok(())
+    tx.execute(
+        &format!("DELETE FROM http_checks {SUBJECT_FILTER}"),
+        params![application_id, resource_id],
+    )
+    .map_err(ApiError::database)?;
+    change_log::check_removed(tx, by, &removed)
 }
 
 /// Runs the subject's HTTP check once and records the result, with its timeline event, as an

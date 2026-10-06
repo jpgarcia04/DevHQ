@@ -104,7 +104,8 @@ const snapshot: InventorySnapshot = {
   incidents: [],
   events: [],
   httpChecks: [],
-  agentChanges: [],
+  changes: [],
+  changesSince: null,
   automatedHistory: { limit: 200, truncated: [] },
 }
 
@@ -195,31 +196,35 @@ describe('real operational records', () => {
     expect(screen.queryByText('Manual entry')).not.toBeInTheDocument()
   })
 
-  it('mixes the configuration changes an agent made into the timeline, kept when a system is gone', async () => {
+  it('mixes configuration changes into the timeline with who made them, kept when a system is gone', async () => {
     const user = userEvent.setup()
-    const changes: InventorySnapshot['agentChanges'] = [
+    const changes: InventorySnapshot['changes'] = [
       {
         id: 'c1',
         subject: { type: 'application', id: 'shop' },
         subjectName: 'Shop',
+        source: 'agent',
         agent: 'claude-code',
         action: 'updated',
         summary: 'Updated application «Shop»: version «1.4» → «1.5»',
+        changes: [{ field: 'version', before: '1.4', after: '1.5' }],
         occurredAt: minutesFromNow(-12),
       },
       {
         id: 'c2',
         subject: { type: 'resource', id: 'old-box' },
         subjectName: 'Old box',
-        agent: 'claude-code',
+        source: 'manual',
+        agent: null,
         action: 'deleted',
         summary: 'Deleted resource «Old box», which had no history',
+        changes: [{ field: 'name', before: 'Old box', after: null }],
         occurredAt: minutesFromNow(-30),
       },
     ]
     const { unmount } = renderWith(
       <RealActivityPage />,
-      inventoryContext({ snapshot: { ...snapshot, events, agentChanges: changes } }),
+      inventoryContext({ snapshot: { ...snapshot, events, changes } }),
     )
     // In time order among the person's entries: after evt-1 (10 min ago), before evt-2 (15).
     const titles = screen
@@ -232,7 +237,12 @@ describe('real operational records', () => {
       'Deleted resource «Old box», which had no history',
     ])
     expect(screen.getAllByText('Change')).toHaveLength(2)
-    expect(screen.getAllByText('Agent · claude-code')).toHaveLength(2)
+    // The agent's change says which agent; the person's, that it was typed by hand.
+    expect(screen.getAllByText('Agent · claude-code')).toHaveLength(1)
+    const deletion = screen
+      .getAllByRole('listitem')
+      .find((item) => item.textContent?.includes('Deleted resource «Old box»'))!
+    expect(within(deletion).getByText('Manual entry')).toBeInTheDocument()
     // A system that is gone keeps the name the change gave it, without a link that leads nowhere.
     expect(screen.getByText('Old box · no longer in the inventory')).toBeInTheDocument()
     expect(screen.queryByRole('link', { name: /Old box/ })).not.toBeInTheDocument()
@@ -250,7 +260,7 @@ describe('real operational records', () => {
     // Changes alone are activity too, and the overview's recent activity shows them.
     renderWith(
       <RealActivityPage />,
-      inventoryContext({ snapshot: { ...snapshot, events: [], agentChanges: changes } }),
+      inventoryContext({ snapshot: { ...snapshot, events: [], changes } }),
     )
     expect(screen.queryByRole('heading', { name: 'No activity recorded' })).not.toBeInTheDocument()
     expect(screen.getByText('Deleted resource «Old box», which had no history')).toBeInTheDocument()
@@ -262,14 +272,16 @@ describe('real operational records', () => {
       inventoryContext({
         snapshot: {
           ...snapshot,
-          agentChanges: [
+          changes: [
             {
               id: 'c1',
               subject: { type: 'resource', id: 'spare' },
               subjectName: 'Spare box',
+              source: 'agent',
               agent: 'codex',
               action: 'created',
               summary: 'Added resource «Spare box» (server)',
+              changes: null,
               occurredAt: minutesFromNow(-3),
             },
           ],
@@ -280,6 +292,36 @@ describe('real operational records', () => {
     expect(within(recent).getByText('Added resource «Spare box» (server)')).toBeInTheDocument()
     expect(within(recent).getByText('Agent · codex')).toBeInTheDocument()
     expect(within(recent).queryByText('No activity recorded yet.')).not.toBeInTheDocument()
+  })
+
+  it('says from when configuration changes are complete, and nothing when they always were', () => {
+    const changes: InventorySnapshot['changes'] = [
+      {
+        id: 'c1',
+        subject: { type: 'application', id: 'shop' },
+        subjectName: 'Shop',
+        source: 'manual',
+        agent: null,
+        action: 'updated',
+        summary: 'Updated application «Shop»: lifecycle testing → production',
+        changes: [{ field: 'lifecycle', before: 'testing', after: 'production' }],
+        occurredAt: minutesFromNow(-5),
+      },
+    ]
+    const note = /Earlier changes made in the window left no trace/
+    const { unmount } = renderWith(
+      <RealActivityPage />,
+      inventoryContext({ snapshot: { ...snapshot, events, changes, changesSince: null } }),
+    )
+    expect(screen.queryByText(note)).not.toBeInTheDocument()
+    unmount()
+    renderWith(
+      <RealActivityPage />,
+      inventoryContext({
+        snapshot: { ...snapshot, events, changes, changesSince: minutesFromNow(-60 * 24) },
+      }),
+    )
+    expect(screen.getByText(note)).toBeInTheDocument()
   })
 
   it('lists recorded incidents with their affected system', async () => {

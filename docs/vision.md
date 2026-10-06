@@ -84,9 +84,9 @@ No son requisitos rígidos sino criterios: sirven para decidir qué entra, cómo
     sobre qué aplicación o recurso, el valor anterior y el que quedó cuando aplica, quién lo hizo
     (tú, o qué agente) y con qué resultado. Significativo no es cada clic: crear, editar o borrar
     algo del inventario, cambiar una relación o una comprobación, abrir o cerrar una incidencia, sí;
-    abrir una vista o cambiar un filtro, no. Hoy lo cumplen la procedencia de cada registro y, con
-    la puerta, `agent_log` para los agentes; tus cambios de configuración todavía no dejan rastro
-    (ver «Estado actual e historia»).
+    abrir una vista o cambiar un filtro, no. Hoy lo cumplen la procedencia de cada registro y el
+    registro de cambios común, que guarda cada cambio de configuración, tuyo o de un agente, con su
+    autor y cada campo antes y después (ver «Estado actual e historia»).
 13. **La observabilidad es la base.** Las capacidades operativas, si se incorporan, se construyen
     poco a poco sobre esa base y son explícitas, seguras, controlables y auditables, las uses tú
     directamente o un agente al que hayas autorizado. «DevHQ observa, no opera» es una regla del
@@ -128,7 +128,8 @@ Cada capacidad operativa que se incorpore cumple cuatro condiciones:
 
 La puerta para agentes ya sigue este patrón en pequeño, dentro del propio inventario: un agente
 cambia datos con capacidades parecidas a las tuyas, solo con el acceso que eliges en Settings, por
-los mismos casos de uso que la ventana, y cada cambio queda en `agent_log` en la misma transacción.
+los mismos casos de uso que la ventana, y cada cambio queda en el registro de cambios en la misma
+transacción, igual que los tuyos.
 Es el precedente natural para lo que algún día actúe fuera de DevHQ. Mientras tanto, la regla actual
 se mantiene (ver «Tensiones con las reglas actuales»).
 
@@ -259,12 +260,16 @@ el posterior cuando aplica, cuándo y quién: tú o un agente, con su nombre. Lo
 se repite en él, porque ya dice quién lo escribió.
 
 Ese registro es **uno solo para ti y para los agentes**, con el actor como un dato más, no dos
-mecanismos separados. `agent_log`, en la rama de la puerta, ya cubre lo que cambian los agentes: si
-se diseña un sistema de eventos o de auditoría, crece desde él hacia un registro común en vez de
-levantar otro al lado. Hoy el valor anterior y el posterior solo forman parte de su resumen en texto
-(«version «1.3.0» → «1.4.0»»); el común los necesita estructurados para responder «cómo llegó a
-esto» y no solo «quién tocó esto». Como todo historial, se lee por índice, para que su coste no
-crezca con los años, y se muestra en Activity mezclado con lo demás, con la etiqueta de su actor.
+mecanismos separados. Existe desde el esquema v10 (`change_log`, ver «Registro de cambios» en el
+README): creció desde `agent_log`, el que la puerta llevaba solo para los agentes, en vez de
+levantar otro al lado. Cada entrada guarda, además de un resumen para leer («version «1.3.0» →
+«1.4.0»»), cada campo con su valor anterior y el posterior, para responder «cómo llegó a esto» y no
+solo «quién tocó esto». Se muestra en Activity mezclado con lo demás, con la etiqueta de su actor.
+Crece solo cuando alguien cambia algo, como los registros manuales, así que hoy se carga entero como
+ellos; si algún día crece con lo automático, se leerá por índice, como el resto del historial, para
+que su coste no crezca con los años. Lo anterior a la v10 en un inventario que ya existía no dejó
+rastro, y Activity dice desde cuándo está completo. Si se diseña un sistema de eventos o de
+auditoría, crece desde este registro.
 
 ### Dónde encaja cada cosa
 
@@ -288,9 +293,9 @@ crezca con los años, y se muestra en Activity mezclado con lo demás, con la et
 
 ### Cómo crecer sin romperlo
 
-Cada tabla que cuelga de un sujeto (`observations`, `incidents`, `events`, `http_checks` y, con la
-puerta, `agent_log`) lo señala con dos columnas, `application_id` y `resource_id`, y un CHECK que
-exige exactamente una. Un tercer tipo de sujeto añadiría una columna a cada una y obligaría a
+Cada tabla que cuelga de un sujeto (`observations`, `incidents`, `events`, `http_checks` y
+`change_log`) lo señala con dos columnas, `application_id` y `resource_id`, y un CHECK que exige
+exactamente una. Un tercer tipo de sujeto añadiría una columna a cada una y obligaría a
 reconstruirlas, porque SQLite no cambia un CHECK con ALTER, como hicieron la v4 y la v7. Por eso lo
 nuevo que se observa entra, mientras quepa, como **tipo de recurso** (una base de datos compartida,
 un dominio…): hereda sin cambios las observaciones, las incidencias, la comprobación HTTP(S),
@@ -332,7 +337,7 @@ ni a mantenerla al día. Por eso:
 | ¿Qué lleva meses sin actividad?                          | Actividad observada: commits, despliegues                                                | No: solo existe la actividad que se registra en DevHQ                                                                     |
 | ¿Dónde están sus logs, su documentación, su repositorio? | Referencias                                                                              | No: solo la descripción libre                                                                                             |
 | ¿Qué dominio o certificado caduca pronto?                | Dominios como recurso y la caducidad del certificado como evidencia                      | No                                                                                                                        |
-| ¿Cómo llegó esto a su estado actual?                     | La evidencia y un registro de cambios común                                              | En parte: la evidencia y el historial de cada incidencia; de la configuración, solo los cambios de agentes, con la puerta |
+| ¿Cómo llegó esto a su estado actual?                     | La evidencia y un registro de cambios común                                              | Sí: la evidencia, el historial de cada incidencia y el registro de cambios, tuyos y de los agentes, completo desde la v10 |
 | ¿Qué debe saber un agente que entra a este proyecto?     | Un resumen por sistema con referencias, relaciones y estado                              | En parte: `get_system` de la puerta                                                                                       |
 
 ## Líneas de evolución posibles
@@ -340,10 +345,10 @@ ni a mantenerla al día. Por eso:
 Sin fechas ni compromiso, ordenadas por lo que cada una necesita de las anteriores. Los pasos
 concretos y su orden están en «Evolución prevista» del README; este documento no los reordena.
 
-1. **Registro de cambios común**: lo que cambias tú en la ventana deja rastro igual que lo que
-   cambia un agente, en un único registro con el actor, el valor anterior y el posterior. Sin
-   credenciales ni operaciones; es la base de la trazabilidad que pedirán las capacidades
-   operativas.
+1. **Registro de cambios común** (hecho, esquema v10): lo que cambias tú en la ventana deja rastro
+   igual que lo que cambia un agente, en un único registro con el actor, el valor anterior y el
+   posterior. Sin credenciales ni operaciones; es la base de la trazabilidad que pedirán las
+   capacidades operativas.
 2. **Referencias**: dónde está cada cosa (repositorio, ruta local en cada estación de trabajo,
    documentación, logs, panel del proveedor). Barato y sin credenciales; hace útiles los resúmenes
    para agentes y comodidades como abrir la carpeta.
@@ -421,6 +426,9 @@ Este documento se corrige cuando cambia la dirección, con una línea en «Histo
 - 6 oct 2026: la trazabilidad pasa a ser una propiedad del sistema, igual para ti que para los
   agentes, y se distingue el estado actual de la historia de cómo se llegó a él, con un único
   registro de cambios común en vez de dos mecanismos.
+- 6 oct 2026: el registro de cambios común existe (esquema v10, `change_log`) y la puerta para
+  agentes está en `main`; el texto deja de describir como pendiente que tus cambios de configuración
+  dejen rastro.
 
 ## Planteamiento original
 

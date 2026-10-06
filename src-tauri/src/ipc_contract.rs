@@ -14,8 +14,8 @@
 
 use super::{commands, manage};
 use crate::access::AgentAccess;
-use crate::agent_log::AgentChange;
 use crate::backup::{Backup, BackupCounts, BackupFile, BackupFolder};
+use crate::change_log::{Change, FieldChange};
 use crate::http_check::{HttpCheck, HttpCheckInput};
 use crate::inventory::{
     self, Application, ApplicationInput, Component, DataLocation, Inventory, Resource,
@@ -393,15 +393,50 @@ fn every_answer_has_the_shape_the_window_expects() {
             monitor: "active".into(),
             monitor_interval_minutes: Some(5),
         }],
-        agent_changes: vec![AgentChange {
-            id: "change-1".into(),
-            subject: shop(),
-            subject_name: "Shop".into(),
-            agent: "claude-code".into(),
-            action: "updated".into(),
-            summary: "Updated application «Shop»: version «1.9» → «2.0»".into(),
-            occurred_at: at("09:35"),
-        }],
+        changes: vec![
+            Change {
+                id: "change-2".into(),
+                subject: shop(),
+                subject_name: "Shop".into(),
+                source: "agent".into(),
+                agent: Some("claude-code".into()),
+                action: "updated".into(),
+                summary: "Updated application «Shop»: version «1.9» → «2.0»".into(),
+                changes: Some(vec![FieldChange {
+                    field: "version".into(),
+                    before: "1.9".into(),
+                    after: "2.0".into(),
+                }]),
+                occurred_at: at("09:35"),
+            },
+            Change {
+                id: "change-1".into(),
+                subject: host(),
+                subject_name: "Host".into(),
+                source: "manual".into(),
+                agent: None,
+                action: "check_removed".into(),
+                summary: "Removed the HTTP check of «Host» (http://host.example/old); the evidence it recorded stays".into(),
+                changes: Some(vec![FieldChange {
+                    field: "url".into(),
+                    before: "http://host.example/old".into(),
+                    after: serde_json::Value::Null,
+                }]),
+                occurred_at: at("08:45"),
+            },
+            Change {
+                id: "change-0".into(),
+                subject: shop(),
+                subject_name: "Shop".into(),
+                source: "agent".into(),
+                agent: Some("codex".into()),
+                action: "created".into(),
+                summary: "Added application «Shop» (development)".into(),
+                changes: None,
+                occurred_at: at("08:40"),
+            },
+        ],
+        changes_since: Some(at("08:30")),
         automated_history: AutomatedHistory {
             limit: 200,
             truncated: vec![TruncatedHistory {

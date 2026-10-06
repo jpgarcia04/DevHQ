@@ -1,7 +1,7 @@
 # Puerta para agentes: lo pendiente
 
 La puerta está construida y probada en Linux: `devhq --mcp` con sus herramientas de lectura y
-escritura, el acceso que eliges en Settings → Agent gate, `agent_log` en Activity, la ventana abierta
+escritura, el acceso que eliges en Settings → Agent gate, sus cambios en el registro común y en Activity, la ventana abierta
 que nota sola lo que cambia un agente y `status` diciendo si hay una ventana abierta. Su
 comportamiento está en el README («Puerta para agentes»), que es la especificación. Aquí queda solo lo
 que falta comprobar; cuando algo se resuelve, pasa al README en el mismo commit y sale de

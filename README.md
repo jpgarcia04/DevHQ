@@ -28,6 +28,9 @@ abierta**. **No funciona en segundo plano ni opera sistemas.**
 - Incidents con severidad, estado, contexto desplegable y filtros; Activity global.
 - En Mi inventario: observaciones, incidencias y eventos manuales persistentes, con
   procedencia, hora y vigencia visibles.
+- En Mi inventario, un registro de cambios de la configuración: cada alta, edición o borrado de
+  aplicaciones, recursos, componentes y comprobaciones, tuyo o de un agente, con quién, cuándo y
+  cada campo antes y después, en Activity junto a lo demás.
 - Una comprobación HTTP(S) de solo lectura por aplicación o recurso, que se ejecuta a
   petición o, si activas su supervisión, cada 5–60 min mientras DevHQ está abierto, y
   registra una observación automática con su evidencia técnica.
@@ -114,6 +117,41 @@ una lista vacía solo tranquiliza si todo tiene evidencia vigente. Una incidenci
 de un recurso aparece también en las aplicaciones que lo usan. Lifecycle sigue siendo
 independiente de health. La vigencia se reevalúa al cargar y cada 30 s con la ventana
 abierta; ese reloj no lee datos ni ejecuta comprobaciones.
+
+### Registro de cambios
+
+Las observaciones, incidencias y eventos ya son historia: nunca se reescriben y dicen quién los
+registró. La configuración no: aplicaciones, recursos, componentes y comprobaciones HTTP(S) guardan
+solo cómo están ahora, y editarlas pisa el valor anterior. Su historia es el **registro de
+cambios** (`change_log`), uno solo para ti y para los agentes, con el autor como un dato más: tú en
+la ventana (`manual`, «Manual entry») o un agente por la [puerta](#puerta-para-agentes) (`agent`, con
+el nombre que declaró su cliente, «Agent · _nombre_»).
+
+- Cada caso de uso que cambia la configuración escribe su entrada **en la misma transacción** que el
+  cambio: dar de alta, editar o borrar una aplicación o un recurso (con sus componentes), y
+  configurar, cambiar, pausar, reanudar o quitar una comprobación. Nunca hay un cambio sin su
+  entrada ni una entrada sin su cambio. Un rechazo no deja nada, y guardar sin cambiar nada, pausar
+  lo que ya estaba pausado o reanudar lo que ya estaba activo no es un cambio y tampoco.
+- Cada entrada guarda un resumen para leer («Updated application «Tienda»: version «1.3.0» →
+  «1.4.0»») y, campo por campo, el valor anterior y el posterior, con los nombres de campo que usa
+  la ventana (`version`, `components`, `url`…): un alta, los valores con que nació; un borrado,
+  todos los que tenía. Así el registro dice cómo llegó algo a su estado actual, no solo quién lo
+  tocó.
+- Ejecutar una comprobación no cambia la configuración, y su observación es evidencia de DevHQ
+  (`http`), que no dice quién la pidió: solo la puerta deja una entrada (`check_run`) cuando la pide
+  un agente, para que una petición que un agente hizo salir de tu computadora siempre lleve su
+  nombre.
+- Las entradas nunca se modifican ni se borran. No tienen claves foráneas, así que no impiden borrar
+  un sistema sin historial y le sobreviven con el nombre que tenía: Activity las sigue mostrando,
+  con «no longer in the inventory» en vez de un enlace que no lleva a nada.
+- Activity (global y de cada sistema) y la actividad reciente de Overview las muestran **mezcladas
+  con los demás registros** en orden de tiempo, como entradas de tipo Change con la etiqueta de su
+  autor. Crecen solo cuando alguien cambia algo, como los registros manuales, así que se cargan
+  siempre completas.
+- Hasta la v10 tus cambios no dejaban rastro (los de agentes sí, desde la v9). Si la actualización
+  encuentra un inventario que ya tenía aplicaciones o recursos, anota ese momento y Activity dice que
+  los cambios están completos desde entonces y que los anteriores hechos en la ventana no dejaron
+  rastro; un inventario vacío, o uno nuevo, no tiene nada anterior que echar en falta y no lo dice.
 
 ### Comprobación HTTP(S)
 
@@ -327,19 +365,14 @@ Una edición es **parcial**: lo que el agente no manda se conserva, para que cam
 borre los componentes por omisión. La lista de componentes, cuando se manda, es la lista completa,
 como en el formulario, y un componente apunta a su recurso por ID o por nombre exacto. Los registros
 que escribe llevan `source = agent` y su nombre. La configuración (aplicaciones, recursos, componentes
-y comprobaciones) no tiene `source`, así que cada cambio deja una entrada en `agent_log` (quién,
-qué, cuándo, sobre qué sistema y un resumen como «Updated application «Tienda»: version «1.3.0» →
-«1.4.0»») **en la misma transacción** que el cambio, después de comprobar ahí, con el lock de
-escritura de SQLite, que sigues permitiendo escribir. Las entradas nunca se modifican ni se borran;
-no tienen claves foráneas, así que no impiden borrar un sistema sin historial y le sobreviven con
-el nombre que tenía. `get_system` devuelve las de cada sistema, y la ventana las muestra en
-Activity (global y de cada sistema) y en la actividad reciente de Overview, **mezcladas con tus
-entradas** en orden de tiempo, como entradas de tipo Change con la etiqueta «Agent · _nombre_».
-Igual que los registros manuales, se cargan siempre completas. La de un sistema que ya no existe
-conserva su nombre, con «no longer in the inventory» en vez de un enlace que no lleva a nada, y
-sigue en la Activity de todos los sistemas. Los registros no se repiten en ese
-log: ya dicen quién los escribió. Ejecutar una comprobación deja en el log qué agente la pidió. Un
-rechazo no cambia nada ni deja entrada. Las herramientas que sobrescriben o quitan configuración se
+y comprobaciones) no tiene `source`: cada cambio que hace un agente queda en el
+[registro de cambios](#registro-de-cambios) con su nombre, por los mismos casos de uso que la
+ventana y **en la misma transacción** que el cambio, después de comprobar ahí, con el lock de
+escritura de SQLite, que sigues permitiendo escribir. La respuesta incluye esa entrada (`change`), o
+`null` si no cambió nada. `get_system` devuelve todas las de cada sistema, tuyas y de agentes, con
+cada campo antes y después, y dice desde cuándo están completas (`changesCompleteSince`). Los
+registros no se repiten en ese log: ya dicen quién los escribió. Ejecutar una comprobación deja en
+el log qué agente la pidió. Un rechazo no cambia nada ni deja entrada. Las herramientas que sobrescriben o quitan configuración se
 declaran destructivas (`destructiveHint`) y `run_check`, que sale de tu computadora, de mundo
 abierto (`openWorldHint`), así que el cliente pide confirmación según cómo lo tengas configurado.
 
@@ -461,7 +494,9 @@ lista). Luego hace de agente: elige Read and write en Settings → Agent gate, l
 ejecutable como puerta (`--mcp --database` con la base del recorrido), le habla MCP como un cliente
 que se llama `native-walk`, comprueba que `status` ve la ventana abierta y da de alta una aplicación
 con un componente sobre el recurso. Sin tocar la ventana, Applications debe mostrarla sola, y Activity
-su Change con la etiqueta «Agent · native-walk». Con la app sin el vigilante de `data_version`, ese
+su Change con la etiqueta «Agent · native-walk». En la copia del respaldo, el registro de cambios
+debe tener, como tuyos, el alta del recurso, la de la aplicación y la comprobación, y ninguna marca de
+inicio, porque la base v6 de la que parte estaba vacía. Con la app sin el vigilante de `data_version`, ese
 paso no ve la aplicación en 15 s y falla. Por último cierra la ventana como
 lo hace su botón, nunca por WebDriver: con `WM_DELETE_WINDOW` en X11 (un script de Python que llama
 a libX11, porque bajo Xvfb no hay gestor de ventanas que lo envíe) o con `WM_CLOSE` en Windows. El
@@ -619,7 +654,7 @@ asíncrono porque lanza la tarea que alimenta el `Channel`: Tauri ejecuta un com
 que recibe la petición (el principal), que no tiene runtime de Tokio, y lanzarla desde ahí provocaba un
 pánico que en Linux abortaba el proceso al abrir Mi inventario (lo comprueba `npm run e2e:native`). Abre
 `inventory.sqlite3` en el directorio de datos de la aplicación que proporciona Tauri; las
-migraciones transaccionales v1→v9 usan `PRAGMA user_version` y una versión más nueva se
+migraciones transaccionales v1→v10 usan `PRAGMA user_version` y una versión más nueva se
 rechaza en vez de adivinarse. Cada apertura solo lee esa versión: únicamente una base antigua
 toma el lock de escritura para migrar, y dentro vuelve a leerla por si otra conexión ya lo
 hizo. La base usa write-ahead logging (WAL): un lector trabaja sobre el último estado
@@ -666,7 +701,13 @@ añade dos índices parciales sobre los registros manuales; ninguna fila cambia.
 sin agente. Sus índices parciales pasan a cubrir los registros manuales y de agentes, que se cargan
 siempre completos. La v8 solo añade `agent_access`, una fila como mucho con el modo de la puerta
 para agentes; ninguna fila cambia y, sin fila, la puerta está cerrada. La v9 solo añade
-`agent_log`, sin claves foráneas y con un índice por sistema; ninguna fila cambia. Los
+`agent_log`, sin claves foráneas y con un índice por sistema; ninguna fila cambia. La v10 lo
+convierte en `change_log`, el registro de cambios común: copia cada entrada, con su `rowid`, como
+cambio de un agente (`source = agent`) sin campos estructurados (`changes` nulo), borra `agent_log`
+y crea los mismos índices. Un CHECK exige que `changes`, cuando existe, sea una lista JSON y que el
+nombre del agente esté exactamente cuando el autor es un agente. Añade `change_log_start`, con una
+fila como mucho: el momento de la actualización, solo si el inventario ya tenía aplicaciones o
+recursos. Ninguna otra fila cambia. Los
 registros usan dos columnas con clave foránea (`application_id`/`resource_id`) y un CHECK
 que exige exactamente una; las referencias de historial son `ON DELETE RESTRICT`, así que
 nada puede borrar un sujeto y dejar evidencia huérfana; los casos de uso de borrado lo
@@ -702,9 +743,11 @@ cuentas, cloud, sync, telemetría, scanners, automation engine, Runner ni backgr
    el acceso que eliges en Settings, sus cambios aparecen en Activity y la ventana abierta los nota
    sola. Quedan comprobaciones en Windows:
    [docs/puerta-para-agentes.md](docs/puerta-para-agentes.md).
-4. Después, automatizaciones con resultado e historial, y seguridad con almacén nativo de
+4. Hecho: un [registro de cambios](#registro-de-cambios) común para ti y para los agentes, con el
+   autor, cuándo y cada campo antes y después: la configuración deja rastro igual que la evidencia.
+5. Después, automatizaciones con resultado e historial, y seguridad con almacén nativo de
    credenciales y evidencias contextualizadas.
-5. A largo plazo, una supervisión que siga con la ventana cerrada y avise de lo que necesita
+6. A largo plazo, una supervisión que siga con la ventana cerrada y avise de lo que necesita
    atención, hecha por DevHQ mismo y no por un agente. Contradice que DevHQ no funcione en segundo plano, así que exige revisar esa regla y
    cuidar lo que consume.
 
@@ -720,7 +763,7 @@ no una especificación ni un backlog: nada de lo que describe existe hasta que e
 Las pruebas cubren navegación, tabs/teclado, filtros, rutas desconocidas, relaciones
 compartidas, cronología de la demo, salud desconocida, persistencia tras reapertura,
 rechazo de referencias inválidas sin escrituras parciales, restricciones del esquema,
-migraciones v1/v2→v3, v3→v4, v4→v5, v5→v6, v6→v7, v7→v8 y v8→v9 (incluida la negativa a confirmar relaciones rotas),
+migraciones v1/v2→v3, v3→v4, v4→v5, v5→v6, v6→v7, v7→v8, v8→v9 y v9→v10 (incluida la negativa a confirmar relaciones rotas),
 vigencia y sustitución de observaciones de ambos orígenes, orden de atención, errores de
 carga visibles y recuperables, comprobaciones contra un servidor local (estado esperado,
 500, redirect, bucle de redirects, tiempo agotado, conexión rechazada, dominio `.invalid`

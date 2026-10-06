@@ -1,4 +1,5 @@
-use crate::{http_check, records};
+use crate::records::Actor;
+use crate::{change_log, http_check, records};
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -131,8 +132,11 @@ pub struct Inventory {
     pub incidents: Vec<records::Incident>,
     pub events: Vec<records::Event>,
     pub http_checks: Vec<http_check::HttpCheck>,
-    /// What agents changed in the configuration through the agent gate, newest first: all of it.
-    pub agent_changes: Vec<crate::agent_log::AgentChange>,
+    /// Every change to the configuration, by the person or by an agent, newest first: all of it.
+    pub changes: Vec<change_log::Change>,
+    /// From when the person's changes are in `changes`: the upgrade that started the log on an
+    /// inventory that already held systems. None when the log was always complete.
+    pub changes_since: Option<String>,
     /// Which automated results the snapshot leaves out. Manual records are always complete.
     pub automated_history: records::AutomatedHistory,
 }
@@ -197,8 +201,8 @@ pub(crate) fn plain(path: &Path) -> String {
     }
 }
 
-pub(crate) const SCHEMA_VERSION: i64 = 9;
-const MIGRATIONS: [(i64, &str); 9] = [
+pub(crate) const SCHEMA_VERSION: i64 = 10;
+const MIGRATIONS: [(i64, &str); 10] = [
     (1, include_str!("../migrations/001_inventory.sql")),
     (2, include_str!("../migrations/002_inventory_details.sql")),
     (3, include_str!("../migrations/003_operational_records.sql")),
@@ -208,6 +212,7 @@ const MIGRATIONS: [(i64, &str); 9] = [
     (7, include_str!("../migrations/007_agent_provenance.sql")),
     (8, include_str!("../migrations/008_agent_access.sql")),
     (9, include_str!("../migrations/009_agent_log.sql")),
+    (10, include_str!("../migrations/010_change_log.sql")),
 ];
 
 /// Opens the inventory, upgrading its schema first if it is older than this build's.
@@ -424,7 +429,8 @@ pub fn list(path: &Path) -> Result<Inventory, ApiError> {
         automated_history,
     } = records::load(&tx, &subjects)?;
     let http_checks = http_check::load(&tx)?;
-    let agent_changes = crate::agent_log::load(&tx)?;
+    let changes = change_log::load(&tx)?;
+    let changes_since = change_log::complete_since(&tx)?;
     tx.commit().map_err(ApiError::database)?;
     Ok(Inventory {
         applications,
@@ -433,7 +439,8 @@ pub fn list(path: &Path) -> Result<Inventory, ApiError> {
         incidents,
         events,
         http_checks,
-        agent_changes,
+        changes,
+        changes_since,
         automated_history,
     })
 }
@@ -443,40 +450,40 @@ pub fn save_resource(path: &Path, input: ResourceInput) -> Result<Resource, ApiE
     let tx = db
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(ApiError::database)?;
-    let resource = save_resource_in(&tx, input)?;
+    let (resource, _) = save_resource_in(&tx, input, &Actor::Person)?;
     tx.commit().map_err(ApiError::database)?;
     Ok(resource)
 }
 
-/// Saves a resource inside the caller's write transaction, which the caller commits.
+/// Saves a resource inside the caller's write transaction, which the caller commits, and logs
+/// the change there as `by`'s: None when the save changed nothing.
 pub(crate) fn save_resource_in(
     tx: &Transaction,
     input: ResourceInput,
-) -> Result<Resource, ApiError> {
+    by: &Actor,
+) -> Result<(Resource, Option<change_log::Change>), ApiError> {
     allowed(&input.kind, &["server", "workstation"], "resource kind")?;
     let id = input.id.unwrap_or_else(|| Uuid::new_v4().to_string());
     if id.is_empty() {
         return Err(ApiError::invalid("Resource ID is required."));
     }
-    let (kept_name, kept_description, kept_system): (String, String, String) = tx
-        .query_row(
-            "SELECT name, description, operating_system FROM resources WHERE id = ?1",
-            [&id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .optional()
-        .map_err(ApiError::database)?
-        .unwrap_or_default();
-    let name = required_or_kept(&input.name, &kept_name, MAX_NAME, "Resource name")?;
+    let before = resource_in(tx, &id)?;
+    let kept = |field: fn(&Resource) -> &str| before.as_ref().map_or("", field);
+    let name = required_or_kept(
+        &input.name,
+        kept(|item| &item.name),
+        MAX_NAME,
+        "Resource name",
+    )?;
     let description = bounded_or_kept(
         &input.description,
-        &kept_description,
+        kept(|item| &item.description),
         MAX_DESCRIPTION,
         "Resource description",
     )?;
     let operating_system = bounded_or_kept(
         &input.operating_system,
-        &kept_system,
+        kept(|item| &item.operating_system),
         MAX_NAME,
         "Operating system",
     )?;
@@ -486,13 +493,15 @@ pub(crate) fn save_resource_in(
         params![id, name, input.kind, description, operating_system],
     )
     .map_err(ApiError::database)?;
-    Ok(Resource {
+    let resource = Resource {
         id,
         name,
         kind: input.kind,
         description,
         operating_system,
-    })
+    };
+    let change = change_log::resource_saved(tx, by, before.as_ref(), &resource)?;
+    Ok((resource, change))
 }
 
 pub fn save_application(path: &Path, input: ApplicationInput) -> Result<Application, ApiError> {
@@ -500,17 +509,19 @@ pub fn save_application(path: &Path, input: ApplicationInput) -> Result<Applicat
     let tx = db
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(ApiError::database)?;
-    let application = save_application_in(&tx, input)?;
+    let (application, _) = save_application_in(&tx, input, &Actor::Person)?;
     tx.commit().map_err(ApiError::database)?;
     Ok(application)
 }
 
 /// Saves an application and its complete component list inside the caller's write
-/// transaction, which the caller commits.
+/// transaction, which the caller commits, and logs the change there as `by`'s: None when the
+/// save changed nothing.
 pub(crate) fn save_application_in(
     tx: &Transaction,
     input: ApplicationInput,
-) -> Result<Application, ApiError> {
+    by: &Actor,
+) -> Result<(Application, Option<change_log::Change>), ApiError> {
     allowed(
         &input.lifecycle,
         &["development", "testing", "production", "archived"],
@@ -545,19 +556,16 @@ pub(crate) fn save_application_in(
         component.id = Some(component_id);
         parts.push(component);
     }
-    let (kept_name, kept_description, kept_version): (String, String, Option<String>) = tx
-        .query_row(
-            "SELECT name, description, version FROM applications WHERE id = ?1",
-            [&id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .optional()
-        .map_err(ApiError::database)?
-        .unwrap_or_default();
-    let name = required_or_kept(&input.name, &kept_name, MAX_NAME, "Application name")?;
+    let before = application_in(tx, &id)?;
+    let name = required_or_kept(
+        &input.name,
+        before.as_ref().map_or("", |item| &item.name),
+        MAX_NAME,
+        "Application name",
+    )?;
     let description = bounded_or_kept(
         &input.description,
-        &kept_description,
+        before.as_ref().map_or("", |item| &item.description),
         MAX_DESCRIPTION,
         "Application description",
     )?;
@@ -565,7 +573,10 @@ pub(crate) fn save_application_in(
     let version = match &input.version {
         Some(version) => Some(bounded_or_kept(
             version,
-            kept_version.as_deref().unwrap_or_default(),
+            before
+                .as_ref()
+                .and_then(|item| item.version.as_deref())
+                .unwrap_or_default(),
             MAX_VERSION,
             "Version",
         )?),
@@ -625,14 +636,16 @@ pub(crate) fn save_application_in(
         tx.execute("INSERT INTO components (id, application_id, name, kind, resource_id) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![component.id, id, component.name, component.kind, component.resource_id]).map_err(ApiError::database)?;
     }
-    Ok(Application {
+    let application = Application {
         id,
         name,
         description,
         lifecycle: input.lifecycle,
         version,
         components,
-    })
+    };
+    let change = change_log::application_saved(tx, by, before.as_ref(), &application)?;
+    Ok((application, change))
 }
 
 /// The application as stored, with its components in their order, read inside the caller's
@@ -729,19 +742,20 @@ pub fn delete_application(path: &Path, id: &str) -> Result<(), ApiError> {
     let tx = db
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(ApiError::database)?;
-    delete_application_in(&tx, id)?;
+    delete_application_in(&tx, id, &Actor::Person)?;
     tx.commit().map_err(ApiError::database)
 }
 
-/// Deletes the application inside the caller's write transaction; returns the name it had.
-pub(crate) fn delete_application_in(tx: &Transaction, id: &str) -> Result<String, ApiError> {
-    let name: String = tx
-        .query_row("SELECT name FROM applications WHERE id = ?1", [id], |row| {
-            row.get(0)
-        })
-        .optional()
-        .map_err(ApiError::database)?
+/// Deletes the application inside the caller's write transaction, and logs it there as `by`'s
+/// with every field it had; returns the name it had and that entry.
+pub(crate) fn delete_application_in(
+    tx: &Transaction,
+    id: &str,
+    by: &Actor,
+) -> Result<(String, change_log::Change), ApiError> {
+    let before = application_in(tx, id)?
         .ok_or_else(|| ApiError::invalid(format!("The application {id} does not exist.")))?;
+    let name = before.name.clone();
     let history = history_of(tx, "application_id", id)?;
     if !history.is_empty() {
         return Err(ApiError::invalid(format!(
@@ -752,7 +766,8 @@ pub(crate) fn delete_application_in(tx: &Transaction, id: &str) -> Result<String
     // Its components and its HTTP check go with it (ON DELETE CASCADE).
     tx.execute("DELETE FROM applications WHERE id = ?1", [id])
         .map_err(ApiError::database)?;
-    Ok(name)
+    let change = change_log::application_deleted(tx, by, &before)?;
+    Ok((name, change))
 }
 
 /// Deletes a resource that no component runs on and that has no records, with its HTTP check.
@@ -761,19 +776,20 @@ pub fn delete_resource(path: &Path, id: &str) -> Result<(), ApiError> {
     let tx = db
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(ApiError::database)?;
-    delete_resource_in(&tx, id)?;
+    delete_resource_in(&tx, id, &Actor::Person)?;
     tx.commit().map_err(ApiError::database)
 }
 
-/// Deletes the resource inside the caller's write transaction; returns the name it had.
-pub(crate) fn delete_resource_in(tx: &Transaction, id: &str) -> Result<String, ApiError> {
-    let name: String = tx
-        .query_row("SELECT name FROM resources WHERE id = ?1", [id], |row| {
-            row.get(0)
-        })
-        .optional()
-        .map_err(ApiError::database)?
+/// Deletes the resource inside the caller's write transaction, and logs it there as `by`'s with
+/// every field it had; returns the name it had and that entry.
+pub(crate) fn delete_resource_in(
+    tx: &Transaction,
+    id: &str,
+    by: &Actor,
+) -> Result<(String, change_log::Change), ApiError> {
+    let before = resource_in(tx, id)?
         .ok_or_else(|| ApiError::invalid(format!("The resource {id} does not exist.")))?;
+    let name = before.name.clone();
     let users = {
         let mut statement = tx
             .prepare(
@@ -805,7 +821,8 @@ pub(crate) fn delete_resource_in(tx: &Transaction, id: &str) -> Result<String, A
     // Its HTTP check goes with it (ON DELETE CASCADE).
     tx.execute("DELETE FROM resources WHERE id = ?1", [id])
         .map_err(ApiError::database)?;
-    Ok(name)
+    let change = change_log::resource_deleted(tx, by, &before)?;
+    Ok((name, change))
 }
 
 #[cfg(test)]
@@ -1088,6 +1105,174 @@ pub(crate) mod tests {
             valid_for_minutes: 60,
             monitor_interval_minutes: Some(5),
         }
+    }
+
+    /// The log as (source, action, summary), oldest first, and each entry's field changes.
+    fn logged(path: &Path) -> Vec<(String, String, String)> {
+        let mut changes = list(path).unwrap().changes;
+        changes.reverse();
+        changes
+            .into_iter()
+            .map(|change| (change.source, change.action, change.summary))
+            .collect()
+    }
+
+    fn fields(change: &change_log::Change) -> Vec<(String, serde_json::Value, serde_json::Value)> {
+        change
+            .changes
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|item| (item.field.clone(), item.before.clone(), item.after.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn logs_each_change_the_person_makes_with_what_changed_and_nothing_else() {
+        use serde_json::{json, Value};
+        let path = path();
+        let manual = |action: &str, summary: &str| {
+            ("manual".to_owned(), action.to_owned(), summary.to_owned())
+        };
+        let host = resource(&path, "Host");
+        let mut shop = app(Some(host.id.clone()));
+        shop.name = "Shop".into();
+        let shop = save_application(&path, shop).unwrap();
+        assert_eq!(
+            logged(&path),
+            [
+                manual("created", "Added resource «Host» (server)"),
+                manual("created", "Added application «Shop» (production, version 1.0) with API (backend, on Host)"),
+            ]
+        );
+        let created = list(&path).unwrap().changes.remove(0);
+        assert_eq!(created.agent, None);
+        assert_eq!(
+            fields(&created),
+            [
+                ("name".into(), Value::Null, json!("Shop")),
+                ("lifecycle".into(), Value::Null, json!("production")),
+                ("version".into(), Value::Null, json!("1.0")),
+                ("description".into(), Value::Null, json!("Context")),
+                ("components".into(), Value::Null, json!(shop.components)),
+            ]
+        );
+
+        // An edit keeps each changed field, before and after; saving unchanged logs nothing.
+        let edit = |version: Option<&str>| ApplicationInput {
+            id: Some(shop.id.clone()),
+            name: shop.name.clone(),
+            description: shop.description.clone(),
+            lifecycle: shop.lifecycle.clone(),
+            version: version.map(str::to_owned),
+            components: shop
+                .components
+                .iter()
+                .map(|component| ComponentInput {
+                    id: Some(component.id.clone()),
+                    name: component.name.clone(),
+                    kind: component.kind.clone(),
+                    resource_id: component.resource_id.clone(),
+                })
+                .collect(),
+        };
+        save_application(&path, edit(Some("1.1"))).unwrap();
+        save_application(&path, edit(Some("1.1"))).unwrap();
+        let mut renamed = list(&path).unwrap().resources.remove(0);
+        renamed.name = "Web host".into();
+        save_resource(
+            &path,
+            ResourceInput {
+                id: Some(renamed.id.clone()),
+                name: renamed.name.clone(),
+                kind: renamed.kind.clone(),
+                description: renamed.description.clone(),
+                operating_system: renamed.operating_system.clone(),
+            },
+        )
+        .unwrap();
+        let changes = list(&path).unwrap().changes;
+        assert_eq!(changes.len(), 4, "an unchanged save is no change");
+        assert_eq!(
+            fields(&changes[1]),
+            [("version".into(), json!("1.0"), json!("1.1"))]
+        );
+        assert_eq!(
+            fields(&changes[0]),
+            [("name".into(), json!("Host"), json!("Web host"))]
+        );
+
+        // Refused changes log nothing: the entry is written in the change's own transaction.
+        let mut ghost = edit(None);
+        ghost.components[0].resource_id = Some("nowhere".into());
+        assert!(save_application(&path, ghost).is_err());
+        let subject = records::Subject::Application {
+            id: shop.id.clone(),
+        };
+        let mut invalid = http_check(subject.clone());
+        invalid.expected_status = 302;
+        assert!(http_check::save_http_check(&path, invalid).is_err());
+        assert!(http_check::remove_http_check(&path, subject.clone()).is_err());
+        assert_eq!(list(&path).unwrap().changes.len(), 4);
+
+        // Its HTTP check: set up, saved unchanged, paused twice, resumed and removed.
+        http_check::save_http_check(&path, http_check(subject.clone())).unwrap();
+        http_check::save_http_check(&path, http_check(subject.clone())).unwrap();
+        http_check::set_http_check_paused(&path, &subject, true).unwrap();
+        http_check::set_http_check_paused(&path, &subject, true).unwrap();
+        http_check::set_http_check_paused(&path, &subject, false).unwrap();
+        http_check::remove_http_check(&path, subject).unwrap();
+        let every = list(&path).unwrap().changes;
+        let removed = &every[0];
+        assert_eq!(
+            fields(removed),
+            [
+                (
+                    "url".into(),
+                    json!("https://example.com/health"),
+                    Value::Null
+                ),
+                ("expectedStatus".into(), json!(200), Value::Null),
+                ("timeoutSeconds".into(), json!(5), Value::Null),
+                ("validForMinutes".into(), json!(60), Value::Null),
+                ("monitor".into(), json!("active"), Value::Null),
+                ("monitorIntervalMinutes".into(), json!(5), Value::Null),
+            ]
+        );
+        assert_eq!(
+            fields(&every[2]),
+            [("monitor".into(), json!("active"), json!("paused"))]
+        );
+
+        // Deleting keeps every field it had, and the entry outlives the application.
+        delete_application(&path, &shop.id).unwrap();
+        let log = logged(&path);
+        assert_eq!(
+            log[4..],
+            [
+                manual("check_saved", "Set up the HTTP check of «Shop»: GET https://example.com/health expecting 200 within 5 s, valid 60 min, supervised every 5 min while DevHQ is open"),
+                manual("check_paused", "Paused the supervision of «Shop»"),
+                manual("check_resumed", "Resumed the supervision of «Shop»: GET https://example.com/health expecting 200 within 5 s, valid 60 min, supervised every 5 min while DevHQ is open"),
+                manual("check_removed", "Removed the HTTP check of «Shop» (https://example.com/health); the evidence it recorded stays"),
+                manual("deleted", "Deleted application «Shop», which had no history"),
+            ]
+        );
+        let deleted = list(&path).unwrap().changes.remove(0);
+        assert_eq!(deleted.subject_name, "Shop");
+        assert_eq!(
+            fields(&deleted)
+                .iter()
+                .map(|(field, _, after)| (field.as_str(), after.is_null()))
+                .collect::<Vec<_>>(),
+            [
+                ("name", true),
+                ("lifecycle", true),
+                ("version", true),
+                ("description", true),
+                ("components", true)
+            ]
+        );
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
@@ -1752,8 +1937,8 @@ pub(crate) mod tests {
         assert_eq!(
             strings(&db, "SELECT name FROM sqlite_master WHERE type = 'index' AND name NOT LIKE 'sqlite_autoindex%' ORDER BY name"),
             [
-                "agent_log_application_id",
-                "agent_log_resource_id",
+                "change_log_application_id",
+                "change_log_resource_id",
                 "components_application_id",
                 "components_resource_id",
                 "events_application_id",
@@ -2360,49 +2545,217 @@ pub(crate) mod tests {
         let version: i64 = db
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 9);
+        assert_eq!(version, SCHEMA_VERSION);
         for (table, rows) in tables.iter().zip(&before) {
             assert_eq!(&dump(&db, table), rows, "{table}");
         }
-        assert!(dump(&db, "agent_log").is_empty());
+        // v9's agent_log, empty, became v10's change log (see its own test).
+        assert!(dump(&db, "change_log").is_empty());
+        drop(db);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    /// A database at v9 with two agent_log entries, one about a system that is gone.
+    fn v9_with_agent_log(path: &Path, systems: bool) -> Connection {
+        let db = database_at(path, 9);
+        if systems {
+            db.execute_batch(
+                "INSERT INTO resources (id, name, kind, description, operating_system) VALUES ('host', 'Host', 'server', '', 'Linux');
+                 INSERT INTO applications (id, name, lifecycle, description, version) VALUES ('shop', 'Shop', 'production', 'Store', '2.0');
+                 INSERT INTO components (id, application_id, name, kind, resource_id) VALUES ('api', 'shop', 'API', 'backend', 'host');
+                 INSERT INTO http_checks (resource_id, url, expected_status, timeout_seconds, valid_for_minutes, updated_at)
+                   VALUES ('host', 'http://host/health', 200, 5, 15, 800);
+                 INSERT INTO agent_access VALUES (1, 'write', 900);",
+            )
+            .unwrap();
+        }
+        // Out of order, so that keeping each rowid (the tie-break at equal times) is visible.
+        db.execute_batch(
+            "INSERT INTO agent_log (rowid, id, application_id, resource_id, subject_name, agent, action, summary, occurred_at)
+               VALUES (7, 'log-version', 'shop', NULL, 'Shop', 'claude-code', 'updated', 'Updated application «Shop»: version «1.9» → «2.0»', 1000);
+             INSERT INTO agent_log (rowid, id, application_id, resource_id, subject_name, agent, action, summary, occurred_at)
+               VALUES (3, 'log-gone', NULL, 'spare', 'Spare box', 'codex', 'deleted', 'Deleted resource «Spare box», which had no history', 1000);",
+        )
+        .unwrap();
+        db
+    }
+
+    #[test]
+    fn upgrades_v9_agent_log_into_the_change_log_keeping_every_row() {
+        let path = path();
+        let db = v9_with_agent_log(&path, true);
+        let tables = [
+            "resources",
+            "applications",
+            "components",
+            "observations",
+            "incidents",
+            "events",
+            "http_checks",
+            "agent_access",
+        ];
+        let before: Vec<_> = tables.iter().map(|table| dump(&db, table)).collect();
+        let log = dump(&db, "agent_log");
+        drop(db);
+
+        let started = records::now_ms();
+        let upgraded = list(&path).unwrap();
+        let finished = records::now_ms();
+        let db = Connection::open(&path).unwrap();
+        let version: i64 = db
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 10);
+        for (table, rows) in tables.iter().zip(&before) {
+            assert_eq!(&dump(&db, table), rows, "{table}");
+        }
+        // Every entry, with its rowid and values, as an agent's change with only its summary.
+        let agent = format!("{:?}", rusqlite::types::ValueRef::Text(b"agent"));
+        let carried: Vec<String> = log
+            .iter()
+            .map(|row| {
+                let mut values: Vec<&str> = row.split(" | ").collect();
+                // rowid, id, application_id, resource_id, subject_name, [source], agent, action,
+                // summary, [changes], occurred_at.
+                values.insert(5, &agent);
+                values.insert(9, "Null");
+                values.join(" | ")
+            })
+            .collect();
+        assert_eq!(dump(&db, "change_log"), carried);
+        assert!(strings(
+            &db,
+            "SELECT name FROM sqlite_master WHERE name = 'agent_log'"
+        )
+        .is_empty());
         // Nothing references or is referenced: an entry never keeps a subject from going.
         assert!(strings(
             &db,
-            "SELECT \"table\" FROM pragma_foreign_key_list('agent_log')"
+            "SELECT \"table\" FROM pragma_foreign_key_list('change_log')"
         )
         .is_empty());
         assert_eq!(
-            strings(&db, "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'agent_log' AND name NOT LIKE 'sqlite_autoindex%' ORDER BY name"),
-            ["agent_log_application_id", "agent_log_resource_id"]
+            strings(&db, "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'change_log' AND name NOT LIKE 'sqlite_autoindex%' ORDER BY name"),
+            ["change_log_application_id", "change_log_resource_id"]
         );
+        // The inventory held systems whose earlier changes by the person left no trace: the log
+        // is complete from the upgrade on, and the snapshot says so.
+        let since: i64 = db
+            .query_row("SELECT started_at FROM change_log_start", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert!((started..=finished).contains(&since), "{since}");
+        assert_eq!(upgraded.changes_since, records::format_time(since));
+        let ids: Vec<_> = upgraded
+            .changes
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect();
+        assert_eq!(ids, ["log-version", "log-gone"]);
+        assert!(upgraded
+            .changes
+            .iter()
+            .all(|item| item.source == "agent" && item.changes.is_none()));
         drop(db);
+
         let db = open(&path).unwrap();
-        let entry = |application: Option<&str>,
-                     resource: Option<&str>,
-                     agent: &str,
-                     action: &str| {
+        let entry = |subject: (Option<&str>, Option<&str>),
+                     source: &str,
+                     agent: Option<&str>,
+                     action: &str,
+                     changes: Option<&str>| {
             db.execute(
-                "INSERT INTO agent_log (id, application_id, resource_id, subject_name, agent, action, summary, occurred_at)
-                 VALUES (?1, ?2, ?3, 'Shop', ?4, ?5, 'Changed', 1)",
-                rusqlite::params![Uuid::new_v4().to_string(), application, resource, agent, action],
+                "INSERT INTO change_log (id, application_id, resource_id, subject_name, source, agent, action, summary, changes, occurred_at)
+                 VALUES (?1, ?2, ?3, 'Shop', ?4, ?5, ?6, 'Changed', ?7, 1)",
+                rusqlite::params![Uuid::new_v4().to_string(), subject.0, subject.1, source, agent, action, changes],
             )
         };
+        let shop = (Some("shop"), None);
         assert!(
-            entry(Some("shop"), Some("host"), "codex", "updated").is_err(),
+            entry(
+                (Some("shop"), Some("host")),
+                "manual",
+                None,
+                "updated",
+                None
+            )
+            .is_err(),
             "two subjects"
         );
-        assert!(entry(None, None, "codex", "updated").is_err(), "no subject");
         assert!(
-            entry(Some("shop"), None, " ", "updated").is_err(),
+            entry((None, None), "manual", None, "updated", None).is_err(),
+            "no subject"
+        );
+        assert!(
+            entry(shop, "agent", None, "updated", None).is_err(),
             "an agent names itself"
         );
         assert!(
-            entry(Some("shop"), None, "codex", "dropped").is_err(),
+            entry(shop, "agent", Some(" "), "updated", None).is_err(),
+            "with a name"
+        );
+        assert!(
+            entry(shop, "manual", Some("codex"), "updated", None).is_err(),
+            "the person is no agent"
+        );
+        assert!(
+            entry(shop, "http", None, "updated", None).is_err(),
+            "only the person or an agent changes configuration"
+        );
+        assert!(
+            entry(shop, "manual", None, "dropped", None).is_err(),
             "unknown action"
         );
+        assert!(
+            entry(shop, "manual", None, "updated", Some("not json")).is_err(),
+            "changes are JSON"
+        );
+        assert!(
+            entry(shop, "manual", None, "updated", Some(r#"{"field":"name"}"#)).is_err(),
+            "a list of field changes"
+        );
+        assert!(entry(
+            shop,
+            "manual",
+            None,
+            "updated",
+            Some(r#"[{"field":"name","before":"A","after":"B"}]"#)
+        )
+        .is_ok());
         // A deleted subject's entry stays.
-        assert!(entry(Some("gone"), None, "codex", "deleted").is_ok());
+        assert!(entry(
+            (Some("gone"), None),
+            "agent",
+            Some("codex"),
+            "deleted",
+            None
+        )
+        .is_ok());
+        assert!(db
+            .execute("INSERT INTO change_log_start VALUES (2, 0)", [])
+            .is_err());
         drop(db);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn a_change_log_with_nothing_earlier_to_miss_is_complete() {
+        // An inventory with no systems when v10 arrives: whatever changes it had concerned
+        // systems that are gone, and agents' were logged, so nothing is missing from now on.
+        let path = path();
+        drop(v9_with_agent_log(&path, false));
+        let upgraded = list(&path).unwrap();
+        assert_eq!(upgraded.changes_since, None);
+        assert_eq!(upgraded.changes.len(), 2);
+        let db = Connection::open(&path).unwrap();
+        assert!(dump(&db, "change_log_start").is_empty());
+        drop(db);
+        std::fs::remove_file(&path).unwrap();
+        // A new inventory starts with every migration at once, and its log is complete.
+        let fresh = list(&path).unwrap();
+        assert_eq!(fresh.changes_since, None);
+        assert!(fresh.changes.is_empty());
         std::fs::remove_file(path).unwrap();
     }
 

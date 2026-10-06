@@ -161,6 +161,20 @@ export function AutomatedWindowNote({ since, limit }: { since: string; limit: nu
   )
 }
 
+/**
+ * Says from when changes to the configuration are complete: an inventory that already held
+ * systems when DevHQ started logging them has no trace of the person's earlier changes.
+ */
+export function ChangesSinceNote({ since }: { since: string }) {
+  return (
+    <p className="rounded-md border border-dashed px-3 py-2 text-[11px] leading-5 text-muted-foreground">
+      Changes to applications, resources and HTTP checks are recorded from <Moment value={since} />{' '}
+      on, when DevHQ started keeping them. Earlier changes made in the window left no trace; agents'
+      changes are complete.
+    </p>
+  )
+}
+
 /** Marks where a list stops being complete: older entries are manual and agent entries only. */
 export function WindowBoundary({ since }: { since: string }) {
   return (

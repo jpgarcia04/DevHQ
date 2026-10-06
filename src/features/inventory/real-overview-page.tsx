@@ -181,7 +181,7 @@ function OverviewContent() {
               </Link>
             </div>
             <div className="panel p-5">
-              {snapshot.events.length || snapshot.agentChanges.length ? (
+              {snapshot.events.length || snapshot.changes.length ? (
                 <EventRecordList
                   items={timelineEvents(snapshot)}
                   foldRepeats
