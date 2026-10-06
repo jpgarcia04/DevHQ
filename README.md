@@ -697,7 +697,7 @@ cuentas, cloud, sync, telemetría, scanners, automation engine, Runner ni backgr
 3. Hecho en Linux: la [puerta para agentes](#puerta-para-agentes), con la que un agente lee y
    mantiene el inventario cuando se lo pides, con su procedencia siempre visible. Lee y escribe con
    el acceso que eliges en Settings, sus cambios aparecen en Activity y la ventana abierta los nota
-   sola. Quedan comprobaciones en Windows y una decisión:
+   sola. Quedan comprobaciones en Windows:
    [docs/puerta-para-agentes.md](docs/puerta-para-agentes.md).
 4. Después, automatizaciones con resultado e historial, y seguridad con almacén nativo de
    credenciales y evidencias contextualizadas.
