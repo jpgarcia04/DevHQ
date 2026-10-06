@@ -32,13 +32,17 @@ app X que corre en el servidor Y y compruébala cada 15 min», «anota que despl
 `devhq --mcp` arranca el modo puerta del mismo ejecutable que instala el instalador, sin ventana ni
 WebView. Así no hay un segundo programa que instalar y la puerta siempre tiene la misma versión que
 la app: nunca abre un esquema más nuevo que el suyo (ese caso ya se rechaza) ni migra con reglas
-distintas. Para conectarlo a Claude Code:
+distintas. Se conecta a Claude Code **una sola vez**, con alcance de usuario:
 
 ```sh
-claude mcp add devhq -- "C:\Program Files\DevHQ\devhq.exe" --mcp
+claude mcp add --scope user devhq -- "C:\Program Files\DevHQ\devhq.exe" --mcp
 ```
 
-Settings mostrará ese comando con la ruta real del ejecutable instalado (`std::env::current_exe`).
+Claude Code lo guarda en su configuración de usuario, así que desde entonces cualquier sesión local
+nueva, en cualquier carpeta, tiene las herramientas de DevHQ sin repetir nada: abres la sesión, pides
+y la ventana muestra el resultado. Settings mostrará ese comando con la ruta real del ejecutable
+instalado (`std::env::current_exe`) para copiarlo. DevHQ no lo ejecuta ni toca la configuración de
+Claude Code: escribir en la configuración de otro programa es operar, no observar.
 
 El protocolo es JSON-RPC 2.0 sobre stdio (MCP): `initialize`, `notifications/initialized`,
 `ping`, `tools/list` y `tools/call`. Se implementa a mano sobre `serde_json`, que ya es una
@@ -195,7 +199,12 @@ Todo se construye y se prueba en Linux. En Windows queda por comprobar, en la la
 workflow de Windows: la ruta de datos real, que un ejecutable con subsistema `windows` atiende bien
 stdio cuando lo lanza Claude Code, y el comportamiento lanzado desde una app MSIX.
 
-## Decisiones abiertas
+## Decisiones tomadas
 
-- Si la puerta puede borrar (con la confirmación del cliente) o si eso se queda solo en la ventana.
-- Si `agent_log` se ve mezclado en Activity o en una vista propia.
+- La puerta puede hacer todo lo que se hace desde la ventana, borrar incluido (el cliente pide
+  confirmación en cada llamada y Rust sigue rechazando borrar lo que tiene historial).
+- Lo que hace el agente aparece mezclado con lo tuyo en Activity, global y de cada sistema, con una
+  etiqueta breve de procedencia: es la línea de comunicación clara entre los dos, no una vista
+  aparte.
+- El enfermero (supervisión con la ventana cerrada) no será un agente: si llega, lo hará DevHQ
+  mismo, sin gastar uso de ningún modelo.

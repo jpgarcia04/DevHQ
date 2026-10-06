@@ -553,7 +553,7 @@ cuentas, cloud, sync, telemetría, scanners, automation engine, Runner ni backgr
 4. Después, automatizaciones con resultado e historial, y seguridad con almacén nativo de
    credenciales y evidencias contextualizadas.
 5. A largo plazo, una supervisión que siga con la ventana cerrada y avise de lo que necesita
-   atención. Contradice que DevHQ no funcione en segundo plano, así que exige revisar esa regla y
+   atención, hecha por DevHQ mismo y no por un agente. Contradice que DevHQ no funcione en segundo plano, así que exige revisar esa regla y
    cuidar lo que consume.
 
 Estos son límites conceptuales, **no módulos vacíos ni integraciones implementadas**.
