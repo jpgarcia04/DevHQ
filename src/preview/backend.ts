@@ -144,6 +144,7 @@ export function previewBackend(database: PreviewDatabase) {
       }),
       error: null,
       recorded: 0,
+      changes: 0,
     }
   }
 

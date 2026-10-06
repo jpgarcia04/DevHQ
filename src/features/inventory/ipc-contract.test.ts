@@ -401,6 +401,7 @@ const supervision: MonitorStatus = {
   ],
   error: null,
   recorded: 3,
+  changes: 7,
 }
 
 const answers: Record<string, unknown> = {

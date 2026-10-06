@@ -24,36 +24,47 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
   const [checking, setChecking] = useState<string[]>([])
   const [monitor, setMonitor] = useState<MonitorStatus | null>(null)
   const [monitorError, setMonitorError] = useState<string | null>(null)
-  const recorded = useRef<number | null>(null)
+  // What the last status said, to tell when the inventory may have changed since.
+  const seen = useRef<{ recorded: number; changes: number } | null>(null)
+  // Reads overlap: a quiet read can still be in flight when a write's reload starts, and answer
+  // after it. Each read takes a ticket; an answer older than one already applied is dropped,
+  // so the window never goes back to a state from before a write it has shown.
+  const issued = useRef(0)
+  const applied = useRef(0)
 
-  const reload = useCallback(async () => {
-    setLoadState('loading')
-    setError(null)
+  const read = useCallback(async () => {
+    const ticket = ++issued.current
     try {
-      setSnapshot(await inventoryApi.list())
-      setNow(Date.now())
-      setLoadState('ready')
+      const next = await inventoryApi.list()
+      if (ticket > applied.current) {
+        applied.current = ticket
+        setSnapshot(next)
+        setNow(Date.now())
+        setError(null)
+        setLoadState('ready')
+      }
       return true
     } catch (cause) {
-      setSnapshot(null)
-      setError(inventoryError(cause))
-      setLoadState('error')
+      if (ticket > applied.current) {
+        applied.current = ticket
+        setSnapshot(null)
+        setError(inventoryError(cause))
+        setLoadState('error')
+      }
       return false
     }
   }, [])
 
-  // New evidence from a scheduled run appears without a loading state, so the page, open
-  // forms and expanded records stay as they are. A failure is shown like any failed load.
-  const refresh = useCallback(async () => {
-    try {
-      setSnapshot(await inventoryApi.list())
-      setNow(Date.now())
-    } catch (cause) {
-      setSnapshot(null)
-      setError(inventoryError(cause))
-      setLoadState('error')
-    }
-  }, [])
+  const reload = useCallback(async () => {
+    setLoadState('loading')
+    setError(null)
+    return read()
+  }, [read])
+
+  // New evidence from a scheduled run, or a change another process committed, appears without
+  // a loading state, so the page, open forms and expanded records stay as they are. A failure is
+  // shown like any failed load.
+  const refresh = useCallback(() => void read(), [read])
 
   useEffect(() => {
     if (mode !== 'real') return
@@ -65,15 +76,17 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (mode !== 'real') return
     let current = true
-    recorded.current = null
+    seen.current = null
     inventoryApi
       .watchHttpMonitor((status) => {
         if (!current) return
         setMonitor(status)
         setMonitorError(null)
-        // Runs that recorded evidence since the last status: read it.
-        if (status.recorded !== (recorded.current ?? 0)) void refresh()
-        recorded.current = status.recorded
+        // Runs that recorded evidence, or commits by other connections, since the last status:
+        // read the inventory again. The first status compares with launch, when both were 0.
+        const before = seen.current ?? { recorded: 0, changes: 0 }
+        if (status.recorded !== before.recorded || status.changes !== before.changes) refresh()
+        seen.current = { recorded: status.recorded, changes: status.changes }
       })
       .catch((cause) => {
         if (current) setMonitorError(inventoryError(cause))

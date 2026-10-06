@@ -72,6 +72,12 @@ export interface MonitorStatus {
   error: string | null
   /** Observations recorded by runs since launch; grows when there is new evidence. */
   recorded: number
+  /**
+   * Commits by other connections the native process noticed since launch (it looks every 2 s):
+   * an agent's through the agent gate, another program's, and the window's own writes. Grows
+   * when the inventory may have changed.
+   */
+  changes: number
 }
 
 /**

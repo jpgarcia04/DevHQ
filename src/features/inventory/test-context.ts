@@ -74,7 +74,7 @@ export function inventoryContext(
       throw new Error('runHttpCheck is not mocked in this test')
     }),
     checking: [],
-    monitor: { checks: [], error: null, recorded: 0 },
+    monitor: { checks: [], error: null, recorded: 0, changes: 0 },
     monitorError: null,
     ...overrides,
   }

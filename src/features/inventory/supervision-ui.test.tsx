@@ -76,10 +76,11 @@ const snapshot: InventorySnapshot = {
   automatedHistory: { limit: 200, truncated: [] },
 }
 
-const monitor = (checks: MonitorCheckStatus[], recorded = 0): MonitorStatus => ({
+const monitor = (checks: MonitorCheckStatus[], recorded = 0, changes = 0): MonitorStatus => ({
   checks,
   error: null,
   recorded,
+  changes,
 })
 
 function renderWith(ui: ReactNode, value: InventoryContextValue) {
@@ -358,6 +359,47 @@ describe('status pushed by the native process', () => {
     // A status change without new evidence reads nothing.
     await push(monitor([running(web, { nextRunAt: minutesFromNow(20) })], 1))
     expect(list).toHaveBeenCalledTimes(2)
+  })
+
+  // An agent added a resource through the agent gate, in another process.
+  const withAgentBox: InventorySnapshot = {
+    ...snapshot,
+    resources: [
+      ...snapshot.resources,
+      { id: 'agent-box', name: 'Agent box', kind: 'server', description: '', operatingSystem: '' },
+    ],
+  }
+
+  it('reads the inventory again, quietly, when another connection committed something', async () => {
+    const { list, push } = await renderLive()
+    await push(monitor([running(web)]))
+    expect(list).toHaveBeenCalledTimes(1)
+
+    list.mockResolvedValue(withAgentBox)
+    await push(monitor([running(web)], 0, 1))
+    expect(await screen.findByRole('region', { name: 'Agent box' })).toBeInTheDocument()
+    expect(list).toHaveBeenCalledTimes(2)
+    expect(screen.queryByText('Loading local inventory…')).not.toBeInTheDocument()
+
+    // Nothing more committed: nothing more is read.
+    await push(monitor([running(web, { nextRunAt: minutesFromNow(20) })], 0, 1))
+    expect(list).toHaveBeenCalledTimes(2)
+  })
+
+  it('never goes back to an older read that answers late', async () => {
+    const { list, push } = await renderLive()
+    await push(monitor([running(web)]))
+    // The first quiet read is slow; the second, started later, sees the agent's resource.
+    let answerLate: (value: InventorySnapshot) => void = () => {}
+    list.mockReturnValueOnce(new Promise((resolve) => (answerLate = resolve)))
+    await push(monitor([running(web)], 0, 1))
+    list.mockResolvedValueOnce(withAgentBox)
+    await push(monitor([running(web)], 0, 2))
+    expect(await screen.findByRole('region', { name: 'Agent box' })).toBeInTheDocument()
+
+    await act(async () => answerLate(snapshot))
+    expect(screen.getByRole('region', { name: 'Agent box' })).toBeInTheDocument()
+    expect(list).toHaveBeenCalledTimes(3)
   })
 
   it('says when supervision status cannot be received', async () => {

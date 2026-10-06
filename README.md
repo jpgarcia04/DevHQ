@@ -166,7 +166,8 @@ ejecución, que es idéntica a la de Run check y sigue la misma semántica de vi
   commit en llegar al disco y su conexión en cerrarse, nunca a otro escritor). No hay servicio,
   tarea del sistema ni arranque solo.
 - La siguiente ejecución toca **un intervalo después de que terminó la anterior**, la
-  lanzara quien la lanzara: un Run check también reinicia la espera. Las ejecuciones
+  lanzara quien la lanzara: un Run check también reinicia la espera, y también un `run_check` de
+  la [puerta para agentes](#puerta-para-agentes), que la supervisión nota en unos 2 s. Las ejecuciones
   perdidas no se recuperan: tras una pausa, la app cerrada o una ejecución lenta, una
   comprobación atrasada corre **una** vez.
 - Al abrir DevHQ, el ritmo continúa desde la última observación `http` guardada. Las
@@ -221,9 +222,12 @@ ejecución, que es idéntica a la de Run check y sigue la misma semántica de vi
   sistemas, con los mismos 855 y 79 KB hacia la ventana: más lento que en Linux, pero igual de
   independiente de lo lejos que esté la página.
 - El proceso nativo empuja el estado a la ventana por un `Channel` de Tauri: ejecución en
-  curso, última y siguiente ejecución y último error de DevHQ. Cuando una ejecución
-  registra evidencia, la ventana relee el inventario sin estado de carga, así que los
-  formularios abiertos y los registros desplegados se conservan.
+  curso, última y siguiente ejecución y último error de DevHQ, y dos contadores desde que abrió:
+  cuántas ejecuciones registraron evidencia (`recorded`) y cuántas veces notó que otra conexión
+  confirmó algo (`changes`, ver [Puerta para agentes](#puerta-para-agentes)). Cuando uno crece,
+  la ventana relee el inventario sin estado de carga, así que los formularios abiertos y los
+  registros desplegados se conservan. Si dos lecturas se cruzan, aplica solo la que empezó
+  después: nunca vuelve a un estado anterior al que ya muestra.
 
 ### Respaldo
 
@@ -339,12 +343,20 @@ rechazo no cambia nada ni deja entrada. Las herramientas que sobrescriben o quit
 declaran destructivas (`destructiveHint`) y `run_check`, que sale de tu computadora, de mundo
 abierto (`openWorldHint`), así que el cliente pide confirmación según cómo lo tengas configurado.
 
-Con la ventana de DevHQ abierta, lo que cambia un agente se ve al volver a cargar Mi inventario, y la
-supervisión de la ventana no se entera de una comprobación que el agente configuró, pausó o quitó
-hasta que la ventana cambia alguna o se vuelve a abrir: que la ventana note sola esos cambios es el
-siguiente paso ([docs/puerta-para-agentes.md](docs/puerta-para-agentes.md)). Si un agente ejecuta
-una comprobación en el mismo instante en que la supervisión de la ventana corre la misma, quedan dos
-observaciones honestas; ninguna se pierde ni se inventa.
+Con la ventana de DevHQ abierta, lo que cambia un agente aparece solo, en unos 2 s. Mientras la
+ventana vive, su proceso mantiene una conexión SQLite propia y cada 2 s le pregunta
+`PRAGMA data_version`, que cambia exactamente cuando otra conexión confirmó algo: la puerta, otro
+programa o los comandos de la propia ventana, que abren cada uno la suya. Es una consulta trivial que
+no lee ninguna tabla; cerrar la ventana la termina junto con la supervisión y cierra esa conexión, y
+con la ventana cerrada no existe. Cuando cambia, la supervisión relee su configuración (una
+comprobación que el agente configuró, pausó, reanudó o quitó surte efecto, y una ejecución que pidió
+reinicia la espera como Run check) y la ventana relee el inventario sin estado de carga, como tras
+una ejecución supervisada. Leer no confirma nada, así que esa relectura no provoca otra; un cambio
+hecho en la propia ventana, que ya la relee al guardar, provoca una relectura silenciosa más, de unos
+8 ms. Si la conexión falla, se abre otra en la siguiente consulta y eso cuenta como cambio, porque no
+se sabe qué pasó entretanto. Si un agente ejecuta una comprobación en el mismo instante en que la
+supervisión de la ventana corre la misma, quedan dos observaciones honestas; ninguna se pierde ni se
+inventa.
 
 Las de lectura se declaran de solo lectura (`readOnlyHint`). Cada respuesta dice lo que la ventana diría: una
 lista recortada lleva el aviso de su ventana de historial y nada sin evidencia vigente se presenta
@@ -659,9 +671,8 @@ cuentas, cloud, sync, telemetría, scanners, automation engine, Runner ni backgr
 2. Hecho: supervisión cancelable de esas comprobaciones, solo con DevHQ abierto.
 3. En curso: la [puerta para agentes](#puerta-para-agentes), con la que un agente lee y mantiene el
    inventario cuando se lo pides, con su procedencia siempre visible. Ya lee y escribe, con el
-   acceso que eliges en Settings, y sus cambios aparecen en Activity; que la ventana abierta los note
-   sola sigue en diseño:
-   [docs/puerta-para-agentes.md](docs/puerta-para-agentes.md).
+   acceso que eliges en Settings, sus cambios aparecen en Activity y la ventana abierta los nota
+   sola; lo pendiente está en [docs/puerta-para-agentes.md](docs/puerta-para-agentes.md).
 4. Después, automatizaciones con resultado e historial, y seguridad con almacén nativo de
    credenciales y evidencias contextualizadas.
 5. A largo plazo, una supervisión que siga con la ventana cerrada y avise de lo que necesita
@@ -689,7 +700,9 @@ prueba sobre un reloj simulado de Tokio, sin esperas reales: ritmo por intervalo
 continuidad tras reabrir, una sola ejecución por atraso, sin solapes, Run check que se une
 a la ejecución en vuelo, pausa, cancelación al quitar o cerrar (también de una ejecución que
 ya estaba escribiendo su resultado al cerrar), fallos de DevHQ visibles
-que no detienen al resto y configuración ilegible que se reintenta; y, con peticiones
+que no detienen al resto, configuración ilegible que se reintenta y lo que otra conexión confirma
+(una ejecución, una pausa o una comprobación nueva surten efecto en la siguiente consulta, una
+lectura no cuenta como cambio y cerrar termina las consultas al instante y cierra su conexión); y, con peticiones
 reales a un servidor local, que la evidencia programada es idéntica a la manual; y, a través del manejador real de comandos sobre el
 runtime simulado de Tauri y desde un hilo sin runtime asíncrono como el principal, que la ventana puede
 abrir el `Channel` de estado. La ventana

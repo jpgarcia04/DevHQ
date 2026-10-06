@@ -257,8 +257,11 @@ pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             let path = app.path().app_data_dir()?.join("inventory.sqlite3");
-            // Supervision lives only as long as this process: no service, no system task.
-            tauri::async_runtime::spawn(manage(app, path).run());
+            // Supervision, and noticing what other processes change, live only as long as this
+            // process: no service, no system task.
+            let monitor = manage(app, path);
+            tauri::async_runtime::spawn(monitor.clone().run());
+            tauri::async_runtime::spawn(monitor.notice_changes());
             Ok(())
         })
         .invoke_handler(commands())
@@ -266,7 +269,8 @@ pub fn run() {
         .expect("error while building DevHQ")
         .run(|app, event| {
             // Closing the window ends supervision: runs in flight are cancelled, none start, and
-            // nothing is recorded once shutdown returns (it waits for a commit in progress).
+            // nothing is recorded once shutdown returns (it waits for a commit in progress). It
+            // also stops noticing changes and closes the connection that did.
             if let RunEvent::ExitRequested { .. } | RunEvent::Exit = event {
                 if let Some(monitor) = app.try_state::<Monitor>() {
                     monitor.shutdown();

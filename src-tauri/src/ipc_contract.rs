@@ -459,6 +459,7 @@ fn every_answer_has_the_shape_the_window_expects() {
         }],
         error: None,
         recorded: 3,
+        changes: 7,
     };
     // A refusal, as the window receives it through the real handler.
     let path = path();
