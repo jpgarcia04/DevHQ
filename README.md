@@ -547,8 +547,14 @@ cuentas, cloud, sync, telemetría, scanners, automation engine, Runner ni backgr
 1. Hecho: una comprobación HTTP(S) a petición con su propio `source`, sin cambiar la
    semántica de vigencia.
 2. Hecho: supervisión cancelable de esas comprobaciones, solo con DevHQ abierto.
-3. Después, automatizaciones con resultado e historial, y seguridad con almacén nativo de
+3. Siguiente: una puerta para agentes, un modo MCP por stdio del mismo ejecutable con el que un
+   agente lee y mantiene el inventario cuando se lo pides, con su procedencia siempre visible.
+   Es un diseño, todavía sin implementar: [docs/puerta-para-agentes.md](docs/puerta-para-agentes.md).
+4. Después, automatizaciones con resultado e historial, y seguridad con almacén nativo de
    credenciales y evidencias contextualizadas.
+5. A largo plazo, una supervisión que siga con la ventana cerrada y avise de lo que necesita
+   atención. Contradice que DevHQ no funcione en segundo plano, así que exige revisar esa regla y
+   cuidar lo que consume.
 
 Estos son límites conceptuales, **no módulos vacíos ni integraciones implementadas**.
 La dirección es UI → IPC/casos de uso → dominio. SQLite conserva contexto; las credenciales no deben
