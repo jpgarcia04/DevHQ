@@ -47,8 +47,10 @@ dependencias; el resto es la dirección (ver «Preguntas que debe poder responde
    reporta alguien no se confunde con lo que DevHQ mide; una lista recortada dice dónde y por qué.
 7. **La historia no se reescribe.** Las observaciones son inmutables, lo que tiene historial no se
    borra y un cambio de esquema conserva cada fila.
-8. **Observar antes que operar.** Si algún día DevHQ opera, cada acción es explícita, la inicias tú,
-   la ejecuta la herramienta que corresponde, queda registrada y se verifica.
+8. **La observabilidad es la base.** Las capacidades operativas, si se incorporan, se construyen
+   poco a poco sobre esa base y son explícitas, seguras, controlables y auditables, las uses tú
+   directamente o un agente al que hayas autorizado. «DevHQ observa, no opera» es una regla del
+   estado actual, no un límite permanente de la visión (ver «Centro de control»).
 9. **La IA es un cliente intercambiable.** DevHQ funciona entero sin agentes; los agentes entran por
    la puerta, con el acceso que decides.
 10. **Personal y local.** Un archivo SQLite que es tuyo, sin cuentas ni nube. Que DevHQ trabaje por
@@ -60,16 +62,35 @@ dependencias; el resto es la dirección (ver «Preguntas que debe poder responde
 
 Qué se conserva, qué se adapta a la arquitectura actual y qué se pospone, y por qué.
 
-### Centro de control: torre de control, no orquestador
+### Centro de control: primero saber, después actuar
 
 En infraestructura, un _control plane_ decide y aplica el estado deseado: Kubernetes reconcilia,
-Terraform aplica. DevHQ observa y no opera, y esa regla es parte de su valor: puedes confiar en él
-porque no puede romper nada, y no necesita credenciales. Del _control plane_ encaja la mitad que
-sabe: el único lugar que conoce el estado de todo y sus relaciones, desde donde decides y saltas a
-la herramienta adecuada. La otra mitad, aplicar cambios, queda fuera mientras una decisión explícita
-no cambie la regla (ver «Tensiones con las reglas actuales»). Aquí, «centro de control» se lee como
-una torre de control: ve todo, sabe qué depende de qué y dice qué necesita atención; quien opera
-eres tú, o el agente que lanzas tú, con sus herramientas.
+Terraform aplica. Hoy DevHQ observa y no opera, y para el estado actual la regla tiene sentido:
+puedes confiar en él porque no puede romper nada, y no necesita credenciales. Pero es una regla del
+presente, no un límite de la visión: a largo plazo DevHQ puede actuar sobre el ecosistema, por ti
+directamente o por agentes que hayas autorizado. Lo que importa es el orden. Primero, la mitad del
+_control plane_ que sabe: el único lugar que conoce el estado de todo y sus relaciones. Después,
+poco a poco, la mitad que actúa, apoyada en la primera, porque una acción solo es segura si DevHQ
+sabe sobre qué actúa, qué depende de ello y puede observar qué resultó.
+
+Cada capacidad operativa que se incorpore cumple cuatro condiciones:
+
+- **Explícita**: tiene nombre y alcance (reiniciar este servicio, desplegar esta versión en este
+  recurso), nunca una terminal remota ni comandos arbitrarios, y no ocurre sin que alguien la pida.
+- **Segura**: la ejecuta la herramienta que corresponde (systemd, Docker, git, la plataforma de
+  despliegue), que DevHQ no reimplementa, con las credenciales en el almacén del sistema, y una
+  observación posterior verifica el resultado: el Trigger → Condition → Action → Verification que ya
+  anticipa la preview de Automations.
+- **Controlable**: tú decides quién puede usarla, tú o un agente, y hasta dónde, y puedes retirar
+  ese permiso al instante.
+- **Auditable**: queda en la línea de tiempo con su procedencia, quién la pidió, qué se hizo y qué
+  resultó, y no se puede borrar ni reescribir.
+
+La puerta para agentes ya sigue este patrón en pequeño, dentro del propio inventario: un agente
+cambia datos con capacidades parecidas a las tuyas, solo con el acceso que eliges en Settings, por
+los mismos casos de uso que la ventana, y cada cambio queda en `agent_log` en la misma transacción.
+Es el precedente natural para lo que algún día actúe fuera de DevHQ. Mientras tanto, la regla actual
+se mantiene (ver «Tensiones con las reglas actuales»).
 
 ### El modelo antes que los botones: se conserva, ya es el diseño
 
@@ -120,9 +141,10 @@ reglas:
    propio `source`. Exige el almacén nativo de credenciales que el README ya prevé, verificar la
    clave del servidor y revisar la regla «no guarda credenciales». Nunca una terminal remota dentro
    de DevHQ ni comandos arbitrarios.
-3. **Operaciones**, como reiniciar un servicio o volver a desplegar: las últimas, si llegan. Chocan
-   con «no opera sistemas»; si se decide cambiar esa regla, cada acción sigue el principio 8 (el
-   Trigger → Condition → Action → Verification que ya anticipa la preview de Automations).
+3. **Operaciones**, como reiniciar un servicio o volver a desplegar: el último escalón, construido
+   sobre los anteriores, porque una acción necesita saber sobre qué actúa y poder observar qué
+   resultó. Las lanzas tú o un agente autorizado por la puerta, y exigen cambiar la regla «no opera
+   sistemas» y cumplir las cuatro condiciones de «Centro de control».
 
 Las métricas entran como evidencia, no como series: «disco al 91 % en /, umbral 85 %» es una
 observación con sus valores, su momento y su vigencia, y eso es lo que responde qué necesita
@@ -150,9 +172,9 @@ que siga así:
 Que un agente entre a un proyecto sin empezar de cero es un buen objetivo, pero DevHQ no debe
 convertirse en otra copia de la documentación. La documentación, las convenciones y las
 instrucciones para agentes (README, `CLAUDE.md`, `AGENTS.md`) viven en el repositorio, versionadas
-con el código: una copia en DevHQ se desfasaría, y escribirlas en el repositorio por su cuenta sería
-operar. Es la misma razón por la que la puerta muestra el comando de registro para copiarlo y nunca
-toca la configuración de Claude Code.
+con el código: una copia en DevHQ se desfasaría, y escribirlas en el repositorio por su cuenta, sin
+que nadie lo pida, no sería ni explícito ni controlable. Es la misma razón por la que la puerta
+muestra el comando de registro para copiarlo y nunca toca la configuración de Claude Code.
 
 Lo que DevHQ aporta es lo que el repositorio no puede saber: dónde corre, qué depende de él y de qué
 depende, qué estado tiene y desde cuándo, qué incidencias siguen abiertas, qué se desplegó por
@@ -270,8 +292,9 @@ concretos y su orden están en «Evolución prevista» del README; este document
 5. **Contexto para agentes**: el resumen por sistema en la puerta, más rico con cada paso anterior.
 6. **Fuentes con credenciales**: servidores por SSH de solo lectura, el estado de la CI en GitHub u
    otra plataforma. Exige el almacén nativo de credenciales.
-7. **Acciones explícitas y verificadas**: las automatizaciones con resultado e historial que el
-   README ya anticipa. Exige cambiar «no opera sistemas».
+7. **Capacidades operativas**: las automatizaciones con resultado e historial que el README ya
+   anticipa y acciones sobre servidores y despliegues, lanzadas por ti o por un agente autorizado,
+   cada una explícita, segura, controlable y auditable. Exige cambiar «no opera sistemas».
 8. **Supervisión con la ventana cerrada**: exige cambiar «no funciona en segundo plano» y cuidar lo
    que consume.
 
@@ -280,19 +303,19 @@ concretos y su orden están en «Evolución prevista» del README; este document
 Cada regla sigue vigente hasta que se decida cambiarla de forma explícita, y entonces el README
 cambia en el mismo commit que la funcionalidad que lo necesita.
 
-| Idea                                           | Regla o límite de hoy                                                               | Qué haría falta                                                                                                           |
-| ---------------------------------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| Operaciones básicas en servidores              | DevHQ observa; no opera sistemas                                                    | Cambiar la regla; cada acción iniciada por ti, delegada, registrada y verificada                                          |
-| Leer servidores o plataformas con credenciales | No guarda credenciales                                                              | El almacén nativo de credenciales que el README ya prevé; nunca en SQLite, React ni localStorage                          |
-| Vigilar con la ventana cerrada                 | No funciona en segundo plano                                                        | Revisar la regla y medir lo que consume; lo hace DevHQ, no un agente                                                      |
-| Descubrir repositorios o servicios             | No se implementan scanners                                                          | Que lo lances tú, de solo lectura, y que proponga cambios que aceptas                                                     |
-| Atajos como abrir una carpeta                  | Si solo ahorra un comando sencillo, no pertenece                                    | Solo como subproducto de una referencia que el modelo ya tiene                                                            |
-| Muchos tipos de cosas                          | Dos tipos de sujeto, con una columna cada uno en cada tabla que cuelga de un sujeto | Crecer por tipos de recurso; una tabla genérica de sujetos solo si algo no cabe, con una migración que conserve cada fila |
+| Idea                                                  | Regla o límite de hoy                                                               | Qué haría falta                                                                                                                  |
+| ----------------------------------------------------- | ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Actuar sobre el ecosistema, tú o un agente autorizado | DevHQ observa; no opera sistemas                                                    | Cambiar la regla con la primera capacidad operativa, construida sobre la observación: explícita, segura, controlable y auditable |
+| Leer servidores o plataformas con credenciales        | No guarda credenciales                                                              | El almacén nativo de credenciales que el README ya prevé; nunca en SQLite, React ni localStorage                                 |
+| Vigilar con la ventana cerrada                        | No funciona en segundo plano                                                        | Revisar la regla y medir lo que consume; lo hace DevHQ, no un agente                                                             |
+| Descubrir repositorios o servicios                    | No se implementan scanners                                                          | Que lo lances tú, de solo lectura, y que proponga cambios que aceptas                                                            |
+| Atajos como abrir una carpeta                         | Si solo ahorra un comando sencillo, no pertenece                                    | Solo como subproducto de una referencia que el modelo ya tiene                                                                   |
+| Muchos tipos de cosas                                 | Dos tipos de sujeto, con una columna cada uno en cada tabla que cuelga de un sujeto | Crecer por tipos de recurso; una tabla genérica de sujetos solo si algo no cabe, con una migración que conserve cada fila        |
 
 ## Lo que DevHQ no quiere ser
 
 - Un sustituto de GitHub, Docker, la terminal, el editor o un panel de monitorización: los observa,
-  los relaciona y sabe dónde están.
+  los relaciona y sabe dónde están, y si algún día actúa, actúa a través de ellos.
 - Un almacén de métricas o de logs: guarda veredictos con su evidencia, no series ni flujos.
 - Un gestor de secretos o un cliente SSH: si alguna vez necesita credenciales, viven en el almacén
   del sistema.
@@ -319,6 +342,10 @@ Este documento se corrige cuando cambia la dirección, con una línea en «Histo
 
 - 6 oct 2026: primera versión, a partir del planteamiento original y de su revisión contra `main`
   (esquema v6) y la rama de la puerta para agentes (esquema v9).
+- 6 oct 2026: «DevHQ observa, no opera» pasa a leerse como regla del estado actual y no como límite
+  de la visión. La observabilidad es la base; las capacidades operativas, tuyas o de agentes
+  autorizados, quedan abiertas a largo plazo si se construyen sobre ella y son explícitas, seguras,
+  controlables y auditables.
 
 ## Planteamiento original
 
