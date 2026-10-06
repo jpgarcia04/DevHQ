@@ -444,7 +444,8 @@ trabajo (`.gitattributes`): Git for Windows se instala con `core.autocrlf=true` 
 escribiría con CRLF, que `prettier --check` rechaza aunque el código no cambie. En las sesiones
 de Claude Code en la web,
 `.claude/hooks/session-start.sh` prepara el contenedor (WebKitGTK, npm 11, dependencias,
-crates y `DEVHQ_CHROMIUM`) y `CLAUDE.md` resume las reglas de trabajo del repositorio.
+crates y `DEVHQ_CHROMIUM`) y `CLAUDE.md` resume las reglas de trabajo del repositorio; `AGENTS.md`
+remite a él a Codex y a los demás agentes que leen ese archivo.
 
 ## Arquitectura
 

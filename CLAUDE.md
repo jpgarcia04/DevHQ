@@ -2,7 +2,8 @@
 
 Native desktop app (Tauri 2): Rust + SQLite in `src-tauri/`, React + TypeScript + Vite +
 Tailwind 4 in `src/`. The README (in Spanish) is the specification: read it before changing
-behaviour, and update it in the same commit as the change.
+behaviour, and update it in the same commit as the change. `AGENTS.md` sends Codex and other
+agents here: keep every rule in this file and only pointers there.
 
 ## Product rules
 
