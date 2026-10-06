@@ -110,6 +110,7 @@ const snapshot: InventorySnapshot = {
     event(db, 'http', 3500, 'Database run two days before'),
   ],
   httpChecks: [],
+  agentChanges: [],
   automatedHistory: { limit: 200, truncated: [{ subject: web, since }] },
 }
 

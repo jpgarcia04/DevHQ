@@ -28,6 +28,7 @@ export function inventoryContext(
       incidents: [],
       events: [],
       httpChecks: [],
+      agentChanges: [],
       automatedHistory: { limit: 200, truncated: [] },
     },
     loadState: 'ready',

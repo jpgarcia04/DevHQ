@@ -274,6 +274,17 @@ const snapshot: Answer<'list'> = {
       monitorIntervalMinutes: 5,
     },
   ],
+  agentChanges: [
+    {
+      id: 'change-1',
+      subject: shop,
+      subjectName: 'Shop',
+      agent: 'claude-code',
+      action: 'updated',
+      summary: 'Updated application «Shop»: version «1.9» → «2.0»',
+      occurredAt: at('09:35'),
+    },
+  ],
   automatedHistory: { limit: 200, truncated: [{ subject: host, since: at('10:05') }] },
 }
 

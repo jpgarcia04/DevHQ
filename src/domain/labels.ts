@@ -42,6 +42,7 @@ export const eventKindLabels: Record<RecordedEventKind, string> = {
   backup: 'Backup',
   maintenance: 'Maintenance',
   note: 'Note',
+  change: 'Change',
 }
 export const eventOutcomeLabels: Record<EventOutcome, string> = {
   success: 'Success',

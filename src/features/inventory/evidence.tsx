@@ -230,11 +230,26 @@ export function EvidenceDetail({ evidence, now }: { evidence: Evidence; now: num
   )
 }
 
-export function SubjectLink({ subject, className }: { subject: EntityRef; className?: string }) {
+export function SubjectLink({
+  subject,
+  className,
+  formerName,
+}: {
+  subject: EntityRef
+  className?: string
+  /** What a record called the system, said instead of a broken link once it is gone. */
+  formerName?: string
+}) {
   const { snapshot } = useInventory()
   const name = (
     subject.type === 'application' ? snapshot?.applications : snapshot?.resources
   )?.find((item) => item.id === subject.id)?.name
+  if (!name && formerName)
+    return (
+      <span className={cn('text-muted-foreground', className)}>
+        {formerName} · no longer in the inventory
+      </span>
+    )
   return (
     <Link
       className={cn(

@@ -14,7 +14,7 @@ import {
 import { relativeTime } from '@/shared/time'
 import { cn } from '@/shared/utils'
 import { EvidenceBadge, SourceTag, SubjectLink } from './evidence'
-import { automatedSince } from './history'
+import { automatedSince, timelineEvents } from './history'
 import { useInventory } from './inventory-context'
 import { InventoryState } from './inventory-state'
 import { AttentionList, EventRecordList } from './record-lists'
@@ -181,9 +181,9 @@ function OverviewContent() {
               </Link>
             </div>
             <div className="panel p-5">
-              {snapshot.events.length ? (
+              {snapshot.events.length || snapshot.agentChanges.length ? (
                 <EventRecordList
-                  items={snapshot.events}
+                  items={timelineEvents(snapshot)}
                   foldRepeats
                   maxRows={5}
                   detailed={false}

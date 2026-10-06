@@ -328,7 +328,12 @@ qué, cuándo, sobre qué sistema y un resumen como «Updated application «Tien
 «1.4.0»») **en la misma transacción** que el cambio, después de comprobar ahí, con el lock de
 escritura de SQLite, que sigues permitiendo escribir. Las entradas nunca se modifican ni se borran;
 no tienen claves foráneas, así que no impiden borrar un sistema sin historial y le sobreviven con
-el nombre que tenía. `get_system` devuelve las de cada sistema. Los registros no se repiten en ese
+el nombre que tenía. `get_system` devuelve las de cada sistema, y la ventana las muestra en
+Activity (global y de cada sistema) y en la actividad reciente de Overview, **mezcladas con tus
+entradas** en orden de tiempo, como entradas de tipo Change con la etiqueta «Agent · _nombre_».
+Igual que los registros manuales, se cargan siempre completas. La de un sistema que ya no existe
+conserva su nombre, con «no longer in the inventory» en vez de un enlace que no lleva a nada, y
+sigue en la Activity de todos los sistemas. Los registros no se repiten en ese
 log: ya dicen quién los escribió. Ejecutar una comprobación deja en el log qué agente la pidió. Un
 rechazo no cambia nada ni deja entrada. Las herramientas que sobrescriben o quitan configuración se
 declaran destructivas (`destructiveHint`) y `run_check`, que sale de tu computadora, de mundo
@@ -654,8 +659,8 @@ cuentas, cloud, sync, telemetría, scanners, automation engine, Runner ni backgr
 2. Hecho: supervisión cancelable de esas comprobaciones, solo con DevHQ abierto.
 3. En curso: la [puerta para agentes](#puerta-para-agentes), con la que un agente lee y mantiene el
    inventario cuando se lo pides, con su procedencia siempre visible. Ya lee y escribe, con el
-   acceso que eliges en Settings; que la ventana muestre el log del agente en Activity y note sola
-   sus cambios sigue en diseño:
+   acceso que eliges en Settings, y sus cambios aparecen en Activity; que la ventana abierta los note
+   sola sigue en diseño:
    [docs/puerta-para-agentes.md](docs/puerta-para-agentes.md).
 4. Después, automatizaciones con resultado e historial, y seguridad con almacén nativo de
    credenciales y evidencias contextualizadas.

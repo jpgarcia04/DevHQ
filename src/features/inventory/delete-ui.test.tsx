@@ -54,6 +54,7 @@ const snapshot: InventorySnapshot = {
   incidents: [],
   events: [note],
   httpChecks: [],
+  agentChanges: [],
   automatedHistory: { limit: 200, truncated: [] },
 }
 

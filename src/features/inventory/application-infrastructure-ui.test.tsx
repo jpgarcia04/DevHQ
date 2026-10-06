@@ -98,6 +98,7 @@ const snapshot: InventorySnapshot = {
       monitorIntervalMinutes: 15,
     },
   ],
+  agentChanges: [],
   automatedHistory: { limit: 200, truncated: [] },
 }
 

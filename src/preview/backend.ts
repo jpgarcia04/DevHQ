@@ -93,6 +93,7 @@ export function previewBackend(database: PreviewDatabase) {
         (item) => !automated(item) || (item.observationId !== null && kept.has(item.observationId)),
       ),
       httpChecks: database.httpChecks,
+      agentChanges: database.agentChanges,
       automatedHistory: { limit, truncated },
     }
   }

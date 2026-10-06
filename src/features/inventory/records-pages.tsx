@@ -116,7 +116,11 @@ export function RealActivityPage() {
   const [subject, setSubject] = useState('all')
   const [creating, setCreating] = useState(false)
   const chosen = subjectFromKey(subject)
-  const timeline = useTimeline(subject, chosen ? [chosen] : snapshot ? subjectsOf(snapshot) : [])
+  const timeline = useTimeline(
+    subject,
+    chosen ? [chosen] : snapshot ? subjectsOf(snapshot) : [],
+    !chosen,
+  )
   const since = timeline.since
   const events = timeline.events.filter((event) =>
     withinWindow(event.source, event.occurredAt, since),
@@ -145,7 +149,7 @@ export function RealActivityPage() {
       />
       <InventoryState>
         {creating && <EventForm onDone={() => setCreating(false)} />}
-        {snapshot?.events.length ? (
+        {snapshot?.events.length || snapshot?.agentChanges.length ? (
           <>
             <div className="flex flex-wrap items-center justify-between gap-3">
               <select

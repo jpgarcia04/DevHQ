@@ -111,7 +111,33 @@ export interface InventorySnapshot {
   incidents: RecordedIncident[]
   events: RecordedEvent[]
   httpChecks: HttpCheck[]
+  /** What agents changed in the configuration through the agent gate, newest first: all of it. */
+  agentChanges: AgentChange[]
   automatedHistory: AutomatedHistory
+}
+
+/**
+ * A change an agent made through the agent gate to what carries no source of its own:
+ * applications, resources, components and HTTP checks. Written with the change, never altered.
+ */
+export interface AgentChange {
+  id: string
+  subject: EntityRef
+  /** The system's name when the change was made; it may since have been renamed or deleted. */
+  subjectName: string
+  /** As the agent's client named itself; DevHQ cannot verify it. */
+  agent: string
+  action:
+    | 'created'
+    | 'updated'
+    | 'deleted'
+    | 'check_saved'
+    | 'check_paused'
+    | 'check_resumed'
+    | 'check_removed'
+    | 'check_run'
+  summary: string
+  occurredAt: string
 }
 
 /** How far agents may act through the agent gate (`devhq --mcp`). Off until the person opens it. */

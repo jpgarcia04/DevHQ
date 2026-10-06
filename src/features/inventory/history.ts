@@ -1,6 +1,30 @@
 import { sameSubject } from '@/domain/evidence'
 import type { EntityRef, RecordedEvent, RecordSource } from '@/domain/models'
-import type { AutomatedHistory } from './inventory-api'
+import type { AgentChange, AutomatedHistory, InventorySnapshot } from './inventory-api'
+
+/** An agent's change as a timeline entry: a reported record of the agent's, like its events. */
+export const changeEvent = (change: AgentChange): RecordedEvent => ({
+  // Prefixed, so it can never be taken for an event's ID (paging anchors only on events).
+  id: `change:${change.id}`,
+  subject: change.subject,
+  kind: 'change',
+  outcome: 'info',
+  title: change.summary,
+  detail: '',
+  source: 'agent',
+  observationId: null,
+  incidentId: null,
+  occurredAt: change.occurredAt,
+  recordedAt: change.occurredAt,
+  agent: change.agent,
+  subjectName: change.subjectName,
+})
+
+/** Every event and every agent change of the snapshot, as one timeline, newest first. */
+export const timelineEvents = (snapshot: Pick<InventorySnapshot, 'events' | 'agentChanges'>) =>
+  snapshot.agentChanges.length
+    ? mergeTimeline(snapshot.events, snapshot.agentChanges.map(changeEvent))
+    : snapshot.events
 
 /** One timeline row: an event, or consecutive automated results that said the same thing. */
 export type TimelineRow =

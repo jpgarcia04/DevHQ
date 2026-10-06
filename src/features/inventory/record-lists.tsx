@@ -6,6 +6,7 @@ import {
   Database,
   Eye,
   NotebookPen,
+  Settings2,
   Wrench,
   type LucideIcon,
 } from 'lucide-react'
@@ -178,6 +179,7 @@ const kindIcons: Record<RecordedEventKind, LucideIcon> = {
   backup: Database,
   maintenance: Wrench,
   note: NotebookPen,
+  change: Settings2,
 }
 // Entries typed in well after the fact say so; the timeline keeps both moments.
 const lateEntryMs = 5 * 60_000
@@ -228,7 +230,7 @@ function EventItem({
           </time>
         </div>
         <p className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-muted-foreground">
-          <SubjectLink subject={event.subject} />
+          <SubjectLink subject={event.subject} formerName={event.subjectName} />
           <span aria-hidden="true">·</span>
           <span>{eventKindLabels[event.kind]}</span>
           <SourceTag record={event} />

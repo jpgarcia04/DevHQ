@@ -125,6 +125,17 @@
       "monitorIntervalMinutes": 5
     }
   ],
+  "agentChanges": [
+    {
+      "id": "change-1",
+      "subject": { "type": "application", "id": "shop" },
+      "subjectName": "Shop",
+      "agent": "claude-code",
+      "action": "updated",
+      "summary": "Updated application «Shop»: version «1.9» → «2.0»",
+      "occurredAt": "2026-01-01T09:35:00Z"
+    }
+  ],
   "automatedHistory": {
     "limit": 200,
     "truncated": [

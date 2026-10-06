@@ -14,6 +14,7 @@
 
 use super::{commands, manage};
 use crate::access::AgentAccess;
+use crate::agent_log::AgentChange;
 use crate::backup::{Backup, BackupCounts, BackupFile, BackupFolder};
 use crate::http_check::{HttpCheck, HttpCheckInput};
 use crate::inventory::{
@@ -391,6 +392,15 @@ fn every_answer_has_the_shape_the_window_expects() {
             updated_at: at("08:00"),
             monitor: "active".into(),
             monitor_interval_minutes: Some(5),
+        }],
+        agent_changes: vec![AgentChange {
+            id: "change-1".into(),
+            subject: shop(),
+            subject_name: "Shop".into(),
+            agent: "claude-code".into(),
+            action: "updated".into(),
+            summary: "Updated application «Shop»: version «1.9» → «2.0»".into(),
+            occurred_at: at("09:35"),
         }],
         automated_history: AutomatedHistory {
             limit: 200,

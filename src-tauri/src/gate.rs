@@ -1578,11 +1578,15 @@ mod tests {
             deleted["change"]["summary"],
             "Deleted resource «Spare box», which had no history"
         );
-        assert!(inventory::list(&path)
-            .unwrap()
+        let snapshot = inventory::list(&path).unwrap();
+        assert!(snapshot
             .resources
             .iter()
             .all(|item| item.name != "Spare box"));
+        // The window's snapshot carries the change, naming the resource that is gone.
+        assert_eq!(snapshot.agent_changes.len(), 1);
+        assert_eq!(snapshot.agent_changes[0].subject_name, "Spare box");
+        assert_eq!(snapshot.agent_changes[0].action, "deleted");
         assert_eq!(
             changes(&path),
             [(

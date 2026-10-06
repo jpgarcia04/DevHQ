@@ -131,6 +131,8 @@ pub struct Inventory {
     pub incidents: Vec<records::Incident>,
     pub events: Vec<records::Event>,
     pub http_checks: Vec<http_check::HttpCheck>,
+    /// What agents changed in the configuration through the agent gate, newest first: all of it.
+    pub agent_changes: Vec<crate::agent_log::AgentChange>,
     /// Which automated results the snapshot leaves out. Manual records are always complete.
     pub automated_history: records::AutomatedHistory,
 }
@@ -422,6 +424,7 @@ pub fn list(path: &Path) -> Result<Inventory, ApiError> {
         automated_history,
     } = records::load(&tx, &subjects)?;
     let http_checks = http_check::load(&tx)?;
+    let agent_changes = crate::agent_log::load(&tx)?;
     tx.commit().map_err(ApiError::database)?;
     Ok(Inventory {
         applications,
@@ -430,6 +433,7 @@ pub fn list(path: &Path) -> Result<Inventory, ApiError> {
         incidents,
         events,
         http_checks,
+        agent_changes,
         automated_history,
     })
 }

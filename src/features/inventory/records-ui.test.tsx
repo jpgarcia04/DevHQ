@@ -104,6 +104,7 @@ const snapshot: InventorySnapshot = {
   incidents: [],
   events: [],
   httpChecks: [],
+  agentChanges: [],
   automatedHistory: { limit: 200, truncated: [] },
 }
 
@@ -192,6 +193,93 @@ describe('real operational records', () => {
     await user.click(screen.getByText('Checkout returns 502'))
     expect(screen.getByText('Agent · claude-code')).toBeInTheDocument()
     expect(screen.queryByText('Manual entry')).not.toBeInTheDocument()
+  })
+
+  it('mixes the configuration changes an agent made into the timeline, kept when a system is gone', async () => {
+    const user = userEvent.setup()
+    const changes: InventorySnapshot['agentChanges'] = [
+      {
+        id: 'c1',
+        subject: { type: 'application', id: 'shop' },
+        subjectName: 'Shop',
+        agent: 'claude-code',
+        action: 'updated',
+        summary: 'Updated application «Shop»: version «1.4» → «1.5»',
+        occurredAt: minutesFromNow(-12),
+      },
+      {
+        id: 'c2',
+        subject: { type: 'resource', id: 'old-box' },
+        subjectName: 'Old box',
+        agent: 'claude-code',
+        action: 'deleted',
+        summary: 'Deleted resource «Old box», which had no history',
+        occurredAt: minutesFromNow(-30),
+      },
+    ]
+    const { unmount } = renderWith(
+      <RealActivityPage />,
+      inventoryContext({ snapshot: { ...snapshot, events, agentChanges: changes } }),
+    )
+    // In time order among the person's entries: after evt-1 (10 min ago), before evt-2 (15).
+    const titles = screen
+      .getAllByRole('listitem')
+      .map((item) => item.querySelector('p')?.textContent)
+    expect(titles).toEqual([
+      'Observation: Unhealthy',
+      'Updated application «Shop»: version «1.4» → «1.5»',
+      'Deployed 1.5 by hand',
+      'Deleted resource «Old box», which had no history',
+    ])
+    expect(screen.getAllByText('Change')).toHaveLength(2)
+    expect(screen.getAllByText('Agent · claude-code')).toHaveLength(2)
+    // A system that is gone keeps the name the change gave it, without a link that leads nowhere.
+    expect(screen.getByText('Old box · no longer in the inventory')).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /Old box/ })).not.toBeInTheDocument()
+    // One system's activity holds its own changes only.
+    await user.selectOptions(
+      screen.getByRole('combobox', { name: 'Filter activity by system' }),
+      'Shop',
+    )
+    expect(
+      screen.getByText('Updated application «Shop»: version «1.4» → «1.5»'),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/Old box/)).not.toBeInTheDocument()
+    unmount()
+
+    // Changes alone are activity too, and the overview's recent activity shows them.
+    renderWith(
+      <RealActivityPage />,
+      inventoryContext({ snapshot: { ...snapshot, events: [], agentChanges: changes } }),
+    )
+    expect(screen.queryByRole('heading', { name: 'No activity recorded' })).not.toBeInTheDocument()
+    expect(screen.getByText('Deleted resource «Old box», which had no history')).toBeInTheDocument()
+  })
+
+  it('shows an agent’s changes among the overview’s recent activity', () => {
+    renderWith(
+      <RealOverviewPage />,
+      inventoryContext({
+        snapshot: {
+          ...snapshot,
+          agentChanges: [
+            {
+              id: 'c1',
+              subject: { type: 'resource', id: 'spare' },
+              subjectName: 'Spare box',
+              agent: 'codex',
+              action: 'created',
+              summary: 'Added resource «Spare box» (server)',
+              occurredAt: minutesFromNow(-3),
+            },
+          ],
+        },
+      }),
+    )
+    const recent = screen.getByRole('region', { name: 'Recent activity' })
+    expect(within(recent).getByText('Added resource «Spare box» (server)')).toBeInTheDocument()
+    expect(within(recent).getByText('Agent · codex')).toBeInTheDocument()
+    expect(within(recent).queryByText('No activity recorded yet.')).not.toBeInTheDocument()
   })
 
   it('lists recorded incidents with their affected system', async () => {
