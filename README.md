@@ -466,7 +466,7 @@ src/
   shared/          Utilidades de estilos y tiempo
   test/            Configuración de pruebas
 src-tauri/         Host Rust/Tauri 2, SQLite, migraciones, IPC, ventana y CSP
-contract/          Argumentos y respuestas del IPC que comprueban los tests de ambos lados
+contract/          Argumentos y respuestas del IPC, y casos de atención, que comprueban los tests de ambos lados
 ```
 
 React + TypeScript estricto + Vite + Tailwind CSS 4. El estado de filtros es local;
@@ -549,7 +549,12 @@ aceptar esos nombres de argumentos y esos valores (los de los enums pasan su val
 bien, y cada argumento debe leerse entero, porque serde ignora una clave que no conoce y leería como
 ausente un campo opcional renombrado (una edición se volvería un alta). Su serialización de cada
 respuesta debe ser igual al fixture. Renombrar un campo, un argumento, un comando o un valor en
-cualquiera de los dos lados rompe un test. Se conserva la barra nativa de ventana. La CSP limita recursos y las
+cualquiera de los dos lados rompe un test. La respuesta a «¿Qué necesita mi atención?» (orden de
+urgencia, cobertura y estado global) también se calcula en Rust (`attention.rs`) para la puerta para
+agentes, que no tiene ventana a la que preguntar; `contract/attention/` guarda casos con un
+inventario, un instante y el resultado esperado, y Vitest y Rust comprueban contra ellos sus dos
+versiones, empates y fin exacto de la vigencia incluidos, así que la puerta nunca responde distinto
+que la ventana. Se conserva la barra nativa de ventana. La CSP limita recursos y las
 capabilities no conceden permisos adicionales. No se implementan autenticación,
 cuentas, cloud, sync, telemetría, scanners, automation engine, Runner ni background service.
 
@@ -579,7 +584,7 @@ vigencia y sustitución de observaciones de ambos orígenes, orden de atención,
 carga visibles y recuperables, comprobaciones contra un servidor local (estado esperado,
 500, redirect, bucle de redirects, tiempo agotado, conexión rechazada, dominio `.invalid`
 y fallo TLS), configuraciones inválidas sin escrituras parciales, errores de DevHQ que
-no producen observación, la distinción de origen en cada vista real, el contrato IPC de cada comando, el respaldo
+no producen observación, la distinción de origen en cada vista real, el contrato IPC de cada comando, el contrato de atención, el respaldo
 (las mismas filas que el origen comparadas una a una, sin lo no confirmado y sin esperar a un escritor,
 sin reemplazar ni borrar un archivo ajeno, uno a la vez, y una copia dañada que se descarta sin nombre
 final) y el borrado (qué lo

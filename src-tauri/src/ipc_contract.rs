@@ -104,7 +104,7 @@ fn the_window_can_watch_supervision_from_a_thread_without_a_runtime() {
 }
 
 /// The fixtures in `contract/<kind>/`, by file name without `.json`.
-fn fixtures(kind: &str) -> BTreeMap<String, Value> {
+pub(crate) fn fixtures(kind: &str) -> BTreeMap<String, Value> {
     let folder = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../contract")
         .join(kind);

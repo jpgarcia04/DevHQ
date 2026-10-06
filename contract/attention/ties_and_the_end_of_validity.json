@@ -1,0 +1,137 @@
+{
+  "about": "A result whose validity ends exactly now has expired. Results of equal rank and time keep the order of the subjects, and an observation identical in both times to another keeps the order it arrived in.",
+  "now": "2026-09-30T12:00:00Z",
+  "subjects": [
+    {
+      "type": "resource",
+      "id": "w"
+    },
+    {
+      "type": "resource",
+      "id": "z"
+    },
+    {
+      "type": "resource",
+      "id": "y"
+    },
+    {
+      "type": "resource",
+      "id": "x"
+    }
+  ],
+  "observations": [
+    {
+      "id": "x-1",
+      "subject": {
+        "type": "resource",
+        "id": "x"
+      },
+      "result": "healthy",
+      "summary": "healthy as seen",
+      "source": "manual",
+      "observedAt": "2026-09-30T11:00:00Z",
+      "validUntil": "2026-09-30T12:00:00Z",
+      "recordedAt": "2026-09-30T11:00:00Z",
+      "http": null,
+      "agent": null
+    },
+    {
+      "id": "y-1",
+      "subject": {
+        "type": "resource",
+        "id": "y"
+      },
+      "result": "unhealthy",
+      "summary": "unhealthy as seen",
+      "source": "manual",
+      "observedAt": "2026-09-30T10:00:00Z",
+      "validUntil": "2026-09-30T11:00:00Z",
+      "recordedAt": "2026-09-30T10:00:00Z",
+      "http": null,
+      "agent": null
+    },
+    {
+      "id": "z-1",
+      "subject": {
+        "type": "resource",
+        "id": "z"
+      },
+      "result": "unhealthy",
+      "summary": "unhealthy as seen",
+      "source": "manual",
+      "observedAt": "2026-09-30T10:00:00Z",
+      "validUntil": "2026-09-30T11:00:00Z",
+      "recordedAt": "2026-09-30T10:00:00Z",
+      "http": null,
+      "agent": null
+    },
+    {
+      "id": "w-first",
+      "subject": {
+        "type": "resource",
+        "id": "w"
+      },
+      "result": "healthy",
+      "summary": "healthy as seen",
+      "source": "manual",
+      "observedAt": "2026-09-30T11:00:00Z",
+      "validUntil": "2026-09-30T13:00:00Z",
+      "recordedAt": "2026-09-30T11:00:00Z",
+      "http": null,
+      "agent": null
+    },
+    {
+      "id": "w-second",
+      "subject": {
+        "type": "resource",
+        "id": "w"
+      },
+      "result": "unhealthy",
+      "summary": "unhealthy as seen",
+      "source": "manual",
+      "observedAt": "2026-09-30T11:00:00Z",
+      "validUntil": "2026-09-30T13:00:00Z",
+      "recordedAt": "2026-09-30T11:00:00Z",
+      "http": null,
+      "agent": null
+    }
+  ],
+  "incidents": [],
+  "expected": {
+    "attention": [
+      {
+        "kind": "evidence",
+        "subject": {
+          "type": "resource",
+          "id": "z"
+        },
+        "state": "stale",
+        "observationId": "z-1"
+      },
+      {
+        "kind": "evidence",
+        "subject": {
+          "type": "resource",
+          "id": "y"
+        },
+        "state": "stale",
+        "observationId": "y-1"
+      },
+      {
+        "kind": "evidence",
+        "subject": {
+          "type": "resource",
+          "id": "x"
+        },
+        "state": "stale",
+        "observationId": "x-1"
+      }
+    ],
+    "coverage": {
+      "current": 1,
+      "stale": 3,
+      "unobserved": 0
+    },
+    "status": "attention"
+  }
+}

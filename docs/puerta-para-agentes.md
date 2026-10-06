@@ -1,6 +1,7 @@
 # Puerta para agentes (diseño)
 
-**Estado: en construcción.** Hecho: el paso 1 del plan (esquema v7 y procedencia `agent` en la UI).
+**Estado: en construcción.** Hechos: los pasos 1 (esquema v7 y procedencia `agent` en la UI) y 2
+(la atención calculada en Rust, atada a la de la ventana).
 Cuando una parte se implementa, su comportamiento pasa al README (que es la especificación) en el
 mismo commit, y este documento se recorta.
 
@@ -186,7 +187,7 @@ con la ventana abierta.
 ## Plan por commits
 
 1. Hecho: esquema v7 y procedencia `agent` visible en la UI.
-2. Atención en Rust atada a la de TypeScript por fixtures.
+2. Hecho: atención en Rust atada a la de TypeScript por fixtures.
 3. Modo `--mcp` con `status` y las herramientas de lectura.
 4. Herramientas de escritura, `agent_log` y el modo de acceso (esquema v8).
 5. La app nota los cambios de otros procesos (`data_version`) y el lock de «ventana abierta».

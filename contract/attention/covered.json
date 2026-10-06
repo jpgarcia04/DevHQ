@@ -1,0 +1,80 @@
+{
+  "about": "Every subject has current healthy evidence, whoever reported it.",
+  "now": "2026-09-30T12:00:00Z",
+  "subjects": [
+    {
+      "type": "application",
+      "id": "shop"
+    },
+    {
+      "type": "resource",
+      "id": "host"
+    }
+  ],
+  "observations": [
+    {
+      "id": "shop-1",
+      "subject": {
+        "type": "application",
+        "id": "shop"
+      },
+      "result": "healthy",
+      "summary": "healthy as seen",
+      "source": "agent",
+      "observedAt": "2026-09-30T11:00:00Z",
+      "validUntil": "2026-09-30T13:00:00Z",
+      "recordedAt": "2026-09-30T11:00:00Z",
+      "http": null,
+      "agent": "codex"
+    },
+    {
+      "id": "host-1",
+      "subject": {
+        "type": "resource",
+        "id": "host"
+      },
+      "result": "healthy",
+      "summary": "healthy as seen",
+      "source": "http",
+      "observedAt": "2026-09-30T11:58:00Z",
+      "validUntil": "2026-09-30T12:13:00Z",
+      "recordedAt": "2026-09-30T11:58:00Z",
+      "http": {
+        "url": "https://ok.example/health",
+        "expectedStatus": 200,
+        "status": 200,
+        "latencyMs": 40,
+        "error": null,
+        "redirects": []
+      },
+      "agent": null
+    }
+  ],
+  "incidents": [
+    {
+      "id": "inc-done",
+      "subject": {
+        "type": "resource",
+        "id": "host"
+      },
+      "title": "Incident inc-done",
+      "description": "",
+      "severity": "warning",
+      "status": "resolved",
+      "source": "manual",
+      "openedAt": "2026-09-30T09:00:00Z",
+      "updatedAt": "2026-09-30T09:00:00Z",
+      "resolvedAt": "2026-09-30T09:00:00Z",
+      "agent": null
+    }
+  ],
+  "expected": {
+    "attention": [],
+    "coverage": {
+      "current": 2,
+      "stale": 0,
+      "unobserved": 0
+    },
+    "status": "covered"
+  }
+}

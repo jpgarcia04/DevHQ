@@ -104,6 +104,10 @@ progress, because a new push cancels it.
   `contract/responses/` what Rust answers. `src/features/inventory/ipc-contract.test.ts` and
   `src-tauri/src/ipc_contract.rs` check each side against them. A new command or argument
   needs its fixture, its call in the TS test and its readers in `arguments()` in Rust.
+- `contract/attention/` holds cases of «what needs my attention» (inventory, instant, expected
+  ranking, coverage and status). `src/domain/attention-contract.test.ts` and
+  `src-tauri/src/attention.rs` check the window's rules and their Rust copy (for the agent
+  gate) against them: change a rule on both sides and in the cases together.
 - Tauri runs a synchronous command on the thread that received the request: the main thread,
   which has no Tokio runtime. A command that spawns a task or waits must be `async`.
 

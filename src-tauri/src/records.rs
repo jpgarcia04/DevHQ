@@ -122,6 +122,8 @@ impl Subject {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+// Read back only by tests: the attention fixtures hold observations as the window receives them.
+#[cfg_attr(test, derive(Deserialize))]
 #[serde(rename_all = "camelCase")]
 pub struct Observation {
     pub id: String,
@@ -141,6 +143,7 @@ pub struct Observation {
 /// What an HTTP check requested and what came back. `status` is the last status received
 /// (absent when no response arrived); `error` explains any failure of the checked system.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[cfg_attr(test, derive(Deserialize))]
 #[serde(rename_all = "camelCase")]
 pub struct HttpEvidence {
     pub url: String,
@@ -183,6 +186,7 @@ pub struct ObservationInput {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[cfg_attr(test, derive(Deserialize))]
 #[serde(rename_all = "camelCase")]
 pub struct Incident {
     pub id: String,
@@ -259,7 +263,7 @@ pub(crate) fn now_ms() -> i64 {
         })
 }
 
-fn parse_time(value: &str, label: &str) -> Result<i64, ApiError> {
+pub(crate) fn parse_time(value: &str, label: &str) -> Result<i64, ApiError> {
     let parsed = OffsetDateTime::parse(value, &Rfc3339).map_err(|_| {
         ApiError::invalid(format!(
             "{label} must be an RFC 3339 timestamp with a time zone."
