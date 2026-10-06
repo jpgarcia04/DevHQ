@@ -11,7 +11,7 @@ use crate::records::{
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use reqwest::header::LOCATION;
 use reqwest::{redirect, Client, Url};
-use rusqlite::{params, OptionalExtension, Row, Transaction, TransactionBehavior};
+use rusqlite::{params, Connection, OptionalExtension, Row, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::error::Error as StdError;
@@ -84,7 +84,7 @@ pub(crate) fn load(tx: &Transaction) -> Result<Vec<HttpCheck>, ApiError> {
     checks
 }
 
-fn find(tx: &Transaction, subject: &Subject) -> Result<Option<HttpCheck>, ApiError> {
+pub(crate) fn find(tx: &Transaction, subject: &Subject) -> Result<Option<HttpCheck>, ApiError> {
     let (application_id, resource_id) = subject.columns();
     tx.query_row(
         &format!("{CHECK_SELECT} {SUBJECT_FILTER}"),
@@ -170,13 +170,23 @@ fn validate(input: &HttpCheckInput) -> Result<Url, ApiError> {
 /// produced keep the URL and expected status they were checked with. Everything is validated
 /// before the database is opened, so a rejected change writes nothing.
 pub fn save_http_check(path: &Path, input: HttpCheckInput) -> Result<HttpCheck, ApiError> {
-    let url = validate(&input)?;
     let mut db = open(path)?;
     let tx = db
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(ApiError::database)?;
-    records::ensure_subject(&tx, &input.subject)?;
-    let previous = find(&tx, &input.subject)?;
+    let check = save_http_check_in(&tx, input)?;
+    tx.commit().map_err(ApiError::database)?;
+    Ok(check)
+}
+
+/// Saves the subject's check inside the caller's write transaction, which the caller commits.
+pub(crate) fn save_http_check_in(
+    tx: &Transaction,
+    input: HttpCheckInput,
+) -> Result<HttpCheck, ApiError> {
+    let url = validate(&input)?;
+    records::ensure_subject(tx, &input.subject)?;
+    let previous = find(tx, &input.subject)?;
     let monitor = match (input.monitor_interval_minutes, previous) {
         (None, _) => "off",
         (Some(_), Some(previous)) if previous.monitor == "paused" => "paused",
@@ -204,10 +214,7 @@ pub fn save_http_check(path: &Path, input: HttpCheckInput) -> Result<HttpCheck, 
         ],
     )
     .map_err(ApiError::database)?;
-    let check = find(&tx, &input.subject)?
-        .ok_or_else(|| ApiError::database("HTTP check was not saved."))?;
-    tx.commit().map_err(ApiError::database)?;
-    Ok(check)
+    find(tx, &input.subject)?.ok_or_else(|| ApiError::database("HTTP check was not saved."))
 }
 
 /// Pauses or resumes the supervision of the subject's HTTP check. It keeps its interval.
@@ -220,7 +227,18 @@ pub fn set_http_check_paused(
     let tx = db
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(ApiError::database)?;
-    let check = find(&tx, subject)?.ok_or_else(|| not_configured(subject))?;
+    let check = set_http_check_paused_in(&tx, subject, paused)?;
+    tx.commit().map_err(ApiError::database)?;
+    Ok(check)
+}
+
+/// Pauses or resumes inside the caller's write transaction, which the caller commits.
+pub(crate) fn set_http_check_paused_in(
+    tx: &Transaction,
+    subject: &Subject,
+    paused: bool,
+) -> Result<HttpCheck, ApiError> {
+    let check = find(tx, subject)?.ok_or_else(|| not_configured(subject))?;
     if check.monitor == "off" {
         return Err(ApiError::invalid(
             "Supervision is off for this check. Choose an interval in Edit check first.",
@@ -236,9 +254,7 @@ pub fn set_http_check_paused(
         ],
     )
     .map_err(ApiError::database)?;
-    let check = find(&tx, subject)?.ok_or_else(|| not_configured(subject))?;
-    tx.commit().map_err(ApiError::database)?;
-    Ok(check)
+    find(tx, subject)?.ok_or_else(|| not_configured(subject))
 }
 
 /// What supervision needs to plan: every check, and when each subject's check last recorded
@@ -275,7 +291,11 @@ pub(crate) fn supervision(
 
 /// Removes the subject's HTTP check. The observations it produced are evidence and stay.
 pub fn remove_http_check(path: &Path, subject: Subject) -> Result<(), ApiError> {
-    let db = open(path)?;
+    remove_http_check_in(&open(path)?, &subject)
+}
+
+/// Removes the subject's check with the caller's connection or transaction.
+pub(crate) fn remove_http_check_in(db: &Connection, subject: &Subject) -> Result<(), ApiError> {
     let (application_id, resource_id) = subject.columns();
     let removed = db
         .execute(
@@ -284,7 +304,7 @@ pub fn remove_http_check(path: &Path, subject: Subject) -> Result<(), ApiError> 
         )
         .map_err(ApiError::database)?;
     if removed == 0 {
-        return Err(not_configured(&subject));
+        return Err(not_configured(subject));
     }
     Ok(())
 }

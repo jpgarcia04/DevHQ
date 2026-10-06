@@ -195,8 +195,8 @@ pub(crate) fn plain(path: &Path) -> String {
     }
 }
 
-pub(crate) const SCHEMA_VERSION: i64 = 8;
-const MIGRATIONS: [(i64, &str); 8] = [
+pub(crate) const SCHEMA_VERSION: i64 = 9;
+const MIGRATIONS: [(i64, &str); 9] = [
     (1, include_str!("../migrations/001_inventory.sql")),
     (2, include_str!("../migrations/002_inventory_details.sql")),
     (3, include_str!("../migrations/003_operational_records.sql")),
@@ -205,6 +205,7 @@ const MIGRATIONS: [(i64, &str); 8] = [
     (6, include_str!("../migrations/006_history_window.sql")),
     (7, include_str!("../migrations/007_agent_provenance.sql")),
     (8, include_str!("../migrations/008_agent_access.sql")),
+    (9, include_str!("../migrations/009_agent_log.sql")),
 ];
 
 /// Opens the inventory, upgrading its schema first if it is older than this build's.
@@ -434,15 +435,25 @@ pub fn list(path: &Path) -> Result<Inventory, ApiError> {
 }
 
 pub fn save_resource(path: &Path, input: ResourceInput) -> Result<Resource, ApiError> {
+    let mut db = open(path)?;
+    let tx = db
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(ApiError::database)?;
+    let resource = save_resource_in(&tx, input)?;
+    tx.commit().map_err(ApiError::database)?;
+    Ok(resource)
+}
+
+/// Saves a resource inside the caller's write transaction, which the caller commits.
+pub(crate) fn save_resource_in(
+    tx: &Transaction,
+    input: ResourceInput,
+) -> Result<Resource, ApiError> {
     allowed(&input.kind, &["server", "workstation"], "resource kind")?;
     let id = input.id.unwrap_or_else(|| Uuid::new_v4().to_string());
     if id.is_empty() {
         return Err(ApiError::invalid("Resource ID is required."));
     }
-    let mut db = open(path)?;
-    let tx = db
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(ApiError::database)?;
     let (kept_name, kept_description, kept_system): (String, String, String) = tx
         .query_row(
             "SELECT name, description, operating_system FROM resources WHERE id = ?1",
@@ -471,7 +482,6 @@ pub fn save_resource(path: &Path, input: ResourceInput) -> Result<Resource, ApiE
         params![id, name, input.kind, description, operating_system],
     )
     .map_err(ApiError::database)?;
-    tx.commit().map_err(ApiError::database)?;
     Ok(Resource {
         id,
         name,
@@ -482,6 +492,21 @@ pub fn save_resource(path: &Path, input: ResourceInput) -> Result<Resource, ApiE
 }
 
 pub fn save_application(path: &Path, input: ApplicationInput) -> Result<Application, ApiError> {
+    let mut db = open(path)?;
+    let tx = db
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(ApiError::database)?;
+    let application = save_application_in(&tx, input)?;
+    tx.commit().map_err(ApiError::database)?;
+    Ok(application)
+}
+
+/// Saves an application and its complete component list inside the caller's write
+/// transaction, which the caller commits.
+pub(crate) fn save_application_in(
+    tx: &Transaction,
+    input: ApplicationInput,
+) -> Result<Application, ApiError> {
     allowed(
         &input.lifecycle,
         &["development", "testing", "production", "archived"],
@@ -516,10 +541,6 @@ pub fn save_application(path: &Path, input: ApplicationInput) -> Result<Applicat
         component.id = Some(component_id);
         parts.push(component);
     }
-    let mut db = open(path)?;
-    let tx = db
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(ApiError::database)?;
     let (kept_name, kept_description, kept_version): (String, String, Option<String>) = tx
         .query_row(
             "SELECT name, description, version FROM applications WHERE id = ?1",
@@ -600,7 +621,6 @@ pub fn save_application(path: &Path, input: ApplicationInput) -> Result<Applicat
         tx.execute("INSERT INTO components (id, application_id, name, kind, resource_id) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![component.id, id, component.name, component.kind, component.resource_id]).map_err(ApiError::database)?;
     }
-    tx.commit().map_err(ApiError::database)?;
     Ok(Application {
         id,
         name,
@@ -609,6 +629,66 @@ pub fn save_application(path: &Path, input: ApplicationInput) -> Result<Applicat
         version,
         components,
     })
+}
+
+/// The application as stored, with its components in their order, read inside the caller's
+/// transaction; None if there is none with that ID.
+pub(crate) fn application_in(tx: &Transaction, id: &str) -> Result<Option<Application>, ApiError> {
+    let Some(mut application) = tx
+        .query_row(
+            "SELECT id, name, description, lifecycle, version FROM applications WHERE id = ?1",
+            [id],
+            |row| {
+                Ok(Application {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    description: row.get(2)?,
+                    lifecycle: row.get(3)?,
+                    version: row.get(4)?,
+                    components: Vec::new(),
+                })
+            },
+        )
+        .optional()
+        .map_err(ApiError::database)?
+    else {
+        return Ok(None);
+    };
+    let mut statement = tx
+        .prepare("SELECT id, name, kind, resource_id FROM components WHERE application_id = ?1 ORDER BY rowid")
+        .map_err(ApiError::database)?;
+    application.components = statement
+        .query_map([id], |row| {
+            Ok(Component {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                kind: row.get(2)?,
+                resource_id: row.get(3)?,
+            })
+        })
+        .map_err(ApiError::database)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(ApiError::database)?;
+    Ok(Some(application))
+}
+
+/// The resource as stored, read inside the caller's transaction; None if there is none.
+pub(crate) fn resource_in(tx: &Transaction, id: &str) -> Result<Option<Resource>, ApiError> {
+    tx.query_row(
+        "SELECT id, name, kind, description, operating_system FROM resources WHERE id = ?1",
+        [id],
+        |row| {
+            Ok(Resource {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                kind: row.get(2)?,
+                description: row.get(3)?,
+                operating_system: row.get(4)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(ApiError::database)
 }
 
 /// Which kinds of record reference a subject. History is never deleted, so any keeps it.
@@ -645,6 +725,12 @@ pub fn delete_application(path: &Path, id: &str) -> Result<(), ApiError> {
     let tx = db
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(ApiError::database)?;
+    delete_application_in(&tx, id)?;
+    tx.commit().map_err(ApiError::database)
+}
+
+/// Deletes the application inside the caller's write transaction; returns the name it had.
+pub(crate) fn delete_application_in(tx: &Transaction, id: &str) -> Result<String, ApiError> {
     let name: String = tx
         .query_row("SELECT name FROM applications WHERE id = ?1", [id], |row| {
             row.get(0)
@@ -652,7 +738,7 @@ pub fn delete_application(path: &Path, id: &str) -> Result<(), ApiError> {
         .optional()
         .map_err(ApiError::database)?
         .ok_or_else(|| ApiError::invalid(format!("The application {id} does not exist.")))?;
-    let history = history_of(&tx, "application_id", id)?;
+    let history = history_of(tx, "application_id", id)?;
     if !history.is_empty() {
         return Err(ApiError::invalid(format!(
             "{name} has recorded {}. DevHQ keeps history, so it cannot be deleted; set its lifecycle to Archived instead.",
@@ -662,7 +748,7 @@ pub fn delete_application(path: &Path, id: &str) -> Result<(), ApiError> {
     // Its components and its HTTP check go with it (ON DELETE CASCADE).
     tx.execute("DELETE FROM applications WHERE id = ?1", [id])
         .map_err(ApiError::database)?;
-    tx.commit().map_err(ApiError::database)
+    Ok(name)
 }
 
 /// Deletes a resource that no component runs on and that has no records, with its HTTP check.
@@ -671,6 +757,12 @@ pub fn delete_resource(path: &Path, id: &str) -> Result<(), ApiError> {
     let tx = db
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(ApiError::database)?;
+    delete_resource_in(&tx, id)?;
+    tx.commit().map_err(ApiError::database)
+}
+
+/// Deletes the resource inside the caller's write transaction; returns the name it had.
+pub(crate) fn delete_resource_in(tx: &Transaction, id: &str) -> Result<String, ApiError> {
     let name: String = tx
         .query_row("SELECT name FROM resources WHERE id = ?1", [id], |row| {
             row.get(0)
@@ -699,7 +791,7 @@ pub fn delete_resource(path: &Path, id: &str) -> Result<(), ApiError> {
             listed(&users)
         )));
     }
-    let history = history_of(&tx, "resource_id", id)?;
+    let history = history_of(tx, "resource_id", id)?;
     if !history.is_empty() {
         return Err(ApiError::invalid(format!(
             "{name} has recorded {}. DevHQ keeps history, so it cannot be deleted.",
@@ -709,7 +801,7 @@ pub fn delete_resource(path: &Path, id: &str) -> Result<(), ApiError> {
     // Its HTTP check goes with it (ON DELETE CASCADE).
     tx.execute("DELETE FROM resources WHERE id = ?1", [id])
         .map_err(ApiError::database)?;
-    tx.commit().map_err(ApiError::database)
+    Ok(name)
 }
 
 #[cfg(test)]
@@ -1656,6 +1748,8 @@ pub(crate) mod tests {
         assert_eq!(
             strings(&db, "SELECT name FROM sqlite_master WHERE type = 'index' AND name NOT LIKE 'sqlite_autoindex%' ORDER BY name"),
             [
+                "agent_log_application_id",
+                "agent_log_resource_id",
                 "components_application_id",
                 "components_resource_id",
                 "events_application_id",
@@ -2210,7 +2304,7 @@ pub(crate) mod tests {
         let version: i64 = db
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 8);
+        assert_eq!(version, SCHEMA_VERSION);
         for (table, rows) in tables.iter().zip(&before) {
             assert_eq!(&dump(&db, table), rows, "{table}");
         }
@@ -2223,6 +2317,87 @@ pub(crate) mod tests {
         assert!(db
             .execute("INSERT INTO agent_access VALUES (1, 'read', 0)", [])
             .is_ok());
+        drop(db);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn upgrades_v8_with_an_empty_agent_log_without_changing_any_row() {
+        let path = path();
+        let db = database_at(&path, 8);
+        db.execute_batch(
+            "INSERT INTO resources (id, name, kind, description, operating_system) VALUES ('host', 'Host', 'server', '', 'Linux');
+             INSERT INTO applications (id, name, lifecycle, description, version) VALUES ('shop', 'Shop', 'production', 'Store', '2.0');
+             INSERT INTO components (id, application_id, name, kind, resource_id) VALUES ('api', 'shop', 'API', 'backend', 'host');
+             INSERT INTO observations (id, resource_id, result, summary, source, observed_at, valid_until, recorded_at, agent)
+               VALUES ('obs-agent', 'host', 'healthy', 'Looked fine', 'agent', 500, 900, 600, 'claude-code');
+             INSERT INTO events (id, resource_id, kind, outcome, title, detail, source, observation_id, occurred_at, recorded_at, agent)
+               VALUES ('evt-agent', 'host', 'observation', 'success', 'Observation: Healthy', 'Looked fine', 'agent', 'obs-agent', 500, 600, 'claude-code');
+             INSERT INTO http_checks (resource_id, url, expected_status, timeout_seconds, valid_for_minutes, updated_at)
+               VALUES ('host', 'http://host/health', 200, 5, 15, 800);
+             INSERT INTO agent_access VALUES (1, 'write', 900);",
+        )
+        .unwrap();
+        let tables = [
+            "resources",
+            "applications",
+            "components",
+            "observations",
+            "incidents",
+            "events",
+            "http_checks",
+            "agent_access",
+        ];
+        let before: Vec<_> = tables.iter().map(|table| dump(&db, table)).collect();
+        drop(db);
+
+        list(&path).unwrap();
+        let db = Connection::open(&path).unwrap();
+        let version: i64 = db
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 9);
+        for (table, rows) in tables.iter().zip(&before) {
+            assert_eq!(&dump(&db, table), rows, "{table}");
+        }
+        assert!(dump(&db, "agent_log").is_empty());
+        // Nothing references or is referenced: an entry never keeps a subject from going.
+        assert!(strings(
+            &db,
+            "SELECT \"table\" FROM pragma_foreign_key_list('agent_log')"
+        )
+        .is_empty());
+        assert_eq!(
+            strings(&db, "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'agent_log' AND name NOT LIKE 'sqlite_autoindex%' ORDER BY name"),
+            ["agent_log_application_id", "agent_log_resource_id"]
+        );
+        drop(db);
+        let db = open(&path).unwrap();
+        let entry = |application: Option<&str>,
+                     resource: Option<&str>,
+                     agent: &str,
+                     action: &str| {
+            db.execute(
+                "INSERT INTO agent_log (id, application_id, resource_id, subject_name, agent, action, summary, occurred_at)
+                 VALUES (?1, ?2, ?3, 'Shop', ?4, ?5, 'Changed', 1)",
+                rusqlite::params![Uuid::new_v4().to_string(), application, resource, agent, action],
+            )
+        };
+        assert!(
+            entry(Some("shop"), Some("host"), "codex", "updated").is_err(),
+            "two subjects"
+        );
+        assert!(entry(None, None, "codex", "updated").is_err(), "no subject");
+        assert!(
+            entry(Some("shop"), None, " ", "updated").is_err(),
+            "an agent names itself"
+        );
+        assert!(
+            entry(Some("shop"), None, "codex", "dropped").is_err(),
+            "unknown action"
+        );
+        // A deleted subject's entry stays.
+        assert!(entry(Some("gone"), None, "codex", "deleted").is_ok());
         drop(db);
         std::fs::remove_file(path).unwrap();
     }

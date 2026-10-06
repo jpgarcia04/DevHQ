@@ -2,8 +2,9 @@
 
 **Estado: en construcción.** Hechos: los pasos 1 (esquema v7 y procedencia `agent` en la UI), 2 (la
 atención calculada en Rust, atada a la de la ventana) y 3 (`devhq --mcp` con las herramientas de
-lectura; ver «Puerta para agentes» en el README). Del paso 4, hecho el interruptor de acceso
-(esquema v8 y Settings → Agent gate).
+lectura; ver «Puerta para agentes» en el README). Del paso 4, hechos el interruptor de acceso
+(esquema v8 y Settings → Agent gate) y las herramientas de escritura con `agent_log` (esquema v9);
+falta mostrar ese log en Activity.
 Cuando una parte se implementa, su comportamiento pasa al README (que es la especificación) en el
 mismo commit, y este documento se recorta.
 
@@ -171,9 +172,7 @@ con la ventana abierta.
 - v7 (hecha, ver el README): `observations`, `incidents` y `events` admiten `source = 'agent'` con
   su columna `agent`, y los índices parciales cubren los registros manuales y de agentes.
 - v8 (hecha): `agent_access`, el modo de la puerta (`off` sin fila).
-- v9, con las herramientas de escritura: `agent_log`, solo de inserción, con índices por sistema y
-  por tiempo para que Activity lo lea por índice como el resto de la historia. Lleva su test de
-  actualización que compara volcados fila por fila y tests de plan de consulta para `agent_log`.
+- v9 (hecha): `agent_log`, solo de inserción, sin claves foráneas, con un índice por sistema.
 
 ## Pruebas
 
@@ -191,7 +190,8 @@ con la ventana abierta.
 1. Hecho: esquema v7 y procedencia `agent` visible en la UI.
 2. Hecho: atención en Rust atada a la de TypeScript por fixtures.
 3. Hecho: modo `--mcp` con `status` y las herramientas de lectura.
-4. Herramientas de escritura y `agent_log` (esquema v9), y el modo de acceso (esquema v8, hecho).
+4. Hecho: herramientas de escritura y `agent_log` (esquema v9), y el modo de acceso (esquema v8).
+   Falta: el log en Activity.
 5. La app nota los cambios de otros procesos (`data_version`) y el lock de «ventana abierta».
 6. Settings: la sección de la puerta y el comando para conectarla; README y recorrido nativo.
 

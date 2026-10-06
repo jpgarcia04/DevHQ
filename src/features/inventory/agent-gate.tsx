@@ -24,7 +24,7 @@ const modes: { value: AgentAccessMode; label: string; detail: string }[] = [
     value: 'write',
     label: 'Read and write',
     detail:
-      'Agents may also change the inventory as you do here, once the gate offers it. For now the gate only reads, so this works like Read only.',
+      'Agents can also do what you do here: add and edit applications and resources, record observations, incidents and events, set up and run checks, delete what has no history and back up. Each change is tagged as theirs.',
   },
 ]
 

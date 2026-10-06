@@ -24,10 +24,6 @@ pub(crate) const MANUAL: &str = "manual";
 pub(crate) const HTTP: &str = "http";
 pub(crate) const AGENT: &str = "agent";
 /// Longest agent name kept, in characters as the window counts them.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the agent gate is what acts as an agent")
-)]
 pub(crate) const MAX_AGENT: usize = 120;
 pub(crate) const MAX_VALIDITY_MINUTES: i64 = 30 * 24 * 60;
 // Tolerates small clock differences; anything later is a claim about the future.
@@ -42,19 +38,11 @@ const EVENT_SELECT: &str = "SELECT id, application_id, resource_id, kind, outcom
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Actor {
     Person,
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the agent gate is what acts as an agent")
-    )]
     Agent(String),
 }
 
 impl Actor {
     /// An agent, by the name its client declared: trimmed, and refused if empty or too long.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the agent gate is what acts as an agent")
-    )]
     pub(crate) fn agent(name: &str) -> Result<Self, ApiError> {
         required_text(name, MAX_AGENT, "Agent name").map(Actor::Agent)
     }

@@ -8,6 +8,8 @@
 //! transport); stderr is free for diagnostics. Every tool goes through the same use cases as the
 //! window's commands, with the same validation, limits and transactions.
 
+mod writes;
+
 use crate::access;
 use crate::attention::{self, AttentionItem};
 use crate::http_check::HttpCheck;
@@ -172,6 +174,29 @@ impl Session {
             "list_systems" => self.allow("read").and_then(|()| self.list_systems()),
             "get_system" => self.allow("read").and_then(|()| self.get_system(arguments)),
             "history" => self.allow("read").and_then(|()| self.history(arguments)),
+            // Configuration changes check the access inside their own transaction; records,
+            // checks run and backups check it first.
+            "save_application" => self.save_application(arguments),
+            "save_resource" => self.save_resource(arguments),
+            "delete_application" => self.delete("application", arguments),
+            "delete_resource" => self.delete("resource", arguments),
+            "save_check" => self.save_check(arguments),
+            "set_check_paused" => self.set_check_paused(arguments),
+            "remove_check" => self.remove_check(arguments),
+            "run_check" => self.allow("write").and_then(|()| self.run_check(arguments)),
+            "record_observation" => self
+                .allow("write")
+                .and_then(|()| self.record_observation(arguments)),
+            "open_incident" => self
+                .allow("write")
+                .and_then(|()| self.open_incident(arguments)),
+            "update_incident" => self
+                .allow("write")
+                .and_then(|()| self.update_incident(arguments)),
+            "record_event" => self
+                .allow("write")
+                .and_then(|()| self.record_event(arguments)),
+            "backup" => self.allow("write").and_then(|()| self.backup()),
             other => return Err((INVALID_PARAMS, format!("Unknown tool {other}."))),
         };
         // A tool that fails tells the agent why, as the window would tell the person; it is a
@@ -205,25 +230,27 @@ impl Session {
     /// so that a change in Settings applies at once.
     fn allow(&self, need: &str) -> Result<(), ApiError> {
         self.existing()?;
-        let mode = access::mode(&inventory::open(&self.database)?)?;
-        let enough = match need {
-            "read" => mode != "off",
-            _ => mode == "write",
-        };
-        match (enough, mode.as_str()) {
-            (true, _) => Ok(()),
-            (false, "off") => Err(ApiError::denied(
-                "The person has not opened the agent gate. They can choose Read only or Read and write in DevHQ, under Settings → Agent gate.",
-            )),
-            (false, _) => Err(ApiError::denied(
-                "The person opened the agent gate for reading only. To let agents change the inventory, they can choose Read and write in DevHQ, under Settings → Agent gate.",
-            )),
-        }
+        permitted(&access::mode(&inventory::open(&self.database)?)?, need)
     }
 
     fn inventory(&self) -> Result<Inventory, ApiError> {
         self.existing()?;
         inventory::list(&self.database)
+    }
+
+    /// What agents changed in the subject's configuration, newest first.
+    fn agent_changes(
+        &self,
+        subject: &Subject,
+    ) -> Result<Vec<crate::agent_log::AgentChange>, ApiError> {
+        let mut db = inventory::open(&self.database)?;
+        let tx = db.transaction().map_err(ApiError::database)?;
+        let changes = crate::agent_log::load(&tx)?;
+        tx.commit().map_err(ApiError::database)?;
+        Ok(changes
+            .into_iter()
+            .filter(|change| &change.subject == subject)
+            .collect())
     }
 
     fn status(&self) -> Result<Value, ApiError> {
@@ -371,6 +398,7 @@ impl Session {
             "observations": inventory.observations.iter().filter(|item| mine(&item.subject)).collect::<Vec<_>>(),
             "incidents": inventory.incidents.iter().filter(|item| mine(&item.subject)).collect::<Vec<_>>(),
             "events": inventory.events.iter().filter(|item| mine(&item.subject)).collect::<Vec<_>>(),
+            "agentChanges": self.agent_changes(&subject)?,
             "automatedCompleteSince": inventory
                 .automated_history
                 .truncated
@@ -404,6 +432,23 @@ impl Session {
                 "records must be \"observations\" or \"events\".",
             )),
         }
+    }
+}
+
+/// Whether the access mode in force allows what a tool needs: `read` or `write`.
+fn permitted(mode: &str, need: &str) -> Result<(), ApiError> {
+    let enough = match need {
+        "read" => mode != "off",
+        _ => mode == "write",
+    };
+    match (enough, mode) {
+        (true, _) => Ok(()),
+        (false, "off") => Err(ApiError::denied(
+            "The person has not opened the agent gate. They can choose Read only or Read and write in DevHQ, under Settings → Agent gate.",
+        )),
+        (false, _) => Err(ApiError::denied(
+            "The person opened the agent gate for reading only. To let agents change the inventory, they can choose Read and write in DevHQ, under Settings → Agent gate.",
+        )),
     }
 }
 
@@ -551,41 +596,51 @@ fn text<'a>(arguments: &'a Map<String, Value>, key: &str) -> Result<&'a str, Api
 
 /// The system an agent names by type and either ID or name (exact, ignoring case).
 fn find_system(inventory: &Inventory, arguments: &Map<String, Value>) -> Result<Subject, ApiError> {
-    let kind = text(arguments, "type")?;
-    let id = arguments.get("id").and_then(Value::as_str);
-    let name = arguments.get("name").and_then(Value::as_str);
-    let candidates: Vec<(String, &str)> = match kind {
+    let kind = system_type(arguments)?;
+    let candidates: Vec<(String, String)> = match kind {
         "application" => inventory
             .applications
             .iter()
-            .map(|item| (item.id.clone(), item.name.as_str()))
+            .map(|item| (item.id.clone(), item.name.clone()))
             .collect(),
-        "resource" => inventory
+        _ => inventory
             .resources
             .iter()
-            .map(|item| (item.id.clone(), item.name.as_str()))
+            .map(|item| (item.id.clone(), item.name.clone()))
             .collect(),
-        _ => {
-            return Err(ApiError::invalid(
-                "type must be \"application\" or \"resource\".",
-            ))
-        }
     };
-    let found: Vec<&String> = match (id, name) {
-        (Some(id), _) => candidates
-            .iter()
-            .filter(|(item, _)| item == id)
-            .map(|(item, _)| item)
-            .collect(),
+    pick(kind, &candidates, arguments).map(|(subject, _)| subject)
+}
+
+fn system_type(arguments: &Map<String, Value>) -> Result<&'static str, ApiError> {
+    match text(arguments, "type")? {
+        "application" => Ok("application"),
+        "resource" => Ok("resource"),
+        _ => Err(ApiError::invalid(
+            "type must be \"application\" or \"resource\".",
+        )),
+    }
+}
+
+/// Among `candidates` (ID, name) of one kind, the one the arguments name by `id`, or else by
+/// `name` (exact, ignoring case and surrounding spaces): its subject and name.
+fn pick(
+    kind: &str,
+    candidates: &[(String, String)],
+    arguments: &Map<String, Value>,
+) -> Result<(Subject, String), ApiError> {
+    let id = arguments.get("id").and_then(Value::as_str);
+    let name = arguments.get("name").and_then(Value::as_str);
+    let found: Vec<&(String, String)> = match (id, name) {
+        (Some(id), _) => candidates.iter().filter(|(item, _)| item == id).collect(),
         (None, Some(name)) => candidates
             .iter()
             .filter(|(_, item)| item.to_lowercase() == name.trim().to_lowercase())
-            .map(|(item, _)| item)
             .collect(),
         (None, None) => return Err(ApiError::invalid("Name the system by id or by name.")),
     };
-    let id = match found.as_slice() {
-        [id] => (*id).clone(),
+    let (id, name) = match found.as_slice() {
+        [(id, name)] => (id.clone(), name.clone()),
         [] => {
             return Err(ApiError::invalid(format!(
                 "No {kind} matches. `list_systems` lists them."
@@ -597,10 +652,11 @@ fn find_system(inventory: &Inventory, arguments: &Map<String, Value>) -> Result<
             )))
         }
     };
-    Ok(match kind {
+    let subject = match kind {
         "application" => Subject::Application { id },
         _ => Subject::Resource { id },
-    })
+    };
+    Ok((subject, name))
 }
 
 fn system_arguments(extra: Value) -> Value {
@@ -632,6 +688,12 @@ fn read_only(
 }
 
 fn tools() -> Vec<Value> {
+    let mut tools = read_tools();
+    tools.extend(writes::tools());
+    tools
+}
+
+fn read_tools() -> Vec<Value> {
     vec![
         read_only(
             "status",
@@ -861,14 +923,16 @@ mod tests {
             replies[1],
             json!({ "jsonrpc": "2.0", "id": "two", "result": {} })
         );
-        let tools: Vec<_> = replies[2]["result"]["tools"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|tool| tool["name"].as_str().unwrap())
-            .collect();
+        let tools = replies[2]["result"]["tools"].as_array().unwrap();
+        let names = |read_only: bool| -> Vec<&str> {
+            tools
+                .iter()
+                .filter(|tool| tool["annotations"]["readOnlyHint"] == read_only)
+                .map(|tool| tool["name"].as_str().unwrap())
+                .collect()
+        };
         assert_eq!(
-            tools,
+            names(true),
             [
                 "status",
                 "attention",
@@ -877,13 +941,48 @@ mod tests {
                 "history"
             ]
         );
-        // Reading never changes anything, and says so to the client.
-        assert!(replies[2]["result"]["tools"]
-            .as_array()
-            .unwrap()
+        assert_eq!(
+            names(false),
+            [
+                "save_application",
+                "save_resource",
+                "delete_application",
+                "delete_resource",
+                "record_observation",
+                "open_incident",
+                "update_incident",
+                "record_event",
+                "save_check",
+                "set_check_paused",
+                "remove_check",
+                "run_check",
+                "backup",
+            ]
+        );
+        assert!(tools
             .iter()
-            .all(|tool| tool["annotations"]["readOnlyHint"] == true
-                && tool["inputSchema"]["type"] == "object"));
+            .all(|tool| tool["inputSchema"]["type"] == "object"));
+        // Only what removes configuration is destructive, and only a check run leaves the computer.
+        let hinted = |hint: &str| -> Vec<&str> {
+            tools
+                .iter()
+                .filter(|tool| tool["annotations"][hint] == true)
+                .map(|tool| tool["name"].as_str().unwrap())
+                .collect()
+        };
+        assert_eq!(
+            hinted("destructiveHint"),
+            [
+                "save_application",
+                "save_resource",
+                "delete_application",
+                "delete_resource",
+                "save_check",
+                "set_check_paused",
+                "remove_check",
+            ]
+        );
+        assert_eq!(hinted("openWorldHint"), ["run_check"]);
         assert_eq!(replies[3]["error"]["code"], METHOD_NOT_FOUND);
         assert_eq!(replies[4]["error"]["code"], INVALID_PARAMS);
         assert_eq!(replies[5]["error"]["code"], INVALID_PARAMS);
@@ -1198,6 +1297,479 @@ mod tests {
                 .iter()
                 .any(|note| note.as_str().unwrap().contains("not where DevHQ asked")));
         }
+        remove(&path);
+    }
+
+    /// A session whose client named itself `client`, as after `initialize`.
+    fn session(path: &Path, client: &str) -> Session {
+        Session {
+            database: path.to_owned(),
+            client: Some(client.to_owned()),
+        }
+    }
+
+    /// A tool's result in the session: its structured content, or the text of its refusal.
+    fn use_tool(session: &mut Session, tool: &str, arguments: Value) -> Result<Value, String> {
+        let reply = session
+            .handle(
+                &json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": { "name": tool, "arguments": arguments } })
+                    .to_string(),
+            )
+            .unwrap();
+        let result = &reply["result"];
+        if result["isError"] == true {
+            Err(result["content"][0]["text"].as_str().unwrap().to_owned())
+        } else {
+            Ok(result["structuredContent"].clone())
+        }
+    }
+
+    fn changes(path: &Path) -> Vec<(String, String, String)> {
+        let db = inventory::open(path).unwrap();
+        let mut statement = db
+            .prepare("SELECT agent, action, summary FROM agent_log ORDER BY rowid")
+            .unwrap();
+        let rows = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        rows
+    }
+
+    #[test]
+    fn changes_nothing_unless_the_person_lets_agents_write() {
+        let path = path();
+        let (shop, _) = seed(&path);
+        let before = inventory::list(&path).unwrap();
+        let mut agent = session(&path, "claude-code");
+        let attempts = [
+            (
+                "save_application",
+                json!({ "name": "New", "lifecycle": "development" }),
+            ),
+            ("save_resource", json!({ "name": "New", "kind": "server" })),
+            ("delete_application", json!({ "id": shop })),
+            (
+                "record_observation",
+                json!({ "type": "application", "id": shop, "result": "healthy", "summary": "Fine", "validForMinutes": 60 }),
+            ),
+            (
+                "open_incident",
+                json!({ "type": "application", "id": shop, "title": "Down", "severity": "critical" }),
+            ),
+            (
+                "record_event",
+                json!({ "type": "application", "id": shop, "kind": "note", "outcome": "info", "title": "Noted" }),
+            ),
+            (
+                "save_check",
+                json!({ "type": "application", "id": shop, "url": "https://shop.example/" }),
+            ),
+            (
+                "run_check",
+                json!({ "type": "resource", "name": "Web host" }),
+            ),
+            (
+                "remove_check",
+                json!({ "type": "resource", "name": "Web host" }),
+            ),
+            ("backup", json!({})),
+        ];
+        for (tool, arguments) in &attempts {
+            let refused = use_tool(&mut agent, tool, arguments.clone()).unwrap_err();
+            assert!(refused.contains("reading only"), "{tool}: {refused}");
+        }
+        crate::access::set_agent_access(&path, "off").unwrap();
+        let refused = use_tool(
+            &mut agent,
+            "save_resource",
+            json!({ "name": "New", "kind": "server" }),
+        )
+        .unwrap_err();
+        assert!(refused.contains("not opened the agent gate"), "{refused}");
+        let after = inventory::list(&path).unwrap();
+        assert_eq!(after.applications, before.applications);
+        assert_eq!(after.resources, before.resources);
+        assert_eq!(after.observations, before.observations);
+        assert_eq!(after.events, before.events);
+        assert_eq!(after.incidents, before.incidents);
+        assert_eq!(after.http_checks, before.http_checks);
+        assert!(changes(&path).is_empty());
+        assert!(!path.parent().unwrap().join("backups").exists());
+        remove(&path);
+    }
+
+    #[test]
+    fn adds_and_edits_systems_keeping_what_an_edit_leaves_out_and_logs_each_change() {
+        let path = path();
+        seed(&path);
+        crate::access::set_agent_access(&path, "write").unwrap();
+        let mut agent = session(&path, "claude-code");
+        let vps = use_tool(
+            &mut agent,
+            "save_resource",
+            json!({ "name": "VPS", "kind": "server", "operatingSystem": "Ubuntu 24.04" }),
+        )
+        .unwrap();
+        let vps_id = vps["resource"]["id"].as_str().unwrap().to_owned();
+        assert_eq!(
+            vps["change"]["summary"],
+            "Added resource «VPS» (server, Ubuntu 24.04)"
+        );
+        assert_eq!(vps["change"]["agent"], "claude-code");
+        // A component runs on a resource named by id or by its name, ignoring case.
+        let added = use_tool(
+            &mut agent,
+            "save_application",
+            json!({ "name": "Tienda", "lifecycle": "production", "description": "Online store", "version": "1.3.0",
+                    "components": [{ "name": "API", "kind": "backend", "runsOn": "vps" }, { "name": "Web", "kind": "frontend" }] }),
+        )
+        .unwrap();
+        let tienda = added["application"]["id"].as_str().unwrap().to_owned();
+        assert_eq!(
+            added["application"]["components"][0]["resourceId"],
+            vps_id.as_str()
+        );
+        assert_eq!(
+            added["change"]["summary"],
+            "Added application «Tienda» (production, version 1.3.0) with API (backend, on VPS), Web (frontend)"
+        );
+        // An edit of one field keeps every other, components included.
+        let edited = use_tool(
+            &mut agent,
+            "save_application",
+            json!({ "id": tienda, "version": "1.4.0" }),
+        )
+        .unwrap();
+        assert_eq!(edited["application"]["description"], "Online store");
+        assert_eq!(
+            edited["application"]["components"],
+            added["application"]["components"]
+        );
+        assert_eq!(edited["change"]["action"], "updated");
+        assert_eq!(
+            edited["change"]["summary"],
+            "Updated application «Tienda»: version «1.3.0» → «1.4.0»"
+        );
+        let cleared = use_tool(
+            &mut agent,
+            "save_application",
+            json!({ "id": tienda, "version": null, "lifecycle": "testing" }),
+        )
+        .unwrap();
+        assert_eq!(cleared["application"]["version"], Value::Null);
+        assert_eq!(
+            cleared["change"]["summary"],
+            "Updated application «Tienda»: lifecycle production → testing; version «1.4.0» → none"
+        );
+        // A given component list is the complete list.
+        let api = added["application"]["components"][0]["id"].clone();
+        let trimmed = use_tool(
+            &mut agent,
+            "save_application",
+            json!({ "id": tienda, "components": [{ "id": api, "name": "API", "kind": "backend", "runsOn": vps_id }] }),
+        )
+        .unwrap();
+        assert_eq!(
+            trimmed["application"]["components"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            trimmed["change"]["summary"],
+            "Updated application «Tienda»: components API (backend, on VPS), Web (frontend) → API (backend, on VPS)"
+        );
+        let renamed = use_tool(
+            &mut agent,
+            "save_resource",
+            json!({ "id": vps_id, "name": "VPS Hetzner" }),
+        )
+        .unwrap();
+        assert_eq!(renamed["resource"]["operatingSystem"], "Ubuntu 24.04");
+        assert_eq!(
+            renamed["change"]["summary"],
+            "Updated resource «VPS Hetzner»: name «VPS» → «VPS Hetzner»"
+        );
+
+        // Refusals change nothing and log nothing.
+        let logged = changes(&path).len();
+        for (tool, arguments, why) in [
+            (
+                "save_application",
+                json!({ "name": "Nameless lifecycle" }),
+                "lifecycle is required",
+            ),
+            (
+                "save_application",
+                json!({ "lifecycle": "production" }),
+                "name is required",
+            ),
+            (
+                "save_application",
+                json!({ "id": "ghost", "version": "2" }),
+                "No application has the id ghost",
+            ),
+            (
+                "save_application",
+                json!({ "name": "Bad", "lifecycle": "production", "components": [{ "name": "X", "kind": "lambda" }] }),
+                "Invalid component kind",
+            ),
+            (
+                "save_application",
+                json!({ "name": "Bad", "lifecycle": "production", "components": [{ "name": "X", "kind": "backend", "runsOn": "Nowhere" }] }),
+                "Resource Nowhere does not exist",
+            ),
+            (
+                "save_resource",
+                json!({ "name": "Kindless" }),
+                "kind is required",
+            ),
+        ] {
+            let refused = use_tool(&mut agent, tool, arguments).unwrap_err();
+            assert!(refused.contains(why), "{refused}");
+        }
+        assert_eq!(changes(&path).len(), logged);
+        assert!(!inventory::list(&path)
+            .unwrap()
+            .applications
+            .iter()
+            .any(|item| item.name == "Bad"));
+
+        // The agent reads its changes back with the system.
+        let detail = use_tool(
+            &mut agent,
+            "get_system",
+            json!({ "type": "application", "id": tienda }),
+        )
+        .unwrap();
+        let actions: Vec<_> = detail["system"]["agentChanges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|change| change["action"].as_str().unwrap())
+            .collect();
+        assert_eq!(actions, ["updated", "updated", "updated", "created"]);
+        remove(&path);
+    }
+
+    #[test]
+    fn deletes_only_what_has_no_history_and_the_log_outlives_it() {
+        let path = path();
+        let (shop, _) = seed(&path);
+        crate::access::set_agent_access(&path, "write").unwrap();
+        let mut agent = session(&path, "codex");
+        let refused =
+            use_tool(&mut agent, "delete_application", json!({ "id": shop })).unwrap_err();
+        assert!(refused.contains("DevHQ keeps history"), "{refused}");
+        let refused =
+            use_tool(&mut agent, "delete_resource", json!({ "name": "Web host" })).unwrap_err();
+        assert!(refused.contains("is used by Shop (API)"), "{refused}");
+        let deleted = use_tool(
+            &mut agent,
+            "delete_resource",
+            json!({ "name": "spare box" }),
+        )
+        .unwrap();
+        assert_eq!(deleted["deleted"]["name"], "Spare box");
+        assert_eq!(
+            deleted["change"]["summary"],
+            "Deleted resource «Spare box», which had no history"
+        );
+        assert!(inventory::list(&path)
+            .unwrap()
+            .resources
+            .iter()
+            .all(|item| item.name != "Spare box"));
+        assert_eq!(
+            changes(&path),
+            [(
+                "codex".to_owned(),
+                "deleted".to_owned(),
+                "Deleted resource «Spare box», which had no history".to_owned()
+            )]
+        );
+        remove(&path);
+    }
+
+    #[test]
+    fn records_carry_the_agent_and_check_changes_are_logged() {
+        let path = path();
+        let (shop, _) = seed(&path);
+        crate::access::set_agent_access(&path, "write").unwrap();
+        let mut agent = session(&path, "claude-code");
+        let shop_ref = json!({ "type": "application", "name": "shop" });
+        let with = |extra: Value| {
+            let mut arguments = shop_ref.as_object().unwrap().clone();
+            arguments.extend(extra.as_object().unwrap().clone());
+            Value::Object(arguments)
+        };
+        let observed = use_tool(
+            &mut agent,
+            "record_observation",
+            with(
+                json!({ "result": "degraded", "summary": "Checkout slow", "validForMinutes": 30 }),
+            ),
+        )
+        .unwrap();
+        assert_eq!(observed["observation"]["source"], "agent");
+        assert_eq!(observed["observation"]["agent"], "claude-code");
+        let opened = use_tool(
+            &mut agent,
+            "open_incident",
+            with(json!({ "title": "Payments fail", "severity": "warning" })),
+        )
+        .unwrap();
+        assert_eq!(opened["incident"]["source"], "agent");
+        let resolved = use_tool(
+            &mut agent,
+            "update_incident",
+            json!({ "incidentId": opened["incident"]["id"], "status": "resolved", "note": "Provider fixed it" }),
+        )
+        .unwrap();
+        assert_eq!(resolved["incident"]["status"], "resolved");
+        let noted = use_tool(
+            &mut agent,
+            "record_event",
+            with(json!({ "kind": "deployment", "outcome": "success", "title": "Deployed 2.5.0" })),
+        )
+        .unwrap();
+        assert_eq!(noted["event"]["agent"], "claude-code");
+        let refused = use_tool(
+            &mut agent,
+            "record_observation",
+            with(json!({ "result": "fine", "summary": "?", "validForMinutes": 30 })),
+        )
+        .unwrap_err();
+        assert!(refused.contains("Invalid observation result"), "{refused}");
+
+        // A new check takes the window's defaults; a change keeps what it leaves out.
+        let set = use_tool(
+            &mut agent,
+            "save_check",
+            with(json!({ "url": "http://devhq-gate.invalid/health" })),
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                set["httpCheck"]["expectedStatus"].clone(),
+                set["httpCheck"]["timeoutSeconds"].clone(),
+                set["httpCheck"]["validForMinutes"].clone(),
+                set["httpCheck"]["monitor"].clone()
+            ),
+            (json!(200), json!(5), json!(60), json!("off"))
+        );
+        let supervised = use_tool(
+            &mut agent,
+            "save_check",
+            with(json!({ "supervisionIntervalMinutes": 15, "timeoutSeconds": 1 })),
+        )
+        .unwrap();
+        assert_eq!(
+            supervised["httpCheck"]["url"],
+            "http://devhq-gate.invalid/health"
+        );
+        assert_eq!(supervised["httpCheck"]["monitor"], "active");
+        let lapsing = use_tool(
+            &mut agent,
+            "save_check",
+            with(json!({ "validForMinutes": 10 })),
+        )
+        .unwrap_err();
+        assert!(lapsing.contains("must stay valid for longer"), "{lapsing}");
+        use_tool(
+            &mut agent,
+            "set_check_paused",
+            with(json!({ "paused": true })),
+        )
+        .unwrap();
+        use_tool(
+            &mut agent,
+            "set_check_paused",
+            with(json!({ "paused": false })),
+        )
+        .unwrap();
+        // The run is DevHQ's own evidence; the log says the agent asked for it.
+        let ran = use_tool(&mut agent, "run_check", shop_ref.clone()).unwrap();
+        assert_eq!(ran["observation"]["source"], "http");
+        assert_eq!(ran["observation"]["result"], "unhealthy");
+        use_tool(&mut agent, "remove_check", shop_ref.clone()).unwrap();
+        assert!(use_tool(&mut agent, "remove_check", shop_ref.clone()).is_err());
+
+        let logged: Vec<_> = changes(&path)
+            .into_iter()
+            .map(|(agent, action, summary)| {
+                assert_eq!(agent, "claude-code");
+                (action, summary)
+            })
+            .collect();
+        let actions: Vec<_> = logged.iter().map(|(action, _)| action.as_str()).collect();
+        assert_eq!(
+            actions,
+            [
+                "check_saved",
+                "check_saved",
+                "check_paused",
+                "check_resumed",
+                "check_run",
+                "check_removed"
+            ]
+        );
+        assert_eq!(
+            logged[0].1,
+            "Set up the HTTP check of «Shop»: GET http://devhq-gate.invalid/health expecting 200 within 5 s, valid 60 min, run only when asked"
+        );
+        assert_eq!(
+            logged[1].1,
+            "Changed the HTTP check of «Shop»: GET http://devhq-gate.invalid/health expecting 200 within 1 s, valid 60 min, supervised every 15 min while DevHQ is open"
+        );
+        assert!(
+            logged[4].1.starts_with("Ran the HTTP check of «Shop»: "),
+            "{}",
+            logged[4].1
+        );
+        assert_eq!(logged[5].1, "Removed the HTTP check of «Shop» (http://devhq-gate.invalid/health); the evidence it recorded stays");
+        // Records name the agent themselves; they are not logged again.
+        let snapshot = inventory::list(&path).unwrap();
+        assert!(snapshot
+            .events
+            .iter()
+            .any(|event| event.title == "Incident resolved: Payments fail"
+                && event.agent.as_deref() == Some("claude-code")));
+        let _ = shop;
+        remove(&path);
+    }
+
+    #[test]
+    fn backs_up_as_back_up_now_does() {
+        let path = path();
+        seed(&path);
+        crate::access::set_agent_access(&path, "write").unwrap();
+        let mut agent = session(&path, "claude-code");
+        let backup = use_tool(&mut agent, "backup", json!({})).unwrap();
+        assert_eq!(backup["backup"]["quickCheck"], "ok");
+        assert_eq!(backup["backup"]["counts"]["applications"], 1);
+        remove(&path);
+    }
+
+    #[test]
+    fn a_client_without_a_name_is_still_told_apart_from_the_person() {
+        let path = path();
+        seed(&path);
+        crate::access::set_agent_access(&path, "write").unwrap();
+        let mut agent = Session {
+            database: path.clone(),
+            client: None,
+        };
+        let saved = use_tool(
+            &mut agent,
+            "save_resource",
+            json!({ "name": "Box", "kind": "workstation" }),
+        )
+        .unwrap();
+        assert_eq!(saved["change"]["agent"], "unnamed MCP client");
         remove(&path);
     }
 

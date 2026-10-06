@@ -87,8 +87,8 @@ vigencia, sustitución y atención que una manual. Un registro `agent` guarda ad
 puede verificarlo y la etiqueta lo dice al pasar el cursor. Se presenta mezclado con lo tuyo en
 cada vista, con su propia etiqueta, y sigue la misma semántica que un registro manual: es algo
 reportado, no medido por DevHQ. Una incidencia conserva quién la abrió; cada cambio de estado es
-un evento con la procedencia de quien lo hizo. La [puerta para agentes](#puerta-para-agentes) por
-ahora solo lee, así que hoy nada escribe registros `agent`.
+un evento con la procedencia de quien lo hizo. Solo la [puerta para agentes](#puerta-para-agentes)
+escribe registros `agent`.
 
 - **Observación**: resultado (healthy/degraded/unhealthy), qué se vio, momento observado,
   momento registrado y vigencia (1 h–30 días). Es inmutable; se corrige registrando otra.
@@ -295,8 +295,8 @@ tuyo y está en tu disco) sino de intención: ningún agente lee ni escribe en t
 hayas decidido. Con la puerta cerrada solo responde `status`, sin decir qué contiene el inventario,
 para que el agente pueda explicarte dónde abrirla; las demás herramientas responden
 `access_denied`. Settings también muestra el comando de registro con la ruta real del ejecutable,
-para copiarlo; DevHQ nunca lo ejecuta ni toca la configuración de Claude Code. Por ahora la puerta
-solo lee, así que Read and write funciona como Read only:
+para copiarlo; DevHQ nunca lo ejecuta ni toca la configuración de Claude Code. Para leer basta Read
+only:
 
 | Herramienta    | Qué responde                                                                                                                                                                                 |
 | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -306,7 +306,42 @@ solo lee, así que Read and write funciona como Read only:
 | `get_system`   | Una aplicación o recurso (por ID, o por nombre exacto sin distinguir mayúsculas) con sus observaciones, incidencias y eventos cargados, y desde cuándo su historial automático está completo |
 | `history`      | Los resultados automáticos anteriores de un sistema, de 200 en 200, como la carga bajo demanda de la ventana                                                                                 |
 
-Todas se declaran de solo lectura (`readOnlyHint`). Cada respuesta dice lo que la ventana diría: una
+Con Read and write, el agente también hace lo que tú haces en la ventana, pasando por los mismos
+casos de uso, con sus validaciones, límites y transacciones:
+
+| Herramienta                                      | Qué hace                                                                                                                                           |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `save_application`, `save_resource`              | Dar de alta (nombre y lifecycle, o nombre y tipo) o editar por ID                                                                                  |
+| `delete_application`, `delete_resource`          | Borrar lo que no tiene historial; lo demás se rechaza con el mismo motivo que en la ventana                                                        |
+| `record_observation`, `record_event`             | Registrar una observación (resultado, qué vio, vigencia) o un despliegue, respaldo, mantenimiento o nota                                           |
+| `open_incident`, `update_incident`               | Abrir una incidencia o cambiar su estado con una nota                                                                                              |
+| `save_check`, `set_check_paused`, `remove_check` | Configurar la comprobación HTTP(S) de un sistema (200, 5 s y 60 min por defecto, como el formulario), pausar o reanudar su supervisión, o quitarla |
+| `run_check`                                      | Ejecutarla ahora, como Run check: la observación es evidencia de DevHQ (`http`)                                                                    |
+| `backup`                                         | Back up now                                                                                                                                        |
+
+Una edición es **parcial**: lo que el agente no manda se conserva, para que cambiar la versión nunca
+borre los componentes por omisión. La lista de componentes, cuando se manda, es la lista completa,
+como en el formulario, y un componente apunta a su recurso por ID o por nombre exacto. Los registros
+que escribe llevan `source = agent` y su nombre. La configuración (aplicaciones, recursos, componentes
+y comprobaciones) no tiene `source`, así que cada cambio deja una entrada en `agent_log` (quién,
+qué, cuándo, sobre qué sistema y un resumen como «Updated application «Tienda»: version «1.3.0» →
+«1.4.0»») **en la misma transacción** que el cambio, después de comprobar ahí, con el lock de
+escritura de SQLite, que sigues permitiendo escribir. Las entradas nunca se modifican ni se borran;
+no tienen claves foráneas, así que no impiden borrar un sistema sin historial y le sobreviven con
+el nombre que tenía. `get_system` devuelve las de cada sistema. Los registros no se repiten en ese
+log: ya dicen quién los escribió. Ejecutar una comprobación deja en el log qué agente la pidió. Un
+rechazo no cambia nada ni deja entrada. Las herramientas que sobrescriben o quitan configuración se
+declaran destructivas (`destructiveHint`) y `run_check`, que sale de tu computadora, de mundo
+abierto (`openWorldHint`), así que el cliente pide confirmación según cómo lo tengas configurado.
+
+Con la ventana de DevHQ abierta, lo que cambia un agente se ve al volver a cargar Mi inventario, y la
+supervisión de la ventana no se entera de una comprobación que el agente configuró, pausó o quitó
+hasta que la ventana cambia alguna o se vuelve a abrir: que la ventana note sola esos cambios es el
+siguiente paso ([docs/puerta-para-agentes.md](docs/puerta-para-agentes.md)). Si un agente ejecuta
+una comprobación en el mismo instante en que la supervisión de la ventana corre la misma, quedan dos
+observaciones honestas; ninguna se pierde ni se inventa.
+
+Las de lectura se declaran de solo lectura (`readOnlyHint`). Cada respuesta dice lo que la ventana diría: una
 lista recortada lleva el aviso de su ventana de historial y nada sin evidencia vigente se presenta
 como sano. La atención se calcula con la copia en Rust de las reglas de la ventana, atada a ellas por
 `contract/attention/`. El estado en vivo de la supervisión (ejecución en curso, siguiente, último
@@ -539,7 +574,7 @@ asíncrono porque lanza la tarea que alimenta el `Channel`: Tauri ejecuta un com
 que recibe la petición (el principal), que no tiene runtime de Tokio, y lanzarla desde ahí provocaba un
 pánico que en Linux abortaba el proceso al abrir Mi inventario (lo comprueba `npm run e2e:native`). Abre
 `inventory.sqlite3` en el directorio de datos de la aplicación que proporciona Tauri; las
-migraciones transaccionales v1→v8 usan `PRAGMA user_version` y una versión más nueva se
+migraciones transaccionales v1→v9 usan `PRAGMA user_version` y una versión más nueva se
 rechaza en vez de adivinarse. Cada apertura solo lee esa versión: únicamente una base antigua
 toma el lock de escritura para migrar, y dentro vuelve a leerla por si otra conexión ya lo
 hizo. La base usa write-ahead logging (WAL): un lector trabaja sobre el último estado
@@ -585,7 +620,8 @@ añade dos índices parciales sobre los registros manuales; ninguna fila cambia.
 `agent`, que un CHECK exige exactamente con ese origen; las filas existentes conservan su origen
 sin agente. Sus índices parciales pasan a cubrir los registros manuales y de agentes, que se cargan
 siempre completos. La v8 solo añade `agent_access`, una fila como mucho con el modo de la puerta
-para agentes; ninguna fila cambia y, sin fila, la puerta está cerrada. Los
+para agentes; ninguna fila cambia y, sin fila, la puerta está cerrada. La v9 solo añade
+`agent_log`, sin claves foráneas y con un índice por sistema; ninguna fila cambia. Los
 registros usan dos columnas con clave foránea (`application_id`/`resource_id`) y un CHECK
 que exige exactamente una; las referencias de historial son `ON DELETE RESTRICT`, así que
 nada puede borrar un sujeto y dejar evidencia huérfana; los casos de uso de borrado lo
@@ -617,8 +653,9 @@ cuentas, cloud, sync, telemetría, scanners, automation engine, Runner ni backgr
    semántica de vigencia.
 2. Hecho: supervisión cancelable de esas comprobaciones, solo con DevHQ abierto.
 3. En curso: la [puerta para agentes](#puerta-para-agentes), con la que un agente lee y mantiene el
-   inventario cuando se lo pides, con su procedencia siempre visible. Ya lee, con el acceso que
-   eliges en Settings; escribir y que la ventana abierta note sus cambios siguen en diseño:
+   inventario cuando se lo pides, con su procedencia siempre visible. Ya lee y escribe, con el
+   acceso que eliges en Settings; que la ventana muestre el log del agente en Activity y note sola
+   sus cambios sigue en diseño:
    [docs/puerta-para-agentes.md](docs/puerta-para-agentes.md).
 4. Después, automatizaciones con resultado e historial, y seguridad con almacén nativo de
    credenciales y evidencias contextualizadas.
@@ -633,7 +670,7 @@ vivir en componentes React, localStorage ni texto plano en SQLite.
 Las pruebas cubren navegación, tabs/teclado, filtros, rutas desconocidas, relaciones
 compartidas, cronología de la demo, salud desconocida, persistencia tras reapertura,
 rechazo de referencias inválidas sin escrituras parciales, restricciones del esquema,
-migraciones v1/v2→v3, v3→v4, v4→v5, v5→v6, v6→v7 y v7→v8 (incluida la negativa a confirmar relaciones rotas),
+migraciones v1/v2→v3, v3→v4, v4→v5, v5→v6, v6→v7, v7→v8 y v8→v9 (incluida la negativa a confirmar relaciones rotas),
 vigencia y sustitución de observaciones de ambos orígenes, orden de atención, errores de
 carga visibles y recuperables, comprobaciones contra un servidor local (estado esperado,
 500, redirect, bucle de redirects, tiempo agotado, conexión rechazada, dominio `.invalid`
