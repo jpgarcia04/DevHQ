@@ -111,6 +111,15 @@ progress, because a new push cancels it.
 - Tauri runs a synchronous command on the thread that received the request: the main thread,
   which has no Tokio runtime. A command that spawns a task or waits must be `async`.
 
+## Agent gate
+
+`devhq --mcp` (`src-tauri/src/gate.rs`) serves the inventory to an MCP client over stdio: no
+window, no port, alive only while the client keeps stdin open. Every tool calls the same use cases
+as the window's commands; never give it a shortcut around their validation. It never creates an
+inventory that does not exist. Design and remaining steps: `docs/puerta-para-agentes.md`. To try it
+with a real client: `claude -p "..." --mcp-config <json> --strict-mcp-config --allowedTools
+"mcp__devhq__*"` with the server's `--database` pointing at a test inventory.
+
 ## Schema
 
 A schema change is a new migration (`src-tauri/migrations/00N_*.sql`, next `user_version`)

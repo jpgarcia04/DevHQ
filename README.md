@@ -87,8 +87,8 @@ vigencia, sustitución y atención que una manual. Un registro `agent` guarda ad
 puede verificarlo y la etiqueta lo dice al pasar el cursor. Se presenta mezclado con lo tuyo en
 cada vista, con su propia etiqueta, y sigue la misma semántica que un registro manual: es algo
 reportado, no medido por DevHQ. Una incidencia conserva quién la abrió; cada cambio de estado es
-un evento con la procedencia de quien lo hizo. La puerta todavía no existe (ver [Evolución
-prevista](#evolución-prevista)), así que hoy nada escribe registros `agent`.
+un evento con la procedencia de quien lo hizo. La [puerta para agentes](#puerta-para-agentes) por
+ahora solo lee, así que hoy nada escribe registros `agent`.
 
 - **Observación**: resultado (healthy/degraded/unhealthy), qué se vio, momento observado,
   momento registrado y vigencia (1 h–30 días). Es inmutable; se corrige registrando otra.
@@ -268,6 +268,47 @@ de ningún sistema.
   las dos carpetas.
 - Se restauran como cualquier copia (ver [Arquitectura](#arquitectura)). La preview rechaza el
   respaldo como toda escritura y muestra una carpeta de ejemplo.
+
+### Puerta para agentes
+
+`devhq --mcp` arranca la puerta para agentes: el mismo ejecutable, sin ventana ni WebView, habla el
+Model Context Protocol (JSON-RPC 2.0, un mensaje por línea en stdin y stdout) con un agente como
+Claude Code, para que haga lo que tú haces en la ventana cuando se lo pides. Se registra una sola vez,
+con alcance de usuario, y desde entonces cualquier sesión local de Claude Code la tiene:
+
+```sh
+claude mcp add --scope user devhq -- "<ruta del ejecutable de DevHQ>" --mcp
+```
+
+El instalador pone el ejecutable en `%LOCALAPPDATA%\DevHQ`. El cliente lanza la puerta al empezar una
+sesión y la termina al cerrarla (al cerrarse stdin): no abre ningún puerto, no acepta conexiones, no
+queda nada corriendo ni guarda credenciales. Abre el mismo `inventory.sqlite3` que la app, en el
+directorio de datos que Tauri le da (`%APPDATA%\com.devhq.desktop` en Windows; un test lo compara con
+el que resuelve Tauri), o el que se le indique con `--database <ruta>`. Si ahí no hay inventario, lo
+dice y no crea uno vacío donde tu DevHQ no lo encontraría. Por ahora solo lee:
+
+| Herramienta    | Qué responde                                                                                                                                                                                 |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `status`       | Qué archivo abrió, dónde lo guarda de verdad el sistema (`storedAt`, como Settings), su versión de esquema, cuántos sistemas tiene y qué no puede saber                                      |
+| `attention`    | «¿Qué necesita mi atención?» con el mismo orden que Overview, la cobertura, lo nunca observado y lo que nada supervisa; el estado solo es `covered` si todo tiene evidencia vigente          |
+| `list_systems` | Cada aplicación y recurso con su estado de evidencia y última observación, incidencias activas, comprobación HTTP y relaciones                                                               |
+| `get_system`   | Una aplicación o recurso (por ID, o por nombre exacto sin distinguir mayúsculas) con sus observaciones, incidencias y eventos cargados, y desde cuándo su historial automático está completo |
+| `history`      | Los resultados automáticos anteriores de un sistema, de 200 en 200, como la carga bajo demanda de la ventana                                                                                 |
+
+Todas se declaran de solo lectura (`readOnlyHint`). Cada respuesta dice lo que la ventana diría: una
+lista recortada lleva el aviso de su ventana de historial y nada sin evidencia vigente se presenta
+como sano. La atención se calcula con la copia en Rust de las reglas de la ventana, atada a ellas por
+`contract/attention/`. El estado en vivo de la supervisión (ejecución en curso, siguiente, último
+error de DevHQ) solo existe en el proceso de la ventana, y `status` dice que la puerta no lo conoce.
+Un fallo de un caso de uso vuelve como resultado con `isError` y el mismo mensaje que vería la
+ventana; un método o una herramienta desconocidos, como error de JSON-RPC.
+
+En Windows, una puerta lanzada desde una app empaquetada (MSIX), como la app de escritorio de Claude,
+ve `AppData` redirigido (ver [Arquitectura](#arquitectura)) y podría leer otro inventario: `status`
+lo dice con `storedAt`. Claude Code desde una terminal normal no está empaquetado. El workflow de
+Windows instala DevHQ y habla con la puerta del ejecutable instalado como lo hace un cliente MCP:
+comprueba que responde por stdin y stdout aunque no tenga consola, que abre el inventario de
+`%APPDATA%` y que termina al cerrarse su entrada.
 
 ## Ejecutar
 
@@ -563,9 +604,10 @@ cuentas, cloud, sync, telemetría, scanners, automation engine, Runner ni backgr
 1. Hecho: una comprobación HTTP(S) a petición con su propio `source`, sin cambiar la
    semántica de vigencia.
 2. Hecho: supervisión cancelable de esas comprobaciones, solo con DevHQ abierto.
-3. Siguiente: una puerta para agentes, un modo MCP por stdio del mismo ejecutable con el que un
-   agente lee y mantiene el inventario cuando se lo pides, con su procedencia siempre visible.
-   Es un diseño, todavía sin implementar: [docs/puerta-para-agentes.md](docs/puerta-para-agentes.md).
+3. En curso: la [puerta para agentes](#puerta-para-agentes), con la que un agente lee y mantiene el
+   inventario cuando se lo pides, con su procedencia siempre visible. Ya lee; escribir, el
+   interruptor de acceso y que la ventana abierta note sus cambios siguen en diseño:
+   [docs/puerta-para-agentes.md](docs/puerta-para-agentes.md).
 4. Después, automatizaciones con resultado e historial, y seguridad con almacén nativo de
    credenciales y evidencias contextualizadas.
 5. A largo plazo, una supervisión que siga con la ventana cerrada y avise de lo que necesita

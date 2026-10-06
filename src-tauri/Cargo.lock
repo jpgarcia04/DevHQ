@@ -591,6 +591,7 @@ dependencies = [
 name = "devhq"
 version = "0.1.0"
 dependencies = [
+ "dirs",
  "native-tls",
  "reqwest",
  "rusqlite",

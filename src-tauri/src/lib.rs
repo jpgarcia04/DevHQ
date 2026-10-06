@@ -1,9 +1,6 @@
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the agent gate is what asks for attention")
-)]
 mod attention;
 mod backup;
+pub mod gate;
 mod http_check;
 mod inventory;
 #[cfg(test)]

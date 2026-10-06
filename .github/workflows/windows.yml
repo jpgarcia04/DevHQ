@@ -266,6 +266,38 @@ jobs:
           if (-not $process.WaitForExit(20000)) { throw 'The installed DevHQ did not end after its window closed' }
           "Exit code: $($process.ExitCode)"
           if (Test-Path (Join-Path $data 'inventory.sqlite3-wal')) { throw 'A write-ahead log was left behind' }
+      # The agent gate is the same executable, built for the windows subsystem (no console), so
+      # this checks what Linux cannot: that it answers MCP over redirected stdin and stdout, as
+      # Claude Code drives it, finds the inventory where the installed app keeps it, and ends
+      # when its input closes.
+      - name: Ask the installed DevHQ's agent gate, as an MCP client does
+        run: |
+          $expected = Join-Path $env:APPDATA 'com.devhq.desktop\inventory.sqlite3'
+          $start = New-Object System.Diagnostics.ProcessStartInfo $env:DEVHQ_INSTALLED, '--mcp'
+          $start.UseShellExecute = $false
+          $start.RedirectStandardInput = $true
+          $start.RedirectStandardOutput = $true
+          $start.RedirectStandardError = $true
+          $gate = [System.Diagnostics.Process]::Start($start)
+          $gate.StandardInput.WriteLine('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","clientInfo":{"name":"windows-ci"}}}')
+          $gate.StandardInput.WriteLine('{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"status"}}')
+          $gate.StandardInput.WriteLine('{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"attention"}}')
+          $gate.StandardInput.Close()
+          $out = $gate.StandardOutput.ReadToEnd()
+          $err = $gate.StandardError.ReadToEnd()
+          if (-not $gate.WaitForExit(30000)) { throw 'The gate did not end when its input closed' }
+          "Exit code: $($gate.ExitCode)"
+          if ($err) { "stderr: $err" }
+          $replies = @($out -split "`n" | Where-Object { $_.Trim() } | ForEach-Object { $_ | ConvertFrom-Json })
+          if ($replies.Count -ne 3) { throw "Expected 3 replies, got $($replies.Count): $out" }
+          if ($replies[0].result.protocolVersion -ne '2025-06-18') { throw "initialize: $out" }
+          $status = $replies[1].result.structuredContent
+          "Gate opened $($status.database.database) (stored at: $($status.database.storedAt))"
+          if ($status.database.database -ne $expected) { throw "The gate opened $($status.database.database), not $expected" }
+          if (-not $status.exists) { throw 'The gate found no inventory where the installed app keeps it' }
+          if ($replies[2].result.isError) { throw "attention: $out" }
+          "Attention: $($replies[2].result.structuredContent.status)"
+          if ($gate.ExitCode -ne 0) { throw 'The gate failed' }
       # The uninstaller deletes the data folder only when "Delete the application data" is
       # ticked on its confirmation page, which a silent uninstall never shows.
       - name: Uninstall silently and check what stays
