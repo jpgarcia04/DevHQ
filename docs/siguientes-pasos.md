@@ -7,7 +7,7 @@ paso se termina, sale de aquí en el mismo commit; cuando no quede ninguno, esta
 
 Escrita el 6 oct 2026 desde una sesión local en la laptop con Windows, puesta al día esa noche, al
 fusionar el registro de cambios y proponer el diseño de las referencias, y el 7 oct, al implementar
-las referencias con las decisiones que la persona aprobó.
+las referencias con las decisiones que la persona aprobó y al ver pasar su CI.
 
 ## El plan, en corto
 
@@ -33,33 +33,38 @@ permisos por agente ni descubrir repositorios por su cuenta.
   [#3](https://github.com/jpgarcia04/DevHQ/pull/3) (la puerta, v9) y
   [#4](https://github.com/jpgarcia04/DevHQ/pull/4) (el registro de cambios, v10) están **fusionados**
   en `main`. #4 entró (`1a40caf`) con todo el CI de Linux y de Windows en verde al primer intento.
-- **Las referencias (etapa 2, esquema v11)** están hechas en `claude/references-design`, con su
-  pull request abierto; la fusión la decide la persona. Lo que la persona fijó al aprobar el diseño
+- **Las referencias (etapa 2, esquema v11)** están hechas en
+  [#5](https://github.com/jpgarcia04/DevHQ/pull/5) (`claude/references-design`, `a42e52f`), abierto;
+  la fusión la decide la persona. Su CI pasó entero al primer intento: los 5 checks de Linux y los 3
+  jobs de Windows (el previo; «Rust tests · NTFS, SChannel…», 13 min; «Installer, native walk…»,
+  18 min). Lo que la persona fijó al aprobar el diseño
   y queda en el README («Referencias»): se editan con su sistema, como los componentes, y el registro
   de cambios las cubre con un campo `references` en las acciones de siempre; la v11 solo copia el
   destino; `repository` es solo una URL web http(s), comparada por igualdad exacta; un destino es una
   URL http(s) o una ruta absoluta, y la etiqueta es un nombre para personas, nunca un localizador.
   Son inventario declarado, no evidencia: no llevan `source`.
-- **La primera carga, medida en las dos caminatas de #4.** La caminata dice cuánto tarda la ventana
+- **La primera carga, medida en las dos caminatas de #5.** La caminata dice cuánto tarda la ventana
   en poder manejarse tras arrancar DevHQ y, en el primer paso (y en cualquiera que falle), si la
   página está visible, cuánto lleva cargada y cuándo se pidió y se respondió cada llamada a DevHQ, en
   ms desde que cargó la página:
   - WebView2 («Installer, native walk…», bajo la protección en tiempo real): la ventana se pudo
-    manejar 4760 ms después de arrancar DevHQ; visible, con foco y cargada hacía 686 ms;
-    **`list_inventory` 532 → 560 ms (28 ms)**, con la actualización desde v6 y el paso a WAL
-    incluidos, y `watch_http_monitor` 531 → 563 ms. El paso tardó 407 ms. La puerta dejó de ver la
-    ventana 322 ms después de que DevHQ terminara.
-  - WebKitGTK: la ventana se pudo manejar 2426 ms después de arrancar DevHQ; visible, con foco y
-    cargada hacía 516 ms; el paso tardó 1679 ms. Ahí no hay tiempos de llamadas: Tauri llama a DevHQ
-    por `ipc://localhost/<comando>`, que no es HTTP, y la página solo mide peticiones HTTP(S)
-    (Resource Timing); en Windows llama por `http://ipc.localhost/<comando>`. Desde la etapa 2 la
-    caminata pregunta a Tauri adónde llama (`convertFileSrc('', 'ipc')`) y, en WebKitGTK, dice eso
-    en vez de «none recorded».
+    manejar 5077 ms después de arrancar DevHQ; visible, con foco y cargada hacía 1413 ms;
+    **`list_inventory` 1231 → 1255 ms (24 ms)**, con la actualización desde v6 y el paso a WAL
+    incluidos, y `watch_http_monitor` 1230 → 1259 ms. El paso tardó 726 ms. La puerta dejó de ver la
+    ventana 319 ms después de que DevHQ terminara. En #4 fueron 4760 ms, 686 ms, `list_inventory`
+    532 → 560 ms (28 ms), 407 ms y 322 ms: la llamada sigue tardando lo mismo.
+  - WebKitGTK: la ventana se pudo manejar 3036 ms después de arrancar DevHQ; visible, con foco y
+    cargada hacía 394 ms; el paso tardó 1373 ms (en #4, 2426, 516 y 1679 ms). Ahí no hay tiempos de
+    llamadas: Tauri llama a DevHQ por `ipc://localhost/<comando>`, que no es HTTP, y la página solo
+    mide peticiones HTTP(S) (Resource Timing); en Windows llama por `http://ipc.localhost/<comando>`.
+    Desde #5 la caminata pregunta a Tauri adónde llama (`convertFileSrc('', 'ipc')`) y lo dice en vez
+    de «none recorded»: «calls into DevHQ: not timed here, since Tauri sends them to
+    ipc://localhost/, which is not HTTP(S), and the page times only HTTP(S) requests».
 - **Un fallo intermitente sin explicar**, visto una vez en el primer intento del job «Installer,
   native walk…» de #3: el primer paso esperó 15 s a «Nothing is registered yet.» y la captura mostraba
   «Loading local inventory...», así que `list_inventory` no había respondido; pasaron 74 s entre el
-  arranque de msedgedriver y el fallo, y al relanzarlo el paso pasó en 901 ms. En #4 no volvió. Si
-  vuelve, leer su «window state»:
+  arranque de msedgedriver y el fallo, y al relanzarlo el paso pasó en 901 ms. En #4 y en #5 no
+  volvió. Si vuelve, leer su «window state»:
   - Si `list_inventory` falta mientras otras llamadas sí aparecen, o se respondió tarde, lo retiene
     Rust: buscar qué (las tres conexiones de la primera carga, la conversión a WAL, el antivirus);
     hacer `list_inventory` asíncrono, como ya son los comandos que esperan, al menos dejaría la
@@ -86,6 +91,16 @@ permisos por agente ni descubrir repositorios por su cuenta.
      Solo refs locales, sin red ni credenciales. El remoto real de una copia (también SSH) se guarda
      como evidencia, aparte de la referencia `repository`; compararlos exige normalizar URL, que la
      etapa 2 dejó fuera a propósito.
+   - Comprobado el 7 oct con Git 2.54 en Windows, en un repositorio cuya config nombraba programas
+     que solo dejaban una marca: `rev-parse`, `symbolic-ref`, `for-each-ref`, `rev-list` y
+     `config` no ejecutaron nada; `git status` ejecutó el hook de `core.fsmonitor` y el filtro
+     `clean` de `.gitattributes` sobre un archivo con el mtime cambiado, y reescribió `.git/index`
+     (`--no-optional-locks` evita la escritura; `-c core.fsmonitor=false`, el hook, pero no el
+     filtro); y `git log -1 --format=%ct` ejecutó `gpg.program` sobre un commit firmado porque la
+     config decía `log.showSignature=true`. Leer con el `git` instalado puede ejecutar lo que nombra
+     el repositorio, y su ruta la puede haber escrito un agente. gix ejecuta los drivers de filtro
+     externos (gix-filter); libgit2 solo aplica sus filtros internos (crlf, ident) y los que se
+     registran en código.
 2. **Abrir una referencia, si la persona lo quiere**, solo como subproducto: un comando Rust
    `open_reference(id)` que lee la referencia de SQLite y abre en el navegador solo URL http(s); la
    ventana nunca pasa una URL y el WebView no gana plugin ni permiso. Una ruta no se abre hasta que
