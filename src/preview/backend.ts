@@ -6,9 +6,12 @@ import type {
   BackupFolder,
   DataLocation,
   EventPage,
+  InventoryApplication,
+  InventoryResource,
   InventorySnapshot,
   MonitorStatus,
   ObservationPage,
+  SharedRepository,
 } from '@/features/inventory/inventory-api'
 import type { PreviewDatabase } from './sample'
 
@@ -48,6 +51,38 @@ const byName = <T extends { id: string; name: string }>(items: T[]) =>
   )
 
 /**
+ * Each repository URL more than one system declares, as the native process derives it at each
+ * read: by exact equality, in the order first declared (applications, then resources, in the
+ * snapshot's order), with every system that declares it.
+ */
+export function sharedRepositories(
+  applications: InventoryApplication[],
+  resources: InventoryResource[],
+): SharedRepository[] {
+  const found = new Map<string, EntityRef[]>()
+  const systems: { subject: EntityRef; system: InventoryApplication | InventoryResource }[] = [
+    ...applications.map((system) => ({
+      subject: { type: 'application' as const, id: system.id },
+      system,
+    })),
+    ...resources.map((system) => ({
+      subject: { type: 'resource' as const, id: system.id },
+      system,
+    })),
+  ]
+  for (const { subject, system } of systems)
+    for (const reference of system.references) {
+      if (reference.kind !== 'repository') continue
+      const declaring = found.get(reference.target) ?? []
+      if (!declaring.some((item) => sameSubject(item, subject))) declaring.push(subject)
+      found.set(reference.target, declaring)
+    }
+  return [...found]
+    .filter(([, declaring]) => declaring.length > 1)
+    .map(([target, declaring]) => ({ target, systems: declaring }))
+}
+
+/**
  * The read commands of the native process over sample data, with its windowing and paging
  * rules: every manual record but only the latest automated results of each system, and older
  * ones a page at a time from an anchor. Every write is refused. Only the preview loads this.
@@ -82,9 +117,12 @@ export function previewBackend(database: PreviewDatabase) {
       for (const item of own.slice(0, limit)) kept.add(item.id)
       if (own.length > limit) truncated.push({ subject, since: own[limit - 1]!.observedAt })
     }
+    const applications = byName(database.applications)
+    const resources = byName(database.resources)
     return {
-      applications: byName(database.applications),
-      resources: byName(database.resources),
+      applications,
+      resources,
+      sharedRepositories: sharedRepositories(applications, resources),
       observations: observations.filter((item) => !automated(item) || kept.has(item.id)),
       incidents: [...database.incidents].sort(
         (a, b) => Date.parse(b.openedAt) - Date.parse(a.openedAt),

@@ -59,12 +59,28 @@ const snapshot: InventorySnapshot = {
       lifecycle: 'production',
       version: null,
       components: [],
+      references: [],
     },
   ],
   resources: [
-    { id: 'web-host', name: 'Web host', kind: 'server', description: '', operatingSystem: '' },
-    { id: 'db-host', name: 'Database host', kind: 'server', description: '', operatingSystem: '' },
+    {
+      id: 'web-host',
+      name: 'Web host',
+      kind: 'server',
+      description: '',
+      operatingSystem: '',
+      references: [],
+    },
+    {
+      id: 'db-host',
+      name: 'Database host',
+      kind: 'server',
+      description: '',
+      operatingSystem: '',
+      references: [],
+    },
   ],
+  sharedRepositories: [],
   observations: [],
   incidents: [],
   events: [],
@@ -367,7 +383,14 @@ describe('status pushed by the native process', () => {
     ...snapshot,
     resources: [
       ...snapshot.resources,
-      { id: 'agent-box', name: 'Agent box', kind: 'server', description: '', operatingSystem: '' },
+      {
+        id: 'agent-box',
+        name: 'Agent box',
+        kind: 'server',
+        description: '',
+        operatingSystem: '',
+        references: [],
+      },
     ],
   }
 

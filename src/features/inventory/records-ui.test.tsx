@@ -88,6 +88,7 @@ const snapshot: InventorySnapshot = {
       lifecycle: 'production',
       version: null,
       components: [{ id: 'api', name: 'API', kind: 'backend', resourceId: 'db-host' }],
+      references: [],
     },
   ],
   resources: ['spare', 'web-host', 'db-host'].map((id) => ({
@@ -96,7 +97,9 @@ const snapshot: InventorySnapshot = {
     kind: 'server' as const,
     description: '',
     operatingSystem: '',
+    references: [],
   })),
+  sharedRepositories: [],
   observations: [
     observation('db-host', 'unhealthy', 10, 50),
     observation('web-host', 'healthy', 180, -120),

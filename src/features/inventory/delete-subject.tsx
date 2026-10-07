@@ -37,7 +37,7 @@ export function DeleteSubject({
     <section aria-label={`Delete ${name}`} className="space-y-3 border-t pt-4">
       <p className="text-[11px] leading-5 text-muted-foreground">
         {blocker ??
-          `Deleting removes ${name}${subject.type === 'application' ? ', its components' : ''} and its HTTP check for good. Only something without recorded history can be deleted.`}
+          `Deleting removes ${name}${subject.type === 'application' ? ', its components' : ''}, its references and its HTTP check for good. Only something without recorded history can be deleted.`}
       </p>
       {confirming ? (
         <div

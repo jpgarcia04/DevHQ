@@ -1175,6 +1175,7 @@ mod tests {
                 kind: "server".into(),
                 description: String::new(),
                 operating_system: "Linux".into(),
+                references: vec![],
             },
         )
         .unwrap();
@@ -1192,6 +1193,7 @@ mod tests {
                     kind: "backend".into(),
                     resource_id: Some(resource.id.clone()),
                 }],
+                references: vec![],
             },
         )
         .unwrap();
@@ -2231,6 +2233,7 @@ mod tests {
                             kind: "server".into(),
                             description: String::new(),
                             operating_system: "Linux".into(),
+                            references: vec![],
                         },
                     )
                     .unwrap();
@@ -2245,6 +2248,7 @@ mod tests {
                             lifecycle: "production".into(),
                             version: None,
                             components: Vec::new(),
+                            references: vec![],
                         },
                     )
                     .unwrap();

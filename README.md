@@ -29,8 +29,10 @@ abierta**. **No funciona en segundo plano ni opera sistemas.**
 - En Mi inventario: observaciones, incidencias y eventos manuales persistentes, con
   procedencia, hora y vigencia visibles.
 - En Mi inventario, un registro de cambios de la configuración: cada alta, edición o borrado de
-  aplicaciones, recursos, componentes y comprobaciones, tuyo o de un agente, con quién, cuándo y
-  cada campo antes y después, en Activity junto a lo demás.
+  aplicaciones, recursos, componentes, referencias y comprobaciones, tuyo o de un agente, con quién,
+  cuándo y cada campo antes y después, en Activity junto a lo demás.
+- En Mi inventario, las referencias de cada aplicación y recurso: dónde está su repositorio, sus
+  copias locales en cada estación de trabajo, su documentación, sus logs y su panel, para copiarlas.
 - Una comprobación HTTP(S) de solo lectura por aplicación o recurso, que se ejecuta a
   petición o, si activas su supervisión, cada 5–60 min mientras DevHQ está abierto, y
   registra una observación automática con su evidencia técnica.
@@ -57,11 +59,12 @@ aparecen como **no observados**; lifecycle no expresa health.
 Desde Mi inventario se crean y editan recursos y aplicaciones. Cada aplicación
 contiene componentes que pueden apuntar a un recurso existente. Al guardar una
 aplicación se reemplaza su lista de componentes de forma atómica: quitar un
-componente también quita su vínculo. Desde su formulario de edición, y tras confirmarlo,
-se puede borrar una aplicación o un recurso **sin historial**: con sus componentes y su
-comprobación HTTP. Lo que tiene observaciones, incidencias o eventos se conserva (una
-aplicación puede pasar a Archived), y un recurso en el que corre algún componente también,
-hasta desenlazarlo; la UI explica el motivo y Rust lo vuelve a comprobar, dentro de la
+componente también quita su vínculo. Las [referencias](#referencias) de una aplicación o un
+recurso se guardan igual, con él. Desde su formulario de edición, y tras confirmarlo,
+se puede borrar una aplicación o un recurso **sin historial**: con sus componentes, sus
+referencias y su comprobación HTTP. Lo que tiene observaciones, incidencias o eventos se conserva
+(una aplicación puede pasar a Archived), y un recurso en el que corre algún componente, o que
+guarda rutas de otros sistemas, también, hasta desenlazarlo; la UI explica el motivo y Rust lo vuelve a comprobar, dentro de la
 misma transacción, antes de borrar nada. Un recurso inexistente se rechaza antes
 de escribir la aplicación, igual que un componente repetido o que pertenece a otra
 aplicación. Rust guarda los textos sin espacios alrededor y rechaza (nunca recorta) los que
@@ -121,20 +124,21 @@ abierta; ese reloj no lee datos ni ejecuta comprobaciones.
 ### Registro de cambios
 
 Las observaciones, incidencias y eventos ya son historia: nunca se reescriben y dicen quién los
-registró. La configuración no: aplicaciones, recursos, componentes y comprobaciones HTTP(S) guardan
-solo cómo están ahora, y editarlas pisa el valor anterior. Su historia es el **registro de
+registró. La configuración no: aplicaciones, recursos, componentes, referencias y comprobaciones
+HTTP(S) guardan solo cómo están ahora, y editarlas pisa el valor anterior. Su historia es el **registro de
 cambios** (`change_log`), uno solo para ti y para los agentes, con el autor como un dato más: tú en
 la ventana (`manual`, «Manual entry») o un agente por la [puerta](#puerta-para-agentes) (`agent`, con
 el nombre que declaró su cliente, «Agent · _nombre_»).
 
 - Cada caso de uso que cambia la configuración escribe su entrada **en la misma transacción** que el
-  cambio: dar de alta, editar o borrar una aplicación o un recurso (con sus componentes), y
+  cambio: dar de alta, editar o borrar una aplicación o un recurso (con sus componentes y sus
+  referencias), y
   configurar, cambiar, pausar, reanudar o quitar una comprobación. Nunca hay un cambio sin su
   entrada ni una entrada sin su cambio. Un rechazo no deja nada, y guardar sin cambiar nada, pausar
   lo que ya estaba pausado o reanudar lo que ya estaba activo no es un cambio y tampoco.
 - Cada entrada guarda un resumen para leer («Updated application «Tienda»: version «1.3.0» →
   «1.4.0»») y, campo por campo, el valor anterior y el posterior, con los nombres de campo que usa
-  la ventana (`version`, `components`, `url`…): un alta, los valores con que nació; un borrado,
+  la ventana (`version`, `components`, `references`, `url`…): un alta, los valores con que nació; un borrado,
   todos los que tenía. Así el registro dice cómo llegó algo a su estado actual, no solo quién lo
   tocó.
 - Ejecutar una comprobación no cambia la configuración, y su observación es evidencia de DevHQ
@@ -152,6 +156,60 @@ el nombre que declaró su cliente, «Agent · _nombre_»).
   encuentra un inventario que ya tenía aplicaciones o recursos, anota ese momento y Activity dice que
   los cambios están completos desde entonces y que los anteriores hechos en la ventana no dejaron
   rastro; un inventario vacío, o uno nuevo, no tiene nada anterior que echar en falta y no lo dice.
+
+### Referencias
+
+Una aplicación o un recurso dice dónde está en el mundo con sus **referencias**: su repositorio, sus
+copias locales en cada estación de trabajo, su documentación, sus logs y su panel. Responden «¿dónde
+están sus logs, su documentación, su repositorio?» y, para un agente que trabaja en una carpeta,
+«¿qué sistema es este?». Son inventario que declaras tú o un agente, no evidencia: no llevan
+`source`, su rastro es el [registro de cambios](#registro-de-cambios) y DevHQ no las abre ni
+comprueba que existan o respondan. La ventana solo las copia.
+
+| Tipo            | En la ventana | Destino                                                                   |
+| --------------- | ------------- | ------------------------------------------------------------------------- |
+| `repository`    | Repository    | URL http(s): la ubicación canónica del código, no la copia de una máquina |
+| `local_copy`    | Local copy    | Ruta absoluta en un recurso `workstation`                                 |
+| `documentation` | Documentation | URL http(s) o ruta absoluta                                               |
+| `logs`          | Logs          | URL http(s) o ruta absoluta                                               |
+| `dashboard`     | Dashboard     | URL http(s)                                                               |
+
+- El destino es una URL http(s) o una ruta absoluta, y se guarda tal como se escribió, sin espacios
+  alrededor. La URL sigue las reglas de la comprobación HTTP(S): con host, sin usuario ni contraseña
+  y de 2048 caracteres como mucho; se guarda en texto plano, así que no lleva secretos. La ruta se
+  acepta en la forma de cualquier sistema, sea cual sea el que ejecuta DevHQ, porque puede ser de
+  otra máquina: `C:\…` (o `C:/…`), `\\servidor\recurso\…` o `/…`, de 2048 caracteres como mucho.
+  Nada más es un destino: ni rutas relativas, ni `~`, ni caracteres de control, ni remotos SSH. El
+  remoto real de una copia Git se observará como evidencia aparte, y los localizadores de unidades
+  de systemd o de contenedores llegarán con una integración que los necesite.
+- **Toda ruta dice en qué máquina está** (`machine_id`, un recurso), porque el mismo proyecto vive en
+  una carpeta distinta en cada equipo, y una URL no está en ninguna. La máquina de una copia local
+  es una estación de trabajo. Un recurso puede ser la máquina de sus propias rutas, como los logs de
+  un servidor en `/var/log/…`; en la ventana se elige como «This resource» una vez guardado.
+- La **etiqueta**, opcional y de hasta 120 caracteres, es un nombre para personas que distingue dos
+  referencias del mismo tipo (dos paneles, la documentación de la API y la de usuario). Nunca es un
+  localizador: no se copia ni se interpreta.
+- La misma referencia (tipo, destino y máquina) dos veces en un sistema se rechaza.
+- Se editan **dentro del formulario de su aplicación o recurso**, como los componentes: la lista que
+  se guarda es la completa, conserva el ID de cada referencia que sigue en ella y reemplaza la
+  anterior en la misma transacción que el resto del sistema, después de validarla entera; un rechazo
+  no cambia nada. El registro de cambios las cubre con un campo más, `references`, en las mismas
+  entradas de alta, edición y borrado.
+- **Monorepo**: varias aplicaciones, o un recurso, pueden declarar el mismo repositorio sin ninguna
+  entidad nueva. Cada lectura del inventario deriva en Rust qué repositorios declara más de un
+  sistema (`sharedRepositories`), por igualdad exacta de la URL, sin normalizarla, y la ventana y
+  la puerta dicen «Same repository as …». No se guarda.
+- Borrar una aplicación o un recurso borra sus referencias (`CASCADE`). Borrar un recurso que es la
+  máquina de rutas de **otros** sistemas se rechaza y dice de cuáles son, como un recurso en el que
+  corre un componente: quitarlas cambiaría la configuración de otro sistema sin su entrada en el
+  registro de cambios, y el esquema también lo impide (`RESTRICT`). Sus propias rutas no lo impiden:
+  el borrado las quita primero, porque SQLite aplica el `RESTRICT` de la máquina en el acto, antes
+  de la cascada del sujeto. Por la misma razón, un recurso que guarda copias locales de otros
+  sistemas no puede dejar de ser estación de trabajo, y el rechazo dice de qué sistemas son.
+- En la ventana, el Overview de cada aplicación y la tarjeta de cada recurso en Infrastructure
+  muestran sus referencias, con la máquina de cada ruta y un botón **Copy** para el destino, como la
+  ruta en Settings. Sin referencias dicen «No references yet»: no es atención ni hueco de cobertura,
+  porque no dice nada de cómo está el sistema.
 
 ### Comprobación HTTP(S)
 
@@ -340,20 +398,20 @@ para que el agente pueda explicarte dónde abrirla; las demás herramientas resp
 para copiarlo; DevHQ nunca lo ejecuta ni toca la configuración de Claude Code. Para leer basta Read
 only:
 
-| Herramienta    | Qué responde                                                                                                                                                                                                         |
-| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `status`       | Qué archivo abrió, dónde lo guarda de verdad el sistema (`storedAt`, como Settings), su versión de esquema, si hay una ventana de DevHQ abierta sobre él (`windowOpen`), cuántos sistemas tiene y qué no puede saber |
-| `attention`    | «¿Qué necesita mi atención?» con el mismo orden que Overview, la cobertura, lo nunca observado y lo que nada supervisa; el estado solo es `covered` si todo tiene evidencia vigente                                  |
-| `list_systems` | Cada aplicación y recurso con su estado de evidencia y última observación, incidencias activas, comprobación HTTP y relaciones                                                                                       |
-| `get_system`   | Una aplicación o recurso (por ID, o por nombre exacto sin distinguir mayúsculas) con sus observaciones, incidencias y eventos cargados, y desde cuándo su historial automático está completo                         |
-| `history`      | Los resultados automáticos anteriores de un sistema, de 200 en 200, como la carga bajo demanda de la ventana                                                                                                         |
+| Herramienta    | Qué responde                                                                                                                                                                                                                                                                                                         |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `status`       | Qué archivo abrió, dónde lo guarda de verdad el sistema (`storedAt`, como Settings), su versión de esquema, si hay una ventana de DevHQ abierta sobre él (`windowOpen`), cuántos sistemas tiene y qué no puede saber                                                                                                 |
+| `attention`    | «¿Qué necesita mi atención?» con el mismo orden que Overview, la cobertura, lo nunca observado y lo que nada supervisa; el estado solo es `covered` si todo tiene evidencia vigente                                                                                                                                  |
+| `list_systems` | Cada aplicación y recurso con su estado de evidencia y última observación, incidencias activas, comprobación HTTP, relaciones y referencias, con la máquina de cada ruta y qué otros sistemas declaran el mismo repositorio (`sameRepositoryAs`): un agente encuentra así su sistema por su carpeta o su repositorio |
+| `get_system`   | Una aplicación o recurso (por ID, o por nombre exacto sin distinguir mayúsculas) con sus referencias, sus observaciones, incidencias y eventos cargados, y desde cuándo su historial automático está completo                                                                                                        |
+| `history`      | Los resultados automáticos anteriores de un sistema, de 200 en 200, como la carga bajo demanda de la ventana                                                                                                                                                                                                         |
 
 Con Read and write, el agente también hace lo que tú haces en la ventana, pasando por los mismos
 casos de uso, con sus validaciones, límites y transacciones:
 
 | Herramienta                                      | Qué hace                                                                                                                                           |
 | ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `save_application`, `save_resource`              | Dar de alta (nombre y lifecycle, o nombre y tipo) o editar por ID                                                                                  |
+| `save_application`, `save_resource`              | Dar de alta (nombre y lifecycle, o nombre y tipo) o editar por ID, con sus componentes y sus referencias                                           |
 | `delete_application`, `delete_resource`          | Borrar lo que no tiene historial; lo demás se rechaza con el mismo motivo que en la ventana                                                        |
 | `record_observation`, `record_event`             | Registrar una observación (resultado, qué vio, vigencia) o un despliegue, respaldo, mantenimiento o nota                                           |
 | `open_incident`, `update_incident`               | Abrir una incidencia o cambiar su estado con una nota                                                                                              |
@@ -362,10 +420,11 @@ casos de uso, con sus validaciones, límites y transacciones:
 | `backup`                                         | Back up now                                                                                                                                        |
 
 Una edición es **parcial**: lo que el agente no manda se conserva, para que cambiar la versión nunca
-borre los componentes por omisión. La lista de componentes, cuando se manda, es la lista completa,
-como en el formulario, y un componente apunta a su recurso por ID o por nombre exacto. Los registros
-que escribe llevan `source = agent` y su nombre. La configuración (aplicaciones, recursos, componentes
-y comprobaciones) no tiene `source`: cada cambio que hace un agente queda en el
+borre los componentes ni las referencias por omisión. La lista de componentes y la de referencias,
+cuando se mandan, son la lista completa, como en el formulario; un componente apunta a su recurso, y
+una ruta a su máquina, por ID o por nombre exacto, y un recurso puede nombrarse a sí mismo como
+máquina de sus rutas desde el alta. Los registros que escribe llevan `source = agent` y su nombre. La
+configuración (aplicaciones, recursos, componentes, referencias y comprobaciones) no tiene `source`: cada cambio que hace un agente queda en el
 [registro de cambios](#registro-de-cambios) con su nombre, por los mismos casos de uso que la
 ventana y **en la misma transacción** que el cambio, después de comprobar ahí, con el lock de
 escritura de SQLite, que sigues permitiendo escribir. La respuesta incluye esa entrada (`change`), o
@@ -484,7 +543,7 @@ sin ella. El cliente WebDriver es un archivo propio sobre `fetch` (`e2e/native/w
 protocolo es JSON sobre HTTP, así que no hace falta ninguna dependencia, y cada petición que hace
 está a la vista. El recorrido parte de una base v6 en modo journal de rollback, como las anteriores
 a WAL. Abre Mi inventario, comprueba la ruta que muestra Settings y «Copy path», crea un recurso y
-una aplicación, registra una observación, supervisa una comprobación HTTP contra un servidor propio
+una aplicación con su repositorio como referencia, registra una observación, supervisa una comprobación HTTP contra un servidor propio
 en `127.0.0.1` (esa ejecución y la recarga de su evidencia solo llegan a la ventana por el
 `Channel` de supervisión), la ejecuta a petición, lee el panel Supervision y pulsa Back up now: el
 archivo debe estar en `backups/`, sin `.partial`, con `quick_check` correcto, la versión del
@@ -642,8 +701,8 @@ de Tauri. No hay servidor HTTP de aplicación, store global ni capa de repositor
 artificial. Los selectores de dominio no dependen de React ni de los mocks. Las vistas
 consumen explícitamente el escenario durante esta etapa.
 
-Rust expone `list_inventory` (una lectura consistente de inventario, registros y
-`httpChecks`), `data_location`, `backup_inventory`, `list_backups`, `save_application`, `save_resource`, `delete_application`,
+Rust expone `list_inventory` (una lectura consistente de inventario con sus referencias, registros
+y `httpChecks`), `data_location`, `backup_inventory`, `list_backups`, `save_application`, `save_resource`, `delete_application`,
 `delete_resource`, `record_observation`, `older_observations`, `older_events`, `open_incident`,
 `update_incident_status`, `record_event`, `save_http_check`, `set_http_check_paused`,
 `remove_http_check`, `run_http_check` y `watch_http_monitor`. Los comandos de
@@ -654,7 +713,7 @@ asíncrono porque lanza la tarea que alimenta el `Channel`: Tauri ejecuta un com
 que recibe la petición (el principal), que no tiene runtime de Tokio, y lanzarla desde ahí provocaba un
 pánico que en Linux abortaba el proceso al abrir Mi inventario (lo comprueba `npm run e2e:native`). Abre
 `inventory.sqlite3` en el directorio de datos de la aplicación que proporciona Tauri; las
-migraciones transaccionales v1→v10 usan `PRAGMA user_version` y una versión más nueva se
+migraciones transaccionales v1→v11 usan `PRAGMA user_version` y una versión más nueva se
 rechaza en vez de adivinarse. Cada apertura solo lee esa versión: únicamente una base antigua
 toma el lock de escritura para migrar, y dentro vuelve a leerla por si otra conexión ya lo
 hizo. La base usa write-ahead logging (WAL): un lector trabaja sobre el último estado
@@ -707,7 +766,11 @@ cambio de un agente (`source = agent`) sin campos estructurados (`changes` nulo)
 y crea los mismos índices. Un CHECK exige que `changes`, cuando existe, sea una lista JSON y que el
 nombre del agente esté exactamente cuando el autor es un agente. Añade `change_log_start`, con una
 fila como mucho: el momento de la actualización, solo si el inventario ya tenía aplicaciones o
-recursos. Ninguna otra fila cambia. Los
+recursos. Ninguna otra fila cambia. La v11 solo añade `system_references`, las
+[referencias](#referencias), con sus índices por sistema y por máquina; ninguna fila cambia. Sus CHECK
+imponen lo que SQL puede decir: un tipo conocido, un destino y una etiqueta sin espacios alrededor y
+dentro de sus límites, que una URL no tenga máquina y una ruta absoluta sí, que un repositorio y un
+panel sean URL y que una copia local sea una ruta; Rust comprueba el resto antes de escribir. Los
 registros usan dos columnas con clave foránea (`application_id`/`resource_id`) y un CHECK
 que exige exactamente una; las referencias de historial son `ON DELETE RESTRICT`, así que
 nada puede borrar un sujeto y dejar evidencia huérfana; los casos de uso de borrado lo
@@ -745,9 +808,11 @@ cuentas, cloud, sync, telemetría, scanners, automation engine, Runner ni backgr
    [docs/puerta-para-agentes.md](docs/puerta-para-agentes.md).
 4. Hecho: un [registro de cambios](#registro-de-cambios) común para ti y para los agentes, con el
    autor, cuándo y cada campo antes y después: la configuración deja rastro igual que la evidencia.
-5. Después, automatizaciones con resultado e historial, y seguridad con almacén nativo de
+5. Hecho: las [referencias](#referencias) de cada aplicación y recurso (repositorio, copias locales,
+   documentación, logs y panel), que declaras tú o un agente y DevHQ solo copia.
+6. Después, automatizaciones con resultado e historial, y seguridad con almacén nativo de
    credenciales y evidencias contextualizadas.
-6. A largo plazo, una supervisión que siga con la ventana cerrada y avise de lo que necesita
+7. A largo plazo, una supervisión que siga con la ventana cerrada y avise de lo que necesita
    atención, hecha por DevHQ mismo y no por un agente. Contradice que DevHQ no funcione en segundo plano, así que exige revisar esa regla y
    cuidar lo que consume.
 
@@ -763,7 +828,7 @@ no una especificación ni un backlog: nada de lo que describe existe hasta que e
 Las pruebas cubren navegación, tabs/teclado, filtros, rutas desconocidas, relaciones
 compartidas, cronología de la demo, salud desconocida, persistencia tras reapertura,
 rechazo de referencias inválidas sin escrituras parciales, restricciones del esquema,
-migraciones v1/v2→v3, v3→v4, v4→v5, v5→v6, v6→v7, v7→v8, v8→v9 y v9→v10 (incluida la negativa a confirmar relaciones rotas),
+migraciones v1/v2→v3, v3→v4, v4→v5, v5→v6, v6→v7, v7→v8, v8→v9, v9→v10 y v10→v11 (incluida la negativa a confirmar relaciones rotas),
 vigencia y sustitución de observaciones de ambos orígenes, orden de atención, errores de
 carga visibles y recuperables, comprobaciones contra un servidor local (estado esperado,
 500, redirect, bucle de redirects, tiempo agotado, conexión rechazada, dominio `.invalid`
@@ -771,8 +836,13 @@ y fallo TLS), configuraciones inválidas sin escrituras parciales, errores de De
 no producen observación, la distinción de origen en cada vista real, el contrato IPC de cada comando, el contrato de atención, el respaldo
 (las mismas filas que el origen comparadas una a una, sin lo no confirmado y sin esperar a un escritor,
 sin reemplazar ni borrar un archivo ajeno, uno a la vez, y una copia dañada que se descarta sin nombre
-final) y el borrado (qué lo
-impide, la confirmación y que un resultado tardío de un sujeto borrado no se registra). La supervisión se
+final), el borrado (qué lo
+impide, la confirmación y que un resultado tardío de un sujeto borrado no se registra) y las
+referencias: cada destino que se rechaza y por qué, las máquinas, los duplicados, los ID que se
+conservan, el registro de cambios con el campo `references`, el repositorio compartido por igualdad
+exacta (en Rust, en la puerta y en la preview), el recurso que guarda copias locales de otros y no
+deja de ser estación de trabajo, y el que es máquina de sus propias rutas y se borra con ellas pero no
+con las de otros. La supervisión se
 prueba sobre un reloj simulado de Tokio, sin esperas reales: ritmo por intervalo,
 continuidad tras reabrir, una sola ejecución por atraso, sin solapes, Run check que se une
 a la ejecución en vuelo, pausa, cancelación al quitar o cerrar (también de una ejecución que

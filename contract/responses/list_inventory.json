@@ -9,6 +9,22 @@
       "components": [
         { "id": "api", "name": "API", "kind": "backend", "resourceId": "host" },
         { "id": "db", "name": "Database", "kind": "database", "resourceId": null }
+      ],
+      "references": [
+        {
+          "id": "shop-repo",
+          "kind": "repository",
+          "target": "https://github.com/me/platform",
+          "label": null,
+          "machineId": null
+        },
+        {
+          "id": "shop-logs",
+          "kind": "logs",
+          "target": "/var/log/shop",
+          "label": "API",
+          "machineId": "host"
+        }
       ]
     }
   ],
@@ -18,7 +34,32 @@
       "name": "Host",
       "kind": "server",
       "description": "Rack 2",
-      "operatingSystem": "Debian 13"
+      "operatingSystem": "Debian 13",
+      "references": [
+        {
+          "id": "host-repo",
+          "kind": "repository",
+          "target": "https://github.com/me/platform",
+          "label": null,
+          "machineId": null
+        },
+        {
+          "id": "host-dashboard",
+          "kind": "dashboard",
+          "target": "https://grafana.example/d/host",
+          "label": null,
+          "machineId": null
+        }
+      ]
+    }
+  ],
+  "sharedRepositories": [
+    {
+      "target": "https://github.com/me/platform",
+      "systems": [
+        { "type": "application", "id": "shop" },
+        { "type": "resource", "id": "host" }
+      ]
     }
   ],
   "observations": [

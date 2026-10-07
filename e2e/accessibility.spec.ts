@@ -10,6 +10,12 @@ const pages: { name: string; path: string; open?: string }[] = [
   { name: 'overview, inventory unavailable', path: '/preview.html?scenario=unavailable#/' },
   { name: 'applications', path: '/preview.html#/applications' },
   { name: 'new application form', path: '/preview.html#/applications', open: 'New application' },
+  // With its references: kind, URL or path, machine and label for each.
+  {
+    name: 'edit application form',
+    path: '/preview.html#/applications/shop',
+    open: 'Edit application',
+  },
   { name: 'application', path: '/preview.html#/applications/shop' },
   {
     name: 'application, inventory unavailable',
@@ -29,6 +35,11 @@ const pages: { name: string; path: string; open?: string }[] = [
   },
   { name: 'HTTP check form', path: '/preview.html#/applications/shop', open: 'Edit check' },
   { name: 'infrastructure', path: '/preview.html#/infrastructure' },
+  {
+    name: 'edit resource form',
+    path: '/preview.html#/infrastructure?resource=web-host',
+    open: 'Edit',
+  },
   {
     name: 'resource history',
     path: '/preview.html#/infrastructure?resource=web-host',

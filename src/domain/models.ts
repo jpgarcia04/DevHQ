@@ -3,6 +3,11 @@ export type Lifecycle = 'development' | 'testing' | 'production' | 'archived'
 export type IncidentSeverity = 'info' | 'warning' | 'critical'
 export type IncidentStatus = 'open' | 'investigating' | 'resolved'
 export type ComponentKind = 'backend' | 'database' | 'docker' | 'frontend'
+/**
+ * Where a system is: concepts, never providers. A repository and a dashboard are web addresses, a
+ * local copy is a path on a workstation, and documentation and logs can be either.
+ */
+export type ReferenceKind = 'repository' | 'local_copy' | 'documentation' | 'logs' | 'dashboard'
 
 export interface ApplicationComponent {
   id: string

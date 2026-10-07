@@ -230,8 +230,8 @@ que es: algo reportado por ese agente, con su fecha.
 
 Tres capas que no se mezclan:
 
-- **Inventario**: qué existe y cómo se relaciona. Aplicaciones, recursos, componentes y, más
-  adelante, referencias y más relaciones. Cambia poco y lo declaras tú o un agente. Guarda cómo está
+- **Inventario**: qué existe y cómo se relaciona. Aplicaciones, recursos, componentes, referencias
+  y, más adelante, más relaciones. Cambia poco y lo declaras tú o un agente. Guarda cómo está
   cada cosa ahora; su historia vive en el registro de cambios (ver «Estado actual e historia»).
 - **Evidencia**: qué pasó y qué se vio. Observaciones, incidencias y eventos, inmutables, con
   procedencia, momento observado y registrado, y vigencia. Los despliegues y la actividad de un
@@ -293,8 +293,8 @@ auditoría, crece desde este registro.
 
 ### Cómo crecer sin romperlo
 
-Cada tabla que cuelga de un sujeto (`observations`, `incidents`, `events`, `http_checks` y
-`change_log`) lo señala con dos columnas, `application_id` y `resource_id`, y un CHECK que exige
+Cada tabla que cuelga de un sujeto (`observations`, `incidents`, `events`, `http_checks`,
+`change_log` y `system_references`) lo señala con dos columnas, `application_id` y `resource_id`, y un CHECK que exige
 exactamente una. Un tercer tipo de sujeto añadiría una columna a cada una y obligaría a
 reconstruirlas, porque SQLite no cambia un CHECK con ALTER, como hicieron la v4 y la v7. Por eso lo
 nuevo que se observa entra, mientras quepa, como **tipo de recurso** (una base de datos compartida,
@@ -335,10 +335,10 @@ ni a mantenerla al día. Por eso:
 | ¿Qué está desplegado, dónde y con qué versión?           | Despliegues con versión o commit y destino                                               | En parte: lifecycle, la versión como texto y eventos de despliegue a mano, sin destino ni commit                          |
 | ¿Qué tiene cambios sin desplegar?                        | El repositorio de cada aplicación, el commit del último despliegue y leer el repositorio | No                                                                                                                        |
 | ¿Qué lleva meses sin actividad?                          | Actividad observada: commits, despliegues                                                | No: solo existe la actividad que se registra en DevHQ                                                                     |
-| ¿Dónde están sus logs, su documentación, su repositorio? | Referencias                                                                              | No: solo la descripción libre                                                                                             |
+| ¿Dónde están sus logs, su documentación, su repositorio? | Referencias                                                                              | Sí: las referencias de cada aplicación y recurso (v11), en la ventana y en la puerta; DevHQ no comprueba que existan      |
 | ¿Qué dominio o certificado caduca pronto?                | Dominios como recurso y la caducidad del certificado como evidencia                      | No                                                                                                                        |
 | ¿Cómo llegó esto a su estado actual?                     | La evidencia y un registro de cambios común                                              | Sí: la evidencia, el historial de cada incidencia y el registro de cambios, tuyos y de los agentes, completo desde la v10 |
-| ¿Qué debe saber un agente que entra a este proyecto?     | Un resumen por sistema con referencias, relaciones y estado                              | En parte: `get_system` de la puerta                                                                                       |
+| ¿Qué debe saber un agente que entra a este proyecto?     | Un resumen por sistema con referencias, relaciones y estado                              | En parte: `get_system` de la puerta, con sus referencias; `list_systems` le dice qué sistema es su carpeta                |
 
 ## Líneas de evolución posibles
 
@@ -349,9 +349,10 @@ concretos y su orden están en «Evolución prevista» del README; este document
    igual que lo que cambia un agente, en un único registro con el actor, el valor anterior y el
    posterior. Sin credenciales ni operaciones; es la base de la trazabilidad que pedirán las
    capacidades operativas.
-2. **Referencias**: dónde está cada cosa (repositorio, ruta local en cada estación de trabajo,
-   documentación, logs, panel del proveedor). Barato y sin credenciales; hace útiles los resúmenes
-   para agentes y comodidades como abrir la carpeta.
+2. **Referencias** (hecho, esquema v11): dónde está cada cosa (repositorio, ruta local en cada
+   estación de trabajo, documentación, logs, panel del proveedor), declarada por ti o por un agente.
+   Barato y sin credenciales; hace útiles los resúmenes para agentes y, más adelante, comodidades
+   como abrir la carpeta: hoy DevHQ solo copia el destino.
 3. **Más tipos de recurso y de relación**: bases de datos compartidas y dominios como recursos, un
    recurso que corre en otro, una aplicación que usa otra. Responde qué se cae si cae algo.
 4. **Despliegues con estructura**: el evento de despliegue con versión o commit, entorno y recurso

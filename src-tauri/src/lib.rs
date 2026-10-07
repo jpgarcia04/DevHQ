@@ -9,6 +9,7 @@ mod inventory;
 mod ipc_contract;
 mod monitor;
 mod records;
+mod references;
 mod window_lock;
 
 use monitor::{Monitor, MonitorStatus};

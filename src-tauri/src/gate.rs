@@ -15,6 +15,7 @@ use crate::attention::{self, AttentionItem};
 use crate::http_check::HttpCheck;
 use crate::inventory::{self, ApiError, Inventory};
 use crate::records::{self, Subject};
+use crate::references::Reference;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
@@ -449,7 +450,7 @@ fn permitted(mode: &str, need: &str) -> Result<(), ApiError> {
     }
 }
 
-const INSTRUCTIONS: &str = "DevHQ is the person's local operations inventory: applications, the resources they run on, and the evidence about them (observations, incidents, events, HTTP checks). Start with `attention` to answer «what needs my attention?». Never present a system without current evidence as healthy: unobserved and expired evidence are gaps, not health. Every record says who produced it (`source`: manual, http or agent) and when.";
+const INSTRUCTIONS: &str = "DevHQ is the person's local operations inventory: applications, the resources they run on, where each one is (its references: repository, local copies, documentation, logs, dashboard), and the evidence about them (observations, incidents, events, HTTP checks). Working in a folder, an agent can find its system by a local copy's path or by its repository's URL in `list_systems`. Start with `attention` to answer «what needs my attention?». Never present a system without current evidence as healthy: unobserved and expired evidence are gaps, not health. Every record says who produced it (`source`: manual, http or agent) and when.";
 
 /// Every application, then every resource, in the inventory's order.
 fn subjects(inventory: &Inventory) -> Vec<Subject> {
@@ -510,8 +511,42 @@ impl Names {
     }
 }
 
+/// Where a system is, as an agent reads it: each path's machine by name, and for a repository
+/// the other systems that declare the same one, derived at this read as the window derives it.
+fn reference_list(
+    inventory: &Inventory,
+    names: &Names,
+    subject: &Subject,
+    references: &[Reference],
+) -> Vec<Value> {
+    references
+        .iter()
+        .map(|reference| {
+            let mut value = json!({
+                "id": reference.id,
+                "kind": reference.kind,
+                "target": reference.target,
+                "label": reference.label,
+                "machine": reference.machine_id.as_ref().map(|id| names.system(&Subject::Resource { id: id.clone() })),
+            });
+            if reference.kind == "repository" {
+                let shared: Vec<Value> = inventory
+                    .shared_repositories
+                    .iter()
+                    .filter(|repository| repository.target == reference.target)
+                    .flat_map(|repository| &repository.systems)
+                    .filter(|system| *system != subject)
+                    .map(|system| names.system(system))
+                    .collect();
+                value["sameRepositoryAs"] = json!(shared);
+            }
+            value
+        })
+        .collect()
+}
+
 /// What the window shows about a system at a glance: identity, evidence, active incidents and
-/// its HTTP check, plus what it is related to.
+/// its HTTP check, plus what it is related to and where it is.
 fn summary(
     inventory: &Inventory,
     names: &Names,
@@ -542,7 +577,7 @@ fn summary(
                 .collect();
             json!({ "system": names.system(subject), "application": application.map(|item| json!({
                 "description": item.description, "lifecycle": item.lifecycle, "version": item.version,
-            })), "components": components })
+            })), "components": components, "references": application.map(|item| reference_list(inventory, names, subject, &item.references)) })
         }
         Subject::Resource { id } => {
             let resource = inventory.resources.iter().find(|item| &item.id == id);
@@ -562,7 +597,7 @@ fn summary(
                 .collect();
             json!({ "system": names.system(subject), "resource": resource.map(|item| json!({
                 "description": item.description, "kind": item.kind, "operatingSystem": item.operating_system,
-            })), "usedBy": used_by })
+            })), "usedBy": used_by, "references": resource.map(|item| reference_list(inventory, names, subject, &item.references)) })
         }
     };
     if let Value::Object(object) = &mut value {
@@ -710,14 +745,14 @@ fn read_tools() -> Vec<Value> {
         read_only(
             "list_systems",
             "List applications and resources",
-            "Every application and resource with its evidence state and latest observation, active incidents, HTTP check and relations (components and what they run on; what uses each resource).",
+            "Every application and resource with its evidence state and latest observation, active incidents, HTTP check, relations (components and what they run on; what uses each resource) and references: where its repository, its local copies (each path with the machine it is on), its documentation, its logs and its dashboard are, and which other systems declare the same repository (`sameRepositoryAs`, by exact URL). References are declared inventory: DevHQ never opens or checks them.",
             json!({}),
             &[],
         ),
         read_only(
             "get_system",
             "System detail",
-            "One application or resource with every loaded observation, incident and event about it, every change to its configuration (who made it, and each field before and after), newest first, and from when its automated results are complete.",
+            "One application or resource with its references (as list_systems gives them), every loaded observation, incident and event about it, every change to its configuration (who made it, and each field before and after), newest first, and from when its automated results are complete.",
             system_arguments(json!({})),
             &["type"],
         ),
@@ -769,6 +804,7 @@ mod tests {
                 kind: "server".into(),
                 description: String::new(),
                 operating_system: "Debian 13".into(),
+                references: vec![],
             },
         )
         .unwrap();
@@ -780,6 +816,7 @@ mod tests {
                 kind: "workstation".into(),
                 description: String::new(),
                 operating_system: String::new(),
+                references: vec![],
             },
         )
         .unwrap();
@@ -797,6 +834,7 @@ mod tests {
                     kind: "backend".into(),
                     resource_id: Some(host.id.clone()),
                 }],
+                references: vec![],
             },
         )
         .unwrap();
@@ -1151,6 +1189,7 @@ mod tests {
                 lifecycle: "development".into(),
                 version: None,
                 components: vec![],
+                references: vec![],
             },
         )
         .unwrap();
@@ -1613,6 +1652,168 @@ mod tests {
             .map(|change| change["action"].as_str().unwrap())
             .collect();
         assert_eq!(actions, ["updated", "updated", "updated", "created"]);
+        remove(&path);
+    }
+
+    #[test]
+    fn agents_declare_where_systems_are_and_find_them_by_it() {
+        let path = path();
+        let (shop, host) = seed(&path);
+        crate::access::set_agent_access(&path, "write").unwrap();
+        let mut agent = session(&path, "claude-code");
+        // A new resource can be the machine of its own paths, named by the name it is given.
+        let laptop = use_tool(
+            &mut agent,
+            "save_resource",
+            json!({ "name": "Laptop", "kind": "workstation", "references": [
+                { "kind": "logs", "target": r"C:\ProgramData\Agent\logs", "machine": "laptop" },
+            ] }),
+        )
+        .unwrap();
+        let laptop_id = laptop["resource"]["id"].as_str().unwrap().to_owned();
+        assert_eq!(
+            laptop["resource"]["references"][0]["machineId"],
+            laptop_id.as_str()
+        );
+        // Each path's machine by exact name, ignoring case, or by id; the list is complete.
+        let saved = use_tool(
+            &mut agent,
+            "save_application",
+            json!({ "id": shop, "references": [
+                { "kind": "repository", "target": "https://github.com/me/platform" },
+                { "kind": "local_copy", "target": r"C:\src\platform", "machine": "LAPTOP", "label": "Work" },
+                { "kind": "logs", "target": "/var/log/shop", "machine": host },
+            ] }),
+        )
+        .unwrap();
+        assert_eq!(
+            saved["change"]["summary"],
+            r"Updated application «Shop»: references none → repository https://github.com/me/platform, local copy «Work» C:\src\platform on Laptop, logs /var/log/shop on Web host"
+        );
+        // An edit that leaves them out keeps them, as it keeps the components.
+        let versioned = use_tool(
+            &mut agent,
+            "save_application",
+            json!({ "id": shop, "version": "2.5.0" }),
+        )
+        .unwrap();
+        assert_eq!(
+            versioned["application"]["references"],
+            saved["application"]["references"]
+        );
+        assert_eq!(
+            versioned["application"]["components"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        // Another application in the same repository, as the parts of a monorepo are.
+        let admin = use_tool(
+            &mut agent,
+            "save_application",
+            json!({ "name": "Admin", "lifecycle": "development", "references": [
+                { "kind": "repository", "target": "https://github.com/me/platform" },
+            ] }),
+        )
+        .unwrap();
+        let admin_id = admin["application"]["id"].as_str().unwrap().to_owned();
+
+        let listed = answer(&path, "list_systems", json!({}));
+        let system = |name: &str| -> Value {
+            listed["applications"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .chain(listed["resources"].as_array().unwrap())
+                .find(|item| item["system"]["name"] == name)
+                .unwrap()
+                .clone()
+        };
+        let shown: Vec<Value> = system("Shop")["references"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| {
+                let mut item = item.clone();
+                item.as_object_mut().unwrap().remove("id");
+                item
+            })
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                json!({ "kind": "repository", "target": "https://github.com/me/platform", "label": null, "machine": null,
+                        "sameRepositoryAs": [{ "type": "application", "id": admin_id, "name": "Admin" }] }),
+                json!({ "kind": "local_copy", "target": r"C:\src\platform", "label": "Work",
+                        "machine": { "type": "resource", "id": laptop_id, "name": "Laptop" } }),
+                json!({ "kind": "logs", "target": "/var/log/shop", "label": null,
+                        "machine": { "type": "resource", "id": host, "name": "Web host" } }),
+            ]
+        );
+        assert_eq!(
+            system("Admin")["references"][0]["sameRepositoryAs"][0]["name"],
+            "Shop"
+        );
+        assert_eq!(system("Spare box")["references"], json!([]));
+        // Working in a folder, an agent finds which system it is.
+        let here: Vec<&str> = listed["applications"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| {
+                item["references"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|reference| reference["target"] == r"C:\src\platform")
+            })
+            .map(|item| item["system"]["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(here, ["Shop"]);
+        let detail = answer(
+            &path,
+            "get_system",
+            json!({ "type": "resource", "name": "Laptop" }),
+        );
+        assert_eq!(
+            detail["system"]["references"][0]["machine"]["name"],
+            "Laptop"
+        );
+
+        // Refused as the window's save refuses them, and nothing changes.
+        let logged = changes(&path).len();
+        for (tool, arguments, why) in [
+            (
+                "save_application",
+                json!({ "id": shop, "references": "https://github.com/me/platform" }),
+                "references must be a list",
+            ),
+            (
+                "save_application",
+                json!({ "id": shop, "references": [{ "target": "https://x.example" }] }),
+                "The argument kind is required",
+            ),
+            (
+                "save_application",
+                json!({ "id": shop, "references": [{ "kind": "local_copy", "target": "/srv/shop", "machine": "Web host" }] }),
+                "Web host is a server, not a workstation",
+            ),
+            (
+                "save_resource",
+                json!({ "id": laptop_id, "kind": "server" }),
+                r"Laptop holds local copies of other systems: Shop (local copy C:\src\platform)",
+            ),
+            (
+                "delete_resource",
+                json!({ "name": "Laptop" }),
+                r"Laptop holds paths of other systems: Shop (local copy C:\src\platform)",
+            ),
+        ] {
+            let refused = use_tool(&mut agent, tool, arguments).unwrap_err();
+            assert!(refused.contains(why), "{refused}");
+        }
+        assert_eq!(changes(&path).len(), logged);
         remove(&path);
     }
 

@@ -4,6 +4,9 @@
     "name": "Host",
     "kind": "workstation",
     "description": "Rack 2",
-    "operatingSystem": "Debian 13"
+    "operatingSystem": "Debian 13",
+    "references": [
+      { "kind": "logs", "target": "/var/log/syslog", "label": "System", "machineId": "host" }
+    ]
   }
 }

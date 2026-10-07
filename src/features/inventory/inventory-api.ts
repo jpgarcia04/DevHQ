@@ -12,7 +12,23 @@ import type {
   RecordedEvent,
   RecordedIncident,
   RecordSource,
+  ReferenceKind,
 } from '@/domain/models'
+
+/**
+ * Where a system is, as the person or an agent declared it: inventory, not evidence, so it has no
+ * source; the change log is its trace. DevHQ never opens or checks it.
+ */
+export interface InventoryReference {
+  id: string
+  kind: ReferenceKind
+  /** An http(s) URL or an absolute path, as typed. */
+  target: string
+  /** A name for people that tells two references of one kind apart; never a locator. */
+  label: string | null
+  /** The resource a path is on; null for a URL. */
+  machineId: string | null
+}
 
 export interface InventoryResource {
   id: string
@@ -20,6 +36,7 @@ export interface InventoryResource {
   kind: 'server' | 'workstation'
   description: string
   operatingSystem: string
+  references: InventoryReference[]
 }
 
 export interface InventoryComponent {
@@ -36,6 +53,17 @@ export interface InventoryApplication {
   lifecycle: Lifecycle
   version: string | null
   components: InventoryComponent[]
+  references: InventoryReference[]
+}
+
+/**
+ * A repository URL more than one system declares, as the parts of a monorepo do: derived by the
+ * native process at each read, by exact equality of the URL, and never stored.
+ */
+export interface SharedRepository {
+  target: string
+  /** Applications first, then resources, in the inventory's order. */
+  systems: EntityRef[]
 }
 
 /**
@@ -114,6 +142,7 @@ export interface EventPage {
 export interface InventorySnapshot {
   applications: InventoryApplication[]
   resources: InventoryResource[]
+  sharedRepositories: SharedRepository[]
   observations: Observation[]
   incidents: RecordedIncident[]
   events: RecordedEvent[]
@@ -245,10 +274,18 @@ export interface BackupFolder {
   files: BackupFile[]
 }
 
-export type ResourceInput = Omit<InventoryResource, 'id'> & { id?: string }
-export type ApplicationInput = Omit<InventoryApplication, 'id' | 'components'> & {
+/** A reference to keep (with its ID) or to add. */
+export type ReferenceInput = Omit<InventoryReference, 'id'> & { id?: string }
+/** `references` is the complete list: the save replaces the stored one. */
+export type ResourceInput = Omit<InventoryResource, 'id' | 'references'> & {
+  id?: string
+  references: ReferenceInput[]
+}
+/** `components` and `references` are complete lists: the save replaces the stored ones. */
+export type ApplicationInput = Omit<InventoryApplication, 'id' | 'components' | 'references'> & {
   id?: string
   components: (Omit<InventoryComponent, 'id'> & { id?: string })[]
+  references: ReferenceInput[]
 }
 export interface ObservationInput {
   subject: EntityRef
@@ -300,7 +337,7 @@ export const inventoryApi = {
     invoke<InventoryApplication>('save_application', { input }),
   /** Refused while it has records: DevHQ never erases history. */
   deleteApplication: (id: string) => invoke<null>('delete_application', { id }),
-  /** Refused while it has records or a component runs on it. */
+  /** Refused while it has records, a component runs on it or it holds another system's paths. */
   deleteResource: (id: string) => invoke<null>('delete_resource', { id }),
   recordObservation: (input: ObservationInput) =>
     invoke<Observation>('record_observation', { input }),

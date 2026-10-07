@@ -54,6 +54,7 @@ const snapshot: InventorySnapshot = {
         { id: 'db', name: 'Orders', kind: 'database', resourceId: 'db-host' },
         { id: 'jobs', name: 'Jobs', kind: 'docker', resourceId: null },
       ],
+      references: [],
     },
     {
       id: 'blog',
@@ -62,6 +63,7 @@ const snapshot: InventorySnapshot = {
       lifecycle: 'production',
       version: null,
       components: [{ id: 'blog-web', name: 'Site', kind: 'frontend', resourceId: 'web-host' }],
+      references: [],
     },
     {
       id: 'empty',
@@ -70,6 +72,7 @@ const snapshot: InventorySnapshot = {
       lifecycle: 'development',
       version: null,
       components: [],
+      references: [],
     },
   ],
   resources: [
@@ -79,9 +82,24 @@ const snapshot: InventorySnapshot = {
       kind: 'server',
       description: '',
       operatingSystem: 'Debian 13',
+      references: [],
     },
-    { id: 'db-host', name: 'Database host', kind: 'server', description: '', operatingSystem: '' },
-    { id: 'spare', name: 'Spare box', kind: 'workstation', description: '', operatingSystem: '' },
+    {
+      id: 'db-host',
+      name: 'Database host',
+      kind: 'server',
+      description: '',
+      operatingSystem: '',
+      references: [],
+    },
+    {
+      id: 'spare',
+      name: 'Spare box',
+      kind: 'workstation',
+      description: '',
+      operatingSystem: '',
+      references: [],
+    },
   ],
   observations: [observation('web-host', 'healthy', 30), observation('db-host', 'degraded', -5)],
   incidents: [diskFull],
@@ -101,6 +119,7 @@ const snapshot: InventorySnapshot = {
   changes: [],
   changesSince: null,
   automatedHistory: { limit: 200, truncated: [] },
+  sharedRepositories: [],
 }
 
 function renderTab(applicationId: string) {

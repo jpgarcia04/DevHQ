@@ -6,6 +6,7 @@ import type {
   Lifecycle,
   RecordSource,
   RecordedEventKind,
+  ReferenceKind,
 } from './models'
 
 export const healthLabels: Record<HealthStatus, string> = {
@@ -49,4 +50,11 @@ export const eventOutcomeLabels: Record<EventOutcome, string> = {
   warning: 'Warning',
   failure: 'Problem',
   info: 'Info',
+}
+export const referenceKindLabels: Record<ReferenceKind, string> = {
+  repository: 'Repository',
+  local_copy: 'Local copy',
+  documentation: 'Documentation',
+  logs: 'Logs',
+  dashboard: 'Dashboard',
 }

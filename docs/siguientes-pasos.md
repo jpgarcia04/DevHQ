@@ -6,19 +6,18 @@ pueda seguir sin la conversación que la escribió. El [README](../README.md) si
 paso se termina, sale de aquí en el mismo commit; cuando no quede ninguno, esta nota se borra.
 
 Escrita el 6 oct 2026 desde una sesión local en la laptop con Windows, puesta al día esa noche, al
-fusionar el registro de cambios y proponer el diseño de las referencias, y el 7 oct, cuando la persona
-lo aprobó con las decisiones que se anotan abajo.
+fusionar el registro de cambios y proponer el diseño de las referencias, y el 7 oct, al implementar
+las referencias con las decisiones que la persona aprobó.
 
 ## El plan, en corto
 
-Revisado `main` contra la visión, el siguiente paso estructural es anclar cada sistema a lo que es en
-el mundo real. La visión, la puerta para agentes (esquema v9) y el registro de cambios común (v10) ya
-están en `main`: el inventario tiene autor y tiempo, como la evidencia. Ahora, en orden:
+Revisado `main` contra la visión, el siguiente paso estructural era anclar cada sistema a lo que es
+en el mundo real. La visión, la puerta para agentes (esquema v9) y el registro de cambios común (v10)
+están en `main`, y las referencias (v11), en `claude/references-design`: cada aplicación y recurso
+dice dónde está su repositorio, sus copias locales, su documentación, sus logs y su panel. Ahora:
 
-1. **Referencias** (diseño aprobado, ver abajo): anclar cada sistema a lo que es en el mundo real
-   (repositorio, copia local en una estación de trabajo, documentación, logs, panel).
-2. **Primera fuente observada sobre esas anclas**: la actividad de los repositorios locales, leída
-   cuando se pide.
+1. **Primera fuente observada sobre esas anclas** (etapa 3): la actividad de los repositorios
+   locales, leída cuando se pide.
 
 Después, según lo que pidan preguntas concretas: bases de datos compartidas y dominios como tipos de
 recurso, relaciones nuevas, despliegues con versión, commit y destino, credenciales, operaciones y
@@ -34,6 +33,13 @@ permisos por agente ni descubrir repositorios por su cuenta.
   [#3](https://github.com/jpgarcia04/DevHQ/pull/3) (la puerta, v9) y
   [#4](https://github.com/jpgarcia04/DevHQ/pull/4) (el registro de cambios, v10) están **fusionados**
   en `main`. #4 entró (`1a40caf`) con todo el CI de Linux y de Windows en verde al primer intento.
+- **Las referencias (etapa 2, esquema v11)** están hechas en `claude/references-design`, con su
+  pull request abierto; la fusión la decide la persona. Lo que la persona fijó al aprobar el diseño
+  y queda en el README («Referencias»): se editan con su sistema, como los componentes, y el registro
+  de cambios las cubre con un campo `references` en las acciones de siempre; la v11 solo copia el
+  destino; `repository` es solo una URL web http(s), comparada por igualdad exacta; un destino es una
+  URL http(s) o una ruta absoluta, y la etiqueta es un nombre para personas, nunca un localizador.
+  Son inventario declarado, no evidencia: no llevan `source`.
 - **La primera carga, medida en las dos caminatas de #4.** La caminata dice cuánto tarda la ventana
   en poder manejarse tras arrancar DevHQ y, en el primer paso (y en cualquiera que falle), si la
   página está visible, cuánto lleva cargada y cuándo se pidió y se respondió cada llamada a DevHQ, en
@@ -44,15 +50,11 @@ permisos por agente ni descubrir repositorios por su cuenta.
     incluidos, y `watch_http_monitor` 531 → 563 ms. El paso tardó 407 ms. La puerta dejó de ver la
     ventana 322 ms después de que DevHQ terminara.
   - WebKitGTK: la ventana se pudo manejar 2426 ms después de arrancar DevHQ; visible, con foco y
-    cargada hacía 516 ms; el paso tardó 1679 ms. **Las llamadas salen como «none recorded»**, y no es
-    un fallo de la caminata: en Linux, Tauri 2.11 llama a DevHQ por `ipc://localhost/<comando>`, y los
-    navegadores solo registran los tiempos de peticiones HTTP(S) (Resource Timing); en Windows llama
-    por `http://ipc.localhost/<comando>`. El diagnóstico sirve en el WebView donde salió el fallo, y
-    en WebKitGTK no puede servir con esa técnica.
-- **Pendiente pequeño**: que la caminata diga en WebKitGTK por qué no hay tiempos, en vez de «none
-  recorded», o que los mida igual en los dos WebView con `performance.mark` en `inventoryApi`.
-  Tocar `e2e/native/` relanza los jobs de Windows, así que va con el próximo cambio que ya los
-  relance (la etapa 2 toca `src-tauri/`), no en un push propio.
+    cargada hacía 516 ms; el paso tardó 1679 ms. Ahí no hay tiempos de llamadas: Tauri llama a DevHQ
+    por `ipc://localhost/<comando>`, que no es HTTP, y la página solo mide peticiones HTTP(S)
+    (Resource Timing); en Windows llama por `http://ipc.localhost/<comando>`. Desde la etapa 2 la
+    caminata pregunta a Tauri adónde llama (`convertFileSrc('', 'ipc')`) y, en WebKitGTK, dice eso
+    en vez de «none recorded».
 - **Un fallo intermitente sin explicar**, visto una vez en el primer intento del job «Installer,
   native walk…» de #3: el primer paso esperó 15 s a «Nothing is registered yet.» y la captura mostraba
   «Loading local inventory...», así que `list_inventory` no había respondido; pasaron 74 s entre el
@@ -68,84 +70,27 @@ permisos por agente ni descubrir repositorios por su cuenta.
 
 ## Qué hacer, en orden
 
-1. **Etapa 2, referencias: diseño aprobado el 7 oct 2026, con las decisiones de abajo.** Responde «¿Dónde están sus logs, su documentación, su repositorio?» (hoy,
-   solo la descripción libre) y, para un agente que entra en una carpeta, «¿qué sistema es este?».
-   Es inventario, no evidencia: cambia poco y lo puede declarar un agente que ya está en el proyecto.
-   - **Tabla** `system_references` (`references` es palabra reservada de SQL): `id`, el sujeto con
-     las dos columnas de siempre (`application_id`/`resource_id`, CHECK de exactamente una,
-     `ON DELETE CASCADE` como `http_checks`), `kind`, `target`, `label` opcional (120) y
-     `machine_id` → `resources(id) ON DELETE RESTRICT`. Índices por sujeto y por máquina. La v11 solo
-     crea la tabla; ninguna fila cambia; prueba de actualización fila por fila.
-   - **Tipos**, conceptos y no proveedores: `repository`, `local_copy`, `documentation`, `logs` y
-     `dashboard`.
-   - **Destino**: una URL http(s) sin usuario ni contraseña (2048, como la comprobación) o una ruta
-     absoluta (`C:\…`, `\\servidor\…` o `/…`, aceptadas en cualquier sistema, porque la ruta puede ser
-     de otra máquina). Una regla para todas: **toda ruta dice en qué máquina está** (`machine_id`), y
-     una URL no. `repository` y `dashboard`, solo URL; `local_copy`, solo ruta en un recurso
-     `workstation` (el mismo proyecto en la laptop y en el sobremesa son dos); `documentation` y
-     `logs`, cualquiera de las dos (un log en `/var/log/…` de un servidor). La misma referencia (tipo,
-     destino y máquina) dos veces en un sujeto se rechaza.
-   - **Borrar la máquina de una ruta se rechaza** y dice de quién es la ruta, como un recurso en el que
-     corre un componente: con `CASCADE` cambiaría la configuración de otra aplicación sin su entrada
-     en el registro de cambios.
-   - **Monorepo**: la misma URL de repositorio desde varias aplicaciones, sin entidad nueva; la
-     ventana y la puerta dicen «same repository as …», derivado al leer por igualdad exacta.
-   - **Se editan como los componentes**, dentro de `save_application` y `save_resource`: la lista
-     enviada es la completa, conserva los ID y se reemplaza en la misma transacción. Así el registro de
-     cambios las cubre con un campo más, `references`, en las acciones que ya existen (`created`,
-     `updated`, `deleted`): **no hacen falta acciones nuevas**, que obligarían a reconstruir
-     `change_log` para cambiar el CHECK de `action`.
-   - **Ventana**: los formularios de aplicación y de recurso ganan la lista; el Overview de la
-     aplicación y la tarjeta del recurso en Infrastructure las muestran con su máquina y un botón para
-     copiar el destino, como la ruta en Settings. Sin referencias dice «No references yet», sin
-     presentarlo como problema: no es atención ni cobertura.
-   - **Abrir**, solo como subproducto: la v11 solo copia. Después, si la persona lo quiere, un comando
-     Rust `open_reference(id)` que lee la referencia de SQLite y abre en el navegador solo URL
-     http(s): la ventana nunca pasa una URL y el WebView no gana plugin ni permiso. Una ruta no se abre
-     hasta que DevHQ sepa en qué estación corre (etapa 3), y entonces solo se muestra la carpeta en el
-     explorador, nunca se abre un archivo: abrir una ruta que escribió un agente podría ejecutar un
-     programa.
-   - **Puerta**: `get_system` y `list_systems` devuelven las referencias de cada sistema (en
-     `list_systems`, para que un agente encuentre su sistema por su carpeta o su remoto);
-     `save_application` y `save_resource` aceptan `references`, lista completa cuando se manda y
-     conservada cuando no, con la máquina por ID o por nombre exacto, como el recurso de un componente.
-   - **Contratos y pruebas**: fixtures de `list_inventory`, `save_application` y `save_resource`; las
-     herramientas de la puerta; datos de ejemplo en la preview; validación sin escrituras parciales;
-     el rechazo al borrar la máquina; y el registro de cambios con el campo nuevo.
-   - **Fuera**: comprobar que la ruta existe o que la URL responde (sería evidencia), descubrir
-     repositorios, credenciales y tipos con nombre de proveedor.
-   - **Decisiones de la persona** (7 oct 2026):
-     1. Las referencias se editan dentro de la edición del sistema, como los componentes: en
-        `save_application` y `save_resource`, con la lista completa cuando se manda (en la puerta se
-        conserva si se omite), los ID conservados y el reemplazo en la misma transacción. El registro
-        de cambios las cubre con un campo `references` en las acciones que ya existen (`created`,
-        `updated`, `deleted`) de aplicaciones y recursos: sin acciones nuevas ni reconstruir
-        `change_log`.
-     2. La v11 solo copia el destino. No abre URL ni carpetas.
-     3. `repository` es solo una URL web http(s): la ubicación canónica declarada. El remoto real de
-        una copia Git (SSH incluido) se observará en la etapa 3, como evidencia aparte. Los
-        repositorios se comparan por igualdad exacta; normalizar URL queda para la etapa 3.
-     4. Destinos de la v11: solo URL http(s) o ruta absoluta. Los localizadores de systemd o de Docker
-        llegarán con una integración real que los necesite. La etiqueta (opcional, 120) es un nombre
-        para personas que distingue dos referencias del mismo tipo, nunca un localizador: la UI no
-        debe sugerir lo contrario.
-   - **Principio que se conserva**: las referencias son inventario declarado (por la persona o por un
-     agente), no evidencia. No llevan `source`; su rastro es el registro de cambios. Branch, HEAD,
-     working tree y remoto serán evidencia observada (etapa 3), y «commits sin publicar», estado
-     derivado. Nada de la etapa 3 entra en la 2.
-   - **Dos reglas que salieron al revisar el repositorio**:
-     - `save_resource` deja cambiar el tipo de un recurso. Pasar de `workstation` a otro tipo un
-       recurso que guarda copias locales se rechaza y dice de qué sistemas son.
-     - Un recurso puede ser la máquina de sus propias rutas. Borrarlo se rechaza solo por rutas de
-       otros sistemas: el caso de uso quita antes las suyas, para que el `RESTRICT` de `machine_id` no
-       choque con el `CASCADE` del sujeto (SQLite aplica `RESTRICT` en el acto, antes de la cascada).
-       Con su prueba.
-2. **Etapa 3, actividad local**, después de las referencias. Dos decisiones que tomar con la persona
-   antes: la actividad (último commit, cambios sin confirmar, commits sin publicar) no es salud, así
-   que no cabe en una observación healthy/degraded/unhealthy y necesita su propia forma de evidencia;
-   y choca con la regla «no se implementan scanners», que habría que reescribir de forma explícita
-   (leer a petición una ruta que el inventario ya conoce no es escanear). Solo refs locales, sin red
-   ni credenciales.
+1. **Etapa 3, actividad local.** Responde «¿qué lleva meses sin actividad?» y prepara «¿qué tiene
+   cambios sin desplegar?», sobre las copias locales que la etapa 2 ya ancla a su máquina. Tres
+   decisiones que tomar con la persona antes de escribir código:
+   - La actividad (último commit, branch, HEAD, cambios sin confirmar, el remoto real) no es salud,
+     así que no cabe en una observación healthy/degraded/unhealthy y necesita su propia forma de
+     evidencia, con su `source`, su momento observado y su vigencia. «Commits sin publicar» y «sin
+     actividad desde…» serían estado derivado, no guardado.
+   - Choca con la regla «no se implementan scanners», que habría que reescribir de forma explícita,
+     en el README y en `CLAUDE.md` en el mismo commit: leer a petición una ruta que el inventario ya
+     conoce no es escanear ni descubrir.
+   - DevHQ no sabe todavía en qué máquina corre, y una copia local solo se puede leer en la suya:
+     hace falta decir cuál de las estaciones de trabajo del inventario es «esta» (y cómo se recuerda
+     sin guardar nada que cambie de equipo a equipo en el inventario compartido).
+     Solo refs locales, sin red ni credenciales. El remoto real de una copia (también SSH) se guarda
+     como evidencia, aparte de la referencia `repository`; compararlos exige normalizar URL, que la
+     etapa 2 dejó fuera a propósito.
+2. **Abrir una referencia, si la persona lo quiere**, solo como subproducto: un comando Rust
+   `open_reference(id)` que lee la referencia de SQLite y abre en el navegador solo URL http(s); la
+   ventana nunca pasa una URL y el WebView no gana plugin ni permiso. Una ruta no se abre hasta que
+   DevHQ sepa en qué estación corre, y entonces solo se muestra la carpeta en el explorador, nunca se
+   abre un archivo: abrir una ruta que escribió un agente podría ejecutar un programa.
 
 ## Lo que solo se puede hacer en la laptop
 

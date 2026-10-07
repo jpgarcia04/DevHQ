@@ -27,6 +27,7 @@ use crate::records::{
     IncidentStatusInput, Observation, ObservationInput, ObservationPage, Redirect, Subject,
     TruncatedHistory,
 };
+use crate::references::{Reference, SharedRepository};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -197,6 +198,9 @@ fn seeded() -> PathBuf {
                VALUES ('shop', 'Shop', 'production', 'Store', '2.0'), ('draft', 'Draft', 'development', '', NULL);
              INSERT INTO components (id, application_id, name, kind, resource_id)
                VALUES ('api', 'shop', 'API', 'backend', 'host');
+             -- The reference an edit of the shop keeps by its ID.
+             INSERT INTO system_references (id, application_id, kind, target)
+               VALUES ('shop-repo', 'shop', 'repository', 'https://github.com/me/shop');
              -- Supervised, and pointed at a reserved domain: running it records a DNS failure.
              INSERT INTO http_checks (resource_id, url, expected_status, timeout_seconds, valid_for_minutes, updated_at, monitor, monitor_interval_minutes)
                VALUES ('host', 'http://devhq-contract.invalid/health', 200, 1, 15, 1767225600000, 'active', 5);
@@ -292,6 +296,22 @@ fn every_answer_has_the_shape_the_window_expects() {
                     resource_id: None,
                 },
             ],
+            references: vec![
+                Reference {
+                    id: "shop-repo".into(),
+                    kind: "repository".into(),
+                    target: "https://github.com/me/platform".into(),
+                    label: None,
+                    machine_id: None,
+                },
+                Reference {
+                    id: "shop-logs".into(),
+                    kind: "logs".into(),
+                    target: "/var/log/shop".into(),
+                    label: Some("API".into()),
+                    machine_id: Some("host".into()),
+                },
+            ],
         }],
         resources: vec![Resource {
             id: "host".into(),
@@ -299,6 +319,26 @@ fn every_answer_has_the_shape_the_window_expects() {
             kind: "server".into(),
             description: "Rack 2".into(),
             operating_system: "Debian 13".into(),
+            references: vec![
+                Reference {
+                    id: "host-repo".into(),
+                    kind: "repository".into(),
+                    target: "https://github.com/me/platform".into(),
+                    label: None,
+                    machine_id: None,
+                },
+                Reference {
+                    id: "host-dashboard".into(),
+                    kind: "dashboard".into(),
+                    target: "https://grafana.example/d/host".into(),
+                    label: None,
+                    machine_id: None,
+                },
+            ],
+        }],
+        shared_repositories: vec![SharedRepository {
+            target: "https://github.com/me/platform".into(),
+            systems: vec![shop(), host()],
         }],
         observations: vec![
             Observation {
