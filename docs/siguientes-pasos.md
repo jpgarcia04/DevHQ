@@ -5,8 +5,9 @@ Nota de trabajo, no especificación: dice qué está en marcha y qué toca despu
 pueda seguir sin la conversación que la escribió. El [README](../README.md) sigue mandando. Cuando un
 paso se termina, sale de aquí en el mismo commit; cuando no quede ninguno, esta nota se borra.
 
-Escrita el 6 oct 2026 desde una sesión local en la laptop con Windows, y puesta al día esa noche, al
-fusionar el registro de cambios y proponer el diseño de las referencias.
+Escrita el 6 oct 2026 desde una sesión local en la laptop con Windows, puesta al día esa noche, al
+fusionar el registro de cambios y proponer el diseño de las referencias, y el 7 oct, cuando la persona
+lo aprobó con las decisiones que se anotan abajo.
 
 ## El plan, en corto
 
@@ -14,7 +15,7 @@ Revisado `main` contra la visión, el siguiente paso estructural es anclar cada 
 el mundo real. La visión, la puerta para agentes (esquema v9) y el registro de cambios común (v10) ya
 están en `main`: el inventario tiene autor y tiempo, como la evidencia. Ahora, en orden:
 
-1. **Referencias** (diseño propuesto, ver abajo): anclar cada sistema a lo que es en el mundo real
+1. **Referencias** (diseño aprobado, ver abajo): anclar cada sistema a lo que es en el mundo real
    (repositorio, copia local en una estación de trabajo, documentación, logs, panel).
 2. **Primera fuente observada sobre esas anclas**: la actividad de los repositorios locales, leída
    cuando se pide.
@@ -67,8 +68,7 @@ permisos por agente ni descubrir repositorios por su cuenta.
 
 ## Qué hacer, en orden
 
-1. **Etapa 2, referencias: diseño propuesto, esperando el visto bueno de la persona.** No se escribe
-   código hasta que lo dé. Responde «¿Dónde están sus logs, su documentación, su repositorio?» (hoy,
+1. **Etapa 2, referencias: diseño aprobado el 7 oct 2026, con las decisiones de abajo.** Responde «¿Dónde están sus logs, su documentación, su repositorio?» (hoy,
    solo la descripción libre) y, para un agente que entra en una carpeta, «¿qué sistema es este?».
    Es inventario, no evidencia: cambia poco y lo puede declarar un agente que ya está en el proyecto.
    - **Tabla** `system_references` (`references` es palabra reservada de SQL): `id`, el sujeto con
@@ -114,11 +114,32 @@ permisos por agente ni descubrir repositorios por su cuenta.
      el rechazo al borrar la máquina; y el registro de cambios con el campo nuevo.
    - **Fuera**: comprobar que la ruta existe o que la URL responde (sería evidencia), descubrir
      repositorios, credenciales y tipos con nombre de proveedor.
-   - **Decisiones de la persona**: (a) editar dentro del formulario del sistema (propuesto) o con
-     comandos propios; (b) la v11 solo copia (propuesto) o trae ya `open_reference` para URL;
-     (c) `repository` solo como URL web http(s) (propuesto; los remotos `git@host:…` llevan usuario y
-     la etapa 3 los leerá de la copia local) o también ssh; (d) los logs de una unidad de systemd o de
-     un contenedor, por ahora en la etiqueta (propuesto) o con un tercer tipo de destino.
+   - **Decisiones de la persona** (7 oct 2026):
+     1. Las referencias se editan dentro de la edición del sistema, como los componentes: en
+        `save_application` y `save_resource`, con la lista completa cuando se manda (en la puerta se
+        conserva si se omite), los ID conservados y el reemplazo en la misma transacción. El registro
+        de cambios las cubre con un campo `references` en las acciones que ya existen (`created`,
+        `updated`, `deleted`) de aplicaciones y recursos: sin acciones nuevas ni reconstruir
+        `change_log`.
+     2. La v11 solo copia el destino. No abre URL ni carpetas.
+     3. `repository` es solo una URL web http(s): la ubicación canónica declarada. El remoto real de
+        una copia Git (SSH incluido) se observará en la etapa 3, como evidencia aparte. Los
+        repositorios se comparan por igualdad exacta; normalizar URL queda para la etapa 3.
+     4. Destinos de la v11: solo URL http(s) o ruta absoluta. Los localizadores de systemd o de Docker
+        llegarán con una integración real que los necesite. La etiqueta (opcional, 120) es un nombre
+        para personas que distingue dos referencias del mismo tipo, nunca un localizador: la UI no
+        debe sugerir lo contrario.
+   - **Principio que se conserva**: las referencias son inventario declarado (por la persona o por un
+     agente), no evidencia. No llevan `source`; su rastro es el registro de cambios. Branch, HEAD,
+     working tree y remoto serán evidencia observada (etapa 3), y «commits sin publicar», estado
+     derivado. Nada de la etapa 3 entra en la 2.
+   - **Dos reglas que salieron al revisar el repositorio**:
+     - `save_resource` deja cambiar el tipo de un recurso. Pasar de `workstation` a otro tipo un
+       recurso que guarda copias locales se rechaza y dice de qué sistemas son.
+     - Un recurso puede ser la máquina de sus propias rutas. Borrarlo se rechaza solo por rutas de
+       otros sistemas: el caso de uso quita antes las suyas, para que el `RESTRICT` de `machine_id` no
+       choque con el `CASCADE` del sujeto (SQLite aplica `RESTRICT` en el acto, antes de la cascada).
+       Con su prueba.
 2. **Etapa 3, actividad local**, después de las referencias. Dos decisiones que tomar con la persona
    antes: la actividad (último commit, cambios sin confirmar, commits sin publicar) no es salud, así
    que no cabe en una observación healthy/degraded/unhealthy y necesita su propia forma de evidencia;
