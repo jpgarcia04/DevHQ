@@ -81,7 +81,7 @@ permisos por agente ni descubrir repositorios por su cuenta.
   negó abrir `.git/config`, un error de clase `Os` que el lector ya respondía como `unreadable` con el
   motivo de libgit2. La prueba exigía la frase de DevHQ; ahora admite las dos (sin mirar las palabras
   del sistema, que salen en su idioma). En la laptop siempre lo detecta DevHQ, también con `TMP`
-  acentuado. El pase siguiente ([run 38151813941](https://github.com/jpgarcia04/DevHQ/actions/runs/38151813941)) pasó los tests en los dos pases y la caminata, pero falló la comprobación de que los tests no dejan nada en `TMP`: quedaban la config de Git vacía y el marcador de la batería, creados una vez por ejecución desde el primer commit de la etapa. Ahora el marcador se compila en la carpeta de la batería, que la prueba borra, y `GIT_CONFIG_GLOBAL` apunta a una ruta que no existe (Git se salta una config global ausente); en la laptop, con un `TMP` nuevo, no queda nada. Falta el pase de Windows de ese cambio y fusionar.
+  acentuado. El pase siguiente ([run 38151813941](https://github.com/jpgarcia04/DevHQ/actions/runs/38151813941)) pasó los tests en los dos pases y la caminata, pero falló la comprobación de que los tests no dejan nada en `TMP`: quedaban la config de Git vacía y el marcador de la batería, creados una vez por ejecución desde el primer commit de la etapa. Ahora el marcador se compila en la carpeta de la batería, que la prueba borra, y `GIT_CONFIG_GLOBAL` apunta a una ruta que no existe (Git se salta una config global ausente); en la laptop, con un `TMP` nuevo, no queda nada. Con ese cambio ([run 38152754066](https://github.com/jpgarcia04/DevHQ/actions/runs/38152754066)) pasaron los 3 jobs de Windows: los tres pases de tests (128 cada uno, 0 entradas dejadas en `TMP`), el instalador y la caminata; y el CI de Linux. Falta que la persona revise y fusione el PR.
 - **Fuera de alcance, para después**: el bundle de la ventana pasó de unos 497 a 517 kB y Vite avisa
   de que supera 500 kB; es un aviso, en una app que carga desde disco, y no se cambió la configuración
   por él. Una aplicación que ya no declara ninguna copia local no ofrece «Show every reading» en la
@@ -118,8 +118,8 @@ permisos por agente ni descubrir repositorios por su cuenta.
 
 ## Qué hacer, en orden
 
-1. **Etapa 3, actividad de las copias locales**: ver pasar el workflow de Windows en el PR desde
-   `claude/local-activity-design` (ver «Estado») y fusionarlo cuando la persona lo apruebe.
+1. **Etapa 3, actividad de las copias locales**: revisar y fusionar
+   [#6](https://github.com/jpgarcia04/DevHQ/pull/6), con todo el CI en verde (ver «Estado»).
 2. **Abrir una referencia, si la persona lo quiere**, solo como subproducto: un comando Rust
    `open_reference(id)` que lee la referencia de SQLite y abre en el navegador solo URL http(s); la
    ventana nunca pasa una URL y el WebView no gana plugin ni permiso. Una ruta no se abre hasta que
