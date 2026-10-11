@@ -853,6 +853,99 @@ pub(crate) mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    /// A ref's log is read as Git reads it, whatever its length, or not at all: the newest entry
+    /// from the log's end, so a long log never gives an older moment; entries counted only in a log
+    /// read whole, so a longer one is a failure of DevHQ, never a smaller count; and a log the
+    /// system does not let DevHQ read leaves the copy unreadable, never with no stash or no sync.
+    #[test]
+    fn reads_a_log_of_any_length_as_git_does_or_says_it_cannot() {
+        let root = folder("logs");
+        let reader = test_reader("confined", &[]);
+        let read = |dir: &Path| reader.read(&path_text(dir), DEADLINE);
+        let origin = root.join("origin.git");
+        std::fs::create_dir(&origin).unwrap();
+        git(&origin, &["init", "-q", "--bare", "-b", "main"]);
+        let copy = root.join("copy");
+        std::fs::create_dir(&copy).unwrap();
+        git(&copy, &["init", "-q", "-b", "main"]);
+        commit(&copy, "a.txt", "a\n", "a");
+        git(&copy, &["remote", "add", "origin", &path_text(&origin)]);
+        // A push logs the remote branch it moves, and writes no FETCH_HEAD: the log is the only
+        // sign of contact.
+        git(&copy, &["push", "-q", "origin", "main"]);
+        assert!(!copy.join(".git").join("FETCH_HEAD").exists());
+        let head = git(&copy, &["rev-parse", "HEAD"]).trim().to_owned();
+        let entry = |seconds: i64| {
+            format!("{head} {head} DevHQ test <test@devhq.invalid> {seconds} +0000\tpush\n")
+        };
+        let longer_than_read = |line: &str| line.repeat(reader::MAX_LOG as usize / line.len() + 1);
+
+        // A remote branch's log longer than DevHQ reads whole, its newest entry last, then a line
+        // still being written, which Git skips.
+        let pushed = copy.join(".git/logs/refs/remotes/origin/main");
+        let mut log = longer_than_read(&entry(1_000_000_000));
+        log.push_str(&entry(1_700_000_000));
+        log.push_str(&head);
+        std::fs::write(&pushed, &log).unwrap();
+        let reading = read(&copy).unwrap();
+        assert_eq!(reading.refs.synced_at, Some(1_700_000_000_000));
+        // An end with no entry Git would read leaves the newest unknown: nothing is kept.
+        log.push_str(&format!("\n{}\n", "x".repeat(reader::TAIL as usize)));
+        std::fs::write(&pushed, &log).unwrap();
+        let error = read(&copy).unwrap_err();
+        assert_eq!(error.code, "read_error");
+        assert!(
+            error.message.contains("found no entry in the last 1 MiB"),
+            "{}",
+            error.message
+        );
+        std::fs::write(&pushed, entry(1_700_000_000)).unwrap();
+
+        // Stashes, counted as Git lists them: a line that is no entry is skipped.
+        std::fs::write(copy.join("a.txt"), "stashed\n").unwrap();
+        git(&copy, &["stash", "-q"]);
+        let stash = copy.join(".git/logs/refs/stash");
+        let stashed = std::fs::read_to_string(&stash).unwrap();
+        std::fs::write(&stash, format!("{stashed}not an entry\n")).unwrap();
+        assert_eq!(read(&copy).unwrap().refs.stashes, Some(1));
+        assert_eq!(as_git_reads(&copy).0.stashes, Some(1));
+        // Longer than DevHQ reads whole: no count rather than the count of its beginning.
+        std::fs::write(&stash, longer_than_read(&stashed)).unwrap();
+        let error = read(&copy).unwrap_err();
+        assert_eq!(error.code, "read_error");
+        assert!(
+            error.message.contains("longer than the 32 MiB DevHQ reads"),
+            "{}",
+            error.message
+        );
+        // No log at all: no stash, as Git lists none.
+        std::fs::remove_file(&stash).unwrap();
+        assert_eq!(read(&copy).unwrap().refs.stashes, Some(0));
+        assert_eq!(as_git_reads(&copy).0.stashes, Some(0));
+        std::fs::write(&stash, &stashed).unwrap();
+
+        // Logs the system does not let DevHQ read.
+        #[cfg(any(target_os = "linux", windows))]
+        if let Some(allow) = forbid(&copy.join(".git").join("logs")) {
+            let reading = read(&copy);
+            drop(allow);
+            let reading = reading.unwrap();
+            assert_eq!(reading.refs.outcome, "unreadable", "{reading:?}");
+            assert!(
+                reading
+                    .refs
+                    .detail
+                    .as_deref()
+                    .unwrap()
+                    .starts_with("The system did not let DevHQ read the log of refs/"),
+                "{reading:?}"
+            );
+            assert_eq!(reading.worktree, None);
+        }
+        assert_eq!(read(&copy).unwrap().refs.stashes, Some(1));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn a_format_libgit2_does_not_know_is_a_failure_of_devhq_not_a_fact() {
         let root = folder("formats");

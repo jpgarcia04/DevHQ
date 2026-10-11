@@ -25,7 +25,8 @@ use git2::{
 };
 use serde_json::{json, Value};
 use std::ffi::OsStr;
-use std::io::{ErrorKind, Read, Write};
+use std::fs::File;
+use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 
@@ -200,9 +201,43 @@ pub(crate) fn read_refs(path: &Path) -> Result<(Refs, Option<Repository>), Strin
             None,
         ));
     }
-    let refs = facts(&repository)
-        .map_err(|error| format!("libgit2 could not read this copy: {}", libgit2(&error)))?;
-    Ok((refs, Some(repository)))
+    match facts(&repository) {
+        Ok(refs) => Ok((refs, Some(repository))),
+        Err(Unread::Unreadable(detail)) => Ok((not_read("unreadable", &detail), None)),
+        Err(Unread::Limit(message)) => Err(message),
+        Err(Unread::Libgit2(error)) => Err(format!(
+            "libgit2 could not read this copy: {}",
+            libgit2(&error)
+        )),
+    }
+}
+
+/// Why `facts` has none to give.
+enum Unread {
+    /// libgit2 failed: a failure of DevHQ.
+    Libgit2(git2::Error),
+    /// The system did not let DevHQ read a file the facts need: a fact of the copy, which is then
+    /// unreadable, never read with a guess in that fact's place.
+    Unreadable(String),
+    /// A file the facts need is longer than DevHQ reads: a limit of DevHQ, so a failure of it,
+    /// never a smaller count or an older moment.
+    Limit(String),
+}
+
+impl From<git2::Error> for Unread {
+    fn from(error: git2::Error) -> Self {
+        Self::Libgit2(error)
+    }
+}
+
+/// A failure of the system to look, as opposed to nothing being there. A name the system rejects
+/// (a hostile `gitdir:` line) is nothing there too, as it is for libgit2.
+fn kept_from_looking(error: &std::io::Error) -> bool {
+    error.raw_os_error().is_some()
+        && !matches!(
+            error.kind(),
+            ErrorKind::NotFound | ErrorKind::NotADirectory | ErrorKind::InvalidFilename
+        )
 }
 
 /// Why the system kept DevHQ from seeing whether a repository starts at `path`, if it did.
@@ -215,15 +250,6 @@ pub(crate) fn read_refs(path: &Path) -> Result<(Refs, Option<Repository>), Strin
 /// itself as a bare repository; in each, `commondir`, `HEAD`, `objects` and `refs`. The first
 /// failure other than "not there" is the answer. It only reads metadata and two small files.
 fn denied_while_looking(path: &Path) -> Option<std::io::Error> {
-    /// A failure of the system to look, as opposed to nothing being there. A name the system
-    /// rejects (a hostile `gitdir:` line) is nothing there too, as it is for libgit2.
-    fn kept_from_looking(error: &std::io::Error) -> bool {
-        error.raw_os_error().is_some()
-            && !matches!(
-                error.kind(),
-                ErrorKind::NotFound | ErrorKind::NotADirectory | ErrorKind::InvalidFilename
-            )
-    }
     fn denied(result: std::io::Result<std::fs::Metadata>) -> Option<std::io::Error> {
         result.err().filter(kept_from_looking)
     }
@@ -283,7 +309,7 @@ fn when(commit: &Commit) -> i64 {
 }
 
 /// Everything but the working tree, from refs, commits, reflogs and config.
-fn facts(repository: &Repository) -> Result<Refs, git2::Error> {
+fn facts(repository: &Repository) -> Result<Refs, Unread> {
     let head_ref = repository.find_reference("HEAD")?;
     // HEAD names its branch, or is detached (no branch). Read as bytes: a hostile HEAD can name
     // anything.
@@ -292,7 +318,7 @@ fn facts(repository: &Repository) -> Result<Refs, git2::Error> {
     let head = match repository.head() {
         Ok(reference) => Some(reference.peel_to_commit()?),
         Err(error) if error.code() == ErrorCode::UnbornBranch => None,
-        Err(error) => return Err(error),
+        Err(error) => return Err(error.into()),
     };
     let branch = branch_ref.as_deref().map(|target| {
         let name = target.strip_prefix(b"refs/heads/").unwrap_or(target);
@@ -336,7 +362,7 @@ fn facts(repository: &Repository) -> Result<Refs, git2::Error> {
             published.push(commit.id());
         }
         if let Ok(name) = reference.name() {
-            synced_at = synced_at.max(log(repository, name).newest);
+            synced_at = synced_at.max(newest_entry(repository, name)?);
         }
     }
 
@@ -347,7 +373,7 @@ fn facts(repository: &Repository) -> Result<Refs, git2::Error> {
 
     // Each stash is an entry of the stash's log.
     let stashes = if repository.find_reference("refs/stash").is_ok() {
-        log(repository, "refs/stash").entries
+        entries(repository, "refs/stash")?
     } else {
         0
     };
@@ -397,43 +423,115 @@ fn facts(repository: &Repository) -> Result<Refs, git2::Error> {
     })
 }
 
-/// What a ref's log says: how many entries, and when the newest was written.
-#[derive(Default)]
-struct Log {
-    entries: usize,
-    newest: Option<i64>,
+/// The longest log DevHQ counts the entries of: a stash logs one line, under 300 bytes, per stash.
+pub(crate) const MAX_LOG: u64 = 32 * 1024 * 1024;
+/// How much of the end of a log DevHQ reads for its newest entry: one line is far shorter.
+pub(crate) const TAIL: u64 = 1024 * 1024;
+
+/// The log of the shared ref `name` (a remote branch, the stash), opened as the file it is. Not
+/// with libgit2's reflog API, which creates an empty log file for a ref that has none (the hostile
+/// battery found it): reading must never write. None when there is no log, which says nothing:
+/// Git, too, lists no stash then.
+fn open_log(repository: &Repository, name: &str) -> Result<Option<File>, Unread> {
+    match File::open(repository.commondir().join("logs").join(name)) {
+        Ok(file) => Ok(Some(file)),
+        Err(error) if kept_from_looking(&error) => Err(unreadable_log(name, &error)),
+        Err(_) => Ok(None),
+    }
 }
 
-/// The longest log DevHQ reads: a stash or a remote branch logs one line per change.
-const MAX_LOG: u64 = 32 * 1024 * 1024;
+fn unreadable_log(name: &str, error: &std::io::Error) -> Unread {
+    Unread::Unreadable(format!(
+        "The system did not let DevHQ read the log of {}: {error}",
+        plain_text(name, MAX_NAME)
+    ))
+}
 
-/// The log of the shared ref `name` (a remote branch, the stash), read as the file it is. Not
-/// with libgit2's reflog API, which creates an empty log file for a ref that has none (the hostile
-/// battery found it): reading must never write. Each line is `old new committer when zone\tmessage`
-/// and the newest comes last; a log that is missing or unreadable says nothing.
-fn log(repository: &Repository, name: &str) -> Log {
-    let Ok(file) = std::fs::File::open(repository.commondir().join("logs").join(name)) else {
-        return Log::default();
+/// When the newest entry of the log of `name` was written; None when it has none. Git appends
+/// each entry, so the newest is the last line Git would read, and only the end of the log is read,
+/// however long it has grown. An end without a single entry Git would read, in a log longer than
+/// that, leaves the newest unknown: a limit, never an older entry in its place.
+fn newest_entry(repository: &Repository, name: &str) -> Result<Option<i64>, Unread> {
+    let Some(mut file) = open_log(repository, name)? else {
+        return Ok(None);
+    };
+    let unreadable = |error: std::io::Error| unreadable_log(name, &error);
+    let length = file.metadata().map_err(unreadable)?.len();
+    let start = length.saturating_sub(TAIL);
+    file.seek(SeekFrom::Start(start)).map_err(unreadable)?;
+    let mut tail = Vec::new();
+    file.take(TAIL).read_to_end(&mut tail).map_err(unreadable)?;
+    // Unless the tail is the whole log, its first line may be cut: only what follows a newline is
+    // whole.
+    let whole = if start == 0 {
+        &tail[..]
+    } else {
+        tail.iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(&[][..], |at| &tail[at + 1..])
+    };
+    match whole
+        .split_inclusive(|byte| *byte == b'\n')
+        .rev()
+        .find_map(entry_time)
+    {
+        Some(at) => Ok(Some(at)),
+        None if start == 0 => Ok(None),
+        None => Err(Unread::Limit(format!(
+            "DevHQ found no entry in the last {} MiB of the log of {}, which is all it reads of it, so it cannot say when this copy last talked to a remote.",
+            TAIL >> 20,
+            plain_text(name, MAX_NAME)
+        ))),
+    }
+}
+
+/// How many entries Git would read in the log of `name`; 0 when there is no log. Counting needs
+/// the whole log, so one longer than `MAX_LOG` is a limit, never the count of its beginning.
+fn entries(repository: &Repository, name: &str) -> Result<usize, Unread> {
+    let Some(file) = open_log(repository, name)? else {
+        return Ok(0);
     };
     let mut text = Vec::new();
-    if file.take(MAX_LOG).read_to_end(&mut text).is_err() {
-        return Log::default();
+    file.take(MAX_LOG + 1)
+        .read_to_end(&mut text)
+        .map_err(|error| unreadable_log(name, &error))?;
+    if text.len() as u64 > MAX_LOG {
+        return Err(Unread::Limit(format!(
+            "The log of {} is longer than the {} MiB DevHQ reads of it, so DevHQ cannot count what it holds.",
+            plain_text(name, MAX_NAME),
+            MAX_LOG >> 20
+        )));
     }
-    let lines: Vec<&[u8]> = text
-        .split(|byte| *byte == b'\n')
-        .filter(|line| !line.is_empty())
-        .collect();
-    let newest = lines.last().and_then(|line| {
-        let head = line.split(|byte| *byte == b'\t').next()?;
-        let mut fields = head.rsplit(|byte| *byte == b' ');
-        let _zone = fields.next()?;
-        let seconds: i64 = std::str::from_utf8(fields.next()?).ok()?.parse().ok()?;
-        Some(seconds.saturating_mul(1000))
-    });
-    Log {
-        entries: lines.len(),
-        newest,
+    Ok(text
+        .split_inclusive(|byte| *byte == b'\n')
+        .filter(|line| entry_time(line).is_some())
+        .count())
+}
+
+/// When a log entry was written, in milliseconds, if `line` is one Git reads
+/// (`show_one_reflog_ent`): `old new name <email> seconds ±hhmm`, a tab and a message, and its
+/// newline. Git skips any other line, a line still being written among them, and so does DevHQ.
+fn entry_time(line: &[u8]) -> Option<i64> {
+    let line = line.strip_suffix(b"\n")?;
+    let id = |text: &[u8]| text.len() == 40 && text.iter().all(u8::is_ascii_hexdigit);
+    if line.len() < 82
+        || !id(&line[..40])
+        || line[40] != b' '
+        || !id(&line[41..81])
+        || line[81] != b' '
+    {
+        return None;
     }
+    let rest = &line[82..];
+    let email_end = rest.iter().position(|byte| *byte == b'>')?;
+    let when = rest[email_end + 1..].strip_prefix(b" ")?;
+    let digits = when.iter().take_while(|byte| byte.is_ascii_digit()).count();
+    let seconds: i64 = std::str::from_utf8(&when[..digits]).ok()?.parse().ok()?;
+    let zone = when[digits..].strip_prefix(b" ")?;
+    let zone_ok = zone.len() >= 5
+        && matches!(zone[0], b'+' | b'-')
+        && zone[1..5].iter().all(u8::is_ascii_digit);
+    (seconds != 0 && zone_ok).then(|| seconds.saturating_mul(1000))
 }
 
 /// Commits reachable from `tips` that no `hidden` commit contains, counted up to one past the

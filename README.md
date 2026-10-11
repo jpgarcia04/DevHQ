@@ -267,8 +267,8 @@ Qué dice una lectura:
 | `branch`, `head`                            | La rama de HEAD (nula si está suelto) y su commit (nulo si aún no hay commits)                                                                                                                                                                                                                                                                  |
 | `lastCommitAt`                              | La fecha de commit más nueva entre HEAD y las ramas locales, según los propios commits                                                                                                                                                                                                                                                          |
 | `unpublishedOnHead`, `unpublishedElsewhere` | Commits de HEAD, y de las demás ramas locales, que ninguna rama remota de la copia contiene; hasta 1000 («1000+»). Separados porque las ramas viejas de un PR fusionado con squash cuentan como sin publicar                                                                                                                                    |
-| `stashes`                                   | Cuántos stashes guarda                                                                                                                                                                                                                                                                                                                          |
-| `syncedAt`                                  | La última vez que la copia habló con un remoto según sus archivos (`FETCH_HEAD` y los logs de sus ramas remotas): DevHQ nunca hace fetch, así que «sin publicar» es según lo que la copia sabía entonces                                                                                                                                        |
+| `stashes`                                   | Cuántos stashes guarda: las entradas del log de `refs/stash` que Git lee, como en `git stash list`; ninguna si no hay log                                                                                                                                                                                                                       |
+| `syncedAt`                                  | La última vez que la copia habló con un remoto según sus archivos (`FETCH_HEAD` y la entrada más nueva del log de cada rama remota): DevHQ nunca hace fetch, así que «sin publicar» es según lo que la copia sabía entonces                                                                                                                     |
 | `remotes`                                   | Nombre y URL de cada remoto (hasta 20), la URL solo en formas conocidas y sin credenciales: http(s) sin usuario, contraseña, query ni fragmento; `ssh://` sin contraseña; `usuario@host:ruta`; `git://` y `file://` sin usuario ni contraseña; y rutas absolutas. Cualquier otra, como `ext::`, que es una línea de comandos, se guarda sin URL |
 | `operation`                                 | Un merge, rebase, cherry-pick, revert, bisect o am a medias                                                                                                                                                                                                                                                                                     |
 | `changed`, `untracked`, `unverifiable`      | Archivos seguidos con cambios, en el índice o en el working tree (conflictos incluidos); entradas nuevas no ignoradas, una carpeta nueva una vez, como en `git status`; y archivos que DevHQ no puede verificar: parecen cambiados bajo un driver de filtro que la config define y DevHQ no ejecuta (LFS, por ejemplo), o no se pudieron leer   |
@@ -284,6 +284,17 @@ algo que no está, así que una carpeta sin permiso le parece una carpeta sin re
 decir `not_a_copy`, DevHQ vuelve a mirar lo mismo que miró libgit2 (`.git`, el archivo que nombra otra
 carpeta, `HEAD`, `commondir`, `objects` y `refs`, y la propia carpeta como repositorio bare) y, si el
 sistema le negó alguna de esas miradas, la lectura es `unreadable` con el motivo del sistema.
+
+Los logs de las ramas remotas y del stash se leen como los lee Git: una línea que Git no aceptaría,
+como una que aún se está escribiendo, no es una entrada. Un número que parece exacto nunca sale de un
+log leído a medias. La entrada más nueva es la última, así que de cada log de rama remota solo se lee
+el final (1 MiB), y `syncedAt` es exacto por largo que sea el log; si en ese final no hay ninguna
+entrada, el momento es desconocido. Contar stashes exige el log entero, así que uno de más de 32 MiB
+(más de cien mil stashes) no se cuenta. Ninguno de los dos casos se rellena con una cuenta menor, un
+momento anterior o un cero, y como la lectura no tiene dónde decir «desconocido» para esos datos, es un
+fallo de DevHQ, que se muestra y no se guarda. Un log que el sistema no deja leer deja la lectura
+`unreadable`, con el motivo del sistema, en vez de sin stashes o sin contacto. Un log que no existe no
+dice nada: sin él, Git tampoco lista ningún stash.
 
 - **Evidencia sin vigencia.** Cada lectura se guarda en `copy_readings`, inmutable, con `source =
 read` («Automated · Local read»), el lector y su versión (`reader`, «libgit2 1.9.7»), el momento
