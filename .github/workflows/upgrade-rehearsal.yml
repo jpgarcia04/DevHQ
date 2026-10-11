@@ -1,0 +1,203 @@
+# A one-off rehearsal, on a throwaway Windows runner with synthetic data, of upgrading an installed
+# DevHQ built from 149914d (before development data was kept apart) to one built from d343703 (the
+# merge of that change), through the NSIS installer, and of going back. It lives only on the
+# claude/upgrade-rehearsal branch and runs when that branch is pushed: workflow_dispatch would need
+# the file on main. The phases are in .github/windows/upgrade-rehearsal.ps1.
+#
+# The build job makes both installers once; the candidate it uploads is the exact file the
+# rehearsal installs. To rehearse again without building again (a fix to the rehearsal itself),
+# set BUILDS_FROM_RUN to the id of the run whose builds to reuse: the rehearsal then downloads that
+# run's artifacts, which still name their commits and hashes.
+name: Upgrade rehearsal
+
+on:
+  push:
+    branches: [claude/upgrade-rehearsal]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upgrade-rehearsal
+  cancel-in-progress: true
+
+env:
+  OLD_COMMIT: 149914dbbb0b83ed7820d6744c8709c19856ee62
+  NEW_COMMIT: d343703f95f80f34dcd3122c0b4122e9ea4620de
+  BUILDS_FROM_RUN: ''
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  plan:
+    name: Build now, or reuse a run's builds
+    runs-on: ubuntu-24.04
+    outputs:
+      from: ${{ steps.plan.outputs.from }}
+    steps:
+      - id: plan
+        shell: bash
+        run: |
+          echo "from=$BUILDS_FROM_RUN" >> "$GITHUB_OUTPUT"
+          if [ -n "$BUILDS_FROM_RUN" ]; then echo "Reusing the builds of run $BUILDS_FROM_RUN"; else echo 'Building both installers'; fi
+
+  build:
+    name: A · Both installers, from their exact commits
+    needs: plan
+    if: needs.plan.outputs.from == ''
+    runs-on: windows-latest
+    steps:
+      # Full history: both commits, and main to check that the new one is on it.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      # The scripts leave with the rehearsal's commit when the checkout moves to a build's.
+      - name: Keep the rehearsal's scripts
+        run: |
+          $scripts = Join-Path $env:RUNNER_TEMP 'scripts'
+          New-Item -ItemType Directory -Force $scripts | Out-Null
+          Copy-Item .github/windows/upgrade-rehearsal*.ps1, .github/windows/rehearsal_inventory.py $scripts
+          "REHEARSAL_SCRIPTS=$scripts" >> $env:GITHUB_ENV
+          "BUILDS=$(Join-Path $env:RUNNER_TEMP 'builds')" >> $env:GITHUB_ENV
+      - name: Check the commits
+        run: |
+          git merge-base --is-ancestor $env:NEW_COMMIT origin/main
+          if ($LASTEXITCODE -ne 0) { throw "$env:NEW_COMMIT is not on main" }
+          git merge-base --is-ancestor $env:OLD_COMMIT $env:NEW_COMMIT
+          if ($LASTEXITCODE -ne 0) { throw "$env:OLD_COMMIT is not an ancestor of $env:NEW_COMMIT" }
+          "main is at $(git rev-parse origin/main)"
+          git log --oneline "$env:OLD_COMMIT..$env:NEW_COMMIT"
+          'Paths that changed between the two builds:'
+          git diff --stat $env:OLD_COMMIT $env:NEW_COMMIT
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      # No Rust cache: nothing on this branch could restore one, and a cold build of each
+      # commit keeps what is built plainly the commit. The second build reuses target/ only
+      # through Cargo's own fingerprints.
+      - name: Build the old installer (149914d)
+        run: '& "$env:REHEARSAL_SCRIPTS/upgrade-rehearsal-build.ps1" -Commit $env:OLD_COMMIT -Label 149914d -Out $env:BUILDS'
+      - name: Build the new installer (d343703), the candidate
+        run: '& "$env:REHEARSAL_SCRIPTS/upgrade-rehearsal-build.ps1" -Commit $env:NEW_COMMIT -Label d343703 -Out $env:BUILDS'
+      - name: Write the build manifest
+        run: |
+          . "$env:REHEARSAL_SCRIPTS/upgrade-rehearsal-common.ps1"
+          $client = 'Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+          $makensis = Get-ChildItem -Recurse -File (Join-Path $env:LOCALAPPDATA 'tauri') -Filter makensis.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          $manifest = [ordered]@{
+            run = [ordered]@{
+              url = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+              id = $env:GITHUB_RUN_ID; attempt = $env:GITHUB_RUN_ATTEMPT; workflowCommit = $env:GITHUB_SHA
+              runner = "$env:ImageOS $env:ImageVersion"
+            }
+            builds = [ordered]@{
+              old = Get-Content -Raw (Join-Path $env:BUILDS '149914d.json') | ConvertFrom-Json
+              new = Get-Content -Raw (Join-Path $env:BUILDS 'd343703.json') | ConvertFrom-Json
+            }
+            tools = [ordered]@{
+              rustc = @(rustc -vV)
+              cargo = cargo -V
+              node = node -v
+              npm = npm -v
+              tauriCli = npx tauri -V
+              makensis = if ($makensis) { & $makensis.FullName /VERSION } else { 'not found' }
+              sevenZip = (7z | Select-Object -First 2) -join ' '
+              webView2 = @("HKLM:\SOFTWARE\WOW6432Node\$client", "HKLM:\SOFTWARE\$client") | Where-Object { Test-Path $_ } |
+                ForEach-Object { (Get-ItemProperty $_).pv } | Select-Object -First 1
+            }
+          }
+          Save-Json $manifest (Join-Path $env:BUILDS 'build-manifest.json')
+          $new = $manifest.builds.new
+          "$($new.installer.sha256)  $($new.installer.file)" | Set-Content -Encoding ascii (Join-Path $env:BUILDS 'SHA256SUMS.txt')
+          Get-Content -Raw (Join-Path $env:BUILDS 'build-manifest.json')
+      # The candidate is this exact file: never build it again for the everyday installation.
+      - name: Keep the candidate installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: devhq-upgrade-candidate-d343703
+          path: |
+            ${{ env.BUILDS }}/DevHQ_*_d343703_x64-setup.exe
+            ${{ env.BUILDS }}/SHA256SUMS.txt
+            ${{ env.BUILDS }}/build-manifest.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Keep what the rehearsal also needs
+        uses: actions/upload-artifact@v7
+        with:
+          name: devhq-upgrade-rehearsal-inputs
+          path: |
+            ${{ env.BUILDS }}/DevHQ_*_149914d_x64-setup.exe
+            ${{ env.BUILDS }}/devhq-d343703-unpacked.exe
+            ${{ env.BUILDS }}/build-manifest.json
+          if-no-files-found: error
+          retention-days: 90
+
+  rehearsal:
+    name: B–H · Install, upgrade, check, go back
+    needs: [plan, build]
+    if: always() && needs.plan.result == 'success' && (needs.build.result == 'success' || (needs.build.result == 'skipped' && needs.plan.outputs.from != ''))
+    runs-on: windows-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - name: Make the rehearsal's folder, outside the checkout
+        run: |
+          $folder = Join-Path $env:RUNNER_TEMP 'rehearsal'
+          New-Item -ItemType Directory -Force $folder | Out-Null
+          "REHEARSAL_DIR=$folder" >> $env:GITHUB_ENV
+      - uses: actions/download-artifact@v7
+        with:
+          name: devhq-upgrade-candidate-d343703
+          path: ${{ env.REHEARSAL_DIR }}/inputs
+          run-id: ${{ needs.plan.outputs.from || github.run_id }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v7
+        with:
+          name: devhq-upgrade-rehearsal-inputs
+          path: ${{ env.REHEARSAL_DIR }}/inputs
+          run-id: ${{ needs.plan.outputs.from || github.run_id }}
+          github-token: ${{ github.token }}
+      - name: Inputs · the builds are the ones described; the runner has no DevHQ
+        run: ./.github/windows/upgrade-rehearsal.ps1 -Phase Inputs
+      # DevHQ, its installer and the rehearsal write under real-time protection, as on a desktop.
+      - name: Turn on Defender's real-time protection
+        run: ./.github/windows/defender.ps1 -On -Probe $env:APPDATA
+      - name: B · Install the old build (149914d) and open it
+        run: ./.github/windows/upgrade-rehearsal.ps1 -Phase B
+      - name: C · Synthetic inventory, Read only, backup, witnesses, snapshots
+        run: ./.github/windows/upgrade-rehearsal.ps1 -Phase C
+      - name: D · Install the new build over it; check the files before opening it
+        run: ./.github/windows/upgrade-rehearsal.ps1 -Phase D
+      - name: E · Open the new build; check the inventory and the gate
+        run: ./.github/windows/upgrade-rehearsal.ps1 -Phase E
+      - name: F · An unpacked build keeps development data apart
+        run: ./.github/windows/upgrade-rehearsal.ps1 -Phase F
+      # What the silent installer does to running DevHQ processes: its outcome is recorded, not
+      # judged. Only the data must survive it. Going back runs even if this phase fails.
+      - name: G · The silent installer with DevHQ running (negative case), then the new build again
+        id: g
+        run: ./.github/windows/upgrade-rehearsal.ps1 -Phase G
+      - name: H · Go back to the old build
+        if: success() || steps.g.outcome == 'failure'
+        run: ./.github/windows/upgrade-rehearsal.ps1 -Phase H
+      - name: Real-time protection stayed on
+        run: ./.github/windows/defender.ps1 -Check
+      - name: Report
+        if: always()
+        run: ./.github/windows/upgrade-rehearsal.ps1 -Phase Report
+      - name: Keep the report and the evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: devhq-upgrade-rehearsal-report
+          path: |
+            ${{ env.REHEARSAL_DIR }}/report/
+            ${{ env.REHEARSAL_DIR }}/state/
+            ${{ env.REHEARSAL_DIR }}/inputs/build-manifest.json
+            ${{ env.REHEARSAL_DIR }}/inputs/SHA256SUMS.txt
+          retention-days: 90
