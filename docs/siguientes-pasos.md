@@ -66,8 +66,19 @@ permisos por agente ni descubrir repositorios por su cuenta.
   leen como archivos. Hecha después la ventana (Settings › This computer, la última lectura de cada
   copia con Read y sus lecturas anteriores, el panel Local copies con Read all y la última actividad en
   Applications), con la preview y sus pruebas. Esta estación se pide aparte de `list_inventory`, después
-  de cada lectura del inventario, para no cambiar lo que `list` devuelve. Falta la caminata nativa y el
-  PR.
+  de cada lectura del inventario, para no cambiar lo que `list` devuelve. Y la caminata nativa: elige
+  esta estación, declara una copia hostil construida con el `git` instalado y la lee con Read, Read all
+  y la puerta; ningún marcador corre, ningún archivo cambia, y `git status` sobre la misma copia sí
+  ejecuta su fsmonitor. Pasó en el CI de Linux
+  ([run 38150025121](https://github.com/jpgarcia04/DevHQ/actions/runs/38150025121), los 4 jobs) con el
+  lector encerrado por seccomp; en Windows, `devhq --read-copy` sobre la misma copia se comprobó en la
+  laptop fuera de la caminata, y la caminata la corre el workflow de Windows en el PR. Falta ver ese
+  workflow, medir cuánto crece el instalador (en #5: artefacto de 3 371 793 bytes, `devhq.exe`
+  instalado de 13 136 384) y fusionar.
+- **Fuera de alcance, para después**: el bundle de la ventana pasó de unos 497 a 517 kB y Vite avisa
+  de que supera 500 kB; es un aviso, en una app que carga desde disco, y no se cambió la configuración
+  por él. Una aplicación que ya no declara ninguna copia local no ofrece «Show every reading» en la
+  ventana; sus lecturas siguen guardadas y la puerta las da (`history`).
 - **La primera carga, medida en las dos caminatas de #5.** La caminata dice cuánto tarda la ventana
   en poder manejarse tras arrancar DevHQ y, en el primer paso (y en cualquiera que falle), si la
   página está visible, cuánto lleva cargada y cuándo se pidió y se respondió cada llamada a DevHQ, en
@@ -100,8 +111,8 @@ permisos por agente ni descubrir repositorios por su cuenta.
 
 ## Qué hacer, en orden
 
-1. **Etapa 3, actividad de las copias locales**: la caminata nativa sobre lo ya hecho (ver «Estado»
-   y «Etapa 3: diseño revisado», abajo) y abrir el PR desde `claude/local-activity-design`.
+1. **Etapa 3, actividad de las copias locales**: ver pasar el workflow de Windows en el PR desde
+   `claude/local-activity-design` (ver «Estado») y fusionarlo cuando la persona lo apruebe.
 2. **Abrir una referencia, si la persona lo quiere**, solo como subproducto: un comando Rust
    `open_reference(id)` que lee la referencia de SQLite y abre en el navegador solo URL http(s); la
    ventana nunca pasa una URL y el WebView no gana plugin ni permiso. Una ruta no se abre hasta que
