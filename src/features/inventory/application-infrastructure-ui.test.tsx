@@ -120,6 +120,7 @@ const snapshot: InventorySnapshot = {
   changesSince: null,
   automatedHistory: { limit: 200, truncated: [] },
   sharedRepositories: [],
+  localCopies: [],
 }
 
 function renderTab(applicationId: string) {

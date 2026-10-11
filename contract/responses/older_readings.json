@@ -1,0 +1,62 @@
+{
+  "readings": [
+    {
+      "id": "reading-1",
+      "subject": { "type": "application", "id": "shop" },
+      "referenceId": "shop-copy",
+      "machineId": "laptop",
+      "path": "C:\\src\\platform",
+      "source": "read",
+      "reader": "libgit2 1.9.7",
+      "agent": "claude-code",
+      "observedAt": "2026-01-01T07:00:00Z",
+      "recordedAt": "2026-01-01T07:00:00Z",
+      "outcome": "read",
+      "detail": null,
+      "branch": "main",
+      "head": "0123456789abcdef0123456789abcdef01234567",
+      "lastCommitAt": "2026-01-01T06:30:00Z",
+      "unpublishedOnHead": 2,
+      "unpublishedElsewhere": 0,
+      "stashes": 1,
+      "syncedAt": "2026-01-01T06:00:00Z",
+      "remotes": [
+        { "name": "mirror", "url": null },
+        { "name": "origin", "url": "git@github.com:me/platform.git" }
+      ],
+      "operation": null,
+      "changed": null,
+      "untracked": null,
+      "unverifiable": null,
+      "worktreeUnknown": "Reading the working tree took longer than 30 s, so DevHQ stopped it."
+    },
+    {
+      "id": "reading-0",
+      "subject": { "type": "application", "id": "shop" },
+      "referenceId": "shop-copy",
+      "machineId": "laptop",
+      "path": "C:\\src\\platform",
+      "source": "read",
+      "reader": "libgit2 1.9.7",
+      "agent": null,
+      "observedAt": "2026-01-01T06:00:00Z",
+      "recordedAt": "2026-01-01T06:00:00Z",
+      "outcome": "missing",
+      "detail": "Nothing is at this path.",
+      "branch": null,
+      "head": null,
+      "lastCommitAt": null,
+      "unpublishedOnHead": null,
+      "unpublishedElsewhere": null,
+      "stashes": null,
+      "syncedAt": null,
+      "remotes": null,
+      "operation": null,
+      "changed": null,
+      "untracked": null,
+      "unverifiable": null,
+      "worktreeUnknown": null
+    }
+  ],
+  "more": true
+}

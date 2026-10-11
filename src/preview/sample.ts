@@ -9,9 +9,11 @@ import type {
 import type {
   ConfigurationChange,
   BackupFile,
+  CopyReading,
   HttpCheck,
   InventoryApplication,
   InventoryResource,
+  ThisWorkstation,
 } from '@/features/inventory/inventory-api'
 
 /**
@@ -28,10 +30,27 @@ export interface PreviewDatabase {
   httpChecks: HttpCheck[]
   changes: ConfigurationChange[]
   changesSince: string | null
+  /** Every reading of a local copy, in the order they were recorded. */
+  copyReadings: CopyReading[]
+  /** Which workstation this computer is, from the local association beside the inventory. */
+  thisWorkstation: ThisWorkstation
   /** The files in the backups folder, newest first. */
   backups: BackupFile[]
   /** Reading fails, as it would with an unreadable database. */
   unavailable: boolean
+}
+
+/** Where the native process would keep this computer's association, on Windows. */
+const associationFile = 'C:\\Users\\you\\AppData\\Local\\com.devhq.desktop\\this-workstation.json'
+
+const notChosen: ThisWorkstation = {
+  resourceId: null,
+  chosenAt: null,
+  problem: 'not_chosen',
+  message:
+    'No workstation has been chosen as this computer yet: choose one in Settings › This computer.',
+  file: associationFile,
+  storedAt: null,
 }
 
 /**
@@ -67,9 +86,58 @@ function nothing(): PreviewDatabase {
     httpChecks: [],
     changes: [],
     changesSince: null,
+    copyReadings: [],
+    thisWorkstation: notChosen,
     backups: [],
     unavailable: false,
   }
+}
+
+/**
+ * Two readings of the Shop's clone on the laptop: three days ago, clean and published; two hours
+ * ago, with a commit on no remote, a stash and changes. Blog declares the same clone, never read.
+ */
+function sampleReadings(now: number): CopyReading[] {
+  const reading = (id: string, minutesAgo: number, facts: Partial<CopyReading>): CopyReading => ({
+    id,
+    subject: shop,
+    referenceId: 'shop-clone',
+    machineId: 'laptop',
+    path: 'C:\\Users\\you\\src\\web',
+    source: 'read',
+    reader: 'libgit2 1.9.7',
+    agent: null,
+    observedAt: at(now, minutesAgo),
+    recordedAt: at(now, minutesAgo),
+    outcome: 'read',
+    detail: null,
+    branch: 'main',
+    head: '4f2a9c1d8e7b6a5f4e3d2c1b0a9f8e7d6c5b4a39',
+    lastCommitAt: at(now, minutesAgo + 300),
+    unpublishedOnHead: 0,
+    unpublishedElsewhere: 0,
+    stashes: 0,
+    syncedAt: at(now, minutesAgo + 30),
+    remotes: [{ name: 'origin', url: 'git@github.com:example/web.git' }],
+    operation: null,
+    changed: 0,
+    untracked: 0,
+    unverifiable: 0,
+    worktreeUnknown: null,
+    ...facts,
+  })
+  return [
+    reading('reading-old', 3 * 24 * 60, {}),
+    reading('reading-new', 120, {
+      head: '9b8a7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a07',
+      lastCommitAt: at(now, 140),
+      unpublishedOnHead: 1,
+      stashes: 1,
+      changed: 2,
+      untracked: 1,
+      agent: 'claude-code',
+    }),
+  ]
 }
 
 /** The name a backup taken at `time` gets: its UTC moment in ISO 8601's basic format. */
@@ -355,6 +423,13 @@ export function sampleDatabase(scenario: Scenario, now: number): PreviewDatabase
             label: null,
             machineId: null,
           },
+          {
+            id: 'blog-clone',
+            kind: 'local_copy',
+            target: 'C:\\Users\\you\\src\\web',
+            label: null,
+            machineId: 'laptop',
+          },
         ],
       },
     ],
@@ -460,6 +535,16 @@ export function sampleDatabase(scenario: Scenario, now: number): PreviewDatabase
         monitorIntervalMinutes: null,
       },
     ],
+    copyReadings: sampleReadings(now),
+    // This computer is the laptop, chosen a week ago.
+    thisWorkstation: {
+      resourceId: 'laptop',
+      chosenAt: time(7 * 24 * 60),
+      problem: null,
+      message: null,
+      file: associationFile,
+      storedAt: null,
+    },
     backups: sampleBackups(now),
     unavailable: false,
   }

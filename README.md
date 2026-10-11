@@ -9,9 +9,10 @@ recordar eventos, relacionar infraestructura y verificar resultados de automatiz
 > completo, sí puede pertenecer.
 
 DevHQ no reemplaza VS Code, una terminal, GitHub Desktop, Docker Desktop, Codex ni
-Claude Code. Conserva inventario local, la evidencia que registras a mano y la de
+Claude Code. Conserva inventario local, la evidencia que registras a mano, la de
 comprobaciones HTTP(S) que lanzas tú o que supervisa **solo mientras su ventana está
-abierta**. **No funciona en segundo plano ni opera sistemas.**
+abierta**, y lo que lee, cuando se lo pides, en las copias locales de esta estación de trabajo,
+sin ejecutar nada de lo que nombran. **No funciona en segundo plano ni opera sistemas.**
 
 ## Qué incluye
 
@@ -87,7 +88,9 @@ origen (`source`), siempre visible:
 | `agent`  | Agent · _nombre_       | Un agente al que le pediste actuar por la puerta para agentes   |
 
 Solo las observaciones (y el evento que las acompaña) pueden ser `http`; el esquema lo
-impone con CHECK. Una observación automática sigue exactamente la misma semántica de
+impone con CHECK. Lo que DevHQ lee en una copia local no es ninguno de estos registros: es una
+lectura, con su propio `source` (`read`), que nunca dice nada de la salud (ver
+[Copias locales](#copias-locales)). Una observación automática sigue exactamente la misma semántica de
 vigencia, sustitución y atención que una manual. Un registro `agent` guarda además, en
 `agent`, el nombre que el cliente del agente declaró (por ejemplo `claude-code`); DevHQ no
 puede verificarlo y la etiqueta lo dice al pasar el cursor. Se presenta mezclado con lo tuyo en
@@ -164,7 +167,8 @@ copias locales en cada estación de trabajo, su documentación, sus logs y su pa
 están sus logs, su documentación, su repositorio?» y, para un agente que trabaja en una carpeta,
 «¿qué sistema es este?». Son inventario que declaras tú o un agente, no evidencia: no llevan
 `source`, su rastro es el [registro de cambios](#registro-de-cambios) y DevHQ no las abre ni
-comprueba que existan o respondan. La ventana solo las copia.
+comprueba que existan o respondan, salvo la copia local que le pidas leer (ver
+[Copias locales](#copias-locales)). La ventana solo las copia.
 
 | Tipo            | En la ventana | Destino                                                                   |
 | --------------- | ------------- | ------------------------------------------------------------------------- |
@@ -180,8 +184,9 @@ comprueba que existan o respondan. La ventana solo las copia.
   acepta en la forma de cualquier sistema, sea cual sea el que ejecuta DevHQ, porque puede ser de
   otra máquina: `C:\…` (o `C:/…`), `\\servidor\recurso\…` o `/…`, de 2048 caracteres como mucho.
   Nada más es un destino: ni rutas relativas, ni `~`, ni caracteres de control, ni remotos SSH. El
-  remoto real de una copia Git se observará como evidencia aparte, y los localizadores de unidades
-  de systemd o de contenedores llegarán con una integración que los necesite.
+  remoto real de una copia Git es evidencia aparte, que DevHQ lee cuando se lo pides (ver
+  [Copias locales](#copias-locales)), y los localizadores de unidades de systemd o de contenedores
+  llegarán con una integración que los necesite.
 - **Toda ruta dice en qué máquina está** (`machine_id`, un recurso), porque el mismo proyecto vive en
   una carpeta distinta en cada equipo, y una URL no está en ninguna. La máquina de una copia local
   es una estación de trabajo. Un recurso puede ser la máquina de sus propias rutas, como los logs de
@@ -210,6 +215,112 @@ comprueba que existan o respondan. La ventana solo las copia.
   muestran sus referencias, con la máquina de cada ruta y un botón **Copy** para el destino, como la
   ruta en Settings. Sin referencias dicen «No references yet»: no es atención ni hueco de cobertura,
   porque no dice nada de cómo está el sistema.
+
+### Copias locales
+
+Una referencia `local_copy` dice dónde está, en una estación de trabajo, una copia de trabajo del
+repositorio de un sistema. Cuando se lo pides, DevHQ la **lee** y guarda lo que encontró como una
+**lectura**: evidencia propia, nunca salud. Responde «¿qué lleva meses sin actividad?» y «¿qué
+trabajo existe solo en una máquina?», y guarda el commit de HEAD para el día en que DevHQ sepa qué
+está desplegado.
+
+**Observar no da poder a lo observado.** Un repositorio puede nombrar programas en su config, en sus
+atributos y en sus hooks, y el programa `git` los ejecuta: drivers de filtro, fsmonitor, programas de
+firma, helpers de remotos. Por eso DevHQ nunca ejecuta `git` y trata la ruta declarada, y lo que
+contiene, como datos no confiables, los haya declarado quien los haya declarado. Lee con las APIs de
+lectura de libgit2 (`git2`, compilada con el proyecto y sin ningún transporte de red), que no lanzan
+programas ni escriben, y cada copia en un proceso propio, `devhq --read-copy`, que antes de leer se
+impide a sí mismo arrancar programas: en Windows entra en un Job Object que solo admite un proceso,
+él mismo; en Linux se pone un filtro seccomp que responde `EPERM` a `execve` y `execveat`, también
+como root. Donde no sabe hacerlo (otros sistemas), no lee y lo dice. El proceso tiene 30 s; si no
+termina, DevHQ lo mata, y lo que devuelve se valida como dato no confiable antes de guardarlo. Así un
+cuelgue o un fallo de libgit2 ante datos hostiles termina con el lector, nunca con la ventana ni con
+la puerta.
+
+Una **batería de repositorios hostiles**, en las pruebas de Rust de Linux y de Windows, nombra un
+programa marcador en cada clave de config que Git ejecuta (una lista que una prueba compara con la de
+`git help --config`), en `.gitattributes`, en los hooks y en `core.hooksPath`, en un `include.path`, un
+`includeIf` y un `config.worktree`, en un submódulo, un repositorio anidado y un worktree enlazado, en
+un commit firmado y en remotos `ext::`, y pone copias del marcador al principio del `PATH` como `git`,
+`sh`, `gpg`, `ssh` o `git-lfs`. Leer, con el lector encerrado y sin encerrar, no debe dejar ninguna
+marca ni cambiar o crear un solo archivo (contenido y fecha de modificación), y debe leer bien cada
+dato; la misma copia leída por el `git status` instalado sí deja marcas. La batería encontró que la API
+de reflog de libgit2 crea un log vacío cuando una ref no lo tiene, así que DevHQ lee esos logs como
+archivos. Un lector o una biblioteca nuevos, y cada versión nueva de libgit2, la pasan antes.
+
+**Lo que no se garantiza.** Si unos datos hostiles lograran ejecutar código dentro del lector, ese
+código tendría tus permisos: podría leer y escribir donde tú puedes, conectarse a la red o pedirle a
+otro proceso (WMI o el Programador de tareas en Windows; systemd o D-Bus en Linux) que arranque un
+programa; ni el Job Object ni seccomp lo impiden. Lo que sí impiden es que el lector, libgit2 incluido,
+lance un programa por sí mismo. Nada del sistema impide que el lector escriba: lo garantizan libgit2 y
+la batería. `git2` se mantiene al día y solo se llaman las APIs que la batería cubre.
+
+Qué dice una lectura:
+
+| Dato                                        | Qué es                                                                                                                                                                                                                                                                                                                                        |
+| ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `outcome`, `detail`                         | `read`; `missing` (nada en esa ruta); `not_a_copy` (una carpeta donde no empieza ningún repositorio, aunque esté dentro de uno, porque DevHQ no busca en las carpetas de arriba; un repositorio bare; un archivo); `unreadable` (el sistema niega el acceso, o la copia es de otro usuario y Git tampoco la usaría). `detail` dice por qué    |
+| `branch`, `head`                            | La rama de HEAD (nula si está suelto) y su commit (nulo si aún no hay commits)                                                                                                                                                                                                                                                                |
+| `lastCommitAt`                              | La fecha de commit más nueva entre HEAD y las ramas locales, según los propios commits                                                                                                                                                                                                                                                        |
+| `unpublishedOnHead`, `unpublishedElsewhere` | Commits de HEAD, y de las demás ramas locales, que ninguna rama remota de la copia contiene; hasta 1000 («1000+»). Separados porque las ramas viejas de un PR fusionado con squash cuentan como sin publicar                                                                                                                                  |
+| `stashes`                                   | Cuántos stashes guarda                                                                                                                                                                                                                                                                                                                        |
+| `syncedAt`                                  | La última vez que la copia habló con un remoto según sus archivos (`FETCH_HEAD` y los logs de sus ramas remotas): DevHQ nunca hace fetch, así que «sin publicar» es según lo que la copia sabía entonces                                                                                                                                      |
+| `remotes`                                   | Nombre y URL de cada remoto (hasta 20), la URL solo en formas conocidas y sin credenciales: http(s) sin usuario, contraseña, query ni fragmento; `ssh://` sin contraseña; `usuario@host:ruta`; `git://`, `file://` y rutas. Cualquier otra, como `ext::`, que es una línea de comandos, se guarda sin URL                                     |
+| `operation`                                 | Un merge, rebase, cherry-pick, revert, bisect o am a medias                                                                                                                                                                                                                                                                                   |
+| `changed`, `untracked`, `unverifiable`      | Archivos seguidos con cambios, en el índice o en el working tree (conflictos incluidos); entradas nuevas no ignoradas, una carpeta nueva una vez, como en `git status`; y archivos que DevHQ no puede verificar: parecen cambiados bajo un driver de filtro que la config define y DevHQ no ejecuta (LFS, por ejemplo), o no se pudieron leer |
+| `worktreeUnknown`                           | En lugar de esos tres números, por qué no se conoce el working tree: un índice que libgit2 no sabe leer, o el plazo                                                                                                                                                                                                                           |
+
+Nunca autores, correos, mensajes ni nombres de archivo, tamaños, listas de ramas o tags, ni el estado de
+los submódulos (cada uno es su propia copia, si se declara). La URL de un remoto se guarda en texto
+plano, ya limpia. Un formato que libgit2 aún no conoce (`extensions.refStorage = reftable`,
+`objectFormat = sha256`) es un fallo de DevHQ, que se muestra y no se guarda; uno que solo afecta al
+índice deja la lectura con el working tree desconocido. Leer mientras un `git` pesado escribe en la
+copia puede fallar una vez: se vuelve a pedir.
+
+- **Evidencia sin vigencia.** Cada lectura se guarda en `copy_readings`, inmutable, con `source =
+read` («Automated · Local read»), el lector y su versión (`reader`, «libgit2 1.9.7»), el momento
+  observado y el registrado, y el agente que la pidió por la puerta, o nada si la pediste tú. No es
+  healthy ni unhealthy, no entra en la atención ni en la cobertura de salud, no escribe eventos ni sale
+  en Activity, y no caduca, porque nunca afirmó seguir siendo cierta: dice lo que la copia tenía cuando
+  se leyó, y su momento se muestra siempre. Nada la presenta como actual.
+- **Copia lo que leyó**: la referencia, la máquina y la ruta, sin claves foráneas, como una observación
+  HTTP copia su URL. Editar o quitar la referencia nunca reescribe una lectura, y una máquina se puede
+  borrar cuando ya no guarda rutas. Si la referencia desaparece o cambia mientras se lee, no se guarda
+  nada, como una comprobación quitada en vuelo.
+- **Es historia**: un sistema con lecturas no se puede borrar, como uno con observaciones. Una aplicación
+  que ya no se usa pasa a Archived: sus copias dejan de leerse al pedir todas, y sus lecturas se
+  conservan. Una copia cuya carpeta ya no existe se quita de las referencias sin tocar sus lecturas.
+- **Lo derivado**, en Rust y en cada lectura del inventario (`localCopies`): cada copia declarada con su
+  última lectura, por un índice; si esa lectura se hizo en otra ruta o máquina de las que declara hoy la
+  referencia; si la copia guardaba trabajo que solo existía allí (commits sin publicar, stashes,
+  cambios, entradas nuevas o no verificables, una operación a medias); y si alguno de sus remotos
+  apunta al repositorio que declara su sistema (`matches`), ninguno (`differs`), o el sistema no declara
+  ninguno (`undeclared`). Esta comparación normaliza los dos lados (host en minúsculas sin usuario ni
+  puerto, ruta sin `/` a los lados, sin `.git` y en minúsculas, para `https://`, `ssh://`, `git://` y
+  `usuario@host:ruta`), porque el remoto real suele ser `git@github.com:me/shop.git` y el repositorio
+  declarado `https://github.com/me/shop`; un host cuyo SSH y web difieren, como Azure DevOps, sale
+  `differs`. `sharedRepositories` sigue comparando por igualdad exacta. Las lecturas anteriores de un
+  sistema se cargan de 200 en 200 (`older_readings`), por el índice de su sistema.
+
+**Esta estación de trabajo.** DevHQ solo lee copias de la estación de trabajo en la que corre, y eso no
+lo dice el inventario, que puede viajar a otro equipo: lo guarda `this-workstation.json`, en la carpeta
+local de DevHQ (`%LOCALAPPDATA%\com.devhq.desktop` en Windows, que no viaja con un perfil móvil;
+`~/.local/share/com.devhq.desktop` en Linux, junto al inventario). Back up now no lo copia. Guarda, por
+equipo, el recurso elegido en cada inventario y cuándo; cada equipo se distingue por una huella, el
+SHA-256 de una etiqueta de DevHQ y del identificador del sistema (`MachineGuid` en Windows,
+`/etc/machine-id` en Linux), que nunca se guarda en bruto. Así, copiar el home a otro equipo, o
+compartirlo entre dos, no hace que uno se crea el otro: el otro equipo simplemente aún no ha elegido. La
+elección vale si el recurso existe en el inventario abierto y es una estación de trabajo; si no, DevHQ
+dice por qué no sabe qué equipo es (sin elegir, ya no está en este inventario, ya no es estación de
+trabajo, el sistema no da identificador o el archivo no se puede leer) y no lee ninguna copia. Solo la
+ventana la elige (`set_this_workstation`); la puerta solo la lee. No es inventario, así que no va al
+registro de cambios; cada lectura guarda en qué máquina se hizo. Las VMs clonadas sin sysprep comparten
+`MachineGuid`, y reinstalar el sistema obliga a elegirla otra vez.
+
+**Solo a petición.** `read_copies` lee las copias que se nombran o, sin nombrar ninguna, todas las de
+esta estación salvo las de aplicaciones archivadas, una tras otra: nunca al abrir DevHQ, nunca con un
+temporizador, nunca con la ventana cerrada. Las copias de otra máquina las lee DevHQ en esa máquina. DevHQ
+no busca copias: lee solo las rutas que el inventario declara.
 
 ### Comprobación HTTP(S)
 
@@ -398,26 +509,27 @@ para que el agente pueda explicarte dónde abrirla; las demás herramientas resp
 para copiarlo; DevHQ nunca lo ejecuta ni toca la configuración de Claude Code. Para leer basta Read
 only:
 
-| Herramienta    | Qué responde                                                                                                                                                                                                                                                                                                         |
-| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `status`       | Qué archivo abrió, dónde lo guarda de verdad el sistema (`storedAt`, como Settings), su versión de esquema, si hay una ventana de DevHQ abierta sobre él (`windowOpen`), cuántos sistemas tiene y qué no puede saber                                                                                                 |
-| `attention`    | «¿Qué necesita mi atención?» con el mismo orden que Overview, la cobertura, lo nunca observado y lo que nada supervisa; el estado solo es `covered` si todo tiene evidencia vigente                                                                                                                                  |
-| `list_systems` | Cada aplicación y recurso con su estado de evidencia y última observación, incidencias activas, comprobación HTTP, relaciones y referencias, con la máquina de cada ruta y qué otros sistemas declaran el mismo repositorio (`sameRepositoryAs`): un agente encuentra así su sistema por su carpeta o su repositorio |
-| `get_system`   | Una aplicación o recurso (por ID, o por nombre exacto sin distinguir mayúsculas) con sus referencias, sus observaciones, incidencias y eventos cargados, y desde cuándo su historial automático está completo                                                                                                        |
-| `history`      | Los resultados automáticos anteriores de un sistema, de 200 en 200, como la carga bajo demanda de la ventana                                                                                                                                                                                                         |
+| Herramienta    | Qué responde                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `status`       | Qué archivo abrió, dónde lo guarda de verdad el sistema (`storedAt`, como Settings), su versión de esquema, si hay una ventana de DevHQ abierta sobre él (`windowOpen`), cuántos sistemas tiene, qué estación de trabajo es este equipo (`thisWorkstation`, o por qué no se sabe) y qué no puede saber                                                                                                                                                                    |
+| `attention`    | «¿Qué necesita mi atención?» con el mismo orden que Overview, la cobertura, lo nunca observado y lo que nada supervisa; el estado solo es `covered` si todo tiene evidencia vigente. Aparte, sin ordenar y diciendo que no es salud, `localCopies`: las copias cuya última lectura tenía trabajo que solo existía allí, las que no se encontraron y las de esta estación nunca leídas                                                                                     |
+| `list_systems` | Cada aplicación y recurso con su estado de evidencia y última observación, incidencias activas, comprobación HTTP, relaciones y referencias, con la máquina de cada ruta y qué otros sistemas declaran el mismo repositorio (`sameRepositoryAs`): un agente encuentra así su sistema por su carpeta o su repositorio. Cada copia local dice si es de esta estación, su última lectura y lo derivado, y cada sistema el commit más nuevo que encontraron (`localActivity`) |
+| `get_system`   | Una aplicación o recurso (por ID, o por nombre exacto sin distinguir mayúsculas) con sus referencias, sus observaciones, incidencias y eventos cargados, y desde cuándo su historial automático está completo                                                                                                                                                                                                                                                             |
+| `history`      | Los resultados automáticos anteriores de un sistema, o las lecturas de sus copias locales (`records: "readings"`), de 200 en 200, como la carga bajo demanda de la ventana                                                                                                                                                                                                                                                                                                |
 
 Con Read and write, el agente también hace lo que tú haces en la ventana, pasando por los mismos
 casos de uso, con sus validaciones, límites y transacciones:
 
-| Herramienta                                      | Qué hace                                                                                                                                           |
-| ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `save_application`, `save_resource`              | Dar de alta (nombre y lifecycle, o nombre y tipo) o editar por ID, con sus componentes y sus referencias                                           |
-| `delete_application`, `delete_resource`          | Borrar lo que no tiene historial; lo demás se rechaza con el mismo motivo que en la ventana                                                        |
-| `record_observation`, `record_event`             | Registrar una observación (resultado, qué vio, vigencia) o un despliegue, respaldo, mantenimiento o nota                                           |
-| `open_incident`, `update_incident`               | Abrir una incidencia o cambiar su estado con una nota                                                                                              |
-| `save_check`, `set_check_paused`, `remove_check` | Configurar la comprobación HTTP(S) de un sistema (200, 5 s y 60 min por defecto, como el formulario), pausar o reanudar su supervisión, o quitarla |
-| `run_check`                                      | Ejecutarla ahora, como Run check: la observación es evidencia de DevHQ (`http`)                                                                    |
-| `backup`                                         | Back up now                                                                                                                                        |
+| Herramienta                                      | Qué hace                                                                                                                                              |
+| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `save_application`, `save_resource`              | Dar de alta (nombre y lifecycle, o nombre y tipo) o editar por ID, con sus componentes y sus referencias                                              |
+| `delete_application`, `delete_resource`          | Borrar lo que no tiene historial; lo demás se rechaza con el mismo motivo que en la ventana                                                           |
+| `record_observation`, `record_event`             | Registrar una observación (resultado, qué vio, vigencia) o un despliegue, respaldo, mantenimiento o nota                                              |
+| `open_incident`, `update_incident`               | Abrir una incidencia o cambiar su estado con una nota                                                                                                 |
+| `save_check`, `set_check_paused`, `remove_check` | Configurar la comprobación HTTP(S) de un sistema (200, 5 s y 60 min por defecto, como el formulario), pausar o reanudar su supervisión, o quitarla    |
+| `run_check`                                      | Ejecutarla ahora, como Run check: la observación es evidencia de DevHQ (`http`)                                                                       |
+| `backup`                                         | Back up now                                                                                                                                           |
+| `read_copies`                                    | Leer ahora, como Read, una copia local (por su referencia), las de un sistema o todas las de esta estación: la lectura es evidencia de DevHQ (`read`) |
 
 Una edición es **parcial**: lo que el agente no manda se conserva, para que cambiar la versión nunca
 borre los componentes ni las referencias por omisión. La lista de componentes y la de referencias,
@@ -434,6 +546,19 @@ registros no se repiten en ese log: ya dicen quién los escribió. Ejecutar una 
 el log qué agente la pidió. Un rechazo no cambia nada ni deja entrada. Las herramientas que sobrescriben o quitan configuración se
 declaran destructivas (`destructiveHint`) y `run_check`, que sale de tu computadora, de mundo
 abierto (`openWorldHint`), así que el cliente pide confirmación según cómo lo tengas configurado.
+
+**Leer una copia no es configurar DevHQ.** `read_copies` exige Read and write porque guarda
+evidencia, como `record_observation`: con Read only un agente ve las lecturas pero nunca provoca una.
+No cambia aplicaciones, recursos, referencias ni comprobaciones, así que no deja entrada en el registro
+de cambios; la propia lectura guarda qué agente la pidió, y la ventana y la puerta lo muestran, como
+lleva su nombre una comprobación que un agente hizo salir de tu computadora. Se declara sin
+`readOnlyHint` (escribe evidencia), sin `destructiveHint` (no cambia nada que exista) y sin
+`openWorldHint` (nada sale del equipo). Lo que la hace posible sí deja rastro: declarar o mover una copia
+local es editar las referencias de un sistema. Qué estación es este equipo solo lo elige la ventana. Con
+Read and write, un agente puede declarar como copia local cualquier ruta absoluta de esta estación y hacer
+que DevHQ la lea; DevHQ solo dirá si ahí hay una copia y los datos de una lectura, nunca nombres de
+archivo, contenidos, autores ni mensajes, que un agente con terminal ya ve. Como el resto de la puerta,
+los modos son de intención, no una barrera de seguridad.
 
 Con la ventana de DevHQ abierta, lo que cambia un agente aparece solo, en unos 2 s. Mientras la
 ventana vive, su proceso mantiene una conexión SQLite propia y cada 2 s le pregunta
@@ -701,11 +826,13 @@ de Tauri. No hay servidor HTTP de aplicación, store global ni capa de repositor
 artificial. Los selectores de dominio no dependen de React ni de los mocks. Las vistas
 consumen explícitamente el escenario durante esta etapa.
 
-Rust expone `list_inventory` (una lectura consistente de inventario con sus referencias, registros
-y `httpChecks`), `data_location`, `backup_inventory`, `list_backups`, `save_application`, `save_resource`, `delete_application`,
+Rust expone `list_inventory` (una lectura consistente de inventario con sus referencias, registros,
+`httpChecks` y la última lectura de cada copia local), `data_location`, `backup_inventory`, `list_backups`, `save_application`, `save_resource`, `delete_application`,
 `delete_resource`, `record_observation`, `older_observations`, `older_events`, `open_incident`,
 `update_incident_status`, `record_event`, `save_http_check`, `set_http_check_paused`,
-`remove_http_check`, `run_http_check` y `watch_http_monitor`. Los comandos de
+`remove_http_check`, `run_http_check`, `watch_http_monitor`, `this_workstation`,
+`set_this_workstation`, `read_copies` y `older_readings`. `read_copies` es asíncrono y espera a sus
+lectores en un hilo aparte, porque cada copia puede tardar hasta su plazo. Los comandos de
 comprobaciones y de borrado son asíncronos y avisan a la supervisión antes de responder, así
 que pausar, reanudar, quitar o borrar surten efecto de inmediato; `run_http_check` pasa por la supervisión para
 no duplicar una ejecución en vuelo y `watch_http_monitor` abre el `Channel` de estado. Ese último también es
@@ -713,7 +840,7 @@ asíncrono porque lanza la tarea que alimenta el `Channel`: Tauri ejecuta un com
 que recibe la petición (el principal), que no tiene runtime de Tokio, y lanzarla desde ahí provocaba un
 pánico que en Linux abortaba el proceso al abrir Mi inventario (lo comprueba `npm run e2e:native`). Abre
 `inventory.sqlite3` en el directorio de datos de la aplicación que proporciona Tauri; las
-migraciones transaccionales v1→v11 usan `PRAGMA user_version` y una versión más nueva se
+migraciones transaccionales v1→v12 usan `PRAGMA user_version` y una versión más nueva se
 rechaza en vez de adivinarse. Cada apertura solo lee esa versión: únicamente una base antigua
 toma el lock de escritura para migrar, y dentro vuelve a leerla por si otra conexión ya lo
 hizo. La base usa write-ahead logging (WAL): un lector trabaja sobre el último estado
@@ -770,7 +897,13 @@ recursos. Ninguna otra fila cambia. La v11 solo añade `system_references`, las
 [referencias](#referencias), con sus índices por sistema y por máquina; ninguna fila cambia. Sus CHECK
 imponen lo que SQL puede decir: un tipo conocido, un destino y una etiqueta sin espacios alrededor y
 dentro de sus límites, que una URL no tenga máquina y una ruta absoluta sí, que un repositorio y un
-panel sean URL y que una copia local sea una ruta; Rust comprueba el resto antes de escribir. Los
+panel sean URL y que una copia local sea una ruta; Rust comprueba el resto antes de escribir. La v12
+solo añade `copy_readings`, las lecturas de [copias locales](#copias-locales), con sus índices por
+referencia y por sistema; ninguna fila cambia. Su sistema es `ON DELETE RESTRICT`, como en todo
+registro, y la referencia, la máquina y la ruta que leyó se copian sin claves foráneas. Sus CHECK exigen
+que una copia no leída diga por qué y nada más, que una leída tenga cada dato obligatorio y su working
+tree contado o desconocido con el motivo (nunca ambos, nunca a medias), un HEAD de 40 dígitos
+hexadecimales y ningún commit sin publicar sin HEAD. Los
 registros usan dos columnas con clave foránea (`application_id`/`resource_id`) y un CHECK
 que exige exactamente una; las referencias de historial son `ON DELETE RESTRICT`, así que
 nada puede borrar un sujeto y dejar evidencia huérfana; los casos de uso de borrado lo
@@ -794,7 +927,12 @@ inventario, un instante y el resultado esperado, y Vitest y Rust comprueban cont
 versiones, empates y fin exacto de la vigencia incluidos, así que la puerta nunca responde distinto
 que la ventana. Se conserva la barra nativa de ventana. La CSP limita recursos y las
 capabilities no conceden permisos adicionales. No se implementan autenticación,
-cuentas, cloud, sync, telemetría, scanners, automation engine, Runner ni background service.
+cuentas, cloud, sync, telemetría, automation engine, Runner ni background service. DevHQ no busca
+qué observar: nunca recorre discos, carpetas ni redes en busca de repositorios o servicios. Lee solo
+lo que el inventario nombra (la URL de una comprobación, la ruta de una copia local de esta estación de
+trabajo), cuando se le pide o, si es una comprobación supervisada, mientras la ventana está abierta. Leer
+nunca ejecuta un programa que nombre lo leído ni escribe en ello: la ruta y lo que contiene son datos no
+confiables, aunque los hayas declarado tú.
 
 ## Evolución prevista
 
@@ -810,9 +948,13 @@ cuentas, cloud, sync, telemetría, scanners, automation engine, Runner ni backgr
    autor, cuándo y cada campo antes y después: la configuración deja rastro igual que la evidencia.
 5. Hecho: las [referencias](#referencias) de cada aplicación y recurso (repositorio, copias locales,
    documentación, logs y panel), que declaras tú o un agente y DevHQ solo copia.
-6. Después, automatizaciones con resultado e historial, y seguridad con almacén nativo de
+6. Hecho en Windows, pendiente de su primer CI en Linux: leer, cuando se lo pides, las
+   [copias locales](#copias-locales) de esta estación de trabajo sin ejecutar nada de lo que nombran,
+   como evidencia propia: actividad, trabajo que solo existe en una máquina y el commit de HEAD que
+   comparará la etapa de despliegues.
+7. Después, automatizaciones con resultado e historial, y seguridad con almacén nativo de
    credenciales y evidencias contextualizadas.
-7. A largo plazo, una supervisión que siga con la ventana cerrada y avise de lo que necesita
+8. A largo plazo, una supervisión que siga con la ventana cerrada y avise de lo que necesita
    atención, hecha por DevHQ mismo y no por un agente. Contradice que DevHQ no funcione en segundo plano, así que exige revisar esa regla y
    cuidar lo que consume.
 
@@ -828,7 +970,7 @@ no una especificación ni un backlog: nada de lo que describe existe hasta que e
 Las pruebas cubren navegación, tabs/teclado, filtros, rutas desconocidas, relaciones
 compartidas, cronología de la demo, salud desconocida, persistencia tras reapertura,
 rechazo de referencias inválidas sin escrituras parciales, restricciones del esquema,
-migraciones v1/v2→v3, v3→v4, v4→v5, v5→v6, v6→v7, v7→v8, v8→v9, v9→v10 y v10→v11 (incluida la negativa a confirmar relaciones rotas),
+migraciones v1/v2→v3, v3→v4, v4→v5, v5→v6, v6→v7, v7→v8, v8→v9, v9→v10, v10→v11 y v11→v12 (incluida la negativa a confirmar relaciones rotas),
 vigencia y sustitución de observaciones de ambos orígenes, orden de atención, errores de
 carga visibles y recuperables, comprobaciones contra un servidor local (estado esperado,
 500, redirect, bucle de redirects, tiempo agotado, conexión rechazada, dominio `.invalid`
@@ -842,7 +984,16 @@ referencias: cada destino que se rechaza y por qué, las máquinas, los duplicad
 conservan, el registro de cambios con el campo `references`, el repositorio compartido por igualdad
 exacta (en Rust, en la puerta y en la preview), el recurso que guarda copias locales de otros y no
 deja de ser estación de trabajo, y el que es máquina de sus propias rutas y se borra con ellas pero no
-con las de otros. La supervisión se
+con las de otros. Las copias locales se prueban con la batería hostil por el lector encerrado y sin
+encerrar, que también comprueba que el `git` instalado sí ejecuta lo que nombran; con el lector frente al
+`git` instalado en gemelos benignos (ramas, HEAD suelto, sin commits, merge y rebase a medias, stashes,
+carpetas nuevas, un driver real y, en Windows, el `core.autocrlf` de la config del sistema); con un
+lector encerrado que no puede arrancar ningún programa; con lo que hay en una ruta que no es una copia,
+un formato que libgit2 no conoce, una carpeta sin permiso en Linux, un lector que se cuelga, muere o
+devuelve algo incoherente o enorme, y remotos con credenciales; y con su esquema: la actualización, los
+CHECK, la historia que impide borrar, una copia movida o quitada mientras se lee, la paginación sin huecos
+ni repetidos, los planes de consulta, la estación de trabajo de cada equipo por su huella y la puerta, que
+lee como agente sin tocar el registro de cambios. La supervisión se
 prueba sobre un reloj simulado de Tokio, sin esperas reales: ritmo por intervalo,
 continuidad tras reabrir, una sola ejecución por atraso, sin solapes, Run check que se une
 a la ejecución en vuelo, pausa, cancelación al quitar o cerrar (también de una ejecución que

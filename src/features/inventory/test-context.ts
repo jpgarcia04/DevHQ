@@ -26,6 +26,7 @@ export function inventoryContext(
         },
       ],
       sharedRepositories: [],
+      localCopies: [],
       observations: [],
       incidents: [],
       events: [],

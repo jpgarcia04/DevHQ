@@ -7,8 +7,10 @@ import type {
   InventorySnapshot,
   MonitorStatus,
   ObservationPage,
+  ReadingPage,
+  ThisWorkstation,
 } from '@/features/inventory/inventory-api'
-import { previewBackend, readOnly, sharedRepositories } from './backend'
+import { previewBackend, readOnly, remoteLocation, sharedRepositories } from './backend'
 import { sampleDatabase } from './sample'
 
 const now = Date.parse('2026-09-30T12:00:00Z')
@@ -126,6 +128,60 @@ describe('the preview’s simulated native process', () => {
         ],
       },
     ])
+  })
+
+  it('carries each declared local copy with its newest reading, as the native process derives it', () => {
+    const { backend, snapshot } = preview()
+    expect(
+      snapshot.localCopies.map((copy) => [
+        copy.referenceId,
+        copy.latest?.id ?? null,
+        copy.repository,
+        copy.localWork,
+        copy.movedSinceRead,
+      ]),
+    ).toEqual([
+      // Applications first, in the snapshot's order: Blog's clone was never read.
+      ['blog-clone', null, null, false, false],
+      ['shop-clone', 'reading-new', 'matches', true, false],
+    ])
+    expect(backend('this_workstation')).toMatchObject({ resourceId: 'laptop', problem: null })
+    // A system's readings, newest first, from the newest or from one already shown.
+    const shop: EntityRef = { type: 'application', id: 'shop' }
+    const page = backend('older_readings', { subject: shop, before: null }) as ReadingPage
+    expect([ids(page.readings), page.more]).toEqual([['reading-new', 'reading-old'], false])
+    expect(
+      ids(
+        (backend('older_readings', { subject: shop, before: 'reading-new' }) as ReadingPage)
+          .readings,
+      ),
+    ).toEqual(['reading-old'])
+    expect(() => backend('older_readings', { subject: web, before: 'reading-new' })).toThrow()
+    // Reading a copy and choosing this computer write: refused.
+    for (const command of ['read_copies', 'set_this_workstation'])
+      expect(() => backend(command, {})).toThrow(expect.objectContaining(readOnly))
+    expect(
+      (previewBackend(sampleDatabase('empty', now))('this_workstation') as ThisWorkstation).problem,
+    ).toBe('not_chosen')
+  })
+
+  it('compares a remote with a declared repository wherever both point', () => {
+    for (const same of [
+      'git@github.com:me/shop.git',
+      'ssh://git@GitHub.com:22/Me/Shop',
+      'https://token@github.com/me/shop/',
+    ])
+      expect(remoteLocation(same)).toBe(remoteLocation('https://github.com/me/shop'))
+    for (const nothing of [
+      '/srv/git/shop.git',
+      'C:\\git\\shop',
+      'ext::sh -c x',
+      'https://github.com/',
+    ])
+      expect(remoteLocation(nothing)).toBeNull()
+    expect(remoteLocation('git@gitlab.com:me/shop.git')).not.toBe(
+      remoteLocation('https://github.com/me/shop'),
+    )
   })
 
   it('pages older results from an anchor, without gaps or duplicates', () => {

@@ -21,6 +21,10 @@ use crate::inventory::{
     self, Application, ApplicationInput, Component, DataLocation, Inventory, Resource,
     ResourceInput,
 };
+use crate::local_copies::readings::{
+    CopyReading, LocalCopy, ReadFailure, ReadOutcome, ReadingPage,
+};
+use crate::local_copies::Remote;
 use crate::monitor::{CheckStatus, MonitorStatus, RunError};
 use crate::records::{
     AutomatedHistory, Event, EventInput, EventPage, HttpEvidence, Incident, IncidentInput,
@@ -28,6 +32,7 @@ use crate::records::{
     TruncatedHistory,
 };
 use crate::references::{Reference, SharedRepository};
+use crate::workstation::{Computer, ThisWorkstation};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -51,14 +56,29 @@ fn remove(path: &Path) {
     std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
 
+/// The computer the contract runs on: its local folder beside the inventory and a fingerprint of
+/// its own, never this machine's.
+fn computer(path: &Path) -> Computer {
+    Computer {
+        local: path.parent().unwrap().join("local"),
+        fingerprint: Some("contract-computer".into()),
+    }
+}
+
 /// DevHQ's commands and state over the database at `path`, as `run` registers them, without
-/// supervision's loop. The app must outlive its window.
+/// supervision's loop, reading copies with a confined reader of the test executable. The app must
+/// outlive its window.
 fn devhq(path: &Path) -> (App<MockRuntime>, WebviewWindow<MockRuntime>) {
     let app = mock_builder()
         .invoke_handler(commands())
         .build(mock_context(noop_assets()))
         .unwrap();
-    manage(&app, path.to_path_buf());
+    manage(
+        &app,
+        path.to_path_buf(),
+        computer(path),
+        crate::local_copies::tests::test_reader("confined", &[]),
+    );
     let window = WebviewWindowBuilder::new(&app, "main", Default::default())
         .build()
         .unwrap();
@@ -182,6 +202,13 @@ fn arguments(command: &str) -> Vec<(&'static str, Reader)> {
         "remove_http_check" | "run_http_check" => vec![("subject", subject)],
         // A channel crosses as `__CHANNEL__:<id>`.
         "watch_http_monitor" => vec![("channel", text)],
+        "this_workstation" => vec![],
+        "set_this_workstation" => vec![("resourceId", read_completely::<Option<String>>)],
+        "read_copies" => vec![("referenceIds", read_completely::<Option<Vec<String>>>)],
+        "older_readings" => vec![
+            ("subject", subject),
+            ("before", read_completely::<Option<String>>),
+        ],
         _ => panic!("contract/commands/{command}.json names no command of DevHQ's"),
     }
 }
@@ -193,7 +220,8 @@ fn seeded() -> PathBuf {
         .unwrap()
         .execute_batch(
             "INSERT INTO resources (id, name, kind, description, operating_system)
-               VALUES ('host', 'Host', 'server', '', 'Linux'), ('spare', 'Spare', 'workstation', '', '');
+               VALUES ('host', 'Host', 'server', '', 'Linux'), ('spare', 'Spare', 'workstation', '', ''),
+                      ('laptop', 'Laptop', 'workstation', '', 'Windows 11');
              INSERT INTO applications (id, name, lifecycle, description, version)
                VALUES ('shop', 'Shop', 'production', 'Store', '2.0'), ('draft', 'Draft', 'development', '', NULL);
              INSERT INTO components (id, application_id, name, kind, resource_id)
@@ -215,8 +243,18 @@ fn seeded() -> PathBuf {
                VALUES ('evt-http-1', 'host', 'observation', 'success', 'HTTP check: Healthy', 'HTTP 200 as expected', 'http', 'obs-http-1', 1767225600000, 1767225600000),
                       ('evt-http-2', 'host', 'observation', 'success', 'HTTP check: Healthy', 'HTTP 200 as expected', 'http', 'obs-http-2', 1767225900000, 1767225900000);
              INSERT INTO incidents (id, application_id, title, description, severity, status, source, opened_at, updated_at)
-               VALUES ('incident-1', 'shop', 'Checkout fails', '', 'critical', 'open', 'manual', 1767225600000, 1767225600000);",
+               VALUES ('incident-1', 'shop', 'Checkout fails', '', 'critical', 'open', 'manual', 1767225600000, 1767225600000);
+             -- A local copy of the shop on the laptop, this computer, at a path where nothing is:
+             -- reading it keeps a reading that says so. And an earlier reading, the paging anchor.
+             INSERT INTO system_references (id, application_id, kind, target, machine_id)
+               VALUES ('shop-copy', 'shop', 'local_copy', '/devhq-contract/shop', 'laptop');
+             INSERT INTO copy_readings (id, application_id, reference_id, machine_id, path, source, reader, observed_at, recorded_at, outcome, detail)
+               VALUES ('reading-1', 'shop', 'shop-copy', 'laptop', '/devhq-contract/shop', 'read', 'libgit2 1.9.7', 1767225600000, 1767225600000, 'missing', 'Nothing is at this path.');",
         )
+        .unwrap();
+    // This computer is the laptop.
+    computer(&path)
+        .choose(&inventory::list(&path).unwrap().resources, Some("laptop"))
         .unwrap();
     path
 }
@@ -275,6 +313,51 @@ fn every_answer_has_the_shape_the_window_expects() {
             location: "https://host.example/health".into(),
         }],
     };
+    // A reading of the shop's copy on the laptop: commits on no remote, a stash and changes.
+    let read_on_laptop = CopyReading {
+        id: "reading-2".into(),
+        subject: shop(),
+        reference_id: "shop-copy".into(),
+        machine_id: "laptop".into(),
+        path: r"C:\src\platform".into(),
+        source: "read".into(),
+        reader: "libgit2 1.9.7".into(),
+        agent: None,
+        observed_at: at("10:00"),
+        recorded_at: at("10:00"),
+        outcome: "read".into(),
+        detail: None,
+        branch: Some("main".into()),
+        head: Some("0123456789abcdef0123456789abcdef01234567".into()),
+        last_commit_at: Some(at("09:00")),
+        unpublished_on_head: Some(2),
+        unpublished_elsewhere: Some(0),
+        stashes: Some(1),
+        synced_at: Some(at("08:00")),
+        remotes: Some(vec![
+            Remote {
+                name: "mirror".into(),
+                url: None,
+            },
+            Remote {
+                name: "origin".into(),
+                url: Some("git@github.com:me/platform.git".into()),
+            },
+        ]),
+        operation: None,
+        changed: Some(3),
+        untracked: Some(1),
+        unverifiable: Some(0),
+        worktree_unknown: None,
+    };
+    let laptop = || ThisWorkstation {
+        resource_id: Some("laptop".into()),
+        chosen_at: Some(at("08:00")),
+        problem: None,
+        message: None,
+        file: r"C:\Users\Juan Pablo\AppData\Local\com.devhq.desktop\this-workstation.json".into(),
+        stored_at: None,
+    };
     let snapshot = Inventory {
         applications: vec![Application {
             id: "shop".into(),
@@ -311,34 +394,61 @@ fn every_answer_has_the_shape_the_window_expects() {
                     label: Some("API".into()),
                     machine_id: Some("host".into()),
                 },
-            ],
-        }],
-        resources: vec![Resource {
-            id: "host".into(),
-            name: "Host".into(),
-            kind: "server".into(),
-            description: "Rack 2".into(),
-            operating_system: "Debian 13".into(),
-            references: vec![
                 Reference {
-                    id: "host-repo".into(),
-                    kind: "repository".into(),
-                    target: "https://github.com/me/platform".into(),
+                    id: "shop-copy".into(),
+                    kind: "local_copy".into(),
+                    target: r"C:\src\platform".into(),
                     label: None,
-                    machine_id: None,
-                },
-                Reference {
-                    id: "host-dashboard".into(),
-                    kind: "dashboard".into(),
-                    target: "https://grafana.example/d/host".into(),
-                    label: None,
-                    machine_id: None,
+                    machine_id: Some("laptop".into()),
                 },
             ],
         }],
+        resources: vec![
+            Resource {
+                id: "host".into(),
+                name: "Host".into(),
+                kind: "server".into(),
+                description: "Rack 2".into(),
+                operating_system: "Debian 13".into(),
+                references: vec![
+                    Reference {
+                        id: "host-repo".into(),
+                        kind: "repository".into(),
+                        target: "https://github.com/me/platform".into(),
+                        label: None,
+                        machine_id: None,
+                    },
+                    Reference {
+                        id: "host-dashboard".into(),
+                        kind: "dashboard".into(),
+                        target: "https://grafana.example/d/host".into(),
+                        label: None,
+                        machine_id: None,
+                    },
+                ],
+            },
+            Resource {
+                id: "laptop".into(),
+                name: "Laptop".into(),
+                kind: "workstation".into(),
+                description: String::new(),
+                operating_system: "Windows 11".into(),
+                references: vec![],
+            },
+        ],
         shared_repositories: vec![SharedRepository {
             target: "https://github.com/me/platform".into(),
             systems: vec![shop(), host()],
+        }],
+        local_copies: vec![LocalCopy {
+            reference_id: "shop-copy".into(),
+            subject: shop(),
+            machine_id: "laptop".into(),
+            path: r"C:\src\platform".into(),
+            latest: Some(read_on_laptop.clone()),
+            moved_since_read: false,
+            repository: Some("matches".into()),
+            local_work: true,
         }],
         observations: vec![
             Observation {
@@ -622,6 +732,63 @@ fn every_answer_has_the_shape_the_window_expects() {
             }),
         ),
         ("error".to_owned(), refused),
+        ("this_workstation".to_owned(), value(laptop())),
+        (
+            "read_copies".to_owned(),
+            value(&ReadOutcome {
+                readings: vec![read_on_laptop.clone()],
+                failures: vec![ReadFailure {
+                    reference_id: "docs-copy".into(),
+                    subject: host(),
+                    path: r"C:\src\infra".into(),
+                    message: r"Reading C:\src\infra took longer than 30 s, so DevHQ stopped it. Nothing was kept.".into(),
+                }],
+                this_workstation: laptop(),
+            }),
+        ),
+        (
+            "older_readings".to_owned(),
+            value(&ReadingPage {
+                readings: vec![
+                    CopyReading {
+                        id: "reading-1".into(),
+                        agent: Some("claude-code".into()),
+                        observed_at: at("07:00"),
+                        recorded_at: at("07:00"),
+                        last_commit_at: Some(at("06:30")),
+                        synced_at: Some(at("06:00")),
+                        changed: None,
+                        untracked: None,
+                        unverifiable: None,
+                        worktree_unknown: Some(
+                            "Reading the working tree took longer than 30 s, so DevHQ stopped it."
+                                .into(),
+                        ),
+                        ..read_on_laptop.clone()
+                    },
+                    CopyReading {
+                        id: "reading-0".into(),
+                        observed_at: at("06:00"),
+                        recorded_at: at("06:00"),
+                        outcome: "missing".into(),
+                        detail: Some("Nothing is at this path.".into()),
+                        branch: None,
+                        head: None,
+                        last_commit_at: None,
+                        unpublished_on_head: None,
+                        unpublished_elsewhere: None,
+                        stashes: None,
+                        synced_at: None,
+                        remotes: None,
+                        changed: None,
+                        untracked: None,
+                        unverifiable: None,
+                        ..read_on_laptop.clone()
+                    },
+                ],
+                more: true,
+            }),
+        ),
     ]);
     let fixtures = fixtures("responses");
     assert_eq!(

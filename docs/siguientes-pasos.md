@@ -45,9 +45,18 @@ permisos por agente ni descubrir repositorios por su cuenta.
   comparada por igualdad exacta; un destino es una URL http(s) o una ruta absoluta, y la etiqueta es
   un nombre para personas, nunca un localizador. Son inventario declarado, no evidencia: no llevan
   `source`.
-- **El diseño de la etapa 3** está en `claude/local-activity-design`, que sale de `main` (`aff9dd7`)
-  desde que #5 se fusionó; antes salía de su punta. La persona aprobó su dirección el 11 oct, y la
-  revisión de ese día no dejó nada pendiente de ella.
+- **La etapa 3** se implementa en `claude/local-activity-design`, que sale de `main` (`aff9dd7`)
+  desde que #5 se fusionó; antes salía de su punta. La persona aprobó la dirección del diseño el 11
+  oct, y la revisión de ese día no dejó nada pendiente de ella. Hecho en un primer commit: el lector
+  (`devhq --read-copy`, libgit2 encerrado, con plazo), la batería hostil, el esquema v12
+  (`copy_readings`), esta estación de trabajo (`this-workstation.json` con la huella), los comandos de
+  la ventana y la herramienta `read_copies` de la puerta, con el README, `CLAUDE.md` y la visión. Todo
+  pasa en la laptop con Windows; el código solo de Linux (seccomp, `machine-id`, la carpeta sin
+  permiso) no se ha compilado todavía: lo hará el primer CI. La batería encontró un fallo real antes de
+  existir el primer commit: la API de reflog de libgit2 (`git_reflog_read`) crea un log vacío cuando una
+  ref no tiene, y leía escribiendo en `.git/modules/sub/logs/refs/remotes/origin/main`; ahora esos logs se
+  leen como archivos. Falta la ventana (Settings › This computer, la última lectura de cada copia con
+  Read, el panel Local copies y la actividad en Applications), la preview, la caminata nativa y el PR.
 - **La primera carga, medida en las dos caminatas de #5.** La caminata dice cuánto tarda la ventana
   en poder manejarse tras arrancar DevHQ y, en el primer paso (y en cualquiera que falle), si la
   página está visible, cuánto lleva cargada y cuándo se pidió y se respondió cada llamada a DevHQ, en
@@ -80,8 +89,8 @@ permisos por agente ni descubrir repositorios por su cuenta.
 
 ## Qué hacer, en orden
 
-1. **Etapa 3, actividad de las copias locales**: implementar el diseño revisado (ver «Etapa 3:
-   diseño revisado», abajo) en un PR desde `claude/local-activity-design`.
+1. **Etapa 3, actividad de las copias locales**: terminar la ventana sobre lo ya hecho (ver «Estado»
+   y «Etapa 3: diseño revisado», abajo) y abrir el PR desde `claude/local-activity-design`.
 2. **Abrir una referencia, si la persona lo quiere**, solo como subproducto: un comando Rust
    `open_reference(id)` que lee la referencia de SQLite y abre en el navegador solo URL http(s); la
    ventana nunca pasa una URL y el WebView no gana plugin ni permiso. Una ruta no se abre hasta que

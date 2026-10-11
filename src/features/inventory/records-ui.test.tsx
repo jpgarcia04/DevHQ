@@ -100,6 +100,7 @@ const snapshot: InventorySnapshot = {
     references: [],
   })),
   sharedRepositories: [],
+  localCopies: [],
   observations: [
     observation('db-host', 'unhealthy', 10, 50),
     observation('web-host', 'healthy', 180, -120),

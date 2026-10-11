@@ -13,7 +13,11 @@ agents here: keep every rule in this file and only pointers there.
   When a list is cut (history window, paging), the UI says where and why.
 - History is never deleted or rewritten: observations are immutable, subjects with history
   cannot be deleted, a schema change keeps every row.
-- DevHQ observes; it does not operate systems, run in the background or hold credentials.
+- DevHQ observes; it does not operate systems, run in the background or hold credentials. It
+  reads only what the inventory names, when asked, and never searches a disk or a network for things
+  to add. Observing never gives the source a way to run code or change anything: a reader never runs
+  a program the source names and never writes to it, and every declared path, and what it holds, is
+  untrusted data.
 - Provenance (`source`), observed and recorded times, and validity are always visible.
 - `docs/vision.md` (in Spanish) holds the long-term direction and the questions to ask of any
   new feature or architectural change; read it before proposing either. It guides and
@@ -127,6 +131,21 @@ commit (`Monitor::notice_changes`, `PRAGMA data_version` every 2 s) and holds th
 What remains to check or decide: `docs/puerta-para-agentes.md`. To try it
 with a real client: `claude -p "..." --mcp-config <json> --strict-mcp-config --allowedTools
 "mcp__devhq__*"` with the server's `--database` pointing at a test inventory.
+
+## Local copies
+
+`src-tauri/src/local_copies.rs` reads a declared local copy with libgit2's read APIs, never with the
+`git` program, which runs what a repository names. Each copy is read in `devhq --read-copy`, a process
+that first forbids itself to start programs (a Job Object on Windows, seccomp on `execve` on Linux;
+elsewhere it refuses to read) and that the caller kills at its deadline; its answer is checked as
+untrusted. Not every libgit2 API that sounds like reading only reads (the reflog API creates a missing
+log): a new libgit2 call, a new reader or library, and every libgit2 upgrade must pass the hostile
+battery (`local_copies/battery.rs`) on Linux and Windows. What is not guaranteed, and stays written in
+the README: code that hostile data ran inside the reader has the person's rights, and nothing of the
+system stops the reader writing. Which workstation this computer is lives in `this-workstation.json`
+in the local data folder, keyed by a machine fingerprint, never in the inventory; only the window
+chooses it. Tests build repositories with the installed `git`, without the machine's config, and
+compile the battery's marker with the toolchain's `rustc`.
 
 ## Schema
 

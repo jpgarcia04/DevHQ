@@ -97,6 +97,13 @@ No son requisitos rígidos sino criterios: sirven para decidir qué entra, cómo
     capacidades son explícitas, auditables y sujetas al acceso que les concedes.
 15. **Personal y local.** Un archivo SQLite que es tuyo, sin cuentas ni nube. Que DevHQ trabaje por
     su cuenta con la ventana cerrada exige decidirlo de forma explícita.
+16. **Observar no da poder a lo observado.** Leer una fuente nunca le da a esa fuente una forma de
+    ejecutar código ni de cambiar nada: DevHQ no ejecuta ningún programa que la fuente nombre y no
+    escribe en ella, y lo que el inventario nombra (una ruta, un repositorio) son datos no confiables,
+    los haya declarado quien los haya declarado. La garantía no es una lista de prohibiciones que cada
+    versión de la herramienta alarga: viene de leer con algo que no sabe ejecutar programas, de una
+    batería hostil que lo exige y, donde el sistema lo permite, de un lector al que el sistema no deja
+    arrancarlos. Lo que no se garantiza se escribe.
 
 ## Revisión del planteamiento
 
@@ -273,28 +280,28 @@ auditoría, crece desde este registro.
 
 ### Dónde encaja cada cosa
 
-| Cosa                            | Dónde encajaría                                                                                                       | Por qué                                                                                                   |
-| ------------------------------- | --------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| Proyecto                        | La aplicación (existe)                                                                                                | Es la unidad que ya mantienes                                                                             |
-| Repositorio                     | Referencia de la aplicación y fuente de evidencia (commits, actividad)                                                | No es dónde corre sino dónde está el código; un monorepo es la misma referencia desde varias aplicaciones |
-| Copia local de trabajo          | Referencia ligada a una estación de trabajo: la ruta en esa máquina                                                   | El mismo proyecto puede estar clonado en varias máquinas                                                  |
-| Servidor, VPS, laptop           | Recurso `server` o `workstation` (existe)                                                                             | Es donde corren los componentes                                                                           |
-| Base de datos                   | Componente si es de una sola aplicación (existe); recurso si la comparten varias                                      | «Qué aplicaciones usan esta base de datos» exige que sea un recurso                                       |
-| Contenedor                      | Componente, el papel estable (existe, como `docker`); los contenedores concretos, como evidencia                      | Van y vienen: inventariarlos uno a uno envejecería en horas                                               |
-| Despliegue                      | Evento `deployment` (existe) con versión o commit, entorno y recurso de destino                                       | Es historia inmutable; lo desplegado se deriva del último                                                 |
-| Entorno                         | Hoy, el lifecycle de la aplicación, uno solo; varios, cuando hagan falta, como dimensión de componentes y despliegues | Una aplicación con producción y staging a la vez no se puede expresar hoy                                 |
-| Dominio                         | Recurso de un tipo nuevo, con su comprobación                                                                         | La caducidad del dominio y de su certificado es atención pura                                             |
-| API                             | Lo que expone una aplicación: una relación «usa» entre aplicaciones y la comprobación del endpoint                    | Responde qué se rompe si cambia o cae                                                                     |
-| Documentación                   | Referencia                                                                                                            | Vive en el repositorio o en la web                                                                        |
-| Logs                            | Referencia; un fragmento acotado como evidencia de una observación                                                    | Nunca el flujo                                                                                            |
-| CPU, RAM, disco                 | Evidencia: una observación con sus valores                                                                            | Nunca series                                                                                              |
-| Agentes de IA                   | Procedencia (`agent`) y clientes de la puerta                                                                         | No son inventario                                                                                         |
-| CI, paneles, otras herramientas | Fuentes de evidencia con su `source`, y referencias                                                                   | DevHQ las relaciona, no las sustituye                                                                     |
+| Cosa                            | Dónde encajaría                                                                                                         | Por qué                                                                                                   |
+| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| Proyecto                        | La aplicación (existe)                                                                                                  | Es la unidad que ya mantienes                                                                             |
+| Repositorio                     | Referencia de la aplicación y fuente de evidencia (commits, actividad)                                                  | No es dónde corre sino dónde está el código; un monorepo es la misma referencia desde varias aplicaciones |
+| Copia local de trabajo          | Referencia ligada a una estación de trabajo: la ruta en esa máquina; lo que se lee en ella, evidencia propia (lecturas) | El mismo proyecto puede estar clonado en varias máquinas, y cada una sabe algo que las demás no           |
+| Servidor, VPS, laptop           | Recurso `server` o `workstation` (existe)                                                                               | Es donde corren los componentes                                                                           |
+| Base de datos                   | Componente si es de una sola aplicación (existe); recurso si la comparten varias                                        | «Qué aplicaciones usan esta base de datos» exige que sea un recurso                                       |
+| Contenedor                      | Componente, el papel estable (existe, como `docker`); los contenedores concretos, como evidencia                        | Van y vienen: inventariarlos uno a uno envejecería en horas                                               |
+| Despliegue                      | Evento `deployment` (existe) con versión o commit, entorno y recurso de destino                                         | Es historia inmutable; lo desplegado se deriva del último                                                 |
+| Entorno                         | Hoy, el lifecycle de la aplicación, uno solo; varios, cuando hagan falta, como dimensión de componentes y despliegues   | Una aplicación con producción y staging a la vez no se puede expresar hoy                                 |
+| Dominio                         | Recurso de un tipo nuevo, con su comprobación                                                                           | La caducidad del dominio y de su certificado es atención pura                                             |
+| API                             | Lo que expone una aplicación: una relación «usa» entre aplicaciones y la comprobación del endpoint                      | Responde qué se rompe si cambia o cae                                                                     |
+| Documentación                   | Referencia                                                                                                              | Vive en el repositorio o en la web                                                                        |
+| Logs                            | Referencia; un fragmento acotado como evidencia de una observación                                                      | Nunca el flujo                                                                                            |
+| CPU, RAM, disco                 | Evidencia: una observación con sus valores                                                                              | Nunca series                                                                                              |
+| Agentes de IA                   | Procedencia (`agent`) y clientes de la puerta                                                                           | No son inventario                                                                                         |
+| CI, paneles, otras herramientas | Fuentes de evidencia con su `source`, y referencias                                                                     | DevHQ las relaciona, no las sustituye                                                                     |
 
 ### Cómo crecer sin romperlo
 
 Cada tabla que cuelga de un sujeto (`observations`, `incidents`, `events`, `http_checks`,
-`change_log` y `system_references`) lo señala con dos columnas, `application_id` y `resource_id`, y un CHECK que exige
+`change_log`, `system_references` y `copy_readings`) lo señala con dos columnas, `application_id` y `resource_id`, y un CHECK que exige
 exactamente una. Un tercer tipo de sujeto añadiría una columna a cada una y obligaría a
 reconstruirlas, porque SQLite no cambia un CHECK con ALTER, como hicieron la v4 y la v7. Por eso lo
 nuevo que se observa entra, mientras quepa, como **tipo de recurso** (una base de datos compartida,
@@ -308,6 +315,23 @@ que usa otra) llega cuando una pregunta concreta lo necesita, con sus claves for
 `RESTRICT` o `CASCADE` explícitos; no un motor genérico de grafos. Lo que nombra una tecnología en
 vez de un concepto, como el tipo de componente `docker`, se generaliza cuando se toque esa parte del
 modelo, no antes.
+
+Las fuentes de evidencia también crecen por un patrón y no por una capa de integraciones, que no se
+escribe hasta que dos fuentes reales pidan lo mismo. Lo fijó la primera, las copias locales (v12):
+
+1. El inventario nombra el objetivo y la fuente lee solo eso, a petición; supervisarla es otra
+   decisión, como con HTTP.
+2. Si el objetivo vive en una máquina (una copia, el Docker local), se lee solo en la suya, con «esta
+   estación de trabajo», que no es inventario.
+3. Si la fuente juzga salud (un contenedor caído), escribe observaciones con su `source`; si registra
+   hechos que no son salud, tiene su tabla de evidencia con las columnas comunes y copia su objetivo
+   en vez de apuntarlo con una clave foránea.
+4. Un fallo del objetivo es evidencia; uno de DevHQ es un error que no se guarda.
+5. Leer no ejecuta nada de la fuente ni escribe en ella: el lector corre en un proceso propio, con
+   plazo y, donde el sistema lo permite, sin poder arrancar programas, y pasa una batería hostil; lo
+   que no se garantiza se documenta, y si hay credenciales, ninguna pasa por la fuente que se lee.
+6. Lo derivado se calcula al leer, en Rust, para la ventana y la puerta; si entra en la atención, se
+   escribe a los dos lados con casos en `contract/attention/`.
 
 ### El inventario envejece
 
@@ -333,8 +357,8 @@ ni a mantenerla al día. Por eso:
 | ¿Qué se cae si cae este servidor?                        | Relaciones entre recursos y entre aplicaciones                                           | En parte: solo lo que corre directamente en él                                                                            |
 | ¿Qué aplicaciones usan esta base de datos?               | Bases de datos compartidas como recurso                                                  | No: un recurso solo es servidor o estación de trabajo, y una base de datos es componente de una sola aplicación           |
 | ¿Qué está desplegado, dónde y con qué versión?           | Despliegues con versión o commit y destino                                               | En parte: lifecycle, la versión como texto y eventos de despliegue a mano, sin destino ni commit                          |
-| ¿Qué tiene cambios sin desplegar?                        | El repositorio de cada aplicación, el commit del último despliegue y leer el repositorio | No                                                                                                                        |
-| ¿Qué lleva meses sin actividad?                          | Actividad observada: commits, despliegues                                                | No: solo existe la actividad que se registra en DevHQ                                                                     |
+| ¿Qué tiene cambios sin desplegar?                        | El repositorio de cada aplicación, el commit del último despliegue y leer el repositorio | No: las lecturas de las copias locales guardan el commit de HEAD; falta el del último despliegue                          |
+| ¿Qué lleva meses sin actividad?                          | Actividad observada: commits, despliegues                                                | En parte: el commit más nuevo que encontraron las lecturas de sus copias locales, cuando se pidieron                      |
 | ¿Dónde están sus logs, su documentación, su repositorio? | Referencias                                                                              | Sí: las referencias de cada aplicación y recurso (v11), en la ventana y en la puerta; DevHQ no comprueba que existan      |
 | ¿Qué dominio o certificado caduca pronto?                | Dominios como recurso y la caducidad del certificado como evidencia                      | No                                                                                                                        |
 | ¿Cómo llegó esto a su estado actual?                     | La evidencia y un registro de cambios común                                              | Sí: la evidencia, el historial de cada incidencia y el registro de cambios, tuyos y de los agentes, completo desde la v10 |
@@ -358,9 +382,10 @@ concretos y su orden están en «Evolución prevista» del README; este document
 4. **Despliegues con estructura**: el evento de despliegue con versión o commit, entorno y recurso
    de destino, registrado por ti, por un agente o, más adelante, por la CI. Responde qué está
    desplegado y dónde.
-5. **Actividad local**: leer, cuando lo pides, los repositorios locales que el inventario ya conoce
-   (último commit, cambios sin confirmar, commits posteriores al último despliegue) como evidencia
-   con su propio `source`. Sin credenciales, pero choca con «no se implementan scanners».
+5. **Actividad local** (hecho, esquema v12): leer, cuando lo pides, las copias locales que el
+   inventario ya conoce (último commit, commits sin publicar, stashes, cambios sin confirmar, el commit
+   de HEAD) como evidencia con su propio `source`, `read`, sin ejecutar nada de lo que nombran. Sin
+   credenciales; la regla «no se implementan scanners» pasó a ser «DevHQ no busca qué observar».
 6. **Contexto para agentes**: el resumen por sistema en la puerta, más rico con cada paso anterior.
 7. **Fuentes con credenciales**: servidores por SSH de solo lectura, el estado de la CI en GitHub u
    otra plataforma. Exige el almacén nativo de credenciales.
@@ -375,14 +400,14 @@ concretos y su orden están en «Evolución prevista» del README; este document
 Cada regla sigue vigente hasta que se decida cambiarla de forma explícita, y entonces el README
 cambia en el mismo commit que la funcionalidad que lo necesita.
 
-| Idea                                                  | Regla o límite de hoy                                                               | Qué haría falta                                                                                                                  |
-| ----------------------------------------------------- | ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| Actuar sobre el ecosistema, tú o un agente autorizado | DevHQ observa; no opera sistemas                                                    | Cambiar la regla con la primera capacidad operativa, construida sobre la observación: explícita, segura, controlable y auditable |
-| Leer servidores o plataformas con credenciales        | No guarda credenciales                                                              | El almacén nativo de credenciales que el README ya prevé; nunca en SQLite, React ni localStorage                                 |
-| Vigilar con la ventana cerrada                        | No funciona en segundo plano                                                        | Revisar la regla y medir lo que consume; lo hace DevHQ, no un agente                                                             |
-| Descubrir repositorios o servicios                    | No se implementan scanners                                                          | Que lo lances tú, de solo lectura, y que proponga cambios que aceptas                                                            |
-| Atajos como abrir una carpeta                         | Si solo ahorra un comando sencillo, no pertenece                                    | Solo como subproducto de una referencia que el modelo ya tiene                                                                   |
-| Muchos tipos de cosas                                 | Dos tipos de sujeto, con una columna cada uno en cada tabla que cuelga de un sujeto | Crecer por tipos de recurso; una tabla genérica de sujetos solo si algo no cabe, con una migración que conserve cada fila        |
+| Idea                                                  | Regla o límite de hoy                                                               | Qué haría falta                                                                                                                        |
+| ----------------------------------------------------- | ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| Actuar sobre el ecosistema, tú o un agente autorizado | DevHQ observa; no opera sistemas                                                    | Cambiar la regla con la primera capacidad operativa, construida sobre la observación: explícita, segura, controlable y auditable       |
+| Leer servidores o plataformas con credenciales        | No guarda credenciales                                                              | El almacén nativo de credenciales que el README ya prevé; nunca en SQLite, React ni localStorage                                       |
+| Vigilar con la ventana cerrada                        | No funciona en segundo plano                                                        | Revisar la regla y medir lo que consume; lo hace DevHQ, no un agente                                                                   |
+| Descubrir repositorios o servicios                    | DevHQ no busca qué observar; lee solo lo que el inventario nombra                   | Que lo lances tú, sobre un lugar que eliges, de solo lectura y sin ejecutar nada de lo que encuentre, y que proponga altas que aceptas |
+| Atajos como abrir una carpeta                         | Si solo ahorra un comando sencillo, no pertenece                                    | Solo como subproducto de una referencia que el modelo ya tiene                                                                         |
+| Muchos tipos de cosas                                 | Dos tipos de sujeto, con una columna cada uno en cada tabla que cuelga de un sujeto | Crecer por tipos de recurso; una tabla genérica de sujetos solo si algo no cabe, con una migración que conserve cada fila              |
 
 ## Lo que DevHQ no quiere ser
 
@@ -430,6 +455,9 @@ Este documento se corrige cuando cambia la dirección, con una línea en «Histo
 - 6 oct 2026: el registro de cambios común existe (esquema v10, `change_log`) y la puerta para
   agentes está en `main`; el texto deja de describir como pendiente que tus cambios de configuración
   dejen rastro.
+- 11 oct 2026: un principio 16, «observar no da poder a lo observado», y el patrón para las fuentes de
+  evidencia, fijados por la primera, las copias locales (v12). «No se implementan scanners» pasa a
+  «DevHQ no busca qué observar; lee solo lo que el inventario nombra».
 
 ## Planteamiento original
 
