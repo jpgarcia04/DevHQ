@@ -82,6 +82,17 @@ permisos por agente ni descubrir repositorios por su cuenta.
   motivo de libgit2. La prueba exigía la frase de DevHQ; ahora admite las dos (sin mirar las palabras
   del sistema, que salen en su idioma). En la laptop siempre lo detecta DevHQ, también con `TMP`
   acentuado. El pase siguiente ([run 38151813941](https://github.com/jpgarcia04/DevHQ/actions/runs/38151813941)) pasó los tests en los dos pases y la caminata, pero falló la comprobación de que los tests no dejan nada en `TMP`: quedaban la config de Git vacía y el marcador de la batería, creados una vez por ejecución desde el primer commit de la etapa. Ahora el marcador se compila en la carpeta de la batería, que la prueba borra, y `GIT_CONFIG_GLOBAL` apunta a una ruta que no existe (Git se salta una config global ausente); en la laptop, con un `TMP` nuevo, no queda nada. Con ese cambio ([run 38152754066](https://github.com/jpgarcia04/DevHQ/actions/runs/38152754066)) pasaron los 3 jobs de Windows: los tres pases de tests (128 cada uno, 0 entradas dejadas en `TMP`), el instalador y la caminata; y el CI de Linux. Falta que la persona revise y fusione el PR.
+- **La auditoría de Codex sobre #6** (de solo lectura, frente a `main`, sobre `e18c30e`) encontró dos
+  defectos, confirmados y corregidos en commits aparte, cada uno con una prueba que falla sin el
+  arreglo. Una URL `file://usuario:contraseña@servidor/…` se guardaba tal cual, contraseña incluida:
+  ahora `file://` pierde lo que va antes de la @ de su autoridad, y `git://`, que no tiene cuentas,
+  su usuario. Y el log de una ref se leía hasta 32 MiB y se contaba como si fuera entero: un log más
+  largo daba menos stashes de los que hay y un `syncedAt` anterior o nulo. Ahora la entrada más nueva
+  se lee del final del log, exacta a cualquier largo; un log de stash de más de 32 MiB, o un final sin
+  entradas, es un fallo de DevHQ que no se guarda (la lectura no tiene dónde decir «desconocido» para
+  esos datos, y darle dónde exigiría cambiar el esquema y la ventana por un caso que no se da en la
+  práctica); un log que el sistema no deja leer deja la copia `unreadable`. Las líneas se leen como
+  Git (`show_one_reflog_ent`), así que una que no es una entrada ya no cuenta como stash.
 - **Fuera de alcance, para después**: el bundle de la ventana pasó de unos 497 a 517 kB y Vite avisa
   de que supera 500 kB; es un aviso, en una app que carga desde disco, y no se cambió la configuración
   por él. Una aplicación que ya no declara ninguna copia local no ofrece «Show every reading» en la
@@ -268,8 +279,8 @@ un día resulta tener un fallo. Cada campo responde a una pregunta:
 
 - **Remotos sin secretos**: libgit2 devuelve la URL tal cual, con credenciales
   (`https://user:token@…`). Solo se guardan formas conocidas, limpias: http(s) sin usuario,
-  contraseña, query ni fragmento; `ssh://` sin contraseña; `usuario@host:ruta`; `git://`, `file://`
-  y rutas absolutas. Cualquier otra (`ext::`, que es una línea de comandos, o lo que no se reconozca)
+  contraseña, query ni fragmento; `ssh://` sin contraseña; `usuario@host:ruta`; `git://` y `file://`
+  sin usuario ni contraseña; y rutas absolutas. Cualquier otra (`ext::`, que es una línea de comandos, o lo que no se reconozca)
   se guarda solo con su nombre, y la ventana dice que DevHQ no muestra su URL.
 - **Fuera, por ruido o por ser datos personales**: autor, correo y mensajes de commit; nombres de
   archivo; listas de ramas, tags y stashes; el estado de los submódulos (cada uno es su propia copia,
