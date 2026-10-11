@@ -66,6 +66,115 @@ export interface SharedRepository {
   systems: EntityRef[]
 }
 
+/** A remote of a local copy, by name; its URL only in a form DevHQ keeps without credentials. */
+export interface CopyRemote {
+  name: string
+  url: string | null
+}
+
+/** What DevHQ found at a declared path: a copy it read, or why it could not. */
+export type ReadingOutcome = 'read' | 'missing' | 'not_a_copy' | 'unreadable'
+
+/** An operation a copy was left halfway through. */
+export type CopyOperation =
+  'merge' | 'rebase' | 'cherry_pick' | 'revert' | 'bisect' | 'apply_mailbox'
+
+/**
+ * What DevHQ read in a local copy, when someone asked: evidence of its own, never health, with no
+ * validity. It says what the copy held at `observedAt`, which may no longer be so. It copies the
+ * reference, machine and path it read, so it outlives them. Facts only with outcome `read`.
+ */
+export interface CopyReading {
+  id: string
+  subject: EntityRef
+  referenceId: string
+  machineId: string
+  path: string
+  source: 'read'
+  /** The library and its version («libgit2 1.9.7»). */
+  reader: string
+  /** The agent that asked for it through the gate; null when the person asked. */
+  agent: string | null
+  observedAt: string
+  recordedAt: string
+  outcome: ReadingOutcome
+  /** Why it was not read; only then. */
+  detail: string | null
+  /** The branch HEAD was on; null when detached. */
+  branch: string | null
+  /** HEAD's commit; null before the first commit. */
+  head: string | null
+  /** The newest commit date of HEAD and the local branches, as the commits say. */
+  lastCommitAt: string | null
+  /** Commits on no remote branch of the copy, on HEAD and on other local branches; 1001 is 1000+. */
+  unpublishedOnHead: number | null
+  unpublishedElsewhere: number | null
+  stashes: number | null
+  /** When the copy last talked to a remote, by its own files: DevHQ never fetches. */
+  syncedAt: string | null
+  remotes: CopyRemote[] | null
+  operation: CopyOperation | null
+  /** Tracked files changed, new entries, and files DevHQ could not verify… */
+  changed: number | null
+  untracked: number | null
+  unverifiable: number | null
+  /** …or why the working tree is unknown. */
+  worktreeUnknown: string | null
+}
+
+/**
+ * A local copy a system declares now, with its newest reading and what the native process derives
+ * from it at each read of the inventory. Never stored.
+ */
+export interface LocalCopy {
+  referenceId: string
+  subject: EntityRef
+  machineId: string
+  path: string
+  latest: CopyReading | null
+  /** The newest reading was made at another path or machine than declared now. */
+  movedSinceRead: boolean
+  /** How its remotes compared with the repositories the system declares, normalized. */
+  repository: 'matches' | 'differs' | 'undeclared' | null
+  /** When read, it held commits on no remote, stashes, changes, new or unverifiable files, or an operation. */
+  localWork: boolean
+}
+
+/** A system's readings, a page at a time, newest first. */
+export interface ReadingPage {
+  readings: CopyReading[]
+  more: boolean
+}
+
+/**
+ * Which workstation this computer is, from DevHQ's local data folder, never the inventory; or why
+ * it is unknown.
+ */
+export interface ThisWorkstation {
+  resourceId: string | null
+  chosenAt: string | null
+  problem:
+    'not_chosen' | 'not_in_inventory' | 'not_a_workstation' | 'no_machine_id' | 'unreadable' | null
+  message: string | null
+  /** Where the association is kept, and where the system really keeps it when that differs. */
+  file: string
+  storedAt: string | null
+}
+
+/** A copy DevHQ could not read: a failure of DevHQ, kept nowhere. */
+export interface ReadFailure {
+  referenceId: string
+  subject: EntityRef
+  path: string
+  message: string
+}
+
+export interface ReadOutcome {
+  readings: CopyReading[]
+  failures: ReadFailure[]
+  thisWorkstation: ThisWorkstation
+}
+
 /**
  * `off`: runs only when asked. `active`: also every interval while DevHQ is open.
  * `paused`: keeps its interval but runs only when asked until resumed.
@@ -143,6 +252,8 @@ export interface InventorySnapshot {
   applications: InventoryApplication[]
   resources: InventoryResource[]
   sharedRepositories: SharedRepository[]
+  /** Each local copy the systems declare, with its newest reading; older ones are paged. */
+  localCopies: LocalCopy[]
   observations: Observation[]
   incidents: RecordedIncident[]
   events: RecordedEvent[]
@@ -368,6 +479,21 @@ export const inventoryApi = {
     const channel = new Channel<MonitorStatus>(onStatus)
     await invoke<null>('watch_http_monitor', { channel })
   },
+  /** Which workstation this computer is, or why DevHQ does not know. */
+  thisWorkstation: () => invoke<ThisWorkstation>('this_workstation'),
+  /** Chooses an existing workstation as this computer; null forgets the choice. */
+  setThisWorkstation: (resourceId: string | null) =>
+    invoke<ThisWorkstation>('set_this_workstation', { resourceId }),
+  /**
+   * Reads, now, the copies named or (null) every one of this workstation but those of archived
+   * applications, each in a confined reader; resolves with what was kept and what DevHQ could not
+   * read.
+   */
+  readCopies: (referenceIds: string[] | null) =>
+    invoke<ReadOutcome>('read_copies', { referenceIds }),
+  /** A system's readings older than `before`, one already shown, or its newest with null. */
+  olderReadings: (subject: EntityRef, before: string | null) =>
+    invoke<ReadingPage>('older_readings', { subject, before }),
 }
 
 export function inventoryError(error: unknown): string {

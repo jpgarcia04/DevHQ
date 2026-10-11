@@ -6,6 +6,7 @@ import { Backups } from './backups'
 import { useCopy } from './copy'
 import { inventoryError, type DataLocation } from './inventory-api'
 import { useInventory } from './inventory-context'
+import { ThisComputer } from './this-computer'
 
 /**
  * The inventory's file on this device and how to back it up. It asks the native process only
@@ -107,13 +108,14 @@ export function RealSettingsPage() {
         description="Your data is stored locally on this device."
       />
       <DatabaseFile />
+      <ThisComputer />
       <AgentGate />
       <section className="panel max-w-3xl p-6">
         <h2 className="section-heading">Data source</h2>
         <p className="mt-4 text-xs leading-6 text-muted-foreground">
-          Applications, components, resources, references, observations, incidents and events are
-          stored in SQLite in the operating system’s DevHQ application data directory. The demo is a
-          separate, fixed example and is never imported automatically.
+          Applications, components, resources, references, observations, incidents, events and
+          readings of local copies are stored in SQLite in the operating system’s DevHQ application
+          data directory. The demo is a separate, fixed example and is never imported automatically.
         </p>
         <p className="mt-3 text-xs leading-6 text-muted-foreground">
           Records come from three sources, always labelled: manual entries you type, HTTP checks
@@ -123,6 +125,12 @@ export function RealSettingsPage() {
           event collection or automation execution. Incidents and events are entries by you or by an
           agent. An observation vouches for a result only until its validity ends; after that it is
           shown as expired, whatever its source.
+        </p>
+        <p className="mt-3 text-xs leading-6 text-muted-foreground">
+          Readings of local copies are DevHQ’s own evidence too, but not health: when you press
+          Read, or an agent asks, DevHQ reads a declared copy on this computer with libgit2 in a
+          process of its own that cannot start programs, and keeps what the copy held at that
+          moment. It never runs Git, hooks or anything the repository names, and never writes to it.
         </p>
       </section>
       <section className="panel max-w-3xl p-6">

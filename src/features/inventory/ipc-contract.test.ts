@@ -119,6 +119,10 @@ const calls: Record<keyof typeof inventoryApi, () => Promise<unknown>> = {
   setHttpCheckPaused: () => inventoryApi.setHttpCheckPaused(host, true),
   runHttpCheck: () => inventoryApi.runHttpCheck(host),
   watchHttpMonitor: () => inventoryApi.watchHttpMonitor(() => {}),
+  thisWorkstation: () => inventoryApi.thisWorkstation(),
+  setThisWorkstation: () => inventoryApi.setThisWorkstation('spare'),
+  readCopies: () => inventoryApi.readCopies(['shop-copy']),
+  olderReadings: () => inventoryApi.olderReadings(shop, 'reading-1'),
 }
 
 /** What a call sends to the native process: each command and its arguments, as JSON. */
@@ -164,6 +168,99 @@ type Answer<Method extends keyof typeof inventoryApi> = Awaited<
 // which Rust holds to what it serializes.
 const at = (time: string) => `2026-01-01T${time}:00Z`
 
+/** A reading of the shop's copy on the laptop: commits on no remote, a stash and changes. */
+const readOnLaptop: Answer<'readCopies'>['readings'][number] = {
+  id: 'reading-2',
+  subject: shop,
+  referenceId: 'shop-copy',
+  machineId: 'laptop',
+  path: 'C:\\src\\platform',
+  source: 'read',
+  reader: 'libgit2 1.9.7',
+  agent: null,
+  observedAt: at('10:00'),
+  recordedAt: at('10:00'),
+  outcome: 'read',
+  detail: null,
+  branch: 'main',
+  head: '0123456789abcdef0123456789abcdef01234567',
+  lastCommitAt: at('09:00'),
+  unpublishedOnHead: 2,
+  unpublishedElsewhere: 0,
+  stashes: 1,
+  syncedAt: at('08:00'),
+  remotes: [
+    { name: 'mirror', url: null },
+    { name: 'origin', url: 'git@github.com:me/platform.git' },
+  ],
+  operation: null,
+  changed: 3,
+  untracked: 1,
+  unverifiable: 0,
+  worktreeUnknown: null,
+}
+
+const laptop: Answer<'thisWorkstation'> = {
+  resourceId: 'laptop',
+  chosenAt: at('08:00'),
+  problem: null,
+  message: null,
+  file: 'C:\\Users\\Juan Pablo\\AppData\\Local\\com.devhq.desktop\\this-workstation.json',
+  storedAt: null,
+}
+
+const readCopies: Answer<'readCopies'> = {
+  readings: [readOnLaptop],
+  failures: [
+    {
+      referenceId: 'docs-copy',
+      subject: host,
+      path: 'C:\\src\\infra',
+      message:
+        'Reading C:\\src\\infra took longer than 30 s, so DevHQ stopped it. Nothing was kept.',
+    },
+  ],
+  thisWorkstation: laptop,
+}
+
+const olderReadings: Answer<'olderReadings'> = {
+  readings: [
+    {
+      ...readOnLaptop,
+      id: 'reading-1',
+      agent: 'claude-code',
+      observedAt: at('07:00'),
+      recordedAt: at('07:00'),
+      lastCommitAt: at('06:30'),
+      syncedAt: at('06:00'),
+      changed: null,
+      untracked: null,
+      unverifiable: null,
+      worktreeUnknown: 'Reading the working tree took longer than 30 s, so DevHQ stopped it.',
+    },
+    {
+      ...readOnLaptop,
+      id: 'reading-0',
+      observedAt: at('06:00'),
+      recordedAt: at('06:00'),
+      outcome: 'missing',
+      detail: 'Nothing is at this path.',
+      branch: null,
+      head: null,
+      lastCommitAt: null,
+      unpublishedOnHead: null,
+      unpublishedElsewhere: null,
+      stashes: null,
+      syncedAt: null,
+      remotes: null,
+      changed: null,
+      untracked: null,
+      unverifiable: null,
+    },
+  ],
+  more: true,
+}
+
 const snapshot: Answer<'list'> = {
   applications: [
     {
@@ -190,6 +287,13 @@ const snapshot: Answer<'list'> = {
           target: '/var/log/shop',
           label: 'API',
           machineId: 'host',
+        },
+        {
+          id: 'shop-copy',
+          kind: 'local_copy',
+          target: 'C:\\src\\platform',
+          label: null,
+          machineId: 'laptop',
         },
       ],
     },
@@ -218,8 +322,28 @@ const snapshot: Answer<'list'> = {
         },
       ],
     },
+    {
+      id: 'laptop',
+      name: 'Laptop',
+      kind: 'workstation',
+      description: '',
+      operatingSystem: 'Windows 11',
+      references: [],
+    },
   ],
   sharedRepositories: [{ target: 'https://github.com/me/platform', systems: [shop, host] }],
+  localCopies: [
+    {
+      referenceId: 'shop-copy',
+      subject: shop,
+      machineId: 'laptop',
+      path: 'C:\\src\\platform',
+      latest: readOnLaptop,
+      movedSinceRead: false,
+      repository: 'matches',
+      localWork: true,
+    },
+  ],
   observations: [
     {
       id: 'obs-http',
@@ -489,6 +613,9 @@ const answers: Record<string, unknown> = {
   list_backups: backups,
   agent_access: agentAccess,
   watch_http_monitor: supervision,
+  this_workstation: laptop,
+  read_copies: readCopies,
+  older_readings: olderReadings,
 }
 
 describe('what the native process answers', () => {

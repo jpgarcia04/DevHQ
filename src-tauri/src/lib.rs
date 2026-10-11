@@ -7,15 +7,20 @@ mod http_check;
 mod inventory;
 #[cfg(test)]
 mod ipc_contract;
+pub mod local_copies;
 mod monitor;
 mod records;
 mod references;
 mod window_lock;
+mod workstation;
 
+use local_copies::readings::{self, ReadOutcome, ReadingPage, Which};
+use local_copies::Reader;
 use monitor::{Monitor, MonitorStatus};
 use std::path::PathBuf;
 use tauri::ipc::Channel;
 use tauri::{Manager, RunEvent};
+use workstation::{Computer, ThisWorkstation};
 
 struct InventoryPath(PathBuf);
 
@@ -218,6 +223,67 @@ async fn watch_http_monitor(
     Ok(())
 }
 
+/// Which workstation this computer is, from its local association (never from the inventory).
+#[tauri::command]
+fn this_workstation(
+    path: tauri::State<'_, InventoryPath>,
+    computer: tauri::State<'_, Computer>,
+) -> Result<ThisWorkstation, inventory::ApiError> {
+    Ok(computer.resolve(&inventory::list(&path.0)?.resources))
+}
+
+/// Chooses which workstation this computer is, or forgets it with null. Only the window can.
+#[tauri::command]
+fn set_this_workstation(
+    path: tauri::State<'_, InventoryPath>,
+    computer: tauri::State<'_, Computer>,
+    resource_id: Option<String>,
+) -> Result<ThisWorkstation, inventory::ApiError> {
+    computer.choose(&inventory::list(&path.0)?.resources, resource_id.as_deref())
+}
+
+/// Reads local copies of this workstation, the ones named or (null) all but those of archived
+/// applications, each in a confined reader of its own. Async, and waiting on a thread of its own:
+/// one copy can take up to its deadline.
+#[tauri::command]
+async fn read_copies(
+    path: tauri::State<'_, InventoryPath>,
+    computer: tauri::State<'_, Computer>,
+    reader: tauri::State<'_, Reader>,
+    reference_ids: Option<Vec<String>>,
+) -> Result<ReadOutcome, inventory::ApiError> {
+    let which = reference_ids.map_or(Which::ThisWorkstation, Which::References);
+    let (path, computer, reader) = (
+        path.0.clone(),
+        computer.inner().clone(),
+        reader.inner().clone(),
+    );
+    tauri::async_runtime::spawn_blocking(move || {
+        readings::read_copies(
+            &path,
+            &computer,
+            &reader,
+            &which,
+            &records::Actor::Person,
+            &|_| Ok(()),
+        )
+    })
+    .await
+    .map_err(|error| {
+        inventory::ApiError::read(format!("DevHQ could not wait for its readers: {error}"))
+    })?
+}
+
+/// A system's readings older than one shown (or its newest), a page at a time.
+#[tauri::command]
+fn older_readings(
+    path: tauri::State<'_, InventoryPath>,
+    subject: records::Subject,
+    before: Option<String>,
+) -> Result<ReadingPage, inventory::ApiError> {
+    readings::older_readings(&path.0, &subject, before.as_deref())
+}
+
 /// Every command the window can call. The app and the IPC contract tests register this list.
 fn commands<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static {
     tauri::generate_handler![
@@ -241,17 +307,29 @@ fn commands<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Sen
         set_http_check_paused,
         remove_http_check,
         run_http_check,
-        watch_http_monitor
+        watch_http_monitor,
+        this_workstation,
+        set_this_workstation,
+        read_copies,
+        older_readings
     ]
 }
 
-/// The state the commands find, over the inventory at `path`. The app and the IPC contract tests
-/// manage this same state. Returns supervision, whose loop is left to the caller.
-fn manage<R: tauri::Runtime>(app: &impl Manager<R>, path: PathBuf) -> Monitor {
+/// The state the commands find, over the inventory at `path`, on `computer`, reading copies with
+/// `reader`. The app and the IPC contract tests manage this same state. Returns supervision, whose
+/// loop is left to the caller.
+fn manage<R: tauri::Runtime>(
+    app: &impl Manager<R>,
+    path: PathBuf,
+    computer: Computer,
+    reader: Reader,
+) -> Monitor {
     let monitor = Monitor::new(path.clone());
     app.manage(InventoryPath(path));
     app.manage(monitor.clone());
     app.manage(backup::Backups::default());
+    app.manage(computer);
+    app.manage(reader);
     monitor
 }
 
@@ -267,9 +345,13 @@ pub fn run() {
                 }
                 Err(error) => eprintln!("DevHQ could not hold its window lock: {error}"),
             }
+            // Which workstation this computer is lives in the local data folder, outside the
+            // inventory, which a roaming profile or a copied inventory does not carry.
+            let computer = Computer::this_one(app.path().app_local_data_dir()?);
+            let reader = Reader::this_executable().map_err(|error| error.message)?;
             // Supervision, and noticing what other processes change, live only as long as this
             // process: no service, no system task.
-            let monitor = manage(app, path);
+            let monitor = manage(app, path, computer, reader);
             tauri::async_runtime::spawn(monitor.clone().run());
             tauri::async_runtime::spawn(monitor.notice_changes());
             Ok(())

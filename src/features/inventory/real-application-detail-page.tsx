@@ -27,6 +27,7 @@ import { HttpCheckPanel } from './http-check'
 import type { InventoryApplication } from './inventory-api'
 import { useInventory } from './inventory-context'
 import { InventoryState } from './inventory-state'
+import { activityText, lastActivity } from './local-copies'
 import { RecordActions } from './record-forms'
 import { EventRecordList, IncidentRecordList } from './record-lists'
 import { ReferenceList } from './reference-list'
@@ -230,6 +231,19 @@ function ApplicationDetail({ app }: { app: InventoryApplication }) {
                       ) : (
                         'None recorded'
                       )}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-muted-foreground">Last activity</dt>
+                    <dd className="mt-1">
+                      {snapshot &&
+                        activityText(
+                          lastActivity(snapshot, subject),
+                          (id) =>
+                            snapshot.resources.find((item) => item.id === id)?.name ??
+                            'a machine no longer in the inventory',
+                          now,
+                        )}
                     </dd>
                   </div>
                   <div>

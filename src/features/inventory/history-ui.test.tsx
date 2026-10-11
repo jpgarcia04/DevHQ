@@ -129,6 +129,7 @@ const snapshot: InventorySnapshot = {
   changesSince: null,
   automatedHistory: { limit: 200, truncated: [{ subject: web, since }] },
   sharedRepositories: [],
+  localCopies: [],
 }
 
 function renderWith(ui: ReactNode, value: InventoryContextValue, path = '/') {

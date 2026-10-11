@@ -30,6 +30,28 @@ serde_json = "1"
 dirs = "6"
 # The supervision loop runs on Tauri's own Tokio runtime.
 tokio = { version = "1", features = ["net", "time", "rt", "sync", "macros"] }
+# Local copies are read with libgit2, which never runs a program a repository names (hooks,
+# filters, fsmonitor, signing or remote helpers), built from its own sources like SQLite and
+# without any network transport (no https, no ssh).
+git2 = { version = "0.21", default-features = false, features = ["vendored-libgit2"] }
+# The fingerprint that tells this computer apart in the local workstation file. Already built for
+# wry; no new crate.
+sha2 = "0.10"
+
+# The reader of local copies forbids itself to start programs: a Job Object on Windows, and the
+# MachineGuid that fingerprints the computer is in the registry.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+] }
+
+# A seccomp filter on Linux.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 # Paused time: supervision is tested on a simulated clock, without real waits.

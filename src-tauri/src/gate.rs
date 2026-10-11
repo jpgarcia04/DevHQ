@@ -14,8 +14,11 @@ use crate::access;
 use crate::attention::{self, AttentionItem};
 use crate::http_check::HttpCheck;
 use crate::inventory::{self, ApiError, Inventory};
+use crate::local_copies::readings::{self, LocalCopy};
+use crate::local_copies::Reader;
 use crate::records::{self, Subject};
 use crate::references::Reference;
+use crate::workstation::{Computer, ThisWorkstation};
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
@@ -33,6 +36,12 @@ const PROTOCOL_VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", 
 /// (`app_data_dir`, which is the system's data directory followed by the identifier).
 pub fn default_database() -> Option<PathBuf> {
     dirs::data_dir().map(|dir| dir.join(IDENTIFIER).join("inventory.sqlite3"))
+}
+
+/// The local data folder the window's DevHQ keeps this computer's settings in (Tauri's
+/// `app_local_data_dir`): where it says which workstation this computer is.
+pub fn default_local_data() -> Option<PathBuf> {
+    dirs::data_local_dir().map(|dir| dir.join(IDENTIFIER))
 }
 
 /// `devhq --mcp [--database <path>]`: serves stdin and stdout until the client closes stdin.
@@ -53,8 +62,16 @@ pub fn main(args: impl IntoIterator<Item = String>) -> i32 {
     let Some(database) = database.or_else(default_database) else {
         return usage("the system has no data directory; pass --database");
     };
+    let Some(local) = default_local_data() else {
+        return usage("the system has no local data directory");
+    };
     let stdin = std::io::stdin();
-    match serve(&database, stdin.lock(), std::io::stdout().lock()) {
+    match serve(
+        &database,
+        Computer::this_one(local),
+        stdin.lock(),
+        std::io::stdout().lock(),
+    ) {
         Ok(()) => 0,
         Err(error) => {
             eprintln!("devhq --mcp: {error}");
@@ -68,10 +85,17 @@ fn usage(problem: &str) -> i32 {
     2
 }
 
-/// Answers each message read from `input` on `output` until `input` ends.
-pub fn serve(database: &Path, input: impl BufRead, mut output: impl Write) -> std::io::Result<()> {
+/// Answers each message read from `input` on `output` until `input` ends, on `computer`.
+pub(crate) fn serve(
+    database: &Path,
+    computer: Computer,
+    input: impl BufRead,
+    mut output: impl Write,
+) -> std::io::Result<()> {
     let mut session = Session {
         database: database.to_owned(),
+        computer,
+        reader: None,
         client: None,
     };
     for line in input.lines() {
@@ -89,6 +113,10 @@ pub fn serve(database: &Path, input: impl BufRead, mut output: impl Write) -> st
 
 struct Session {
     database: PathBuf,
+    /// This computer, as the window's DevHQ tells it apart: which workstation it is.
+    computer: Computer,
+    /// How copies are read; this executable unless a test says otherwise.
+    reader: Option<Reader>,
     /// The name the client declared in `initialize`. Unverified: it is only ever shown as such.
     client: Option<String>,
 }
@@ -202,6 +230,9 @@ impl Session {
                 .allow("write")
                 .and_then(|()| self.record_event(arguments)),
             "backup" => self.allow("write").and_then(|()| self.backup()),
+            "read_copies" => self
+                .allow("write")
+                .and_then(|()| self.read_copies(arguments)),
             other => return Err((INVALID_PARAMS, format!("Unknown tool {other}."))),
         };
         // A tool that fails tells the agent why, as the window would tell the person; it is a
@@ -251,12 +282,16 @@ impl Session {
         } else {
             None
         };
-        // What the inventory holds is for agents the person let in.
-        let counts = if access.as_deref().is_some_and(|mode| mode != "off") {
+        // What the inventory holds is for agents the person let in, and so is which of its
+        // workstations this computer is.
+        let (counts, this_workstation) = if access.as_deref().is_some_and(|mode| mode != "off") {
             let inventory = self.inventory()?;
-            json!({ "applications": inventory.applications.len(), "resources": inventory.resources.len() })
+            (
+                json!({ "applications": inventory.applications.len(), "resources": inventory.resources.len() }),
+                json!(self.this_workstation(&inventory)),
+            )
         } else {
-            Value::Null
+            (Value::Null, Value::Null)
         };
         let window_open = crate::window_lock::window_open(&self.database);
         let mut notes = vec![
@@ -280,9 +315,15 @@ impl Session {
             "access": access,
             "windowOpen": window_open,
             "counts": counts,
+            "thisWorkstation": this_workstation,
             "client": self.client,
             "notes": notes,
         }))
+    }
+
+    /// Which workstation this computer is, by the association the window keeps.
+    fn this_workstation(&self, inventory: &Inventory) -> ThisWorkstation {
+        self.computer.resolve(&inventory.resources)
     }
 
     fn attention(&self) -> Result<Value, ApiError> {
@@ -327,6 +368,8 @@ impl Session {
                 not_supervised.push(names.system(subject));
             }
         }
+        let this = self.this_workstation(&inventory);
+        let local_copies = local_copies_overview(&inventory, &names, this.resource_id.as_deref());
         let meaning = match attention.status {
             "empty" => "There are no applications or resources yet. That is not healthy: there is nothing to know about.",
             "attention" => "The items need attention, most urgent first.",
@@ -341,6 +384,7 @@ impl Session {
             "coverage": attention.coverage,
             "neverObserved": never_observed,
             "notSupervised": not_supervised,
+            "localCopies": local_copies,
             "history": history_note(&inventory),
         }))
     }
@@ -349,6 +393,8 @@ impl Session {
         let inventory = self.inventory()?;
         let now = records::now_ms();
         let names = Names::of(&inventory);
+        let this = self.this_workstation(&inventory);
+        let this = this.resource_id.as_deref();
         let applications = inventory
             .applications
             .iter()
@@ -360,6 +406,7 @@ impl Session {
                         id: application.id.clone(),
                     },
                     now,
+                    this,
                 )
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -374,6 +421,7 @@ impl Session {
                         id: resource.id.clone(),
                     },
                     now,
+                    this,
                 )
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -390,7 +438,14 @@ impl Session {
         let now = records::now_ms();
         let names = Names::of(&inventory);
         let subject = find_system(&inventory, arguments)?;
-        let mut system = summary(&inventory, &names, &subject, now)?;
+        let this = self.this_workstation(&inventory);
+        let mut system = summary(
+            &inventory,
+            &names,
+            &subject,
+            now,
+            this.resource_id.as_deref(),
+        )?;
         let mine = |record_subject: &Subject| record_subject == &subject;
         let detail = json!({
             "observations": inventory.observations.iter().filter(|item| mine(&item.subject)).collect::<Vec<_>>(),
@@ -415,19 +470,29 @@ impl Session {
     fn history(&self, arguments: &Map<String, Value>) -> Result<Value, ApiError> {
         let inventory = self.inventory()?;
         let subject = find_system(&inventory, arguments)?;
-        let before = text(arguments, "before")?;
         match arguments.get("records").and_then(Value::as_str) {
             Some("observations") => {
+                let before = text(arguments, "before")?;
                 let page = records::older_observations(&self.database, &subject, before)?;
                 Ok(json!({ "observations": page.observations, "more": page.more }))
             }
             Some("events") => {
+                let before = text(arguments, "before")?;
                 let page =
                     records::older_events(&self.database, std::slice::from_ref(&subject), before)?;
                 Ok(json!({ "events": page.events, "more": page.more }))
             }
+            // Readings start from the newest when no reading is named.
+            Some("readings") => {
+                let before = match arguments.get("before") {
+                    None | Some(Value::Null) => None,
+                    Some(_) => Some(text(arguments, "before")?),
+                };
+                let page = readings::older_readings(&self.database, &subject, before)?;
+                Ok(json!({ "readings": page.readings, "more": page.more }))
+            }
             _ => Err(ApiError::invalid(
-                "records must be \"observations\" or \"events\".",
+                "records must be \"observations\", \"events\" or \"readings\".",
             )),
         }
     }
@@ -450,7 +515,7 @@ fn permitted(mode: &str, need: &str) -> Result<(), ApiError> {
     }
 }
 
-const INSTRUCTIONS: &str = "DevHQ is the person's local operations inventory: applications, the resources they run on, where each one is (its references: repository, local copies, documentation, logs, dashboard), and the evidence about them (observations, incidents, events, HTTP checks). Working in a folder, an agent can find its system by a local copy's path or by its repository's URL in `list_systems`. Start with `attention` to answer «what needs my attention?». Never present a system without current evidence as healthy: unobserved and expired evidence are gaps, not health. Every record says who produced it (`source`: manual, http or agent) and when.";
+const INSTRUCTIONS: &str = "DevHQ is the person's local operations inventory: applications, the resources they run on, where each one is (its references: repository, local copies, documentation, logs, dashboard), and the evidence about them (observations, incidents, events, HTTP checks). Working in a folder, an agent can find its system by a local copy's path or by its repository's URL in `list_systems`. A local copy's readings say what it held when DevHQ read it, never what it holds now. Start with `attention` to answer «what needs my attention?». Never present a system without current evidence as healthy: unobserved and expired evidence are gaps, not health. Every record says who produced it (`source`: manual, http or agent) and when.";
 
 /// Every application, then every resource, in the inventory's order.
 fn subjects(inventory: &Inventory) -> Vec<Subject> {
@@ -511,13 +576,15 @@ impl Names {
     }
 }
 
-/// Where a system is, as an agent reads it: each path's machine by name, and for a repository
-/// the other systems that declare the same one, derived at this read as the window derives it.
+/// Where a system is, as an agent reads it: each path's machine by name, for a repository the
+/// other systems that declare the same one, and for a local copy whether it is on this computer,
+/// its newest reading and what DevHQ derives from it, at this read as the window derives it.
 fn reference_list(
     inventory: &Inventory,
     names: &Names,
     subject: &Subject,
     references: &[Reference],
+    this: Option<&str>,
 ) -> Vec<Value> {
     references
         .iter()
@@ -529,6 +596,17 @@ fn reference_list(
                 "label": reference.label,
                 "machine": reference.machine_id.as_ref().map(|id| names.system(&Subject::Resource { id: id.clone() })),
             });
+            if let Some(copy) = inventory
+                .local_copies
+                .iter()
+                .find(|copy| copy.reference_id == reference.id)
+            {
+                value["onThisWorkstation"] = json!(this == Some(copy.machine_id.as_str()));
+                value["latestReading"] = json!(copy.latest);
+                value["movedSinceRead"] = json!(copy.moved_since_read);
+                value["repository"] = json!(copy.repository);
+                value["localWork"] = json!(copy.local_work);
+            }
             if reference.kind == "repository" {
                 let shared: Vec<Value> = inventory
                     .shared_repositories
@@ -552,6 +630,7 @@ fn summary(
     names: &Names,
     subject: &Subject,
     now: i64,
+    this: Option<&str>,
 ) -> Result<Value, ApiError> {
     let (state, latest) = attention::evidence(&inventory.observations, subject, now)?;
     let active_incidents = inventory
@@ -577,7 +656,7 @@ fn summary(
                 .collect();
             json!({ "system": names.system(subject), "application": application.map(|item| json!({
                 "description": item.description, "lifecycle": item.lifecycle, "version": item.version,
-            })), "components": components, "references": application.map(|item| reference_list(inventory, names, subject, &item.references)) })
+            })), "components": components, "references": application.map(|item| reference_list(inventory, names, subject, &item.references, this)) })
         }
         Subject::Resource { id } => {
             let resource = inventory.resources.iter().find(|item| &item.id == id);
@@ -597,7 +676,7 @@ fn summary(
                 .collect();
             json!({ "system": names.system(subject), "resource": resource.map(|item| json!({
                 "description": item.description, "kind": item.kind, "operatingSystem": item.operating_system,
-            })), "usedBy": used_by, "references": resource.map(|item| reference_list(inventory, names, subject, &item.references)) })
+            })), "usedBy": used_by, "references": resource.map(|item| reference_list(inventory, names, subject, &item.references, this)) })
         }
     };
     if let Value::Object(object) = &mut value {
@@ -607,8 +686,67 @@ fn summary(
         );
         object.insert("activeIncidents".into(), json!(active_incidents));
         object.insert("httpCheck".into(), json!(check_of(inventory, subject)));
+        object.insert("localActivity".into(), local_activity(inventory, subject));
     }
     Ok(value)
+}
+
+/// The newest commit any reading of the system's copies found, and how many of its copies were
+/// never read: a lower bound, never «inactive» while a copy is unread.
+fn local_activity(inventory: &Inventory, subject: &Subject) -> Value {
+    let copies: Vec<&LocalCopy> = inventory
+        .local_copies
+        .iter()
+        .filter(|copy| &copy.subject == subject)
+        .collect();
+    let last_commit_at = copies
+        .iter()
+        .filter_map(|copy| copy.latest.as_ref()?.last_commit_at.clone())
+        .max();
+    json!({
+        "lastCommitAt": last_commit_at,
+        "copies": copies.len(),
+        "copiesNeverRead": copies.iter().filter(|copy| copy.latest.is_none()).count(),
+    })
+}
+
+/// What the local copies say beside «what needs my attention?», and never in its ranking: they are
+/// not health. Copies of archived applications are left out.
+fn local_copies_overview(inventory: &Inventory, names: &Names, this: Option<&str>) -> Value {
+    let archived = |subject: &Subject| match subject {
+        Subject::Application { id } => inventory
+            .applications
+            .iter()
+            .any(|item| &item.id == id && item.lifecycle == "archived"),
+        Subject::Resource { .. } => false,
+    };
+    let current: Vec<&LocalCopy> = inventory
+        .local_copies
+        .iter()
+        .filter(|copy| !archived(&copy.subject))
+        .collect();
+    let described = |copy: &&LocalCopy| {
+        json!({
+            "system": names.system(&copy.subject),
+            "path": copy.path,
+            "machine": names.system(&Subject::Resource { id: copy.machine_id.clone() }),
+            "reading": copy.latest,
+        })
+    };
+    json!({
+        "work": current.iter().filter(|copy| copy.local_work).map(described).collect::<Vec<_>>(),
+        "notFound": current
+            .iter()
+            .filter(|copy| copy.latest.as_ref().is_some_and(|reading| reading.outcome != "read"))
+            .map(described)
+            .collect::<Vec<_>>(),
+        "neverReadOnThisWorkstation": current
+            .iter()
+            .filter(|copy| copy.latest.is_none() && this == Some(copy.machine_id.as_str()))
+            .map(described)
+            .collect::<Vec<_>>(),
+        "note": "Not health, and not ranked: what each copy held when it was read (`reading.observedAt`), which may no longer be so. `work` held commits on no remote, stashes, changes, new entries, files DevHQ could not verify or an operation left halfway; `notFound` were not where declared, or not readable. Only copies on this workstation can be read (`read_copies`), and only when asked.",
+    })
 }
 
 /// What the snapshot leaves out, so that an agent never takes a cut history for a short one.
@@ -731,21 +869,21 @@ fn read_tools() -> Vec<Value> {
         read_only(
             "status",
             "DevHQ status",
-"Which inventory file the gate opened, where the system really keeps it, its schema version, whether the person lets agents read or write through the gate (`access`: off, read or write), whether a DevHQ window is open on it (`windowOpen`; null when the system cannot say), how many systems it holds, and what the gate cannot know. Always answered, even with the gate off.",
+"Which inventory file the gate opened, where the system really keeps it, its schema version, whether the person lets agents read or write through the gate (`access`: off, read or write), whether a DevHQ window is open on it (`windowOpen`; null when the system cannot say), how many systems it holds, which of its workstations this computer is (`thisWorkstation`, or why DevHQ does not know: only the window chooses it), and what the gate cannot know. Always answered, even with the gate off.",
             json!({}),
             &[],
         ),
         read_only(
             "attention",
             "What needs attention",
-            "«What needs my attention?», ranked as DevHQ's Overview ranks it: active incidents and problem evidence, most urgent first, plus coverage (current, expired, never observed) and the systems nothing supervises. An empty list is only reassuring when status is `covered`.",
+            "«What needs my attention?», ranked as DevHQ's Overview ranks it: active incidents and problem evidence, most urgent first, plus coverage (current, expired, never observed) and the systems nothing supervises. An empty list is only reassuring when status is `covered`. Beside it, unranked and not health, `localCopies`: the copies whose last reading held work that existed only there, the ones not found, and the ones on this workstation never read.",
             json!({}),
             &[],
         ),
         read_only(
             "list_systems",
             "List applications and resources",
-            "Every application and resource with its evidence state and latest observation, active incidents, HTTP check, relations (components and what they run on; what uses each resource) and references: where its repository, its local copies (each path with the machine it is on), its documentation, its logs and its dashboard are, and which other systems declare the same repository (`sameRepositoryAs`, by exact URL). References are declared inventory: DevHQ never opens or checks them.",
+            "Every application and resource with its evidence state and latest observation, active incidents, HTTP check, relations (components and what they run on; what uses each resource) and references: where its repository, its local copies (each path with the machine it is on), its documentation, its logs and its dashboard are, and which other systems declare the same repository (`sameRepositoryAs`, by exact URL). References are declared inventory: DevHQ never opens or checks them. Each local copy also says whether it is on this workstation and its newest reading (`latestReading`, null if never read): what the copy held when DevHQ read it, at `observedAt`, which may no longer be so; `localActivity` gives the newest commit those readings found.",
             json!({}),
             &[],
         ),
@@ -758,13 +896,13 @@ fn read_tools() -> Vec<Value> {
         ),
         read_only(
             "history",
-            "Older automated results",
-            "Automated HTTP results (observations, or their events) older than one already shown, 200 at a time, for a system whose automated history get_system says is cut.",
+            "Older results and readings",
+            "Automated HTTP results (observations, or their events) older than one already shown, 200 at a time, for a system whose automated history get_system says is cut; or the readings of a system's local copies, newest first, 200 at a time (before optional: the first page starts from the newest).",
             system_arguments(json!({
-                "records": { "type": "string", "enum": ["observations", "events"] },
-                "before": { "type": "string", "description": "The id of the oldest automated observation or event already shown." },
+                "records": { "type": "string", "enum": ["observations", "events", "readings"] },
+                "before": { "type": "string", "description": "The id of the oldest observation, event or reading already shown." },
             })),
-            &["type", "records", "before"],
+            &["type", "records"],
         ),
     ]
 }
@@ -791,6 +929,15 @@ mod tests {
 
     fn remove(path: &Path) {
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    /// The computer the tests run on: its local folder beside the inventory, and a fingerprint of
+    /// its own, so that no test reads or writes this machine's real association.
+    fn computer(path: &Path) -> Computer {
+        Computer {
+            local: path.parent().unwrap().join("local"),
+            fingerprint: Some("gate-test-computer".into()),
+        }
     }
 
     /// Shop runs its API on Web host; Spare box runs nothing and was never observed. Web host
@@ -900,7 +1047,7 @@ mod tests {
             .map(|message| format!("{message}\n"))
             .collect();
         let mut output = Vec::new();
-        serve(database, input.as_bytes(), &mut output).unwrap();
+        serve(database, computer(database), input.as_bytes(), &mut output).unwrap();
         String::from_utf8(output)
             .unwrap()
             .lines()
@@ -997,6 +1144,7 @@ mod tests {
                 "remove_check",
                 "run_check",
                 "backup",
+                "read_copies",
             ]
         );
         assert!(tools
@@ -1033,6 +1181,7 @@ mod tests {
         let mut output = Vec::new();
         serve(
             &path,
+            computer(&path),
             "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"1999-01-01\"}}\nnot json\n\n".as_bytes(),
             &mut output,
         )
@@ -1295,6 +1444,8 @@ mod tests {
         // A change in Settings applies to the very next call of a session already running.
         let mut session = Session {
             database: path.clone(),
+            computer: computer(&path),
+            reader: None,
             client: None,
         };
         let attention =
@@ -1402,6 +1553,8 @@ mod tests {
     fn session(path: &Path, client: &str) -> Session {
         Session {
             database: path.to_owned(),
+            computer: computer(path),
+            reader: None,
             client: Some(client.to_owned()),
         }
     }
@@ -1475,6 +1628,7 @@ mod tests {
                 json!({ "type": "resource", "name": "Web host" }),
             ),
             ("backup", json!({})),
+            ("read_copies", json!({})),
         ];
         for (tool, arguments) in &attempts {
             let refused = use_tool(&mut agent, tool, arguments.clone()).unwrap_err();
@@ -1746,7 +1900,10 @@ mod tests {
                 json!({ "kind": "repository", "target": "https://github.com/me/platform", "label": null, "machine": null,
                         "sameRepositoryAs": [{ "type": "application", "id": admin_id, "name": "Admin" }] }),
                 json!({ "kind": "local_copy", "target": r"C:\src\platform", "label": "Work",
-                        "machine": { "type": "resource", "id": laptop_id, "name": "Laptop" } }),
+                        "machine": { "type": "resource", "id": laptop_id, "name": "Laptop" },
+                        // Never read, and this computer is no workstation of this inventory.
+                        "onThisWorkstation": false, "latestReading": null, "movedSinceRead": false,
+                        "repository": null, "localWork": false }),
                 json!({ "kind": "logs", "target": "/var/log/shop", "label": null,
                         "machine": { "type": "resource", "id": host, "name": "Web host" } }),
             ]
@@ -2026,12 +2183,122 @@ mod tests {
     }
 
     #[test]
+    fn reads_local_copies_when_asked_and_keeps_which_agent_asked() {
+        let path = path();
+        seed(&path);
+        let folder = path.parent().unwrap().to_owned();
+        let copy = folder.join("shop-copy");
+        std::fs::create_dir(&copy).unwrap();
+        crate::local_copies::tests::git(&copy, &["init", "-q", "-b", "main"]);
+        std::fs::write(copy.join("a.txt"), "a\n").unwrap();
+        crate::local_copies::tests::git(&copy, &["add", "-A"]);
+        crate::local_copies::tests::git(&copy, &["commit", "-q", "-m", "a"]);
+        std::fs::write(copy.join("a.txt"), "changed\n").unwrap();
+        crate::access::set_agent_access(&path, "write").unwrap();
+        let mut agent = session(&path, "claude-code");
+        agent.reader = Some(crate::local_copies::tests::test_reader("confined", &[]));
+        // An agent declares where the copy is; which workstation this computer is, it cannot say.
+        let laptop = use_tool(
+            &mut agent,
+            "save_resource",
+            json!({ "name": "Laptop", "kind": "workstation" }),
+        )
+        .unwrap()["resource"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        use_tool(
+            &mut agent,
+            "save_application",
+            json!({ "name": "Shop", "id": inventory::list(&path).unwrap().applications[0].id,
+                    "references": [{ "kind": "local_copy", "target": copy.to_str().unwrap(), "machine": "Laptop" }] }),
+        )
+        .unwrap();
+        let refused = use_tool(&mut agent, "read_copies", json!({})).unwrap_err();
+        assert!(
+            refused.contains("does not know which workstation"),
+            "{refused}"
+        );
+        let status = use_tool(&mut agent, "status", json!({})).unwrap();
+        assert_eq!(status["thisWorkstation"]["problem"], "not_chosen");
+        // The person chooses it in the window.
+        computer(&path)
+            .choose(&inventory::list(&path).unwrap().resources, Some(&laptop))
+            .unwrap();
+        let status = use_tool(&mut agent, "status", json!({})).unwrap();
+        assert_eq!(status["thisWorkstation"]["resourceId"], laptop.as_str());
+
+        let logged = changes(&path).len();
+        let read = use_tool(&mut agent, "read_copies", json!({})).unwrap();
+        assert_eq!(read["failures"], json!([]));
+        let reading = &read["readings"][0];
+        assert_eq!(reading["agent"], "claude-code");
+        assert_eq!(reading["source"], "read");
+        assert_eq!(
+            (reading["outcome"].as_str(), reading["changed"].as_i64()),
+            (Some("read"), Some(1))
+        );
+        // A reading is evidence, not a change to the configuration.
+        assert_eq!(changes(&path).len(), logged);
+        // By system, or by reference, as well.
+        use_tool(
+            &mut agent,
+            "read_copies",
+            json!({ "type": "application", "name": "Shop" }),
+        )
+        .unwrap();
+        let reference = reading["referenceId"].as_str().unwrap().to_owned();
+        use_tool(
+            &mut agent,
+            "read_copies",
+            json!({ "referenceId": reference }),
+        )
+        .unwrap();
+
+        let listed = use_tool(&mut agent, "list_systems", json!({})).unwrap();
+        let shop = &listed["applications"][0];
+        let copy_reference = shop["references"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["kind"] == "local_copy")
+            .unwrap();
+        assert_eq!(copy_reference["onThisWorkstation"], true);
+        assert_eq!(copy_reference["localWork"], true);
+        assert_eq!(copy_reference["latestReading"]["agent"], "claude-code");
+        assert!(shop["localActivity"]["lastCommitAt"].is_string());
+        let attention = use_tool(&mut agent, "attention", json!({})).unwrap();
+        assert_eq!(
+            attention["localCopies"]["work"][0]["system"]["name"],
+            "Shop"
+        );
+        // Not health: the ranked list and the status are what they were.
+        assert_eq!(attention["status"], "attention");
+        let history = use_tool(
+            &mut agent,
+            "history",
+            json!({ "type": "application", "name": "Shop", "records": "readings" }),
+        )
+        .unwrap();
+        assert_eq!(history["readings"].as_array().unwrap().len(), 3);
+        assert_eq!(history["more"], false);
+        // Read only shows readings and never causes one.
+        crate::access::set_agent_access(&path, "read").unwrap();
+        assert!(use_tool(&mut agent, "read_copies", json!({}))
+            .unwrap_err()
+            .contains("reading only"));
+        remove(&path);
+    }
+
+    #[test]
     fn a_client_without_a_name_is_still_told_apart_from_the_person() {
         let path = path();
         seed(&path);
         crate::access::set_agent_access(&path, "write").unwrap();
         let mut agent = Session {
             database: path.clone(),
+            computer: computer(&path),
+            reader: None,
             client: None,
         };
         let saved = use_tool(
@@ -2056,6 +2323,11 @@ mod tests {
         assert_eq!(
             default_database().unwrap(),
             app.path().app_data_dir().unwrap().join("inventory.sqlite3")
+        );
+        // And the window's local folder, where it says which workstation this computer is.
+        assert_eq!(
+            default_local_data().unwrap(),
+            app.path().app_local_data_dir().unwrap()
         );
     }
 }

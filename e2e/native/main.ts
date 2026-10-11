@@ -18,9 +18,10 @@
 import assert from 'node:assert/strict'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
-import { mkdir, readdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
 import { createServer, type RequestListener } from 'node:http'
 import { createServer as createHttpsServer } from 'node:https'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import {
@@ -35,6 +36,7 @@ import {
   stopAll,
   until,
 } from './app.ts'
+import { hostileCopy } from './hostile-copy.ts'
 import { isTransient, reference, type Element, type Session } from './webdriver.ts'
 
 const root = join(import.meta.dirname, '..', '..')
@@ -219,6 +221,8 @@ function agentGate(binary: string, database: string, env: NodeJS.ProcessEnv) {
 
 const helpers: ChildProcess[] = []
 const isolated = await isolate()
+// The hostile copy lives outside DevHQ's data, as a person's working copies do.
+const copies = await mkdtemp(join(tmpdir(), 'devhq-copies-'))
 const server = await healthServer()
 let session: Session | undefined
 let pid: number | undefined
@@ -488,6 +492,81 @@ try {
     await ui.see('Agent · native-walk')
   })
 
+  const copy = hostileCopy(copies, 'https://git.example/status-page')
+  const workstation = 'Walk workstation'
+  const localCopies = "//section[@aria-labelledby='local-copies-heading']"
+
+  await step('Choose this computer in Settings', async () => {
+    await ui.go('Infrastructure')
+    await ui.click(button('New resource', '//main//header'))
+    const resourceForm = form('New resource')
+    await ui.fill(field('Name', resourceForm), workstation)
+    await ui.choose(field('Kind', resourceForm), 'Workstation')
+    await ui.click(button('Save resource', resourceForm))
+    await ui.see(workstation, region(workstation))
+    await ui.go('Settings')
+    const section = "//section[@aria-labelledby='this-computer-heading']"
+    // Nothing chosen yet: DevHQ says so instead of guessing from the paths that exist.
+    await ui.see('No workstation has been chosen as this computer yet', section)
+    await ui.choose(field('Workstation', section), workstation)
+    await ui.click(button('Save', section))
+    await ui.see(`This computer is ${workstation}`, section)
+    const status = await gate.tool('status')
+    assert.equal(
+      (status.thisWorkstation as { problem: string | null }).problem,
+      null,
+      'the gate reads the same choice',
+    )
+  })
+
+  await step('Declare a hostile working copy of the application', async () => {
+    await ui.go('Applications')
+    await ui.click("//main//a[@aria-label='Open Status page']")
+    await ui.click(button('Edit application', '//main//header'))
+    const applicationForm = form('Edit application')
+    await ui.click(button('Add reference', applicationForm))
+    // The second reference: the repository is the first.
+    const second = (xpath: string) => `(${xpath})[2]`
+    await ui.choose(second(field('Reference kind', applicationForm)), 'Local copy')
+    await ui.fill(second(field('URL or path', applicationForm)), copy.path)
+    await ui.choose(second(field('Machine', applicationForm)), `${workstation} · workstation`)
+    await ui.click(button('Save application', applicationForm))
+    await ui.see('Never read: DevHQ knows nothing of what this copy holds.')
+    copy.assertUntouched('Declaring the copy')
+  })
+
+  await step('Read the copy in the window without running anything it names', async () => {
+    await ui.click(`//button[@aria-label=${literal(`Read ${copy.path}`)}]`)
+    await ui.see('Read and kept.')
+    // What libgit2, confined, found: the commit was never pushed (the remote was never fetched),
+    // and the file under a filter DevHQ does not run is neither changed nor clean.
+    await ui.see('1 commit of HEAD on no remote branch')
+    await ui.see('1 changed file · 1 new entry · 1 file DevHQ could not verify')
+    await ui.see('A remote pointed to the repository Status page declares.')
+    copy.assertUntouched('Read')
+  })
+
+  await step('Read all and an agent read it again, still running nothing', async () => {
+    await ui.go('Overview')
+    await ui.see('1 copy on this computer', localCopies)
+    await ui.see('Work that existed only in a copy (1)', localCopies)
+    await ui.click(button('Read all on this computer', localCopies))
+    await ui.see('Read 1 copy.', localCopies)
+    copy.assertUntouched('Read all')
+    const read = await gate.tool('read_copies')
+    assert.deepEqual(read.failures, [])
+    const [reading] = read.readings as { agent: string; outcome: string; changed: number }[]
+    assert.deepEqual(
+      [reading!.agent, reading!.outcome, reading!.changed],
+      ['native-walk', 'read', 1],
+    )
+    // The window notices the gate's commit on its own.
+    await ui.see('asked by native-walk', localCopies)
+    copy.assertUntouched("The gate's read")
+    // The installed Git, on the same copy, runs what its config names: the copy is hostile.
+    assert.match(copy.gitStatusMarks(), /fsmonitor/, 'git status ran the fsmonitor it names')
+  })
+
   await step('Closing the window ends DevHQ and leaves one complete file', async () => {
     closeWindow(pid!, env)
     await until('DevHQ to exit', () => !alive(pid!), 20_000)
@@ -508,6 +587,25 @@ try {
     )
     console.log(`  the gate saw no window ${Date.now() - exited} ms after DevHQ exited`)
     assert.equal(await gate.close(), 0, 'the gate ends when its input closes')
+    // Three readings were kept, on the chosen workstation, one asked for by the agent.
+    const inventory = new DatabaseSync(database, { readOnly: true })
+    try {
+      const rows = inventory
+        .prepare(
+          'SELECT r.agent, r.outcome, r.path FROM copy_readings r JOIN resources m ON m.id = r.machine_id WHERE m.name = ? ORDER BY r.observed_at',
+        )
+        .all(workstation)
+      assert.deepEqual(
+        rows.map((row) => [row.agent, row.outcome, row.path]),
+        [
+          [null, 'read', copy.path],
+          [null, 'read', copy.path],
+          ['native-walk', 'read', copy.path],
+        ],
+      )
+    } finally {
+      inventory.close()
+    }
   })
 } catch (error) {
   failed = true
@@ -519,5 +617,7 @@ try {
   server.close()
   await stopAll(helpers)
   await isolated.cleanup()
+  if (!process.env.DEVHQ_E2E_KEEP_DATA)
+    await rm(copies, { recursive: true, force: true, maxRetries: 5 })
 }
 process.exit(failed ? 1 : 0)

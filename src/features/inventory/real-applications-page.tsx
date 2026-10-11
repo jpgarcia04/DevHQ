@@ -14,6 +14,7 @@ import { ApplicationForm } from './application-form'
 import { EvidenceBadge } from './evidence'
 import { useInventory } from './inventory-context'
 import { InventoryState } from './inventory-state'
+import { activityText, lastActivity } from './local-copies'
 
 export function RealApplicationsPage() {
   const { snapshot, now } = useInventory()
@@ -82,6 +83,16 @@ export function RealApplicationsPage() {
                 { type: 'application', id: app.id },
                 now,
               )
+              // Plain names: the card is a link, and links cannot nest.
+              const activity = snapshot
+                ? activityText(
+                    lastActivity(snapshot, { type: 'application', id: app.id }),
+                    (id) =>
+                      snapshot.resources.find((item) => item.id === id)?.name ??
+                      'a machine no longer in the inventory',
+                    now,
+                  )
+                : null
               return (
                 <Link
                   to={`/applications/${app.id}`}
@@ -112,6 +123,7 @@ export function RealApplicationsPage() {
                       </span>
                     )}
                   </p>
+                  {activity && <p className="mt-2 text-xs text-muted-foreground">{activity}</p>}
                 </Link>
               )
             })}

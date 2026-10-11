@@ -1,3 +1,4 @@
+use crate::local_copies::readings::{self, LocalCopy};
 use crate::records::{Actor, Subject};
 use crate::references::{self, Reference, ReferenceInput, SharedRepository};
 use crate::{change_log, http_check, records};
@@ -52,6 +53,14 @@ impl ApiError {
     pub(crate) fn backup(message: impl Into<String>) -> Self {
         Self {
             code: "backup_error",
+            message: message.into(),
+        }
+    }
+    /// DevHQ itself could not read a local copy (see `local_copies`). It is never kept as a
+    /// reading: a copy that is missing or unreadable is a reading, this is not.
+    pub(crate) fn read(message: impl Into<String>) -> Self {
+        Self {
+            code: "read_error",
             message: message.into(),
         }
     }
@@ -140,6 +149,9 @@ pub struct Inventory {
     pub resources: Vec<Resource>,
     /// Each repository more than one system declares, derived from their references at this read.
     pub shared_repositories: Vec<SharedRepository>,
+    /// Each local copy the systems declare, with its newest reading and what DevHQ derives from it
+    /// at this read. Older readings are paged per system.
+    pub local_copies: Vec<LocalCopy>,
     pub observations: Vec<records::Observation>,
     pub incidents: Vec<records::Incident>,
     pub events: Vec<records::Event>,
@@ -213,8 +225,8 @@ pub(crate) fn plain(path: &Path) -> String {
     }
 }
 
-pub(crate) const SCHEMA_VERSION: i64 = 11;
-const MIGRATIONS: [(i64, &str); 11] = [
+pub(crate) const SCHEMA_VERSION: i64 = 12;
+const MIGRATIONS: [(i64, &str); 12] = [
     (1, include_str!("../migrations/001_inventory.sql")),
     (2, include_str!("../migrations/002_inventory_details.sql")),
     (3, include_str!("../migrations/003_operational_records.sql")),
@@ -226,6 +238,7 @@ const MIGRATIONS: [(i64, &str); 11] = [
     (9, include_str!("../migrations/009_agent_log.sql")),
     (10, include_str!("../migrations/010_change_log.sql")),
     (11, include_str!("../migrations/011_references.sql")),
+    (12, include_str!("../migrations/012_copy_readings.sql")),
 ];
 
 /// Opens the inventory, upgrading its schema first if it is older than this build's.
@@ -440,6 +453,7 @@ pub fn list(path: &Path) -> Result<Inventory, ApiError> {
         }
     }
     let shared_repositories = references::shared_repositories(&applications, &resources);
+    let local_copies = readings::local_copies(&tx, &applications, &resources)?;
     let subjects: Vec<_> = applications
         .iter()
         .map(|app| records::Subject::Application { id: app.id.clone() })
@@ -461,6 +475,7 @@ pub fn list(path: &Path) -> Result<Inventory, ApiError> {
         applications,
         resources,
         shared_repositories,
+        local_copies,
         observations,
         incidents,
         events,
@@ -779,7 +794,12 @@ pub(crate) fn resource_in(tx: &Transaction, id: &str) -> Result<Option<Resource>
 /// Which kinds of record reference a subject. History is never deleted, so any keeps it.
 fn history_of(tx: &Transaction, column: &str, id: &str) -> Result<Vec<String>, ApiError> {
     let mut found = Vec::new();
-    for table in ["observations", "incidents", "events"] {
+    for (table, kind) in [
+        ("observations", "observations"),
+        ("incidents", "incidents"),
+        ("events", "events"),
+        ("copy_readings", "readings of its local copies"),
+    ] {
         // EXISTS stops at the first one: a long supervised history costs no more than one.
         let exists: bool = tx
             .query_row(
@@ -789,7 +809,7 @@ fn history_of(tx: &Transaction, column: &str, id: &str) -> Result<Vec<String>, A
             )
             .map_err(ApiError::database)?;
         if exists {
-            found.push(table.to_owned());
+            found.push(kind.to_owned());
         }
     }
     Ok(found)
@@ -2039,6 +2059,9 @@ pub(crate) mod tests {
                 "change_log_resource_id",
                 "components_application_id",
                 "components_resource_id",
+                "copy_readings_application_id",
+                "copy_readings_reference_id",
+                "copy_readings_resource_id",
                 "events_application_id",
                 "events_incident_id",
                 "events_observation_id",
@@ -3075,6 +3098,101 @@ pub(crate) mod tests {
         db.execute("DELETE FROM applications WHERE id = 'shop'", [])
             .unwrap();
         assert_eq!(dump(&db, "system_references").len(), 1);
+        drop(db);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn upgrades_v11_with_copy_readings_without_changing_any_row() {
+        let path = path();
+        let db = database_at(&path, 11);
+        db.execute_batch(
+            "INSERT INTO resources (id, name, kind, description, operating_system)
+               VALUES ('host', 'Host', 'server', '', 'Linux'), ('laptop', 'Laptop', 'workstation', '', 'Windows 11');
+             INSERT INTO applications (id, name, lifecycle, description, version) VALUES ('shop', 'Shop', 'production', 'Store', '2.0');
+             INSERT INTO components (id, application_id, name, kind, resource_id) VALUES ('api', 'shop', 'API', 'backend', 'host');
+             INSERT INTO observations (id, resource_id, result, summary, source, observed_at, valid_until, recorded_at, agent)
+               VALUES ('obs-agent', 'host', 'healthy', 'Looked fine', 'agent', 500, 900, 600, 'claude-code');
+             INSERT INTO events (id, resource_id, kind, outcome, title, detail, source, observation_id, occurred_at, recorded_at, agent)
+               VALUES ('evt-agent', 'host', 'observation', 'success', 'Observation: Healthy', 'Looked fine', 'agent', 'obs-agent', 500, 600, 'claude-code');
+             INSERT INTO incidents (id, application_id, title, description, severity, status, source, opened_at, updated_at)
+               VALUES ('inc', 'shop', 'Down', '', 'critical', 'open', 'manual', 700, 700);
+             INSERT INTO http_checks (resource_id, url, expected_status, timeout_seconds, valid_for_minutes, updated_at, monitor, monitor_interval_minutes)
+               VALUES ('host', 'http://host/health', 200, 5, 15, 800, 'active', 5);
+             INSERT INTO agent_access VALUES (1, 'write', 900);
+             INSERT INTO change_log (id, application_id, resource_id, subject_name, source, agent, action, summary, changes, occurred_at)
+               VALUES ('change-version', 'shop', NULL, 'Shop', 'manual', NULL, 'updated', 'Updated application «Shop»: version «1.9» → «2.0»',
+                       '[{\"field\":\"version\",\"before\":\"1.9\",\"after\":\"2.0\"}]', 1000);
+             INSERT INTO change_log_start VALUES (1, 300);
+             INSERT INTO system_references (id, application_id, resource_id, kind, target, label, machine_id)
+               VALUES ('shop-repo', 'shop', NULL, 'repository', 'https://github.com/me/shop', NULL, NULL),
+                      ('shop-copy', 'shop', NULL, 'local_copy', 'C:\\src\\shop', 'Work', 'laptop'),
+                      ('host-logs', NULL, 'host', 'logs', '/var/log/syslog', NULL, 'host');",
+        )
+        .unwrap();
+        let tables = [
+            "resources",
+            "applications",
+            "components",
+            "observations",
+            "incidents",
+            "events",
+            "http_checks",
+            "agent_access",
+            "change_log",
+            "change_log_start",
+            "system_references",
+        ];
+        let before: Vec<_> = tables.iter().map(|table| dump(&db, table)).collect();
+        drop(db);
+
+        let upgraded = list(&path).unwrap();
+        // The declared copy is there, never read.
+        assert_eq!(upgraded.local_copies.len(), 1);
+        assert_eq!(upgraded.local_copies[0].reference_id, "shop-copy");
+        assert_eq!(upgraded.local_copies[0].latest, None);
+        let db = Connection::open(&path).unwrap();
+        let version: i64 = db
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        for (table, rows) in tables.iter().zip(&before) {
+            assert_eq!(&dump(&db, table), rows, "{table}");
+        }
+        assert!(dump(&db, "copy_readings").is_empty());
+        // A reading keeps its system (RESTRICT) and only copies what it read: no other key.
+        assert_eq!(
+            strings(
+                &db,
+                "SELECT \"from\" || ' → ' || \"table\" || ' ' || on_delete FROM pragma_foreign_key_list('copy_readings') ORDER BY 1"
+            ),
+            [
+                "application_id → applications RESTRICT",
+                "resource_id → resources RESTRICT",
+            ]
+        );
+        assert_eq!(
+            strings(&db, "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'copy_readings' AND name NOT LIKE 'sqlite_autoindex%' ORDER BY name"),
+            [
+                "copy_readings_application_id",
+                "copy_readings_reference_id",
+                "copy_readings_resource_id",
+            ]
+        );
+        drop(db);
+        // Its reference can go, and its machine with it, without touching the reading.
+        let db = open(&path).unwrap();
+        db.execute(
+            "INSERT INTO copy_readings (id, application_id, reference_id, machine_id, path, source, reader, observed_at, recorded_at, outcome, detail)
+             VALUES ('reading', 'shop', 'shop-copy', 'laptop', 'C:\\src\\shop', 'read', 'libgit2 1.9.7', 1000, 1000, 'missing', 'Nothing is at this path.')",
+            [],
+        )
+        .unwrap();
+        db.execute("DELETE FROM system_references WHERE id = 'shop-copy'", [])
+            .unwrap();
+        db.execute("DELETE FROM resources WHERE id = 'laptop'", [])
+            .unwrap();
+        assert_eq!(dump(&db, "copy_readings").len(), 1);
         drop(db);
         std::fs::remove_file(path).unwrap();
     }

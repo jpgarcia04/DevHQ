@@ -14,6 +14,8 @@ use crate::backup;
 use crate::change_log;
 use crate::http_check::{self, HttpCheckInput};
 use crate::inventory::{self, ApiError, ApplicationInput, ComponentInput, ResourceInput};
+use crate::local_copies::readings::{self, Which};
+use crate::local_copies::Reader;
 use crate::records::{
     self, Actor, EventInput, IncidentInput, IncidentStatusInput, Lifeline, ObservationInput,
     Subject,
@@ -567,6 +569,37 @@ impl Session {
         self.existing()?;
         Ok(json!({ "backup": backup::back_up(&self.database)? }))
     }
+
+    /// Reads local copies of this workstation in confined readers, as Read does in the window:
+    /// one reference, the copies of one system, or all of them. Each reading is DevHQ's own
+    /// evidence and keeps the agent that asked; it changes no configuration, so the change log gets
+    /// nothing. Each is kept only while the person still lets agents write, checked inside its
+    /// transaction with SQLite's write lock held.
+    pub(super) fn read_copies(&self, arguments: &Map<String, Value>) -> Result<Value, ApiError> {
+        let which = match (arguments.get("referenceId"), arguments.get("type")) {
+            (Some(_), Some(_)) => {
+                return Err(ApiError::invalid(
+                    "Name either one reference (referenceId) or one system (type and id or name), not both.",
+                ))
+            }
+            (Some(_), None) => Which::References(vec![text(arguments, "referenceId")?.to_owned()]),
+            (None, Some(_)) => Which::System(super::find_system(&self.inventory()?, arguments)?),
+            (None, None) => Which::ThisWorkstation,
+        };
+        let reader = match &self.reader {
+            Some(reader) => reader.clone(),
+            None => Reader::this_executable()?,
+        };
+        let outcome = readings::read_copies(
+            &self.database,
+            &self.computer,
+            &reader,
+            &which,
+            &self.actor()?,
+            &|tx| super::permitted(&access::mode(tx)?, "write"),
+        )?;
+        Ok(json!(outcome))
+    }
 }
 
 fn tool(
@@ -770,6 +803,19 @@ pub(super) fn tools() -> Vec<Value> {
             json!({}),
             &[],
             json!({ "destructiveHint": false, "idempotentHint": false }),
+        ),
+        tool(
+            "read_copies",
+            "Read local copies",
+            "Reads, now, the local copies declared on this workstation (status: thisWorkstation), as Read does in DevHQ: one reference (referenceId), the copies of one system (type and id or name), or, with neither, every one but those of archived applications. Each reading is kept as DevHQ's own evidence (source read) with this agent as who asked, and says what the copy held at that moment: whether it was there, its branch and HEAD, its newest commit date, commits on no remote, stashes, remotes (without credentials), an operation left halfway, and how many files changed, are new or could not be verified. Never file names, contents, authors or messages. DevHQ reads with libgit2 in a process that cannot start programs, so nothing the repository names runs, and it writes nothing in the copy; code that hostile data managed to run inside that reader would still have the person's rights. Nothing leaves this computer, and no configuration changes. Copies on other machines are read by DevHQ there.",
+            json!({
+                "referenceId": { "type": "string", "description": "One local copy's reference id, from list_systems." },
+                "type": { "type": "string", "enum": ["application", "resource"] },
+                "id": { "type": "string", "description": "The system's id, from list_systems." },
+                "name": { "type": "string", "description": "Or its exact name, ignoring case." },
+            }),
+            &[],
+            json!({ "destructiveHint": false, "idempotentHint": false, "openWorldHint": false }),
         ),
     ]
 }

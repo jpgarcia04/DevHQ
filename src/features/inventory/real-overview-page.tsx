@@ -17,6 +17,7 @@ import { EvidenceBadge, SourceTag, SubjectLink } from './evidence'
 import { automatedSince, timelineEvents } from './history'
 import { useInventory } from './inventory-context'
 import { InventoryState } from './inventory-state'
+import { LocalCopiesOverview } from './local-copies-overview'
 import { AttentionList, EventRecordList } from './record-lists'
 import { SupervisionOverview } from './supervision-overview'
 
@@ -171,6 +172,7 @@ function OverviewContent() {
         </div>
         <div className="space-y-7">
           <SupervisionOverview />
+          <LocalCopiesOverview />
           <section aria-labelledby="activity-heading">
             <div className="mb-3 flex items-center justify-between">
               <h2 id="activity-heading" className="section-heading">

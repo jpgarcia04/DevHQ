@@ -9,9 +9,11 @@ import type {
 import type {
   ConfigurationChange,
   BackupFile,
+  CopyReading,
   HttpCheck,
   InventoryApplication,
   InventoryResource,
+  ThisWorkstation,
 } from '@/features/inventory/inventory-api'
 
 /**
@@ -28,10 +30,27 @@ export interface PreviewDatabase {
   httpChecks: HttpCheck[]
   changes: ConfigurationChange[]
   changesSince: string | null
+  /** Every reading of a local copy, in the order they were recorded. */
+  copyReadings: CopyReading[]
+  /** Which workstation this computer is, from the local association beside the inventory. */
+  thisWorkstation: ThisWorkstation
   /** The files in the backups folder, newest first. */
   backups: BackupFile[]
   /** Reading fails, as it would with an unreadable database. */
   unavailable: boolean
+}
+
+/** Where the native process would keep this computer's association, on Windows. */
+const associationFile = 'C:\\Users\\you\\AppData\\Local\\com.devhq.desktop\\this-workstation.json'
+
+const notChosen: ThisWorkstation = {
+  resourceId: null,
+  chosenAt: null,
+  problem: 'not_chosen',
+  message:
+    'No workstation has been chosen as this computer yet: choose one in Settings › This computer.',
+  file: associationFile,
+  storedAt: null,
 }
 
 /**
@@ -67,9 +86,134 @@ function nothing(): PreviewDatabase {
     httpChecks: [],
     changes: [],
     changesSince: null,
+    copyReadings: [],
+    thisWorkstation: notChosen,
     backups: [],
     unavailable: false,
   }
+}
+
+/** Readings of the laptop's dotfiles: one every 6 hours, by an agent, more than a page. */
+export const dotfilesReadings = 205
+
+/**
+ * Readings of the sample's local copies, in the order they were recorded:
+ * - the Shop's clone on the laptop: five days ago, before it was cloned there (not a copy); three
+ *   days ago, clean and published; two hours ago, with a commit on no remote, a stash and changes.
+ *   Blog declares the same clone, never read.
+ * - Blog's clone on the desktop, another computer, read there yesterday: a detached HEAD in a
+ *   rebase left halfway, more than 1000 commits on no remote, a working tree that took too long,
+ *   and a remote that is not the repository Blog declares.
+ * - the laptop's dotfiles, read every 6 hours at a path it has since moved from, and not found
+ *   there the last time: more readings than a page holds.
+ * - the archived Old site's clone, with a stash: kept, but out of Read all and of Overview.
+ */
+function sampleReadings(now: number): CopyReading[] {
+  const reading = (id: string, minutesAgo: number, facts: Partial<CopyReading>): CopyReading => ({
+    id,
+    subject: shop,
+    referenceId: 'shop-clone',
+    machineId: 'laptop',
+    path: 'C:\\Users\\you\\src\\web',
+    source: 'read',
+    reader: 'libgit2 1.9.7',
+    agent: null,
+    observedAt: at(now, minutesAgo),
+    recordedAt: at(now, minutesAgo),
+    outcome: 'read',
+    detail: null,
+    branch: 'main',
+    head: '4f2a9c1d8e7b6a5f4e3d2c1b0a9f8e7d6c5b4a39',
+    lastCommitAt: at(now, minutesAgo + 300),
+    unpublishedOnHead: 0,
+    unpublishedElsewhere: 0,
+    stashes: 0,
+    syncedAt: at(now, minutesAgo + 30),
+    remotes: [{ name: 'origin', url: 'git@github.com:example/web.git' }],
+    operation: null,
+    changed: 0,
+    untracked: 0,
+    unverifiable: 0,
+    worktreeUnknown: null,
+    ...facts,
+  })
+  const notRead = {
+    branch: null,
+    head: null,
+    lastCommitAt: null,
+    unpublishedOnHead: null,
+    unpublishedElsewhere: null,
+    stashes: null,
+    syncedAt: null,
+    remotes: null,
+    changed: null,
+    untracked: null,
+    unverifiable: null,
+  }
+  const dotfiles = (index: number) =>
+    reading(`dotfiles-${index}`, (dotfilesReadings - index) * 6 * 60 + 45, {
+      subject: { type: 'resource', id: 'laptop' },
+      referenceId: 'laptop-dotfiles',
+      path: 'C:\\Users\\you\\dotfiles',
+      agent: 'claude-code',
+      head: 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678',
+      lastCommitAt: at(now, 40 * 24 * 60),
+      syncedAt: at(now, 40 * 24 * 60),
+      remotes: [{ name: 'origin', url: 'https://github.com/you/dotfiles' }],
+      ...(index === dotfilesReadings - 1
+        ? { ...notRead, outcome: 'missing' as const, detail: 'Nothing is at this path.' }
+        : {}),
+    })
+  return [
+    reading('reading-gone', 5 * 24 * 60, {
+      ...notRead,
+      outcome: 'not_a_copy',
+      detail:
+        'No repository starts at this folder. DevHQ does not look in the folders above it: declare the folder at the root of the copy.',
+    }),
+    ...Array.from({ length: dotfilesReadings - 1 }, (_, index) => dotfiles(index)),
+    reading('old-site-read', 4 * 24 * 60, {
+      subject: { type: 'application', id: 'old-site' },
+      referenceId: 'old-site-clone',
+      path: 'C:\\Users\\you\\src\\old-site',
+      head: '0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c',
+      lastCommitAt: at(now, 400 * 24 * 60),
+      syncedAt: at(now, 400 * 24 * 60),
+      stashes: 2,
+      remotes: [{ name: 'origin', url: 'https://github.com/example/old-site.git' }],
+    }),
+    reading('reading-old', 3 * 24 * 60, {}),
+    reading('blog-desktop-read', 26 * 60, {
+      subject: blog,
+      referenceId: 'blog-desktop',
+      machineId: 'desktop',
+      path: '/home/you/src/blog',
+      branch: null,
+      head: '7e6d5c4b3a291807f6e5d4c3b2a1908f7e6d5c4b',
+      lastCommitAt: at(now, 30 * 60),
+      unpublishedElsewhere: 1001,
+      syncedAt: null,
+      remotes: [
+        { name: 'origin', url: 'git@gitlab.com:you/blog.git' },
+        { name: 'deploy', url: null },
+      ],
+      operation: 'rebase',
+      changed: null,
+      untracked: null,
+      unverifiable: null,
+      worktreeUnknown: 'Reading the working tree took longer than 30 s, so DevHQ stopped it.',
+    }),
+    dotfiles(dotfilesReadings - 1),
+    reading('reading-new', 120, {
+      head: '9b8a7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a07',
+      lastCommitAt: at(now, 140),
+      unpublishedOnHead: 1,
+      stashes: 1,
+      changed: 2,
+      untracked: 1,
+      agent: 'claude-code',
+    }),
+  ]
 }
 
 /** The name a backup taken at `time` gets: its UTC moment in ISO 8601's basic format. */
@@ -355,6 +499,37 @@ export function sampleDatabase(scenario: Scenario, now: number): PreviewDatabase
             label: null,
             machineId: null,
           },
+          {
+            id: 'blog-clone',
+            kind: 'local_copy',
+            target: 'C:\\Users\\you\\src\\web',
+            label: null,
+            machineId: 'laptop',
+          },
+          {
+            id: 'blog-desktop',
+            kind: 'local_copy',
+            target: '/home/you/src/blog',
+            label: null,
+            machineId: 'desktop',
+          },
+        ],
+      },
+      {
+        id: 'old-site',
+        name: 'Old site',
+        description: 'Replaced by Blog',
+        lifecycle: 'archived',
+        version: null,
+        components: [],
+        references: [
+          {
+            id: 'old-site-clone',
+            kind: 'local_copy',
+            target: 'C:\\Users\\you\\src\\old-site',
+            label: null,
+            machineId: 'laptop',
+          },
         ],
       },
     ],
@@ -368,12 +543,29 @@ export function sampleDatabase(scenario: Scenario, now: number): PreviewDatabase
         references: [],
       },
       {
+        id: 'desktop',
+        name: 'Home desktop',
+        kind: 'workstation',
+        description: '',
+        operatingSystem: 'Fedora 44',
+        references: [],
+      },
+      {
         id: 'laptop',
         name: 'Dev laptop',
         kind: 'workstation',
         description: '',
         operatingSystem: 'Windows 11',
-        references: [],
+        // Its dotfiles, moved since they were last read.
+        references: [
+          {
+            id: 'laptop-dotfiles',
+            kind: 'local_copy',
+            target: 'C:\\Users\\you\\src\\dotfiles',
+            label: 'Dotfiles',
+            machineId: 'laptop',
+          },
+        ],
       },
       {
         id: 'web-host',
@@ -460,6 +652,16 @@ export function sampleDatabase(scenario: Scenario, now: number): PreviewDatabase
         monitorIntervalMinutes: null,
       },
     ],
+    copyReadings: sampleReadings(now),
+    // This computer is the laptop, chosen a week ago.
+    thisWorkstation: {
+      resourceId: 'laptop',
+      chosenAt: time(7 * 24 * 60),
+      problem: null,
+      message: null,
+      file: associationFile,
+      storedAt: null,
+    },
     backups: sampleBackups(now),
     unavailable: false,
   }

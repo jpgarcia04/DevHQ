@@ -1,0 +1,50 @@
+{
+  "readings": [
+    {
+      "id": "reading-2",
+      "subject": { "type": "application", "id": "shop" },
+      "referenceId": "shop-copy",
+      "machineId": "laptop",
+      "path": "C:\\src\\platform",
+      "source": "read",
+      "reader": "libgit2 1.9.7",
+      "agent": null,
+      "observedAt": "2026-01-01T10:00:00Z",
+      "recordedAt": "2026-01-01T10:00:00Z",
+      "outcome": "read",
+      "detail": null,
+      "branch": "main",
+      "head": "0123456789abcdef0123456789abcdef01234567",
+      "lastCommitAt": "2026-01-01T09:00:00Z",
+      "unpublishedOnHead": 2,
+      "unpublishedElsewhere": 0,
+      "stashes": 1,
+      "syncedAt": "2026-01-01T08:00:00Z",
+      "remotes": [
+        { "name": "mirror", "url": null },
+        { "name": "origin", "url": "git@github.com:me/platform.git" }
+      ],
+      "operation": null,
+      "changed": 3,
+      "untracked": 1,
+      "unverifiable": 0,
+      "worktreeUnknown": null
+    }
+  ],
+  "failures": [
+    {
+      "referenceId": "docs-copy",
+      "subject": { "type": "resource", "id": "host" },
+      "path": "C:\\src\\infra",
+      "message": "Reading C:\\src\\infra took longer than 30 s, so DevHQ stopped it. Nothing was kept."
+    }
+  ],
+  "thisWorkstation": {
+    "resourceId": "laptop",
+    "chosenAt": "2026-01-01T08:00:00Z",
+    "problem": null,
+    "message": null,
+    "file": "C:\\Users\\Juan Pablo\\AppData\\Local\\com.devhq.desktop\\this-workstation.json",
+    "storedAt": null
+  }
+}

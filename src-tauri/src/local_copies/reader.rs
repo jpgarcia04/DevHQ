@@ -1,0 +1,638 @@
+//! What runs inside `devhq --read-copy`: one local copy read with libgit2, in a process of its own
+//! that first forbids itself to start programs (see `confine`).
+//!
+//! It reads one JSON object from stdin, `{"path": "…"}`, and answers on stdout with one JSON line
+//! per phase: first `refs` (whether a copy is there, its branch, HEAD, activity, unpublished
+//! commits, stashes, last contact with a remote, remotes and any operation left halfway), then
+//! `worktree` (how many tracked files changed, how many new entries, how many DevHQ cannot verify),
+//! so that if the working tree takes too long the rest has already arrived. A failure of DevHQ
+//! itself (it could not confine itself, libgit2 cannot read this format) is an `error` line.
+//!
+//! Only libgit2's read APIs are called. The repository is opened at exactly the declared path
+//! (`NO_SEARCH`), its status is read without updating the index, and nothing is ever written: no
+//! checkout, fetch, ref, index, log or config. Not every libgit2 API that sounds like reading only
+//! reads: reading a ref's log creates an empty one when there is none, so logs are read as files.
+//! The hostile battery holds every call to this. libgit2 applies its built-in filters (crlf,
+//! ident) and never runs the external drivers, hooks, fsmonitor, signing or remote helper programs
+//! a repository names. A file that looks changed under a driver the config defines is counted
+//! apart, as unverifiable, instead of as a change or as clean.
+
+use super::remotes;
+use super::{Refs, Remote, Worktree, UNPUBLISHED_LIMIT};
+use git2::{
+    AttrCheckFlags, AttrValue, BranchType, Commit, ErrorClass, ErrorCode, Oid, Repository,
+    RepositoryOpenFlags, RepositoryState, Status, StatusOptions,
+};
+use serde_json::{json, Value};
+use std::ffi::OsStr;
+use std::fs::File;
+use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
+use std::path::Path;
+use std::time::UNIX_EPOCH;
+
+/// Remotes a reading keeps: more says nothing more about a copy.
+const MAX_REMOTES: usize = 20;
+/// The longest branch or remote name kept.
+pub(crate) const MAX_NAME: usize = 255;
+/// The longest reason kept for a copy that could not be read, or a working tree that could not.
+pub(crate) const MAX_DETAIL: usize = 1000;
+/// The request is one short JSON object.
+const MAX_REQUEST: u64 = 64 * 1024;
+
+/// Whether the reader must forbid itself to start programs before reading. Only tests read
+/// without it, to show that libgit2 itself starts none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Confinement {
+    Required,
+    #[cfg(test)]
+    Skipped,
+}
+
+/// Serves one request from `input` on `output`; returns the process exit code.
+pub(crate) fn serve(input: impl Read, mut output: impl Write, confinement: Confinement) -> i32 {
+    let mut answer = |line: Value| -> bool {
+        writeln!(output, "{line}")
+            .and_then(|()| output.flush())
+            .is_ok()
+    };
+    if confinement == Confinement::Required {
+        if let Err(message) = super::confine::forbid_programs() {
+            answer(json!({ "phase": "error", "message": message }));
+            return 1;
+        }
+    }
+    let path = match request(input) {
+        Ok(path) => path,
+        Err(message) => {
+            answer(json!({ "phase": "error", "message": message }));
+            return 1;
+        }
+    };
+    let (refs, repository) = match read_refs(Path::new(&path)) {
+        Ok(read) => read,
+        Err(message) => {
+            answer(json!({ "phase": "error", "message": message }));
+            return 1;
+        }
+    };
+    let mut line = json!(refs);
+    line["phase"] = json!("refs");
+    if !answer(line) {
+        return 1;
+    }
+    if let Some(repository) = repository {
+        let mut line = json!(read_worktree(&repository));
+        line["phase"] = json!("worktree");
+        if !answer(line) {
+            return 1;
+        }
+    }
+    0
+}
+
+/// The path the request names.
+fn request(input: impl Read) -> Result<String, String> {
+    let mut text = String::new();
+    input
+        .take(MAX_REQUEST)
+        .read_to_string(&mut text)
+        .map_err(|error| format!("The reader could not read its request: {error}"))?;
+    let value: Value = serde_json::from_str(&text)
+        .map_err(|error| format!("The reader's request is not JSON: {error}"))?;
+    value
+        .get("path")
+        .and_then(Value::as_str)
+        .filter(|path| !path.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| "The reader's request names no path.".to_owned())
+}
+
+/// Text as DevHQ keeps it from a repository it does not trust: control characters become spaces
+/// and it is cut to `max` characters.
+pub(crate) fn plain_text(text: &str, max: usize) -> String {
+    let cleaned: String = text
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let cleaned = cleaned.trim();
+    if cleaned.chars().count() <= max {
+        cleaned.to_owned()
+    } else {
+        let mut cut: String = cleaned.chars().take(max - 1).collect();
+        cut.push('…');
+        cut
+    }
+}
+
+fn not_read(outcome: &str, detail: &str) -> Refs {
+    Refs {
+        outcome: outcome.to_owned(),
+        detail: Some(plain_text(detail, MAX_DETAIL)),
+        ..Refs::default()
+    }
+}
+
+fn libgit2(error: &git2::Error) -> String {
+    plain_text(error.message(), MAX_DETAIL)
+}
+
+/// The copy at `path`, as far as it is one: the facts of `refs`, and the repository to read the
+/// working tree from when there is one. An error is a failure of DevHQ, not a fact of the copy.
+pub(crate) fn read_refs(path: &Path) -> Result<(Refs, Option<Repository>), String> {
+    match std::fs::metadata(path) {
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            return Ok((not_read("missing", "Nothing is at this path."), None));
+        }
+        Err(error) => return Ok((not_read("unreadable", &error.to_string()), None)),
+        Ok(metadata) if !metadata.is_dir() => {
+            return Ok((
+                not_read("not_a_copy", "This is a file, not the folder of a copy."),
+                None,
+            ));
+        }
+        Ok(_) => {}
+    }
+    let repository = match Repository::open_ext(
+        path,
+        RepositoryOpenFlags::NO_SEARCH,
+        [] as [&OsStr; 0],
+    ) {
+        Ok(repository) => repository,
+        // libgit2 takes a path it may not look at for one that is not there, so "no repository"
+        // only stands when DevHQ could look at everything libgit2 looked for.
+        Err(error) if error.code() == ErrorCode::NotFound => {
+            if let Some(denied) = denied_while_looking(path) {
+                return Ok((
+                    not_read(
+                        "unreadable",
+                        &format!(
+                            "The system did not let DevHQ look for a repository in this folder: {denied}"
+                        ),
+                    ),
+                    None,
+                ));
+            }
+            return Ok((
+                    not_read(
+                        "not_a_copy",
+                        "No repository starts at this folder. DevHQ does not look in the folders above it: declare the folder at the root of the copy.",
+                    ),
+                    None,
+                ));
+        }
+        // A copy owned by another user, which Git itself would refuse (safe.directory), or
+        // one the system does not let this user read.
+        Err(error) if error.code() == ErrorCode::Owner || error.class() == ErrorClass::Os => {
+            return Ok((not_read("unreadable", error.message()), None));
+        }
+        Err(error) => {
+            return Err(format!(
+                "libgit2 could not open this copy: {}",
+                libgit2(&error)
+            ))
+        }
+    };
+    if repository.is_bare() {
+        return Ok((
+            not_read(
+                "not_a_copy",
+                "A bare repository, which has no working tree.",
+            ),
+            None,
+        ));
+    }
+    match facts(&repository) {
+        Ok(refs) => Ok((refs, Some(repository))),
+        Err(Unread::Unreadable(detail)) => Ok((not_read("unreadable", &detail), None)),
+        Err(Unread::Limit(message)) => Err(message),
+        Err(Unread::Libgit2(error)) => Err(format!(
+            "libgit2 could not read this copy: {}",
+            libgit2(&error)
+        )),
+    }
+}
+
+/// Why `facts` has none to give.
+enum Unread {
+    /// libgit2 failed: a failure of DevHQ.
+    Libgit2(git2::Error),
+    /// The system did not let DevHQ read a file the facts need: a fact of the copy, which is then
+    /// unreadable, never read with a guess in that fact's place.
+    Unreadable(String),
+    /// A file the facts need is longer than DevHQ reads: a limit of DevHQ, so a failure of it,
+    /// never a smaller count or an older moment.
+    Limit(String),
+}
+
+impl From<git2::Error> for Unread {
+    fn from(error: git2::Error) -> Self {
+        Self::Libgit2(error)
+    }
+}
+
+/// A failure of the system to look, as opposed to nothing being there. A name the system rejects
+/// (a hostile `gitdir:` line) is nothing there too, as it is for libgit2.
+fn kept_from_looking(error: &std::io::Error) -> bool {
+    error.raw_os_error().is_some()
+        && !matches!(
+            error.kind(),
+            ErrorKind::NotFound | ErrorKind::NotADirectory | ErrorKind::InvalidFilename
+        )
+}
+
+/// Why the system kept DevHQ from seeing whether a repository starts at `path`, if it did.
+///
+/// libgit2 decides there is no repository when `stat` fails on what it looks for, and every
+/// `stat` failure looks the same to it: a folder this user may not search (`chmod 000`, a deny
+/// ACL) holds no repository as far as libgit2 can tell. So this looks again at exactly what
+/// `open_ext` with `NO_SEARCH` looks at (repository.c, `find_repo_traverse` and
+/// `is_valid_repository_path`): `.git`, as a folder or as a file naming one, then the folder
+/// itself as a bare repository; in each, `commondir`, `HEAD`, `objects` and `refs`. The first
+/// failure other than "not there" is the answer. It only reads metadata and two small files.
+fn denied_while_looking(path: &Path) -> Option<std::io::Error> {
+    fn denied(result: std::io::Result<std::fs::Metadata>) -> Option<std::io::Error> {
+        result.err().filter(kept_from_looking)
+    }
+    fn read_link(file: &Path) -> Result<Option<String>, std::io::Error> {
+        match std::fs::read_to_string(file) {
+            Ok(text) => Ok(Some(text)),
+            Err(error) if kept_from_looking(&error) => Err(error),
+            Err(_) => Ok(None),
+        }
+    }
+    /// What `is_valid_repository_path` looks at in `dir`.
+    fn in_repository(dir: &Path) -> Option<std::io::Error> {
+        for name in ["commondir", "HEAD", "objects", "refs"] {
+            if let Some(error) = denied(std::fs::metadata(dir.join(name))) {
+                return Some(error);
+            }
+        }
+        let common = match read_link(&dir.join("commondir")) {
+            Err(error) => return Some(error),
+            Ok(None) => return None,
+            Ok(Some(text)) => dir.join(text.trim_end()),
+        };
+        ["objects", "refs"]
+            .into_iter()
+            .find_map(|name| denied(std::fs::metadata(common.join(name))))
+    }
+
+    let dot_git = path.join(".git");
+    match std::fs::metadata(&dot_git) {
+        Ok(metadata) if metadata.is_dir() => {
+            if let Some(error) = in_repository(&dot_git) {
+                return Some(error);
+            }
+        }
+        // A file named `.git` names the repository folder (`gitdir: …`), as in a linked worktree
+        // or a submodule.
+        Ok(metadata) if metadata.is_file() => match read_link(&dot_git) {
+            Err(error) => return Some(error),
+            Ok(None) => {}
+            Ok(Some(text)) => {
+                if let Some(target) = text.strip_prefix("gitdir:") {
+                    if let Some(error) = in_repository(&path.join(target.trim())) {
+                        return Some(error);
+                    }
+                }
+            }
+        },
+        Ok(_) => {}
+        Err(error) if kept_from_looking(&error) => return Some(error),
+        Err(_) => {}
+    }
+    in_repository(path)
+}
+
+fn when(commit: &Commit) -> i64 {
+    commit.time().seconds().saturating_mul(1000)
+}
+
+/// Everything but the working tree, from refs, commits, reflogs and config.
+fn facts(repository: &Repository) -> Result<Refs, Unread> {
+    let head_ref = repository.find_reference("HEAD")?;
+    // HEAD names its branch, or is detached (no branch). Read as bytes: a hostile HEAD can name
+    // anything.
+    let branch_ref = head_ref.symbolic_target_bytes().map(<[u8]>::to_vec);
+    // Unborn (no commit yet) leaves HEAD without a commit.
+    let head = match repository.head() {
+        Ok(reference) => Some(reference.peel_to_commit()?),
+        Err(error) if error.code() == ErrorCode::UnbornBranch => None,
+        Err(error) => return Err(error.into()),
+    };
+    let branch = branch_ref.as_deref().map(|target| {
+        let name = target.strip_prefix(b"refs/heads/").unwrap_or(target);
+        plain_text(&String::from_utf8_lossy(name), MAX_NAME)
+    });
+
+    let mut last_commit_at = head.as_ref().map(when);
+    let mut elsewhere: Vec<Oid> = Vec::new();
+    for item in repository.branches(Some(BranchType::Local))? {
+        let (local, _) = item?;
+        let Ok(commit) = local.get().peel_to_commit() else {
+            continue;
+        };
+        last_commit_at = last_commit_at.max(Some(when(&commit)));
+        if Some(local.get().name_bytes()) != branch_ref.as_deref() {
+            elsewhere.push(commit.id());
+        }
+    }
+
+    // What the copy knows of its remotes: their branches, and when it last talked to one. A fetch
+    // writes FETCH_HEAD (in the worktree's own folder, and in the shared one for the main
+    // worktree); a fetch or a push logs each remote branch it moves.
+    let mut published: Vec<Oid> = Vec::new();
+    let mut synced_at = [repository.path(), repository.commondir()]
+        .iter()
+        .filter_map(|dir| {
+            std::fs::metadata(dir.join("FETCH_HEAD"))
+                .and_then(|metadata| metadata.modified())
+                .ok()
+                .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+                .and_then(|elapsed| i64::try_from(elapsed.as_millis()).ok())
+        })
+        .max();
+    for item in repository.references_glob("refs/remotes/*")? {
+        let reference = item?;
+        // `refs/remotes/origin/HEAD` only names another remote branch.
+        if reference.symbolic_target_bytes().is_some() {
+            continue;
+        }
+        if let Ok(commit) = reference.peel_to_commit() {
+            published.push(commit.id());
+        }
+        if let Ok(name) = reference.name() {
+            synced_at = synced_at.max(newest_entry(repository, name)?);
+        }
+    }
+
+    let unpublished_on_head = unpublished(repository, head.iter().map(Commit::id), &published)?;
+    let mut hidden = published.clone();
+    hidden.extend(head.iter().map(Commit::id));
+    let unpublished_elsewhere = unpublished(repository, elsewhere, &hidden)?;
+
+    // Each stash is an entry of the stash's log.
+    let stashes = if repository.find_reference("refs/stash").is_ok() {
+        entries(repository, "refs/stash")?
+    } else {
+        0
+    };
+
+    let mut remotes = Vec::new();
+    let names = repository.remotes()?;
+    for name in names
+        .iter()
+        .filter_map(|name| name.ok().flatten())
+        .take(MAX_REMOTES)
+    {
+        let url = repository
+            .find_remote(name)
+            .ok()
+            .and_then(|remote| remote.url().ok().and_then(remotes::sanitized));
+        remotes.push(Remote {
+            name: plain_text(name, MAX_NAME),
+            url,
+        });
+    }
+
+    let operation = match repository.state() {
+        RepositoryState::Clean => None,
+        RepositoryState::Merge => Some("merge"),
+        RepositoryState::Revert | RepositoryState::RevertSequence => Some("revert"),
+        RepositoryState::CherryPick | RepositoryState::CherryPickSequence => Some("cherry_pick"),
+        RepositoryState::Bisect => Some("bisect"),
+        RepositoryState::Rebase
+        | RepositoryState::RebaseInteractive
+        | RepositoryState::RebaseMerge
+        | RepositoryState::ApplyMailboxOrRebase => Some("rebase"),
+        RepositoryState::ApplyMailbox => Some("apply_mailbox"),
+    };
+
+    Ok(Refs {
+        outcome: "read".into(),
+        detail: None,
+        branch,
+        head: head.as_ref().map(|commit| commit.id().to_string()),
+        last_commit_at,
+        unpublished_on_head: Some(unpublished_on_head),
+        unpublished_elsewhere: Some(unpublished_elsewhere),
+        stashes: Some(u32::try_from(stashes).unwrap_or(u32::MAX)),
+        synced_at,
+        remotes: Some(remotes),
+        operation: operation.map(str::to_owned),
+    })
+}
+
+/// The longest log DevHQ counts the entries of: a stash logs one line, under 300 bytes, per stash.
+pub(crate) const MAX_LOG: u64 = 32 * 1024 * 1024;
+/// How much of the end of a log DevHQ reads for its newest entry: one line is far shorter.
+pub(crate) const TAIL: u64 = 1024 * 1024;
+
+/// The log of the shared ref `name` (a remote branch, the stash), opened as the file it is. Not
+/// with libgit2's reflog API, which creates an empty log file for a ref that has none (the hostile
+/// battery found it): reading must never write. None when there is no log, which says nothing:
+/// Git, too, lists no stash then.
+fn open_log(repository: &Repository, name: &str) -> Result<Option<File>, Unread> {
+    match File::open(repository.commondir().join("logs").join(name)) {
+        Ok(file) => Ok(Some(file)),
+        Err(error) if kept_from_looking(&error) => Err(unreadable_log(name, &error)),
+        Err(_) => Ok(None),
+    }
+}
+
+fn unreadable_log(name: &str, error: &std::io::Error) -> Unread {
+    Unread::Unreadable(format!(
+        "The system did not let DevHQ read the log of {}: {error}",
+        plain_text(name, MAX_NAME)
+    ))
+}
+
+/// When the newest entry of the log of `name` was written; None when it has none. Git appends
+/// each entry, so the newest is the last line Git would read, and only the end of the log is read,
+/// however long it has grown. An end without a single entry Git would read, in a log longer than
+/// that, leaves the newest unknown: a limit, never an older entry in its place.
+fn newest_entry(repository: &Repository, name: &str) -> Result<Option<i64>, Unread> {
+    let Some(mut file) = open_log(repository, name)? else {
+        return Ok(None);
+    };
+    let unreadable = |error: std::io::Error| unreadable_log(name, &error);
+    let length = file.metadata().map_err(unreadable)?.len();
+    let start = length.saturating_sub(TAIL);
+    file.seek(SeekFrom::Start(start)).map_err(unreadable)?;
+    let mut tail = Vec::new();
+    file.take(TAIL).read_to_end(&mut tail).map_err(unreadable)?;
+    // Unless the tail is the whole log, its first line may be cut: only what follows a newline is
+    // whole.
+    let whole = if start == 0 {
+        &tail[..]
+    } else {
+        tail.iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(&[][..], |at| &tail[at + 1..])
+    };
+    match whole
+        .split_inclusive(|byte| *byte == b'\n')
+        .rev()
+        .find_map(entry_time)
+    {
+        Some(at) => Ok(Some(at)),
+        None if start == 0 => Ok(None),
+        None => Err(Unread::Limit(format!(
+            "DevHQ found no entry in the last {} MiB of the log of {}, which is all it reads of it, so it cannot say when this copy last talked to a remote.",
+            TAIL >> 20,
+            plain_text(name, MAX_NAME)
+        ))),
+    }
+}
+
+/// How many entries Git would read in the log of `name`; 0 when there is no log. Counting needs
+/// the whole log, so one longer than `MAX_LOG` is a limit, never the count of its beginning.
+fn entries(repository: &Repository, name: &str) -> Result<usize, Unread> {
+    let Some(file) = open_log(repository, name)? else {
+        return Ok(0);
+    };
+    let mut text = Vec::new();
+    file.take(MAX_LOG + 1)
+        .read_to_end(&mut text)
+        .map_err(|error| unreadable_log(name, &error))?;
+    if text.len() as u64 > MAX_LOG {
+        return Err(Unread::Limit(format!(
+            "The log of {} is longer than the {} MiB DevHQ reads of it, so DevHQ cannot count what it holds.",
+            plain_text(name, MAX_NAME),
+            MAX_LOG >> 20
+        )));
+    }
+    Ok(text
+        .split_inclusive(|byte| *byte == b'\n')
+        .filter(|line| entry_time(line).is_some())
+        .count())
+}
+
+/// When a log entry was written, in milliseconds, if `line` is one Git reads
+/// (`show_one_reflog_ent`): `old new name <email> seconds ±hhmm`, a tab and a message, and its
+/// newline. Git skips any other line, a line still being written among them, and so does DevHQ.
+fn entry_time(line: &[u8]) -> Option<i64> {
+    let line = line.strip_suffix(b"\n")?;
+    let id = |text: &[u8]| text.len() == 40 && text.iter().all(u8::is_ascii_hexdigit);
+    if line.len() < 82
+        || !id(&line[..40])
+        || line[40] != b' '
+        || !id(&line[41..81])
+        || line[81] != b' '
+    {
+        return None;
+    }
+    let rest = &line[82..];
+    let email_end = rest.iter().position(|byte| *byte == b'>')?;
+    let when = rest[email_end + 1..].strip_prefix(b" ")?;
+    let digits = when.iter().take_while(|byte| byte.is_ascii_digit()).count();
+    let seconds: i64 = std::str::from_utf8(&when[..digits]).ok()?.parse().ok()?;
+    let zone = when[digits..].strip_prefix(b" ")?;
+    let zone_ok = zone.len() >= 5
+        && matches!(zone[0], b'+' | b'-')
+        && zone[1..5].iter().all(u8::is_ascii_digit);
+    (seconds != 0 && zone_ok).then(|| seconds.saturating_mul(1000))
+}
+
+/// Commits reachable from `tips` that no `hidden` commit contains, counted up to one past the
+/// limit, which reads as «more than the limit».
+fn unpublished(
+    repository: &Repository,
+    tips: impl IntoIterator<Item = Oid>,
+    hidden: &[Oid],
+) -> Result<u32, git2::Error> {
+    let mut walk = repository.revwalk()?;
+    let mut any = false;
+    for tip in tips {
+        walk.push(tip)?;
+        any = true;
+    }
+    if !any {
+        return Ok(0);
+    }
+    for commit in hidden {
+        // A remote branch whose commit is gone (a shallow or pruned copy) hides nothing.
+        let _ = walk.hide(*commit);
+    }
+    let mut count = 0;
+    for commit in walk {
+        commit?;
+        count += 1;
+        if count > UNPUBLISHED_LIMIT {
+            break;
+        }
+    }
+    Ok(count)
+}
+
+/// The working tree as `git status` sees it, counted: tracked files with changes (staged or not,
+/// conflicts included), new entries that are not ignored (a new folder counts once), and files
+/// DevHQ cannot verify. Submodules are left out: each is a copy of its own, if declared.
+pub(crate) fn read_worktree(repository: &Repository) -> Worktree {
+    let mut options = StatusOptions::new();
+    options
+        .include_untracked(true)
+        .recurse_untracked_dirs(false)
+        .include_ignored(false)
+        .include_unmodified(false)
+        .exclude_submodules(true)
+        .update_index(false)
+        .renames_head_to_index(false)
+        .renames_index_to_workdir(false);
+    let statuses = match repository.statuses(Some(&mut options)) {
+        Ok(statuses) => statuses,
+        Err(error) => {
+            return Worktree::unknown(&format!(
+                "libgit2 could not read the working tree: {}",
+                error.message()
+            ))
+        }
+    };
+    let config = repository.config().ok();
+    let (mut changed, mut untracked, mut unverifiable) = (0u32, 0u32, 0u32);
+    for entry in statuses.iter() {
+        let status = entry.status();
+        if status.is_ignored() {
+            continue;
+        }
+        if status == Status::WT_NEW {
+            untracked += 1;
+        } else if status == Status::WT_UNREADABLE
+            || (status == Status::WT_MODIFIED
+                && entry
+                    .path()
+                    .is_ok_and(|path| filtered(repository, config.as_ref(), path)))
+        {
+            // Unreadable, or looking changed only because a driver DevHQ does not run would
+            // have cleaned it: neither a change nor clean.
+            unverifiable += 1;
+        } else {
+            changed += 1;
+        }
+    }
+    Worktree {
+        changed: Some(changed),
+        untracked: Some(untracked),
+        unverifiable: Some(unverifiable),
+        unknown: None,
+    }
+}
+
+/// Whether `path` is under a filter driver that the config defines to clean files, which Git
+/// would run before comparing and libgit2 does not. A `filter` attribute naming a driver the
+/// config does not define is ignored by Git too, so the comparison stands.
+fn filtered(repository: &Repository, config: Option<&git2::Config>, path: &str) -> bool {
+    let Ok(value) =
+        repository.get_attr_bytes(Path::new(path), "filter", AttrCheckFlags::FILE_THEN_INDEX)
+    else {
+        return false;
+    };
+    let AttrValue::String(driver) = AttrValue::from_bytes(value) else {
+        return false;
+    };
+    config.is_some_and(|config| {
+        ["clean", "process"]
+            .iter()
+            .any(|key| config.get_entry(&format!("filter.{driver}.{key}")).is_ok())
+    })
+}
