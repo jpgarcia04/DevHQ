@@ -8,8 +8,9 @@ paso se termina, sale de aquí en el mismo commit; cuando no quede ninguno, esta
 Escrita el 6 oct 2026 desde una sesión local en la laptop con Windows, puesta al día esa noche, al
 fusionar el registro de cambios y proponer el diseño de las referencias, y el 7 oct, al implementar
 las referencias con las decisiones que la persona aprobó y al ver pasar su CI; y el 11 oct, al probar
-cómo se puede leer una copia local sin que leerla ejecute nada, proponer el diseño de la etapa 3 y,
-tras fusionarse las referencias, ponerlo al día sobre `main`.
+cómo se puede leer una copia local sin que leerla ejecute nada, proponer el diseño de la etapa 3,
+ponerlo al día sobre `main` tras fusionarse las referencias y revisarlo con las cuestiones de la
+persona.
 
 ## El plan, en corto
 
@@ -18,7 +19,7 @@ en el mundo real. La visión, la puerta para agentes (esquema v9), el registro d
 y las referencias (v11) están en `main`: cada aplicación y recurso dice dónde está su repositorio,
 sus copias locales, su documentación, sus logs y su panel. Ahora:
 
-1. **Primera fuente observada sobre esas anclas** (etapa 3, diseño propuesto abajo): la actividad de
+1. **Primera fuente observada sobre esas anclas** (etapa 3, diseño revisado abajo): la actividad de
    las copias locales, leída cuando se pide y sin que leerla ejecute nada de lo que se lee.
 
 Después, según lo que pidan preguntas concretas: bases de datos compartidas y dominios como tipos de
@@ -45,7 +46,8 @@ permisos por agente ni descubrir repositorios por su cuenta.
   un nombre para personas, nunca un localizador. Son inventario declarado, no evidencia: no llevan
   `source`.
 - **El diseño de la etapa 3** está en `claude/local-activity-design`, que sale de `main` (`aff9dd7`)
-  desde que #5 se fusionó; antes salía de su punta.
+  desde que #5 se fusionó; antes salía de su punta. La persona aprobó su dirección el 11 oct, y la
+  revisión de ese día no dejó nada pendiente de ella.
 - **La primera carga, medida en las dos caminatas de #5.** La caminata dice cuánto tarda la ventana
   en poder manejarse tras arrancar DevHQ y, en el primer paso (y en cualquiera que falle), si la
   página está visible, cuánto lleva cargada y cuándo se pidió y se respondió cada llamada a DevHQ, en
@@ -78,20 +80,21 @@ permisos por agente ni descubrir repositorios por su cuenta.
 
 ## Qué hacer, en orden
 
-1. **Etapa 3, actividad de las copias locales: diseño propuesto, esperando el visto bueno de la
-   persona** (ver «Etapa 3: diseño propuesto», abajo). No se escribe código hasta que lo dé.
+1. **Etapa 3, actividad de las copias locales**: implementar el diseño revisado (ver «Etapa 3:
+   diseño revisado», abajo) en un PR desde `claude/local-activity-design`.
 2. **Abrir una referencia, si la persona lo quiere**, solo como subproducto: un comando Rust
    `open_reference(id)` que lee la referencia de SQLite y abre en el navegador solo URL http(s); la
    ventana nunca pasa una URL y el WebView no gana plugin ni permiso. Una ruta no se abre hasta que
    DevHQ sepa en qué estación corre, y entonces solo se muestra la carpeta en el explorador, nunca se
    abre un archivo: abrir una ruta que escribió un agente podría ejecutar un programa.
 
-## Etapa 3: diseño propuesto
+## Etapa 3: diseño revisado
 
 Responde «¿qué lleva meses sin actividad?» y «¿qué trabajo existe solo en una máquina?», y prepara
 «¿qué tiene cambios sin desplegar?»: guarda el commit de HEAD, que la etapa de despliegues comparará
 con el desplegado. Es la primera fuente que DevHQ lee en una máquina concreta y la primera cuyo
-objetivo puede haber escrito un agente, así que empieza por un principio.
+objetivo puede haber escrito un agente, así que empieza por un principio. Se propuso el 11 oct y se
+revisó ese mismo día con seis cuestiones de la persona (ver «Qué cambió en la revisión», al final).
 
 ### El principio: observar no da poder a lo observado
 
@@ -100,7 +103,8 @@ ejecuta ningún programa que la fuente nombre (hooks, filtros, programas de firm
 helpers de remotos) y no escribe en ella. La ruta de una `local_copy` y el repositorio que contiene
 son datos no confiables, los haya declarado la persona o un agente. La garantía no puede depender de
 una lista de cosas prohibidas que cada versión de Git alarga: viene de leer con algo que no sabe
-ejecutar programas y, además, desde un proceso al que el sistema operativo no deja crearlos.
+ejecutar programas, de una batería de repositorios hostiles que lo exige en Linux y en Windows y,
+donde el sistema lo permite, de un proceso lector al que el sistema no deja arrancar programas.
 
 ### Lo comprobado
 
@@ -140,41 +144,71 @@ cada archivo antes y después, y contó las marcas:
   puede crear procesos (Windows responde 1816, cuota insuficiente). gix encerrado dejó cero marcas;
   libgit2 encerrado leyó lo mismo que antes.
 
+### Qué garantiza el lector, y qué no
+
+Son tres garantías distintas, y cada una descansa en algo distinto:
+
+| Garantía                            | En qué descansa                                                                                                                                                                                                                                                                                                  | Windows                                                                                                                             | Linux                                                                                                                                                                                                        |
+| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Leer no arranca ningún programa     | libgit2 con solo sus APIs de lectura, que no tienen ningún camino que lance un proceso (y `git2` sin `https` ni `ssh`, así que tampoco transportes de red), y la batería hostil, que lo exige en cada cambio de lector o de versión. Además, el sistema impide al proceso lector arrancar programas por sí mismo | Comprobado en la laptop. El lector se mete en un Job Object con `ActiveProcessLimit = 1`: crear un proceso falla (1816), comprobado | Sin comprobar hasta que la batería corra en el CI de Linux. El lector se pone un filtro seccomp que responde `EPERM` a `execve` y `execveat`, también como root y heredado por cualquier hijo; sin comprobar |
+| Leer no escribe nada                | Solo APIs de lectura (`statuses` sin `UPDATE_INDEX`; nunca checkout, fetch ni escritura de refs) y la batería, que compara el contenido y el mtime de cada archivo antes y después y exige que no aparezca ninguno                                                                                               | Comprobado en la laptop; el sistema no lo impide                                                                                    | Sin comprobar; el sistema no lo impide                                                                                                                                                                       |
+| Un fallo del lector no daña a DevHQ | Un proceso propio por copia, con plazo: un cuelgue, un bucle o un fallo de memoria de libgit2 ante datos hostiles matan al hijo y nunca a la ventana ni a la puerta, y lo que devuelve se valida como dato no confiable antes de guardarlo                                                                       | Igual                                                                                                                               | Igual                                                                                                                                                                                                        |
+
+Lo que no se garantiza, y se documenta en el README, en `CLAUDE.md` y en la descripción de la
+herramienta de la puerta:
+
+- **El encierro no contiene un exploit.** Si unos datos hostiles lograran ejecutar código dentro del
+  lector, ese código tendría los permisos de la persona: podría leer y escribir lo que ella puede,
+  conectarse a la red y pedirle a otro proceso que arranque un programa (WMI o el Programador de
+  tareas en Windows; systemd o D-Bus en Linux), algo que ni el Job Object ni seccomp impiden. Lo que
+  sí garantizan es que el lector, libgit2 incluido, no puede lanzar un programa por sí mismo. El
+  riesgo se reduce manteniendo `git2` al día y llamando solo a las APIs que la batería cubre.
+- **Nada del sistema impide que el lector escriba.** Lo garantizan libgit2 y la batería. Landlock
+  (Linux 5.13 o posterior) o un token de integridad baja (Windows) podrían impedirlo; no se han
+  probado y quedan para cuando una fuente nueva lo pida.
+- **En otros sistemas** (macOS u otros Unix, que hoy no se distribuyen) el lector no sabe encerrarse,
+  así que no lee y lo dice.
+- **`RLIMIT_NPROC = 0` se descarta en Linux**: impide `fork`, pero no `execve`, que reemplaza al
+  propio proceso por otro programa, y no se aplica a root.
+
 ### Cómo se lee
 
-- **Biblioteca**: libgit2, por `git2` sin funciones de red (`default-features = false`,
+- **Biblioteca**: libgit2 por `git2` sin funciones de red (`default-features = false`,
   `vendored-libgit2`), y solo sus APIs de lectura: abrir sin buscar hacia arriba (`NO_SEARCH`: la
-  ruta declarada es la carpeta de la copia; varias aplicaciones de un monorepo declaran la misma),
-  refs, commits, reflogs, config, atributos y `statuses` sin `UPDATE_INDEX` y sin submódulos. Nunca
-  fetch, checkout ni nada que escriba.
-- **Un proceso lector propio**: `devhq --read-copy`, el mismo ejecutable que la puerta, sin ventana.
-  Antes de leer nada se encierra: en Windows, un Job Object con `ActiveProcessLimit = 1` y
-  `KILL_ON_JOB_CLOSE`; en Linux, `RLIMIT_NPROC = 0`, que a un usuario sin privilegios le impide
-  `fork` y también hilos (hay que verificarlo en el CI), o un filtro seccomp que niegue `execve` si el
-  lector necesitara hilos. Si no puede encerrarse, no lee. Lo lanzan la ventana, desde un comando
-  asíncrono, o la puerta: sin shell y con un entorno mínimo (lo que libgit2 necesita para encontrar
-  la config del usuario y la del sistema, sin variables `GIT_*`); recibe las rutas por stdin y
-  devuelve una lectura por línea en stdout. Así un fallo de memoria o un bucle de libgit2 ante datos
-  hostiles mata a un hijo y no a la ventana, el plazo se cumple matándolo (libgit2 no se puede
-  interrumpir) y lo que devuelve se valida como dato no confiable antes de guardarlo. La ventana no
-  puede encerrarse así: WebView2 necesita sus propios procesos.
-- **Plazo**: primero las refs, con un plazo corto, y después el working tree, con uno mayor (unos
-  20 s). Si el working tree no termina, la lectura se guarda con las refs y el working tree
-  desconocido.
+  ruta declarada es la raíz de la copia, así que ni una subcarpeta ni un `$HOME` que sea un
+  repositorio de dotfiles se toman por ella; varias aplicaciones de un monorepo declaran la misma
+  raíz), refs, commits, reflogs, config, atributos y `statuses` sin `UPDATE_INDEX` y sin submódulos.
+  La comprobación de propietario de libgit2 (la de `safe.directory`) se queda activa: una copia que
+  el propio `git` rechazaría sale `unreadable`, con su motivo.
+- **Un proceso por copia**: `devhq --read-copy`, el mismo ejecutable que la ventana y la puerta, sin
+  ventana, que vive lo que dura una lectura. Antes de leer nada se encierra (Job Object en Windows,
+  seccomp en Linux); si no puede, no lee y responde por qué. Recibe la ruta por stdin y escribe dos
+  líneas JSON: primero las refs y después el working tree, de modo que si el working tree no
+  termina, lo demás ya llegó.
+- **Quién lo lanza**: la ventana, desde un comando asíncrono que espera en un hilo aparte, o la
+  puerta. Sin shell; con el entorno de quien lo lanza menos toda variable `GIT_*` (libgit2 necesita
+  `PATH` y el registro para encontrar la config de Git for Windows, que pone `core.autocrlf=true`); y,
+  en Windows, sin consola (`CREATE_NO_WINDOW`: en las compilaciones de desarrollo se abriría una).
+- **Plazo**: 30 s por copia, que se cumplen matando al hijo, porque libgit2 no se puede interrumpir.
+  Si las refs llegaron, la lectura se guarda con el working tree desconocido y el motivo; si no, es
+  un fallo de DevHQ y no se guarda nada.
+- **Lo que vuelve** se valida antes de guardarlo: tamaño de cada línea, tipos, límites de cada
+  número, un `head` de 40 dígitos hexadecimales, textos de longitud acotada y sin caracteres de
+  control. Lo que no cumple es un fallo de DevHQ.
+- **Una copia tras otra**: Read all las lee en serie. Arrancar un proceso cuesta milisegundos, y así
+  no hay paralelismo que gestionar ni un plazo vencido que obligue a relanzar un lector compartido.
 - **Alternativas descartadas**:
   - El `git` instalado: ejecuta lo que nombra el repositorio y escribe el índice; endurecerlo es una
     lista que nunca se cierra, y depende de que haya `git` y de cuál.
-  - gix tal cual: lanza `git` y ejecuta drivers.
-  - gix aislado: ejecuta drivers y pierde la config del sistema, con resultados falsos en Windows.
-  - gix solo para refs: seguro y en Rust, pero sin working tree, que es la mitad del trabajo que solo
-    existe en una copia. Queda como opción si la persona prefiere no tener una biblioteca en C.
-  - gix con un pipeline propio sin drivers: posible con su plumbing, pero es más código sobre una
-    API 0.x que cambia a menudo, y en Windows la config del sistema sigue exigiendo lanzar `git` o
-    buscarla a mano.
-  - Leer `.git` a mano: packfiles con deltas, el índice y las reglas de ignorados; sería reimplementar
-    Git.
-  - libgit2 dentro del proceso de la ventana: más simple, pero sin encierro posible, sin un plazo real
-    y con un fallo de C que cerraría DevHQ.
+  - gix: tal cual lanza `git` y ejecuta drivers; aislado sigue ejecutándolos en `status` y pierde la
+    config del sistema, con resultados falsos en Windows; solo para refs es seguro y está en Rust,
+    pero sin working tree, que es la mitad del valor; con un pipeline propio sin drivers, sería más
+    código sobre una API 0.x que cambia a menudo.
+  - Leer `.git` a mano: packfiles con deltas, el índice y las reglas de ignorados; sería
+    reimplementar Git.
+  - libgit2 dentro de la ventana: más simple, pero un cuelgue la dejaría esperando para siempre, un
+    fallo de C la cerraría, no habría plazo real y no se puede encerrar (WebView2 necesita sus
+    propios procesos).
 
 ### Qué se lee: una lectura neutral
 
@@ -182,22 +216,33 @@ El lector produce una **lectura** (`CopyReading` en Rust) en conceptos, no en la
 La tecnología queda aparte, en `reader` («libgit2 1.9.7»), para saber qué lecturas hizo un lector si
 un día resulta tener un fallo. Cada campo responde a una pregunta:
 
-| Campo                                       | Qué es                                                                                                                                                                                                                                                                                                        | Para qué                                                                                                                |
-| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `outcome`, `detail`                         | `read`; `missing` (nada en esa ruta); `not_a_copy` (hay algo, pero no una copia de trabajo: una carpeta sin repositorio, un repositorio bare, un archivo); `unreadable` (el sistema niega el acceso, o el repositorio es de otro usuario y libgit2 no confía en él). `detail`, en palabras del sistema        | Una copia declarada que no está es inventario que envejece                                                              |
-| `branch`, `head`                            | La rama actual (nula si HEAD está suelto) y el commit de HEAD (nulo si aún no hay commits)                                                                                                                                                                                                                    | Contexto para un agente; después, los cambios sin desplegar                                                             |
-| `lastCommitAt`                              | La fecha del commit más nuevo entre HEAD y las ramas locales, según el propio commit                                                                                                                                                                                                                          | La falta de actividad                                                                                                   |
-| `unpublishedOnHead`, `unpublishedElsewhere` | Commits alcanzables desde HEAD, y desde las demás ramas locales, que ninguna rama remota de la copia contiene; hasta 1000 («1000+»)                                                                                                                                                                           | Trabajo que solo existe aquí. Separados porque las ramas viejas de un PR fusionado con squash cuentan como sin publicar |
-| `syncedAt`                                  | La última vez que la copia habló con un remoto según sus archivos: lo más nuevo entre el mtime de `FETCH_HEAD` y los reflogs de las ramas remotas                                                                                                                                                             | «Sin publicar» se compara con lo que la copia sabía entonces: DevHQ no hace fetch                                       |
-| `remotes`                                   | Nombre y URL de cada remoto (hasta 20), sin contraseña ni usuario http(s)                                                                                                                                                                                                                                     | La divergencia con el repositorio declarado                                                                             |
-| `operation`                                 | `merge`, `rebase`, `cherry_pick`, `revert`, `bisect` o `apply_mailbox` en curso                                                                                                                                                                                                                               | Algo que se quedó a medias                                                                                              |
-| `changed`, `untracked`, `unverifiable`      | Archivos seguidos con cambios (en el índice o en el working tree, conflictos incluidos); entradas nuevas no ignoradas (una carpeta nueva cuenta una vez, como en `git status`); archivos con el mtime cambiado bajo un driver de filtro que la config define y DevHQ no ejecuta. O desconocido, con el motivo | Trabajo sin confirmar; lo no verificable no se cuenta como cambio ni como limpio                                        |
+| Campo                                       | Qué es                                                                                                                                                                                                                                                                                                              | Para qué                                                                                                                |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `outcome`, `detail`                         | `read`; `missing` (nada en esa ruta); `not_a_copy` (hay algo, pero no la raíz de una copia de trabajo: una carpeta sin repositorio o dentro de uno, un repositorio bare, un archivo); `unreadable` (el sistema niega el acceso, o libgit2 no confía en el propietario). `detail`, el motivo en palabras del sistema | Una copia declarada que no está es inventario que envejece                                                              |
+| `branch`, `head`                            | La rama actual (nula si HEAD está suelto) y el commit de HEAD (nulo si aún no hay commits)                                                                                                                                                                                                                          | Contexto para un agente; después, los cambios sin desplegar                                                             |
+| `lastCommitAt`                              | La fecha de commit más nueva entre HEAD y las ramas locales, según el propio commit                                                                                                                                                                                                                                 | La falta de actividad                                                                                                   |
+| `unpublishedOnHead`, `unpublishedElsewhere` | Commits alcanzables desde HEAD, y desde las demás ramas locales, que ninguna rama remota de la copia contiene; hasta 1000 («1000+»)                                                                                                                                                                                 | Trabajo que solo existe aquí. Separados porque las ramas viejas de un PR fusionado con squash cuentan como sin publicar |
+| `stashes`                                   | Cuántos stashes guarda                                                                                                                                                                                                                                                                                              | También es trabajo que solo existe aquí, y el más fácil de olvidar                                                      |
+| `syncedAt`                                  | La última vez que la copia habló con un remoto según sus archivos: lo más nuevo entre el mtime de `FETCH_HEAD` y los reflogs de las ramas remotas                                                                                                                                                                   | «Sin publicar» se compara con lo que la copia sabía entonces: DevHQ no hace fetch                                       |
+| `remotes`                                   | Nombre y URL de cada remoto, hasta 20, limpia (ver abajo)                                                                                                                                                                                                                                                           | Comprobar que la copia es del repositorio declarado                                                                     |
+| `operation`                                 | `merge`, `rebase`, `cherry_pick`, `revert`, `bisect` o `apply_mailbox` en curso                                                                                                                                                                                                                                     | Algo que se quedó a medias                                                                                              |
+| `changed`, `untracked`, `unverifiable`      | Archivos seguidos con cambios (en el índice o en el working tree, conflictos incluidos); entradas nuevas no ignoradas (una carpeta nueva cuenta una vez, como en `git status`); archivos que parecen cambiados bajo un driver de filtro que DevHQ no ejecuta. O desconocido, con el motivo                          | Trabajo sin confirmar; lo no verificable no se cuenta como cambio ni como limpio                                        |
 
-**Fuera, por ruido o por ser datos personales**: autor, correo y mensajes de commit; nombres de
-archivo; listas de ramas, tags y stashes; el estado de los submódulos (cada uno es su propia copia,
-si se declara); archivos ignorados, tamaños y estadísticas de diff; «behind», que dice más de cuándo
-fue el último fetch que del proyecto; la rama por defecto; objetos LFS; hooks y config. Una columna
-se añade después si una pregunta concreta la pide.
+- **Remotos sin secretos**: libgit2 devuelve la URL tal cual, con credenciales
+  (`https://user:token@…`). Solo se guardan formas conocidas, limpias: http(s) sin usuario,
+  contraseña, query ni fragmento; `ssh://` sin contraseña; `usuario@host:ruta`; `git://`, `file://`
+  y rutas absolutas. Cualquier otra (`ext::`, que es una línea de comandos, o lo que no se reconozca)
+  se guarda solo con su nombre, y la ventana dice que DevHQ no muestra su URL.
+- **Fuera, por ruido o por ser datos personales**: autor, correo y mensajes de commit; nombres de
+  archivo; listas de ramas, tags y stashes; el estado de los submódulos (cada uno es su propia copia,
+  si se declara); archivos ignorados, tamaños y estadísticas de diff; «behind», que dice más de
+  cuándo fue el último fetch que del proyecto; la rama por defecto; objetos LFS; hooks y config. Una
+  columna se añade después si una pregunta concreta la pide.
+- **Siempre en pasado**: cada hecho se muestra con el momento y la máquina de su lectura, y en pasado
+  («read 3 days ago on Laptop: 2 changed files, 1 commit on no remote»). No hay vigencia que haga
+  caducar una lectura, porque nunca afirmó seguir siendo cierta, y por eso mismo nada la presenta como
+  actual: la ventana y la puerta nunca dicen «has» ni «now» de una copia, sino lo que tenía cuando se
+  leyó.
 
 ### Cómo se guarda: evidencia propia, no salud
 
@@ -207,133 +252,161 @@ se añade después si una pregunta concreta la pide.
   inmutable y lleva las columnas de toda evidencia: el sujeto (`application_id`/`resource_id`, con un
   CHECK de exactamente uno y `RESTRICT`), `source = 'read'` («Automated · Local read»), `reader`,
   `observed_at`, `recorded_at` y `outcome`, más los hechos de arriba, con CHECK que solo admiten
-  hechos con `read` y exigen el working tree o el motivo de no tenerlo.
+  hechos con `read` y exigen el working tree o el motivo de no tenerlo. Y `agent`: el agente que la
+  pidió por la puerta, o nulo si la pidió la persona (ver «La puerta: leer no es configurar»).
 - **Qué copia y dónde**: `reference_id`, `machine_id` y `path` se copian, sin claves foráneas, como la
   URL en una observación HTTP. `references::replace` borra y reinserta en cada guardado: una clave
   foránea con `RESTRICT` lo rompería y con `CASCADE` borraría evidencia. Así una copia se puede quitar
-  o mover sin tocar su historia, y una máquina se puede borrar cuando ya no guarda rutas. Si la última
-  lectura se hizo en otra ruta o en otra máquina de las que declara hoy la referencia, la ventana lo
-  dice, como el aviso de URL cambiada de la comprobación HTTP.
-- **Es historia**: `history_of` la cuenta, así que un sistema con lecturas ya no se puede borrar,
-  solo archivar.
-- **Sin vigencia**: una lectura no afirma nada del presente, vale para su instante, y su antigüedad
-  siempre se ve («read 3 days ago on Laptop»); todo lo derivado dice de qué lectura sale. Una vigencia
-  fija haría «caducar» algo que nunca dijo seguir siendo cierto.
+  o mover sin tocar su historia, y una máquina se puede borrar cuando ya no guarda rutas; sus
+  lecturas conservan su ID y dicen «a machine no longer in the inventory». Si la última lectura se
+  hizo en otra ruta o en otra máquina de las que declara hoy la referencia, la ventana lo dice, como
+  el aviso de URL cambiada de la comprobación HTTP. Si la referencia desaparece o cambia mientras se
+  lee, no se guarda nada, como una comprobación quitada en vuelo.
+- **Es historia**: `history_of` la cuenta, así que un sistema con lecturas ya no se puede borrar.
+- **Retirar lo que ya no se usa**: una aplicación pasa a Archived, como hoy; las copias de las
+  aplicaciones archivadas salen de Read all, del panel Local copies y de las nunca leídas, y conservan
+  sus lecturas. Quitar la referencia de una copia cuya carpeta ya no existe tampoco toca sus
+  lecturas. Los recursos no tienen lifecycle: el que declare una copia la retira quitando la
+  referencia.
 - **Carga**: `list_inventory` lleva solo la última lectura de cada `local_copy` actual, por un índice
-  `(reference_id, observed_at)`; las demás se paginan por sistema, de 200 en 200, por índices
+  `(reference_id, observed_at)`; las anteriores de cada sistema se paginan de 200 en 200, por índices
   `(application_id, observed_at)` y `(resource_id, observed_at)`, con pruebas de plan de consulta. Las
-  lecturas no escriben eventos ni salen en Activity: leer no es algo que le pase al sistema. Quién la
-  pidió no se guarda, como en una ejecución de comprobación, y como nada sale del equipo ni cambia la
-  configuración tampoco deja entrada en el registro de cambios.
+  lecturas no escriben eventos ni salen en Activity: leer no es algo que le pase al sistema.
 
 ### En qué estación de trabajo corre DevHQ
 
-- **Dos cosas separadas**: el recurso `workstation` es inventario compartido; «esta instalación corre
-  en ese recurso» es una asociación local, fuera de `inventory.sqlite3`, en `this-workstation.json`,
-  en la carpeta local de DevHQ (`app_local_data_dir`: `%LOCALAPPDATA%\com.devhq.desktop` en Windows,
-  que no viaja con un perfil móvil; la puerta la resuelve con `dirs::data_local_dir()`, y un test ata
-  las dos, como hoy la del inventario). Back up now no la copia.
-- **Guarda** los ID de los recursos que son esta máquina (uno por inventario), cuándo se eligieron, el
-  nombre del equipo (solo para mostrarlo) y una **huella de la máquina**: un HMAC-SHA256 con una clave
-  fija de DevHQ sobre el identificador que da el sistema (`MachineGuid` en Windows, `/etc/machine-id`
-  en Linux); el identificador en bruto nunca se guarda ni se muestra. Si el archivo llega a otro
-  equipo (copiar el home entero es habitual en Linux, donde está junto al inventario), su huella no
-  coincide y DevHQ no se cree esa máquina; sin la huella, grabaría como evidencia de la copia de Laptop
-  lo que leyó en otro equipo.
-- **Vale** solo si la huella coincide, el recurso existe en el inventario abierto y es `workstation`;
-  si no, la estación es desconocida y se dice por qué (sin elegir, archivo de otro equipo, recurso
-  borrado o que ya no es estación, sistema sin identificador). Sin estación conocida no se lee
-  ninguna copia.
-- **Solo la ventana la cambia** (Settings › This computer: elegir una estación o crear una con el
-  nombre del equipo); la puerta solo la lee, como el modo de acceso. No es inventario, así que no va
-  al registro de cambios; cada lectura guarda en qué máquina se hizo.
+- **Fuera del inventario compartido**: el recurso `workstation` es inventario; «esta instalación
+  corre en ese recurso» es una asociación local, en `this-workstation.json`, dentro de la carpeta
+  local de DevHQ (`app_local_data_dir`: `%LOCALAPPDATA%\com.devhq.desktop` en Windows, que no viaja
+  con un perfil móvil; la puerta la resuelve con `dirs::data_local_dir()`, y un test ata las dos,
+  como hoy la del inventario). Back up now no la copia.
+- **La huella de la máquina sí hace falta**: en Linux esa carpeta es la misma que la del inventario
+  (`~/.local/share/com.devhq.desktop`), y copiar el home entero a otro equipo, o compartirlo entre
+  dos, es habitual; en Windows, las herramientas de migración también copian `%LOCALAPPDATA%`. Sin
+  huella, otro equipo con el archivo se creería Laptop y grabaría como lecturas de las copias de
+  Laptop las de sus propias rutas, que a menudo se llaman igual: lo desconocido presentado como
+  sabido.
+- **Más simple que lo propuesto**: el archivo guarda, **por huella**, el recurso elegido en cada
+  inventario y cuándo. La huella es un SHA-256 de una etiqueta de DevHQ y del identificador del
+  sistema (`MachineGuid` en Windows, `/etc/machine-id` en Linux); el identificador en bruto nunca se
+  guarda ni se muestra, y `sha2` ya está en el árbol de dependencias (lo trae wry). Sin clave de HMAC
+  y sin el nombre del equipo. En otro equipo no hay entrada para su huella, así que simplemente aún no
+  ha elegido; y dos equipos que comparten home conviven en el mismo archivo.
+- **Vale** solo si el recurso elegido en este equipo existe en el inventario abierto y es
+  `workstation`; si no, la estación es desconocida y se dice por qué: sin elegir, el elegido ya no
+  está en este inventario, ya no es estación de trabajo, el sistema no da identificador o el archivo
+  no se puede leer. Sin estación conocida no se lee ninguna copia.
+- **Solo la ventana la cambia**, en Settings › This computer, eligiendo una estación de trabajo que ya
+  exista (crearla sigue siendo cosa de Infrastructure); la puerta solo la lee, como el modo de
+  acceso. No es inventario, así que no va al registro de cambios; cada lectura guarda en qué máquina
+  se hizo.
 - **MSIX**: una puerta lanzada desde una app empaquetada ve el archivo real si el paquete no tiene
   otro; una ventana empaquetada escribiría en la copia del paquete. `status` y Settings dicen dónde
   está de verdad (`storedAt`).
-- **Alternativas**: la huella como columna del recurso (más simple, con rastro en el registro de
-  cambios, y una huella copiada no coincide en otro equipo; pero mete en el inventario compartido una
-  identidad que pertenece a una máquina, justo lo que la persona no quiere); la asociación local sin
-  huella (un home copiado haría que otro equipo se creyera este); el nombre del equipo (se repite y
-  cambia); preguntarlo en cada sesión (la puerta no puede preguntar); deducirlo de qué rutas existen
-  (es escanear, y la misma ruta puede existir en dos equipos).
+- **Alternativas**: la huella como columna del recurso (rastro en el registro de cambios, pero mete
+  en el inventario compartido una identidad que pertenece a una máquina, justo lo que la persona no
+  quiere); la asociación sin huella (un home copiado haría que otro equipo se creyera este); el nombre
+  del equipo (se repite y cambia); preguntarlo en cada sesión (la puerta no puede preguntar);
+  deducirlo de qué rutas existen (es escanear, y la misma ruta puede existir en dos equipos).
 
 ### Cuándo se lee y quién lo pide
 
 - **Solo a petición**: Read en una copia de esta estación, Read all on this computer y la herramienta
-  de la puerta. Nunca al abrir, nunca con un temporizador, nunca con la ventana cerrada. Leer escribe
-  evidencia, así que la puerta exige Read and write.
+  de la puerta. Nunca al abrir, nunca con un temporizador, nunca con la ventana cerrada.
 - Solo se leen copias de esta estación. Para las de otra máquina, la ventana muestra su última
   lectura y dice que se leen desde el DevHQ de esa máquina.
+- **Sin alertas**: al principio, una lectura no produce atención ni salud; solo se muestra.
 
 ### Lo derivado: qué vale y qué sería ruido
 
-Se calcula en Rust en cada lectura del inventario, como `sharedRepositories`, para la ventana y la
-puerta, y no se guarda. Nada entra en la lista ordenada de «¿Qué necesita mi atención?», que sigue
-siendo de salud, así que `contract/attention/` no cambia.
+Se calcula en Rust en cada lectura del inventario, para la ventana y la puerta, y no se guarda. Nada
+entra en la lista ordenada de «¿Qué necesita mi atención?», que sigue siendo de salud, así que
+`contract/attention/` no cambia.
 
-- **Último commit de cada sistema**: el más nuevo entre las últimas lecturas de sus copias, con su
-  base («Laptop, read today; Desktop never read»). Es una cota inferior: nunca dice «inactivo» si una
-  copia no se ha leído. Applications lo muestra y ordena por él, sin un umbral de meses que mantener;
-  lo que no tiene lecturas va aparte.
-- **Trabajo que solo existe en una copia**: commits sin publicar, cambios, entradas nuevas o archivos
-  no verificables, o una operación a medias, cada cosa con su número y la fecha de su lectura. Va en
-  un panel **Local work** de Overview, como Supervision, junto con las copias declaradas que no se
-  encontraron y cuántas copias de esta estación nunca se leyeron, para que un panel vacío no
-  tranquilice de más.
-- **Divergencia con lo declarado**: la copia no está donde dice la referencia; su remoto no parece el
-  repositorio declarado; o el sistema no declara repositorio y la copia tiene remoto (la ventana puede
-  proponer declararlo cuando el remoto es una URL web, y la persona acepta). La comparación normaliza:
-  el host en minúsculas sin usuario ni puerto, y la ruta sin `/` al principio ni al final, sin `.git`
-  y en minúsculas, para `https://…`, `ssh://…`, `git://…` y `usuario@host:ruta`; una ruta local o un
-  `ext::` no se comparan. Los hosts cuyo SSH y web difieren (Azure DevOps) salen como distintos, así
-  que la ventana dice «no parece», y nunca es atención.
+- **Última actividad de cada sistema**: el commit más nuevo entre las últimas lecturas de sus copias,
+  con su base («Laptop, read today; Desktop never read»). Es una cota inferior: nunca dice
+  «inactivo» si una copia no se ha leído. Applications la muestra en cada aplicación, sin un umbral
+  de meses que mantener; lo que no tiene lecturas lo dice.
+- **Trabajo que solo existe en una copia**: commits sin publicar, stashes, cambios, entradas nuevas o
+  archivos no verificables, o una operación a medias, cada cosa con su número y la fecha de su
+  lectura. Va en un panel **Local copies** de Overview, como Supervision, junto con las copias
+  declaradas que no se encontraron y cuántas copias de esta estación nunca se leyeron, para que un
+  panel vacío no tranquilice de más; ahí está Read all.
+- **Divergencia con lo declarado**: la copia no está donde dice la referencia; o ninguno de sus
+  remotos parece el repositorio que declara su sistema; o el sistema no declara repositorio y la
+  copia tiene remotos, y solo se dice (proponer declararlo queda para cuando haga falta). Para
+  comparar un remoto con el repositorio declarado se normalizan los dos: el host en minúsculas sin
+  usuario ni puerto, y la ruta sin `/` al principio ni al final, sin `.git` y en minúsculas, para
+  `https://`, `ssh://`, `git://` y `usuario@host:ruta`; una ruta local y lo que no se guardó no se
+  comparan. Es el caso concreto que la igualdad exacta no resuelve: el remoto real
+  `git@github.com:me/shop.git` y el declarado `https://github.com/me/shop` saldrían siempre
+  distintos. Los hosts cuyo SSH y web difieren (Azure DevOps) salen como distintos, así que la
+  ventana dice «no parece», y nunca es atención.
+- **`sharedRepositories` no cambia**: sigue comparando por igualdad exacta, como fijó la etapa 2. La
+  normalización existe solo para la comparación nueva; nada de la etapa 2 la necesita hoy.
 - **Ruido, fuera**: que dos copias estén en commits distintos, en una rama que no es la por defecto o
   con HEAD suelto; un umbral fijo de «inactivo»; comparar copias entre sí.
 
 ### Ventana y puerta
 
-- **Comandos**: `read_copies(referenceIds | null)`, asíncrono (null son todas las de esta estación),
-  responde lecturas y, por copia, los fallos de DevHQ; `older_readings(subject, before)`;
-  `set_this_workstation(resourceId | null)`; y `list_inventory` gana `thisWorkstation` y, por cada
-  `local_copy`, su última lectura y lo derivado. Cada uno con su fixture en `contract/` y sus
-  lectores en `arguments()`.
+- **Comandos**: `read_copies(referenceIds | null)`, asíncrono (null son todas las de esta estación,
+  salvo las de aplicaciones archivadas), que responde las lecturas guardadas y, por copia, los fallos
+  de DevHQ; `older_readings(subject, before)`, de 200 en 200; `this_workstation` y
+  `set_this_workstation(resourceId | null)`; y `list_inventory` gana `localCopies`: cada copia local
+  declarada con su última lectura y lo derivado. Cada uno con su fixture en `contract/` y sus lectores
+  en `arguments()`.
 - **Ventana**: Settings › This computer; en el Overview de cada aplicación y en la tarjeta de cada
-  recurso, cada copia con su última lectura, su máquina y Read si es de esta; la estación marcada
-  «This computer» en Infrastructure, con Read all; el panel Local work; el último commit en
+  recurso, cada copia con su última lectura, su máquina, sus lecturas anteriores bajo demanda y Read
+  si es de esta; el panel Local copies de Overview, con Read all; la última actividad en
   Applications. La preview muestra lecturas de ejemplo y rechaza leer, como toda escritura.
 - **Puerta**: `status` dice qué estación es esta, o por qué no se sabe; `list_systems` y `get_system`
   dan, por copia, `onThisWorkstation`, su última lectura y lo derivado; `attention` añade, sin
-  ordenarlos, `localWork` y `copiesNeverRead`, como ya hace con `notSupervised`; `history` admite
-  `records: "readings"`; y una herramienta nueva, `read_copies` (un sistema, una referencia, o todas
-  las de esta estación), con Read and write y sin `openWorldHint`, porque nada sale del equipo.
+  ordenarlos y diciendo que no son salud, `localWork` y `copiesNeverRead`, como ya hace con
+  `notSupervised`; `history` admite `records: "readings"`; y una herramienta nueva, `read_copies` (un
+  sistema, una referencia, o todas las de esta estación).
+
+### La puerta: leer no es configurar
+
+- **Bastan los tres modos de hoy.** Ver lecturas es leer el inventario: Read only. Pedir una lectura
+  guarda evidencia, como `record_observation`, así que exige Read and write; con Read only un agente
+  nunca provoca una lectura. No hace falta un modo nuevo ni permisos por agente.
+- **No es un cambio de configuración**: `read_copies` no toca aplicaciones, recursos, referencias ni
+  comprobaciones, así que no deja entrada en el registro de cambios. La propia lectura guarda qué
+  agente la pidió, y la ventana y la puerta lo muestran: que un agente hiciera leer a DevHQ tu disco
+  lleva su nombre, como lo lleva una comprobación que un agente hizo salir de tu computadora. Se
+  declara sin `readOnlyHint` (escribe evidencia), sin `destructiveHint` (no cambia nada que ya
+  exista) y sin `openWorldHint` (nada sale del equipo).
+- **Lo que la hace posible sí deja rastro**: declarar o mover una copia local es editar las
+  referencias de un sistema, con su entrada en el registro de cambios. Elegir esta estación no es
+  inventario y solo puede hacerlo la ventana.
+- **Limitaciones que se documentan**: con Read and write, un agente puede declarar cualquier ruta
+  absoluta de esta estación como copia local y hacer que DevHQ la lea; DevHQ solo dirá si ahí hay una
+  copia y los hechos de la tabla (nunca nombres de archivo, contenidos, autores ni mensajes), que un
+  agente con terminal ya ve. Los modos son de intención, no una barrera de seguridad. Una puerta
+  lanzada desde una app empaquetada (MSIX) puede ver otro inventario y otro `this-workstation.json`, y
+  `status` lo dice.
 
 ### Reglas que cambian
 
 Texto propuesto; se escribe con la implementación, en el mismo commit.
 
-- **`CLAUDE.md`**, en «Product rules», en lugar de «DevHQ observes; it does not operate systems, run
-  in the background or hold credentials.»: «DevHQ observes; it does not operate systems, run in the
-  background or hold credentials. It reads only what the inventory names and never searches a disk
-  or a network for things to add. Observing never gives the source a way to run code or change
-  anything: reading never runs a program the source names (hooks, filters, signing, monitor or
-  remote helper programs) and never writes to it, so every declared path, and what it holds, is
-  untrusted data.» Y una sección «Local copies»: el lector corre en `devhq --read-copy`, al que el
-  sistema no deja crear procesos, y un lector o una biblioteca nuevos pasan antes la batería hostil.
-- **README, «Arquitectura»**, en lugar de «No se implementan autenticación, cuentas, cloud, sync,
-  telemetría, scanners, automation engine, Runner ni background service.»: «No se implementan
-  autenticación, cuentas, cloud, sync, telemetría, automation engine, Runner ni background service.
-  DevHQ no busca qué observar: nunca recorre discos, carpetas ni redes en busca de repositorios o
-  servicios. Lee solo lo que el inventario nombra (la URL de una comprobación, la ruta de una copia
-  local de esta estación de trabajo) cuando se le pide, o mientras la ventana está abierta si es una
-  comprobación supervisada. Leer nunca ejecuta un programa que nombre lo leído ni escribe en ello: la
-  ruta y lo que contiene se tratan como datos no confiables, aunque los haya declarado la persona.»
-  La entradilla dice que también conserva lo que lee, cuando se lo pides, de las copias locales de
-  esta estación, y una sección nueva, «Actividad de las copias locales», describe todo lo de arriba.
-- **`docs/vision.md`**: un principio 16 en «Qué se garantiza», «Observar no da poder a lo
-  observado»; en «Tensiones», la fila «Descubrir repositorios o servicios» pasa a «DevHQ no busca qué
-  observar; lee solo lo que el inventario nombra» → «Que lo lances tú, sobre un lugar que eliges, de
-  solo lectura y sin ejecutar nada de lo que encuentre, y que proponga altas que aceptas»; la línea de
-  evolución 5, hecha; y en «Cómo crecer sin romperlo», el patrón de abajo.
+- **`CLAUDE.md`**, en «Product rules», detrás de «DevHQ observes; it does not operate systems, run in
+  the background or hold credentials.»: «It reads only what the inventory names, when asked, and never
+  searches a disk or a network for things to add. Observing never gives the source a way to run code
+  or change anything: a reader never runs a program the source names and never writes to it, and every
+  declared path, and what it holds, is untrusted data.» Y una sección «Local copies»: el lector corre
+  en `devhq --read-copy`, un proceso por copia que se encierra antes de leer; un lector o una
+  biblioteca nuevos, y cada versión nueva de libgit2, pasan antes la batería hostil en Linux y en
+  Windows; y lo que no se garantiza (escrituras, un exploit).
+- **README**: la entradilla y «Qué incluye»; una sección «Copias locales» con todo lo de arriba,
+  incluido lo que no se garantiza; en «Arquitectura», «scanners» pasa a «DevHQ no busca qué observar:
+  nunca recorre discos, carpetas ni redes en busca de repositorios o servicios, y lee solo lo que el
+  inventario nombra»; y «Evolución prevista» gana el paso hecho.
+- **`docs/vision.md`**: un principio 16 en «Qué se garantiza», «Observar no da poder a lo observado»;
+  en «Tensiones», la fila «Descubrir repositorios o servicios» pasa a «DevHQ no busca qué observar; lee
+  solo lo que el inventario nombra» → «Que lo lances tú, sobre un lugar que eliges, de solo lectura y
+  sin ejecutar nada de lo que encuentre, y que proponga altas que aceptas»; la línea de evolución 5,
+  hecha; y en «Cómo crecer sin romperlo», el patrón de abajo.
 
 ### El patrón para las fuentes siguientes
 
@@ -348,8 +421,9 @@ de integraciones hasta que una segunda fuente lo pida:
    hechos que no son salud, tiene su tabla de evidencia con las columnas comunes y copia su objetivo
    en vez de apuntarlo con una clave foránea.
 4. Un fallo del objetivo es evidencia; uno de DevHQ es un error que no se guarda.
-5. Leer no ejecuta nada de la fuente ni escribe en ella, y si hay credenciales, ninguna pasa por la
-   fuente que se lee.
+5. Leer no ejecuta nada de la fuente ni escribe en ella; el lector corre en un proceso propio, con
+   plazo y, donde el sistema lo permite, sin poder arrancar programas; lo que no se garantiza se
+   documenta; y si hay credenciales, ninguna pasa por la fuente que se lee.
 6. Lo derivado se calcula al leer, en Rust, para la ventana y la puerta; si entra en la atención, se
    escribe a los dos lados con casos en `contract/attention/`.
 
@@ -357,28 +431,31 @@ de integraciones hasta que una segunda fuente lo pida:
 
 - **libgit2 es C que lee datos hostiles.** En 2024 corrigió un bucle infinito en
   `git_revparse_single` (CVE-2024-24575) y una corrupción de memoria en `git_index_add`
-  (CVE-2024-24577, una escritura que DevHQ no usa). El proceso aparte, encerrado y con plazo, lo
-  contiene, y su salida se valida; queda que un exploit lea lo que el usuario puede leer. `git2` se
-  mantiene al día.
+  (CVE-2024-24577, una escritura que DevHQ no usa). El proceso aparte, con plazo, contiene un
+  cuelgue o un fallo, y su salida se valida; un exploit no queda contenido (ver «Qué garantiza el
+  lector, y qué no»). `git2` se mantiene al día, y cada versión pasa la batería.
 - **libgit2 va detrás de Git**: un formato que no conoce (`extensions.refStorage = reftable`,
-  `objectFormat = sha256`) es un fallo de DevHQ («este formato aún no se puede leer»), no evidencia
-  de la copia.
+  `objectFormat = sha256`, un índice partido con `core.splitIndex`) es un fallo de DevHQ («este
+  formato aún no se puede leer»), no evidencia de la copia; si solo afecta al índice, la lectura se
+  guarda con el working tree desconocido.
 - **La comprobación de propietario** de libgit2, como `safe.directory`, rechazaría copias en FAT,
-  exFAT o recursos de red cuyo propietario no reconoce (sin comprobar todavía): saldrían
-  `unreadable`, con el motivo.
+  exFAT o recursos de red cuyo propietario no reconoce (sin comprobar): saldrían `unreadable`, con
+  el motivo.
 - **Working tree**: sin su driver, un archivo LFS tocado es no verificable; sin fsmonitor ni untracked
   cache, un árbol enorme tarda más, y el plazo lo acota. Leer mientras la persona ejecuta un `git`
   pesado puede fallar una vez; es un fallo de DevHQ y se vuelve a pedir.
 - **Commits sin publicar** en ramas viejas (squash): se ven aparte, pero se ven.
 - **La huella de la máquina**: las VMs clonadas sin sysprep comparten `MachineGuid`; un Linux sin
   `machine-id` no puede elegir estación; reinstalar el sistema obliga a elegirla otra vez.
-- **Las lecturas hacen imborrable su sistema.**
+- **Las lecturas hacen imborrable su sistema**; una aplicación se archiva.
 - **Una dependencia C nueva** (libgit2 y zlib, compiladas con cc como ya se compila SQLite): hay que
   verla compilar en el CI de Linux y de Windows y medir cuánto crece el instalador.
+- **seccomp y la batería en Linux** están sin comprobar hasta su primer CI: si el filtro no se
+  pudiera poner en el runner, el lector no leería allí y la caminata nativa lo mostraría.
 - **Una ruta escrita por un agente** puede apuntar a cualquier carpeta que el usuario pueda leer:
-  DevHQ solo dirá si es una copia y cuáles son sus remotos, que un agente con terminal ya ve.
+  DevHQ solo dirá si es una copia y los hechos de la tabla.
 
-### Pruebas propuestas
+### Pruebas
 
 1. **Batería hostil**, en Rust y la misma para cualquier lector, en Linux y en Windows. Repositorios
    que la propia prueba construye con cada clave de config que nombra un programa (una lista fija,
@@ -390,57 +467,60 @@ de integraciones hasta que una segunda fuente lo pida:
    `core.untrackedCache`, `feature.manyFiles` y `filter.<driver>.required`. Cada programa nombrado es
    el propio ejecutable de la prueba, que con una variable de entorno solo deja una marca (como el
    ayudante de `window_lock`), copiado también en el `PATH` como `git`, `sh`, `gpg`, `ssh` y
-   `git-lfs`. Se exige: ninguna marca; cada archivo de la copia igual en contenido y mtime; ningún
-   archivo nuevo; y la lectura, correcta.
-2. **Encierro**: en modo lector, crear cualquier proceso falla, y si el encierro no se puede poner,
-   no se lee.
+   `git-lfs`. La config hostil se escribe al final, para que el `git` que construye los repositorios
+   no la dispare. Se exige: ninguna marca; cada archivo de la copia igual en contenido y mtime; ningún
+   archivo nuevo; y la lectura, correcta. La batería pasa por el lector real, `devhq --read-copy`
+   encerrado, y no solo por la función que lee.
+2. **Encierro**: en modo lector, arrancar cualquier programa falla en Windows y en Linux, también
+   como root donde el CI lo sea; si el encierro no se puede poner, no se lee.
 3. **Contra `git`**, donde el CI lo tiene: gemelos benignos (ramas, HEAD suelto, sin commits, merge
-   y rebase en curso, sin publicar en HEAD y en otras ramas, carpetas nuevas, el `core.autocrlf` del
-   sistema en Windows leído por el lector encerrado y con su entorno mínimo, un driver real que da no
-   verificable), comparados con `git status --porcelain` y `git rev-list`.
-4. **Resultados**: ruta que no existe, archivo, carpeta vacía, repositorio bare, sin permiso
-   (`chmod 000` en Linux), de otro usuario (`sudo chown` en el CI de Linux) y formato desconocido, que
-   no guarda nada.
-5. **Plazo**: un lector que se bloquea se mata y queda la lectura de refs con el working tree
-   desconocido; una salida del hijo malformada o enorme se rechaza.
+   y rebase en curso, sin publicar en HEAD y en otras ramas, stashes, carpetas nuevas, el
+   `core.autocrlf` del sistema en Windows leído por el lector encerrado, un driver real que da no
+   verificable), comparados con `git status --porcelain`, `git rev-list` y `git stash list`.
+4. **Resultados**: ruta que no existe, archivo, carpeta vacía, subcarpeta de una copia, repositorio
+   bare, sin permiso (`chmod 000` en Linux) y formato desconocido, que no guarda nada.
+5. **Plazo y salida**: un lector que se bloquea se mata y queda la lectura de refs con el working
+   tree desconocido; una salida malformada, incoherente o enorme se rechaza.
 6. **Remotos**: credenciales que se quitan y normalización, con casos (`https://token@…`,
    `ssh://u:p@…`, `git@host:x.git`, Azure DevOps, rutas locales, `ext::`).
 7. **Esquema**: la actualización v11→v12 comparada fila por fila; CHECK que rechazan lecturas
-   incoherentes; `history_of` que impide borrar; editar o quitar la referencia no toca sus lecturas; y
-   los planes de consulta de la última lectura por copia y de la paginación.
-8. **Esta estación**: el archivo de otra máquina se ignora; un recurso borrado o que deja de ser
-   estación de trabajo la deja desconocida; la ventana y la puerta resuelven el mismo archivo; la
-   puerta nunca lo escribe.
+   incoherentes; `history_of` que impide borrar; editar o quitar la referencia no toca sus lecturas;
+   una referencia quitada mientras se lee no guarda nada; y los planes de consulta de la última
+   lectura por copia y de la paginación.
+8. **Esta estación**: otra huella no ve lo elegido; un recurso borrado o que deja de ser estación de
+   trabajo la deja desconocida; la ventana y la puerta resuelven el mismo archivo; la puerta nunca lo
+   escribe.
 9. **Contratos IPC**, la preview y la **caminata nativa** en Linux y en Windows, con la protección
    en tiempo real: elegir esta estación, declarar una copia hostil con un commit sin publicar y un
-   cambio, Read, ver Local work y comprobar que no quedó ninguna marca.
+   cambio, Read, ver Local copies y comprobar que no quedó ninguna marca.
 
 Cada prueba nueva se confirma fallando sin su arreglo: por ejemplo, con el lector cambiado por el
 `git` instalado, la batería hostil tiene que fallar.
 
-### Decisiones de la persona
+### Qué cambió en la revisión
 
-1. El principio «observar no da poder a lo observado», con los textos propuestos para `CLAUDE.md`,
-   el README y la visión.
-2. El lector: libgit2 en un proceso aparte encerrado (propuesto), libgit2 dentro de DevHQ, o gix solo
-   para refs, sin working tree.
-3. El working tree en la v12, solo con números (propuesto), o más adelante.
-4. Los campos de la lectura y lo que queda fuera.
-5. Evidencia propia sin vigencia, con la antigüedad siempre visible (propuesto), o con una vigencia
-   fija.
-6. Que las lecturas impidan borrar su sistema, como el resto de la historia (propuesto).
-7. Esta estación: una asociación local con la huella de la máquina, elegida solo en la ventana
-   (propuesto), o la huella como columna del recurso.
-8. Solo a petición (propuesto), o también al abrir la ventana.
-9. Lo derivado: el último commit en Applications, el panel Local work y las divergencias, sin nada en
-   la lista de atención (propuesto).
-10. Una sola normalización de URL, también para `sharedRepositories` (propuesto), o mantener allí la
-    igualdad exacta de la etapa 2.
-11. `read_copies` en la puerta con Read and write y sin entrada en el registro de cambios
-    (propuesto).
-12. Que el sistema también impida escribir al lector (nivel de integridad bajo en Windows, Landlock
-    en Linux): ahora, o más adelante (propuesto), mientras lo garantizan libgit2 y la prueba que mira
-    cada archivo.
+El 11 oct la persona leyó el diseño, aceptó la dirección general y pidió revisar seis cuestiones:
+
+1. **Seguridad del lector**: se separan las tres garantías, con lo que está comprobado en cada
+   sistema y lo que no (ver la tabla); en Linux, seccomp sobre `execve` en vez de `RLIMIT_NPROC`, que
+   no lo impide; y queda escrito que el encierro no contiene un exploit ni impide escribir.
+2. **Complejidad**: la lectura completa entra ya, porque el working tree es la mitad del valor y la
+   protección es la misma para todo; lo que se simplifica es la maquinaria: un proceso por copia con
+   un solo plazo, sin entorno a medida, sin crear estaciones desde Settings y sin proponer el
+   repositorio.
+3. **Qué se lee**: los mismos campos, más `stashes`; los remotos, solo en formas conocidas y sin
+   credenciales; todo en pasado y con su momento.
+4. **Esta estación**: sigue fuera del inventario; la huella hace falta (en Linux el archivo vive
+   junto al inventario), pero como clave del archivo, un SHA-256 sin clave de HMAC y sin el nombre del
+   equipo.
+5. **Historia y atención**: archivar una aplicación la retira de las lecturas y los paneles sin
+   tocar su historia; ninguna alerta; `sharedRepositories` no cambia y la normalización solo sirve
+   para comparar el remoto real con el repositorio declarado.
+6. **Puerta**: bastan los tres modos; leer exige Read and write, no deja entrada en el registro de
+   cambios y guarda qué agente la pidió; las limitaciones quedan escritas.
+
+No queda ninguna decisión pendiente de la persona: se implementa en un PR desde
+`claude/local-activity-design`, y los textos de las reglas que cambian se revisan en ese PR.
 
 ## Lo que solo se puede hacer en la laptop
 
