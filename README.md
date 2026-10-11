@@ -275,7 +275,11 @@ los submódulos (cada uno es su propia copia, si se declara). La URL de un remot
 plano, ya limpia. Un formato que libgit2 aún no conoce (`extensions.refStorage = reftable`,
 `objectFormat = sha256`) es un fallo de DevHQ, que se muestra y no se guarda; uno que solo afecta al
 índice deja la lectura con el working tree desconocido. Leer mientras un `git` pesado escribe en la
-copia puede fallar una vez: se vuelve a pedir.
+copia puede fallar una vez: se vuelve a pedir. libgit2 toma lo que el sistema no le deja mirar por
+algo que no está, así que una carpeta sin permiso le parece una carpeta sin repositorio; antes de
+decir `not_a_copy`, DevHQ vuelve a mirar lo mismo que miró libgit2 (`.git`, el archivo que nombra otra
+carpeta, `HEAD`, `commondir`, `objects` y `refs`, y la propia carpeta como repositorio bare) y, si el
+sistema le negó alguna de esas miradas, la lectura es `unreadable` con el motivo del sistema.
 
 - **Evidencia sin vigencia.** Cada lectura se guarda en `copy_readings`, inmutable, con `source =
 read` («Automated · Local read»), el lector y su versión (`reader`, «libgit2 1.9.7»), el momento
@@ -948,7 +952,8 @@ confiables, aunque los hayas declarado tú.
    autor, cuándo y cada campo antes y después: la configuración deja rastro igual que la evidencia.
 5. Hecho: las [referencias](#referencias) de cada aplicación y recurso (repositorio, copias locales,
    documentación, logs y panel), que declaras tú o un agente y DevHQ solo copia.
-6. Hecho en Windows, pendiente de su primer CI en Linux: leer, cuando se lo pides, las
+6. Hecho el lector, las lecturas y la puerta, con sus pruebas en Linux (CI) y en Windows; falta la
+   ventana: leer, cuando se lo pides, las
    [copias locales](#copias-locales) de esta estación de trabajo sin ejecutar nada de lo que nombran,
    como evidencia propia: actividad, trabajo que solo existe en una máquina y el commit de HEAD que
    comparará la etapa de despliegues.

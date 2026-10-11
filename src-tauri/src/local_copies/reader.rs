@@ -157,7 +157,20 @@ pub(crate) fn read_refs(path: &Path) -> Result<(Refs, Option<Repository>), Strin
         [] as [&OsStr; 0],
     ) {
         Ok(repository) => repository,
+        // libgit2 takes a path it may not look at for one that is not there, so "no repository"
+        // only stands when DevHQ could look at everything libgit2 looked for.
         Err(error) if error.code() == ErrorCode::NotFound => {
+            if let Some(denied) = denied_while_looking(path) {
+                return Ok((
+                    not_read(
+                        "unreadable",
+                        &format!(
+                            "The system did not let DevHQ look for a repository in this folder: {denied}"
+                        ),
+                    ),
+                    None,
+                ));
+            }
             return Ok((
                     not_read(
                         "not_a_copy",
@@ -190,6 +203,79 @@ pub(crate) fn read_refs(path: &Path) -> Result<(Refs, Option<Repository>), Strin
     let refs = facts(&repository)
         .map_err(|error| format!("libgit2 could not read this copy: {}", libgit2(&error)))?;
     Ok((refs, Some(repository)))
+}
+
+/// Why the system kept DevHQ from seeing whether a repository starts at `path`, if it did.
+///
+/// libgit2 decides there is no repository when `stat` fails on what it looks for, and every
+/// `stat` failure looks the same to it: a folder this user may not search (`chmod 000`, a deny
+/// ACL) holds no repository as far as libgit2 can tell. So this looks again at exactly what
+/// `open_ext` with `NO_SEARCH` looks at (repository.c, `find_repo_traverse` and
+/// `is_valid_repository_path`): `.git`, as a folder or as a file naming one, then the folder
+/// itself as a bare repository; in each, `commondir`, `HEAD`, `objects` and `refs`. The first
+/// failure other than "not there" is the answer. It only reads metadata and two small files.
+fn denied_while_looking(path: &Path) -> Option<std::io::Error> {
+    /// A failure of the system to look, as opposed to nothing being there. A name the system
+    /// rejects (a hostile `gitdir:` line) is nothing there too, as it is for libgit2.
+    fn kept_from_looking(error: &std::io::Error) -> bool {
+        error.raw_os_error().is_some()
+            && !matches!(
+                error.kind(),
+                ErrorKind::NotFound | ErrorKind::NotADirectory | ErrorKind::InvalidFilename
+            )
+    }
+    fn denied(result: std::io::Result<std::fs::Metadata>) -> Option<std::io::Error> {
+        result.err().filter(kept_from_looking)
+    }
+    fn read_link(file: &Path) -> Result<Option<String>, std::io::Error> {
+        match std::fs::read_to_string(file) {
+            Ok(text) => Ok(Some(text)),
+            Err(error) if kept_from_looking(&error) => Err(error),
+            Err(_) => Ok(None),
+        }
+    }
+    /// What `is_valid_repository_path` looks at in `dir`.
+    fn in_repository(dir: &Path) -> Option<std::io::Error> {
+        for name in ["commondir", "HEAD", "objects", "refs"] {
+            if let Some(error) = denied(std::fs::metadata(dir.join(name))) {
+                return Some(error);
+            }
+        }
+        let common = match read_link(&dir.join("commondir")) {
+            Err(error) => return Some(error),
+            Ok(None) => return None,
+            Ok(Some(text)) => dir.join(text.trim_end()),
+        };
+        ["objects", "refs"]
+            .into_iter()
+            .find_map(|name| denied(std::fs::metadata(common.join(name))))
+    }
+
+    let dot_git = path.join(".git");
+    match std::fs::metadata(&dot_git) {
+        Ok(metadata) if metadata.is_dir() => {
+            if let Some(error) = in_repository(&dot_git) {
+                return Some(error);
+            }
+        }
+        // A file named `.git` names the repository folder (`gitdir: …`), as in a linked worktree
+        // or a submodule.
+        Ok(metadata) if metadata.is_file() => match read_link(&dot_git) {
+            Err(error) => return Some(error),
+            Ok(None) => {}
+            Ok(Some(text)) => {
+                if let Some(target) = text.strip_prefix("gitdir:") {
+                    if let Some(error) = in_repository(&path.join(target.trim())) {
+                        return Some(error);
+                    }
+                }
+            }
+        },
+        Ok(_) => {}
+        Err(error) if kept_from_looking(&error) => return Some(error),
+        Err(_) => {}
+    }
+    in_repository(path)
 }
 
 fn when(commit: &Commit) -> i64 {

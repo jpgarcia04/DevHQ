@@ -894,27 +894,101 @@ pub(crate) mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    /// A folder this user may not read is unreadable, with the system's reason. Root reads it
-    /// anyway, so the case only holds for anyone else.
+    /// Keeps this user from looking into `dir` (`chmod 000`) until the guard drops. None when
+    /// nothing would: root looks anyway.
     #[cfg(target_os = "linux")]
-    #[test]
-    fn a_copy_the_system_does_not_let_this_user_read_is_unreadable() {
+    fn forbid(dir: &Path) -> Option<impl Drop> {
         use std::os::unix::fs::PermissionsExt;
+        struct Allow(PathBuf);
+        impl Drop for Allow {
+            fn drop(&mut self) {
+                std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        }
         // SAFETY: geteuid has no preconditions.
         if unsafe { libc::geteuid() } == 0 {
-            return;
+            return None;
         }
-        let root = folder("forbidden");
-        let copy = root.join("copy");
-        std::fs::create_dir(&copy).unwrap();
-        git(&copy, &["init", "-q", "-b", "main"]);
-        std::fs::set_permissions(&copy, std::fs::Permissions::from_mode(0o000)).unwrap();
-        let reading = test_reader("confined", &[])
-            .read(&path_text(&copy), DEADLINE)
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o000)).unwrap();
+        Some(Allow(dir.to_owned()))
+    }
+
+    /// Keeps this user from looking into `dir` with an ACL entry that denies them reading it and
+    /// what it holds, until the guard drops. The owner may always change the ACL back.
+    #[cfg(windows)]
+    fn forbid(dir: &Path) -> Option<impl Drop> {
+        struct Allow(PathBuf, String);
+        impl Drop for Allow {
+            fn drop(&mut self) {
+                let grant = format!("*{}", self.1);
+                let status = Command::new("icacls")
+                    .arg(&self.0)
+                    .args(["/remove:d", &grant])
+                    .output()
+                    .unwrap()
+                    .status;
+                assert!(status.success());
+            }
+        }
+        let whoami = Command::new("whoami")
+            .args(["/user", "/fo", "csv", "/nh"])
+            .output()
             .unwrap();
-        std::fs::set_permissions(&copy, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert_eq!(reading.refs.outcome, "unreadable", "{reading:?}");
-        assert!(reading.refs.detail.is_some());
+        let sid = String::from_utf8(whoami.stdout)
+            .unwrap()
+            .trim()
+            .rsplit(',')
+            .next()
+            .unwrap()
+            .trim_matches('"')
+            .to_owned();
+        assert!(sid.starts_with("S-1-"), "{sid}");
+        let status = Command::new("icacls")
+            .arg(dir)
+            .args(["/deny", &format!("*{sid}:(OI)(CI)(RX)")])
+            .output()
+            .unwrap()
+            .status;
+        assert!(status.success());
+        Some(Allow(dir.to_owned(), sid))
+    }
+
+    /// A copy this user may not look into is unreadable, with the system's reason, and never "no
+    /// copy here": libgit2 takes every path it may not look at for one that is not there.
+    #[cfg(any(target_os = "linux", windows))]
+    #[test]
+    fn a_copy_the_system_does_not_let_this_user_read_is_unreadable() {
+        let root = folder("forbidden");
+        let reader = test_reader("confined", &[]);
+        // The folder itself, and only the repository inside a folder this user may read.
+        for forbidden in ["", ".git"] {
+            let copy = root.join(format!("copy{}", forbidden.len()));
+            std::fs::create_dir(&copy).unwrap();
+            git(&copy, &["init", "-q", "-b", "main"]);
+            commit(&copy, "a.txt", "a\n", "a");
+            let Some(allow) = forbid(&copy.join(forbidden)) else {
+                return;
+            };
+            let reading = reader.read(&path_text(&copy), DEADLINE);
+            drop(allow);
+            let reading = reading.unwrap();
+            assert_eq!(
+                reading.refs.outcome, "unreadable",
+                "{forbidden}: {reading:?}"
+            );
+            assert!(
+                reading
+                    .refs
+                    .detail
+                    .as_deref()
+                    .unwrap()
+                    .starts_with("The system did not let DevHQ look"),
+                "{forbidden}: {reading:?}"
+            );
+            // Allowed again, the same copy reads.
+            let reading = reader.read(&path_text(&copy), DEADLINE).unwrap();
+            assert_eq!(reading.refs.outcome, "read", "{forbidden}: {reading:?}");
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 
