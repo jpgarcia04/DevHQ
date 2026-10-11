@@ -8,14 +8,15 @@ paso se termina, sale de aquí en el mismo commit; cuando no quede ninguno, esta
 Escrita el 6 oct 2026 desde una sesión local en la laptop con Windows, puesta al día esa noche, al
 fusionar el registro de cambios y proponer el diseño de las referencias, y el 7 oct, al implementar
 las referencias con las decisiones que la persona aprobó y al ver pasar su CI; y el 11 oct, al probar
-cómo se puede leer una copia local sin que leerla ejecute nada y proponer el diseño de la etapa 3.
+cómo se puede leer una copia local sin que leerla ejecute nada, proponer el diseño de la etapa 3 y,
+tras fusionarse las referencias, ponerlo al día sobre `main`.
 
 ## El plan, en corto
 
 Revisado `main` contra la visión, el siguiente paso estructural era anclar cada sistema a lo que es
-en el mundo real. La visión, la puerta para agentes (esquema v9) y el registro de cambios común (v10)
-están en `main`, y las referencias (v11), en `claude/references-design`: cada aplicación y recurso
-dice dónde está su repositorio, sus copias locales, su documentación, sus logs y su panel. Ahora:
+en el mundo real. La visión, la puerta para agentes (esquema v9), el registro de cambios común (v10)
+y las referencias (v11) están en `main`: cada aplicación y recurso dice dónde está su repositorio,
+sus copias locales, su documentación, sus logs y su panel. Ahora:
 
 1. **Primera fuente observada sobre esas anclas** (etapa 3, diseño propuesto abajo): la actividad de
    las copias locales, leída cuando se pide y sin que leerla ejecute nada de lo que se lee.
@@ -31,21 +32,20 @@ permisos por agente ni descubrir repositorios por su cuenta.
 ## Estado
 
 - [#2](https://github.com/jpgarcia04/DevHQ/pull/2) (la visión),
-  [#3](https://github.com/jpgarcia04/DevHQ/pull/3) (la puerta, v9) y
-  [#4](https://github.com/jpgarcia04/DevHQ/pull/4) (el registro de cambios, v10) están **fusionados**
-  en `main`. #4 entró (`1a40caf`) con todo el CI de Linux y de Windows en verde al primer intento.
-- **Las referencias (etapa 2, esquema v11)** están hechas en
-  [#5](https://github.com/jpgarcia04/DevHQ/pull/5) (`claude/references-design`, `a42e52f`), abierto;
-  la fusión la decide la persona. Su CI pasó entero al primer intento: los 5 checks de Linux y los 3
-  jobs de Windows (el previo; «Rust tests · NTFS, SChannel…», 13 min; «Installer, native walk…»,
-  18 min). El diseño de la etapa 3 está en `claude/local-activity-design`, que sale de la punta de #5
-  (`223c964`) porque #5 seguía abierto el 11 oct: si #5 entra con un merge commit, como los
-  anteriores, la rama entra limpia en `main`. Lo que la persona fijó al aprobar el diseño
-  y queda en el README («Referencias»): se editan con su sistema, como los componentes, y el registro
-  de cambios las cubre con un campo `references` en las acciones de siempre; la v11 solo copia el
-  destino; `repository` es solo una URL web http(s), comparada por igualdad exacta; un destino es una
-  URL http(s) o una ruta absoluta, y la etiqueta es un nombre para personas, nunca un localizador.
-  Son inventario declarado, no evidencia: no llevan `source`.
+  [#3](https://github.com/jpgarcia04/DevHQ/pull/3) (la puerta, v9),
+  [#4](https://github.com/jpgarcia04/DevHQ/pull/4) (el registro de cambios, v10) y
+  [#5](https://github.com/jpgarcia04/DevHQ/pull/5) (las referencias, etapa 2, v11) están
+  **fusionados** en `main`. #4 entró (`1a40caf`) con todo el CI de Linux y de Windows en verde al
+  primer intento, y #5 también (`aff9dd7`, 11 oct): los 5 checks de Linux y los 3 jobs de Windows (el
+  previo; «Rust tests · NTFS, SChannel…», 13 min; «Installer, native walk…», 18 min). Lo que la
+  persona fijó al aprobar las referencias y queda en el README («Referencias»): se editan con su
+  sistema, como los componentes, y el registro de cambios las cubre con un campo `references` en las
+  acciones de siempre; la v11 solo copia el destino; `repository` es solo una URL web http(s),
+  comparada por igualdad exacta; un destino es una URL http(s) o una ruta absoluta, y la etiqueta es
+  un nombre para personas, nunca un localizador. Son inventario declarado, no evidencia: no llevan
+  `source`.
+- **El diseño de la etapa 3** está en `claude/local-activity-design`, que sale de `main` (`aff9dd7`)
+  desde que #5 se fusionó; antes salía de su punta.
 - **La primera carga, medida en las dos caminatas de #5.** La caminata dice cuánto tarda la ventana
   en poder manejarse tras arrancar DevHQ y, en el primer paso (y en cualquiera que falle), si la
   página está visible, cuánto lleva cargada y cuándo se pidió y se respondió cada llamada a DevHQ, en
