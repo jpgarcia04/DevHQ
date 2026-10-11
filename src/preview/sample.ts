@@ -301,6 +301,44 @@ export function sampleDatabase(scenario: Scenario, now: number): PreviewDatabase
           { id: 'shop-orders', name: 'Orders', kind: 'database', resourceId: 'db-host' },
           { id: 'shop-jobs', name: 'Mailer', kind: 'docker', resourceId: null },
         ],
+        // Shop and Blog are parts of one monorepo, cloned on the laptop.
+        references: [
+          {
+            id: 'shop-repo',
+            kind: 'repository',
+            target: 'https://github.com/example/web',
+            label: null,
+            machineId: null,
+          },
+          {
+            id: 'shop-clone',
+            kind: 'local_copy',
+            target: 'C:\\Users\\you\\src\\web',
+            label: null,
+            machineId: 'laptop',
+          },
+          {
+            id: 'shop-runbook',
+            kind: 'documentation',
+            target: 'https://docs.example/shop/runbook',
+            label: 'Runbook',
+            machineId: null,
+          },
+          {
+            id: 'shop-logs',
+            kind: 'logs',
+            target: '/var/log/shop/api.log',
+            label: 'API',
+            machineId: 'web-host',
+          },
+          {
+            id: 'shop-dashboard',
+            kind: 'dashboard',
+            target: 'https://grafana.example/d/shop',
+            label: null,
+            machineId: null,
+          },
+        ],
       },
       {
         id: 'blog',
@@ -309,6 +347,15 @@ export function sampleDatabase(scenario: Scenario, now: number): PreviewDatabase
         lifecycle: 'development',
         version: null,
         components: [{ id: 'blog-site', name: 'Site', kind: 'frontend', resourceId: 'web-host' }],
+        references: [
+          {
+            id: 'blog-repo',
+            kind: 'repository',
+            target: 'https://github.com/example/web',
+            label: null,
+            machineId: null,
+          },
+        ],
       },
     ],
     resources: [
@@ -318,6 +365,7 @@ export function sampleDatabase(scenario: Scenario, now: number): PreviewDatabase
         kind: 'server',
         description: 'Postgres 17',
         operatingSystem: 'Debian 13',
+        references: [],
       },
       {
         id: 'laptop',
@@ -325,6 +373,7 @@ export function sampleDatabase(scenario: Scenario, now: number): PreviewDatabase
         kind: 'workstation',
         description: '',
         operatingSystem: 'Windows 11',
+        references: [],
       },
       {
         id: 'web-host',
@@ -332,6 +381,16 @@ export function sampleDatabase(scenario: Scenario, now: number): PreviewDatabase
         kind: 'server',
         description: 'Nginx and the API',
         operatingSystem: 'Ubuntu 24.04',
+        // Its own logs are on it.
+        references: [
+          {
+            id: 'web-logs',
+            kind: 'logs',
+            target: '/var/log/nginx',
+            label: 'Nginx',
+            machineId: 'web-host',
+          },
+        ],
       },
     ],
     observations: byRecording(observations),

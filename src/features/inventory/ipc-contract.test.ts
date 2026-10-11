@@ -42,6 +42,8 @@ const calls: Record<keyof typeof inventoryApi, () => Promise<unknown>> = {
       kind: 'workstation',
       description: 'Rack 2',
       operatingSystem: 'Debian 13',
+      // A resource can be the machine of its own paths.
+      references: [{ kind: 'logs', target: '/var/log/syslog', label: 'System', machineId: 'host' }],
     }),
   saveApplication: () =>
     inventoryApi.saveApplication({
@@ -53,6 +55,21 @@ const calls: Record<keyof typeof inventoryApi, () => Promise<unknown>> = {
       components: [
         { id: 'api', name: 'API', kind: 'backend', resourceId: 'host' },
         { name: 'Database', kind: 'database', resourceId: null },
+      ],
+      references: [
+        {
+          id: 'shop-repo',
+          kind: 'repository',
+          target: 'https://github.com/me/shop',
+          label: null,
+          machineId: null,
+        },
+        {
+          kind: 'local_copy',
+          target: 'C:\\src\\shop',
+          label: 'Laptop clone',
+          machineId: 'spare',
+        },
       ],
     }),
   deleteApplication: () => inventoryApi.deleteApplication('draft'),
@@ -159,6 +176,22 @@ const snapshot: Answer<'list'> = {
         { id: 'api', name: 'API', kind: 'backend', resourceId: 'host' },
         { id: 'db', name: 'Database', kind: 'database', resourceId: null },
       ],
+      references: [
+        {
+          id: 'shop-repo',
+          kind: 'repository',
+          target: 'https://github.com/me/platform',
+          label: null,
+          machineId: null,
+        },
+        {
+          id: 'shop-logs',
+          kind: 'logs',
+          target: '/var/log/shop',
+          label: 'API',
+          machineId: 'host',
+        },
+      ],
     },
   ],
   resources: [
@@ -168,8 +201,25 @@ const snapshot: Answer<'list'> = {
       kind: 'server',
       description: 'Rack 2',
       operatingSystem: 'Debian 13',
+      references: [
+        {
+          id: 'host-repo',
+          kind: 'repository',
+          target: 'https://github.com/me/platform',
+          label: null,
+          machineId: null,
+        },
+        {
+          id: 'host-dashboard',
+          kind: 'dashboard',
+          target: 'https://grafana.example/d/host',
+          label: null,
+          machineId: null,
+        },
+      ],
     },
   ],
+  sharedRepositories: [{ target: 'https://github.com/me/platform', systems: [shop, host] }],
   observations: [
     {
       id: 'obs-http',

@@ -5,6 +5,8 @@ import { DeleteSubject } from './delete-subject'
 import { inventoryError, type InventoryResource, type ResourceInput } from './inventory-api'
 import { useInventory } from './inventory-context'
 import { textLimits } from './limits'
+import { ReferenceFields } from './reference-fields'
+import { referenceInputs } from './references'
 
 export function ResourceForm({
   resource,
@@ -18,6 +20,9 @@ export function ResourceForm({
   const [kind, setKind] = useState<ResourceInput['kind']>(resource?.kind ?? 'server')
   const [description, setDescription] = useState(resource?.description ?? '')
   const [operatingSystem, setOperatingSystem] = useState(resource?.operatingSystem ?? '')
+  const [references, setReferences] = useState<ResourceInput['references']>(
+    resource?.references ?? [],
+  )
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   return (
@@ -28,7 +33,14 @@ export function ResourceForm({
         setBusy(true)
         setError(null)
         try {
-          await saveResource({ id: resource?.id, name, kind, description, operatingSystem })
+          await saveResource({
+            id: resource?.id,
+            name,
+            kind,
+            description,
+            operatingSystem,
+            references: referenceInputs(references),
+          })
           onDone()
         } catch (cause) {
           setError(inventoryError(cause))
@@ -78,6 +90,12 @@ export function ResourceForm({
           />
         </label>
       </div>
+      {/* Once it exists, a resource can be the machine of its own paths. */}
+      <ReferenceFields
+        references={references}
+        onChange={setReferences}
+        self={resource && { id: resource.id, kind }}
+      />
       {error && (
         <p role="alert" className="text-xs text-rose-300">
           {error}

@@ -5,22 +5,19 @@ Nota de trabajo, no especificación: dice qué está en marcha y qué toca despu
 pueda seguir sin la conversación que la escribió. El [README](../README.md) sigue mandando. Cuando un
 paso se termina, sale de aquí en el mismo commit; cuando no quede ninguno, esta nota se borra.
 
-Escrita el 6 oct 2026 desde una sesión local en la laptop con Windows, y puesta al día esa noche, al
-fusionar la puerta y abrir el PR del registro de cambios.
+Escrita el 6 oct 2026 desde una sesión local en la laptop con Windows, puesta al día esa noche, al
+fusionar el registro de cambios y proponer el diseño de las referencias, y el 7 oct, al implementar
+las referencias con las decisiones que la persona aprobó y al ver pasar su CI.
 
 ## El plan, en corto
 
-Revisado `main` contra la visión, el siguiente paso estructural es que el inventario tenga tiempo y
-autor, como ya los tiene la evidencia: hoy una observación dice quién, cuándo y hasta cuándo, pero
-editar una aplicación pisa el valor anterior sin rastro. Por eso, en orden:
+Revisado `main` contra la visión, el siguiente paso estructural era anclar cada sistema a lo que es
+en el mundo real. La visión, la puerta para agentes (esquema v9) y el registro de cambios común (v10)
+están en `main`, y las referencias (v11), en `claude/references-design`: cada aplicación y recurso
+dice dónde está su repositorio, sus copias locales, su documentación, sus logs y su panel. Ahora:
 
-0. **Consolidar** (hecho): la visión y la puerta para agentes (esquema v9) están en `main`.
-1. **Registro de cambios común** (en revisión, ver abajo): cada cambio de configuración, tuyo o de
-   un agente, en un solo registro con el autor y cada campo antes y después.
-2. **Referencias**: anclar cada sistema a lo que es en el mundo real (repositorio, copia local en
-   una estación de trabajo, documentación, logs, panel).
-3. **Primera fuente observada sobre esas anclas**: la actividad de los repositorios locales, leída
-   cuando se pide.
+1. **Primera fuente observada sobre esas anclas** (etapa 3): la actividad de los repositorios
+   locales, leída cuando se pide.
 
 Después, según lo que pidan preguntas concretas: bases de datos compartidas y dominios como tipos de
 recurso, relaciones nuevas, despliegues con versión, commit y destino, credenciales, operaciones y
@@ -32,74 +29,83 @@ permisos por agente ni descubrir repositorios por su cuenta.
 
 ## Estado
 
-- [#2](https://github.com/jpgarcia04/DevHQ/pull/2) (la visión y `AGENTS.md`) y
-  [#3](https://github.com/jpgarcia04/DevHQ/pull/3) (la puerta para agentes, esquema v9) están
-  **fusionados** en `main`; #3 entró (`2e99c21`) con todo el CI de Linux y de Windows en verde. En
-  Windows se confirmaron los dos arreglos de su primera ejecución: las pruebas de Rust con un `TMP`
-  corto 8.3 (`f1a46d3`) y la espera al lock de la ventana (`ea99642`). La hipótesis del lock era
-  cierta: la puerta dejó de ver la ventana 109 ms después de que DevHQ terminara, y antes miraba en
-  el acto.
-- **Un fallo intermitente sin explicar**, en el primer intento del job «Installer, native walk…» de
-  esa ejecución: el primer paso de la caminata («Mi inventario opens on the v6 inventory») esperó
-  15 s a «Nothing is registered yet.» y no lo vio. No era `findAll`: la captura `failure.png` muestra
-  «Loading local inventory...», así que la primera lectura del inventario (`list_inventory`, la carga
-  en la que DevHQ actualiza el archivo de v6 y lo pasa a WAL) no había respondido; el volcado de
-  texto, un instante después, ya mostraba el inventario vacío. Además pasaron 74 s entre el arranque
-  de msedgedriver y el fallo, cuando en una ejecución normal todo el paso cabe en 3 o 4 s: no solo
-  esperó la carga, también algo de WebDriver. Al relanzar el job, el paso pasó en 901 ms. Hipótesis
-  sin comprobar: `list_inventory` es síncrono y corre en el hilo principal, que con WebView2 también
-  atiende la ventana, y en esa primera carga compite con la supervisión y con `notice_changes`, que
-  abren el mismo archivo a la vez; cada espera de lock está acotada a 5 s, así que eso solo no
-  explica un minuto, y el antivirus en tiempo real puede pesar.
-- `claude/common-change-log`, [#4](https://github.com/jpgarcia04/DevHQ/pull/4): **la etapa 1, en
-  revisión**, rebasada sobre `main`. Esquema v10, `change_log` en lugar de `agent_log`, cada caso de
-  uso registra su cambio en su transacción (la ventana como `manual`, la puerta como `agent`),
-  Activity lo muestra y dice desde cuándo está completo; el README («Registro de cambios») lo
-  describe y [docs/vision.md](vision.md) ya no lo trata como pendiente. Trae también un diagnóstico
-  para el fallo de arriba: la caminata dice cuánto tarda la ventana en poder manejarse tras arrancar
-  DevHQ y, en el primer paso y en cualquier paso que falle, si la página está visible, cuánto lleva
-  cargada y cuándo se pidió y se respondió cada llamada a DevHQ. En la laptop, sobre la rama
-  rebasada, pasaron Prettier, ESLint, `tsc -b`, Vitest (166), build, `npm run e2e` (30),
-  `cargo fmt`, clippy y las pruebas de Rust (97). `npm run e2e:native` se negó a correr, como debe,
-  porque `%APPDATA%` ya tiene datos de DevHQ: la caminata la corren el CI de Linux y el de Windows.
+- [#2](https://github.com/jpgarcia04/DevHQ/pull/2) (la visión),
+  [#3](https://github.com/jpgarcia04/DevHQ/pull/3) (la puerta, v9) y
+  [#4](https://github.com/jpgarcia04/DevHQ/pull/4) (el registro de cambios, v10) están **fusionados**
+  en `main`. #4 entró (`1a40caf`) con todo el CI de Linux y de Windows en verde al primer intento.
+- **Las referencias (etapa 2, esquema v11)** están hechas en
+  [#5](https://github.com/jpgarcia04/DevHQ/pull/5) (`claude/references-design`, `a42e52f`), abierto;
+  la fusión la decide la persona. Su CI pasó entero al primer intento: los 5 checks de Linux y los 3
+  jobs de Windows (el previo; «Rust tests · NTFS, SChannel…», 13 min; «Installer, native walk…»,
+  18 min). Lo que la persona fijó al aprobar el diseño
+  y queda en el README («Referencias»): se editan con su sistema, como los componentes, y el registro
+  de cambios las cubre con un campo `references` en las acciones de siempre; la v11 solo copia el
+  destino; `repository` es solo una URL web http(s), comparada por igualdad exacta; un destino es una
+  URL http(s) o una ruta absoluta, y la etiqueta es un nombre para personas, nunca un localizador.
+  Son inventario declarado, no evidencia: no llevan `source`.
+- **La primera carga, medida en las dos caminatas de #5.** La caminata dice cuánto tarda la ventana
+  en poder manejarse tras arrancar DevHQ y, en el primer paso (y en cualquiera que falle), si la
+  página está visible, cuánto lleva cargada y cuándo se pidió y se respondió cada llamada a DevHQ, en
+  ms desde que cargó la página:
+  - WebView2 («Installer, native walk…», bajo la protección en tiempo real): la ventana se pudo
+    manejar 5077 ms después de arrancar DevHQ; visible, con foco y cargada hacía 1413 ms;
+    **`list_inventory` 1231 → 1255 ms (24 ms)**, con la actualización desde v6 y el paso a WAL
+    incluidos, y `watch_http_monitor` 1230 → 1259 ms. El paso tardó 726 ms. La puerta dejó de ver la
+    ventana 319 ms después de que DevHQ terminara. En #4 fueron 4760 ms, 686 ms, `list_inventory`
+    532 → 560 ms (28 ms), 407 ms y 322 ms: la llamada sigue tardando lo mismo.
+  - WebKitGTK: la ventana se pudo manejar 3036 ms después de arrancar DevHQ; visible, con foco y
+    cargada hacía 394 ms; el paso tardó 1373 ms (en #4, 2426, 516 y 1679 ms). Ahí no hay tiempos de
+    llamadas: Tauri llama a DevHQ por `ipc://localhost/<comando>`, que no es HTTP, y la página solo
+    mide peticiones HTTP(S) (Resource Timing); en Windows llama por `http://ipc.localhost/<comando>`.
+    Desde #5 la caminata pregunta a Tauri adónde llama (`convertFileSrc('', 'ipc')`) y lo dice en vez
+    de «none recorded»: «calls into DevHQ: not timed here, since Tauri sends them to
+    ipc://localhost/, which is not HTTP(S), and the page times only HTTP(S) requests».
+- **Un fallo intermitente sin explicar**, visto una vez en el primer intento del job «Installer,
+  native walk…» de #3: el primer paso esperó 15 s a «Nothing is registered yet.» y la captura mostraba
+  «Loading local inventory...», así que `list_inventory` no había respondido; pasaron 74 s entre el
+  arranque de msedgedriver y el fallo, y al relanzarlo el paso pasó en 901 ms. En #4 y en #5 no
+  volvió. Si vuelve, leer su «window state»:
+  - Si `list_inventory` falta mientras otras llamadas sí aparecen, o se respondió tarde, lo retiene
+    Rust: buscar qué (las tres conexiones de la primera carga, la conversión a WAL, el antivirus);
+    hacer `list_inventory` asíncrono, como ya son los comandos que esperan, al menos dejaría la
+    ventana atendida mientras tanto.
+  - Si se respondió pronto (unos 30 ms, como arriba) y la página no lo mostró, el retraso está en la
+    página o en el driver: `visibility hidden` apuntaría a que WebView2 no pinta una ventana que nadie
+    ve.
 
 ## Qué hacer, en orden
 
-1. **Fusionar el registro de cambios** (#4) cuando el CI de Linux y el de Windows estén en verde
-   (`gh pr checks 4`), con el visto bueno de la persona. Antes, leer en los logs de las dos caminatas
-   (WebKitGTK y «Installer, native walk…») las líneas nuevas del primer paso: si dicen «none
-   recorded», ese WebView no registra las llamadas a DevHQ y el diagnóstico hay que cambiarlo; si no,
-   anotar aquí cuánto tardó `list_inventory`. Si un job falla, `gh run view <id> --log-failed`,
-   arreglarlo en la rama con las comprobaciones de `CLAUDE.md` y empujar una sola vez: cada push
-   relanza Windows (unos 22 min con caché, 48 sin ella).
-   - Si vuelve el fallo del primer paso, leer su «window state». Si `list_inventory` falta mientras
-     otras llamadas sí aparecen, o se respondió tarde, lo retiene Rust: buscar qué (las tres
-     conexiones de la primera carga, la conversión a WAL, el antivirus); hacer `list_inventory`
-     asíncrono, como ya son los comandos que esperan, al menos dejaría la ventana atendida mientras
-     tanto. Si se respondió pronto y la página no lo mostró, el retraso está en la página o en el
-     driver: `visibility hidden` apuntaría a que WebView2 no pinta una ventana que nadie ve.
-2. **Etapa 2, referencias.** Antes de escribir código, proponer el diseño a la persona y esperar su
-   visto bueno. El punto de partida:
-   - Una tabla que cuelga de una aplicación o un recurso con las dos columnas de siempre
-     (`application_id`/`resource_id` y el CHECK de exactamente una), configuración como
-     `http_checks`: se va con su sujeto (`CASCADE`) y no es evidencia. Migración v11 con su prueba
-     de actualización fila por fila.
-   - Tipos que son conceptos, no proveedores: repositorio, copia local, documentación, logs y panel.
-     URL o ruta; las URL con usuario o contraseña se rechazan, como en la comprobación HTTP.
-   - La copia local apunta además a un recurso `workstation`, porque el mismo proyecto puede estar
-     clonado en varias máquinas. Saber en qué estación corre DevHQ no hace falta hasta la etapa 3.
-   - Un monorepo es la misma URL de repositorio desde varias aplicaciones, sin entidad nueva.
-   - Cada cambio de referencias se registra en `change_log` como cualquier otro cambio de
-     configuración (añadir sus campos y acciones).
-   - La puerta las muestra en `get_system` y las deja editar, por los mismos casos de uso que la
-     ventana: es el primer contexto real para un agente que entra a un proyecto.
-   - Abrir la carpeta o el enlace solo como subproducto, nunca como motivo.
-3. **Etapa 3, actividad local**, después de las referencias. Dos decisiones que tomar con la persona
-   antes: la actividad (último commit, cambios sin confirmar, commits sin publicar) no es salud, así
-   que no cabe en una observación healthy/degraded/unhealthy y necesita su propia forma de evidencia;
-   y choca con la regla «no se implementan scanners», que habría que reescribir de forma explícita
-   (leer a petición una ruta que el inventario ya conoce no es escanear). Solo refs locales, sin red
-   ni credenciales.
+1. **Etapa 3, actividad local.** Responde «¿qué lleva meses sin actividad?» y prepara «¿qué tiene
+   cambios sin desplegar?», sobre las copias locales que la etapa 2 ya ancla a su máquina. Tres
+   decisiones que tomar con la persona antes de escribir código:
+   - La actividad (último commit, branch, HEAD, cambios sin confirmar, el remoto real) no es salud,
+     así que no cabe en una observación healthy/degraded/unhealthy y necesita su propia forma de
+     evidencia, con su `source`, su momento observado y su vigencia. «Commits sin publicar» y «sin
+     actividad desde…» serían estado derivado, no guardado.
+   - Choca con la regla «no se implementan scanners», que habría que reescribir de forma explícita,
+     en el README y en `CLAUDE.md` en el mismo commit: leer a petición una ruta que el inventario ya
+     conoce no es escanear ni descubrir.
+   - DevHQ no sabe todavía en qué máquina corre, y una copia local solo se puede leer en la suya:
+     hace falta decir cuál de las estaciones de trabajo del inventario es «esta» (y cómo se recuerda
+     sin guardar nada que cambie de equipo a equipo en el inventario compartido).
+     Solo refs locales, sin red ni credenciales. El remoto real de una copia (también SSH) se guarda
+     como evidencia, aparte de la referencia `repository`; compararlos exige normalizar URL, que la
+     etapa 2 dejó fuera a propósito.
+   - Comprobado el 7 oct con Git 2.54 en Windows, en un repositorio cuya config nombraba programas
+     que solo dejaban una marca: `rev-parse`, `symbolic-ref`, `for-each-ref`, `rev-list` y
+     `config` no ejecutaron nada; `git status` ejecutó el hook de `core.fsmonitor` y el filtro
+     `clean` de `.gitattributes` sobre un archivo con el mtime cambiado, y reescribió `.git/index`
+     (`--no-optional-locks` evita la escritura; `-c core.fsmonitor=false`, el hook, pero no el
+     filtro); y `git log -1 --format=%ct` ejecutó `gpg.program` sobre un commit firmado porque la
+     config decía `log.showSignature=true`. Leer con el `git` instalado puede ejecutar lo que nombra
+     el repositorio, y su ruta la puede haber escrito un agente. gix ejecuta los drivers de filtro
+     externos (gix-filter); libgit2 solo aplica sus filtros internos (crlf, ident) y los que se
+     registran en código.
+2. **Abrir una referencia, si la persona lo quiere**, solo como subproducto: un comando Rust
+   `open_reference(id)` que lee la referencia de SQLite y abre en el navegador solo URL http(s); la
+   ventana nunca pasa una URL y el WebView no gana plugin ni permiso. Una ruta no se abre hasta que
+   DevHQ sepa en qué estación corre, y entonces solo se muestra la carpeta en el explorador, nunca se
+   abre un archivo: abrir una ruta que escribió un agente podría ejecutar un programa.
 
 ## Lo que solo se puede hacer en la laptop
 

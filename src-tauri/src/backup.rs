@@ -631,6 +631,7 @@ mod tests {
                 kind: "workstation".into(),
                 description: String::new(),
                 operating_system: String::new(),
+                references: vec![],
             },
         )
         .unwrap();

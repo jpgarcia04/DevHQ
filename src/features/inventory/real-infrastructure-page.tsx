@@ -13,6 +13,7 @@ import { useInventory } from './inventory-context'
 import { InventoryState } from './inventory-state'
 import { RecordActions } from './record-forms'
 import { IncidentRecordList } from './record-lists'
+import { ReferenceList } from './reference-list'
 import { ResourceForm } from './resource-form'
 
 export function RealInfrastructurePage() {
@@ -105,6 +106,10 @@ export function RealInfrastructurePage() {
                     ) : (
                       <p className="text-xs text-muted-foreground">No linked components.</p>
                     )}
+                  </div>
+                  <div className="mt-4 border-t pt-4">
+                    <h3 className="eyebrow mb-3">References</h3>
+                    <ReferenceList subject={subject} references={resource.references} />
                   </div>
                   {incidents.length > 0 && (
                     <div className="-mx-5 mt-4 border-t">

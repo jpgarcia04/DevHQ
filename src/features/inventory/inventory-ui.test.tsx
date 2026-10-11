@@ -142,6 +142,7 @@ describe('real inventory UI', () => {
         kind: 'backend' as const,
         resourceId,
       })),
+      references: [],
     })
     renderWithInventory(
       <RealApplicationsPage />,
@@ -156,6 +157,7 @@ describe('real inventory UI', () => {
               kind: 'server',
               description: '',
               operatingSystem: '',
+              references: [],
             },
           ],
           applications: [
@@ -199,6 +201,7 @@ describe('real inventory UI', () => {
           kind: 'server' as const,
           description: '',
           operatingSystem: '',
+          references: [],
         },
       ],
     }

@@ -228,19 +228,26 @@ let count = 0
 /**
  * Tells a slow native process from a slow page or driver: whether the page is visible, how long
  * it has been loaded, and when each call into DevHQ was sent and answered, in ms since the page
- * loaded. A call gets its entry only once answered, so one still waiting is missing; and none at
- * all may also mean the WebView does not record these calls.
+ * loaded. A call gets its entry only once answered, so one still waiting is missing.
+ *
+ * The page times only HTTP(S) requests (Resource Timing). Tauri builds the URL of each call with
+ * `convertFileSrc(command, 'ipc')`: `http://ipc.localhost/<command>` on WebView2, which is timed,
+ * and `ipc://localhost/<command>` on WebKitGTK, which is not. There the state says so, instead of
+ * reporting that no call was answered.
  */
 const windowState = (session: Session) =>
   session
     .execute<string>(
-      `const calls = performance.getEntriesByType('resource')
-        .filter((entry) => entry.name.includes('ipc'))
+      `const ipc = window.__TAURI_INTERNALS__.convertFileSrc('', 'ipc')
+      const calls = performance.getEntriesByType('resource')
+        .filter((entry) => entry.name.startsWith(ipc))
         .slice(-20)
         .map((entry) => new URL(entry.name).pathname.slice(1) + ' ' + Math.round(entry.startTime) + '→' + Math.round(entry.responseEnd))
       return [
         'visibility ' + document.visibilityState + ', focus ' + document.hasFocus() + ', loaded ' + Math.round(performance.now()) + ' ms ago',
-        'answered calls into DevHQ: ' + (calls.join(', ') || 'none recorded'),
+        /^https?:/.test(ipc)
+          ? 'answered calls into DevHQ: ' + (calls.join(', ') || 'none recorded')
+          : 'calls into DevHQ: not timed here, since Tauri sends them to ' + ipc + ', which is not HTTP(S), and the page times only HTTP(S) requests',
       ].join('\\n')`,
     )
     .catch(() => '(the window did not answer)')
@@ -344,6 +351,9 @@ try {
     await ui.click(button('Add component', applicationForm))
     await ui.fill(field('Component name', applicationForm), 'web')
     await ui.choose(field('Resource', applicationForm), 'Build server')
+    // Where it is: a new reference starts as a repository, which is a URL on no machine.
+    await ui.click(button('Add reference', applicationForm))
+    await ui.fill(field('URL or path', applicationForm), 'https://git.example/status-page')
     await ui.click(button('Save application', applicationForm))
     await ui.see('1 component · 1 linked resource', "//main//a[@aria-label='Open Status page']")
   })
@@ -423,6 +433,10 @@ try {
       assert.equal(value('SELECT count(*) FROM components'), 1)
       assert.equal(value('SELECT count(*) FROM resources'), 1)
       assert.equal(value('SELECT count(*) FROM http_checks'), 1)
+      assert.equal(
+        value("SELECT kind || ' ' || target FROM system_references WHERE machine_id IS NULL"),
+        'repository https://git.example/status-page',
+      )
       assert.equal(value("SELECT count(*) FROM observations WHERE source = 'manual'"), 1)
       assert.equal(value("SELECT count(*) FROM observations WHERE source = 'http'"), 2)
       // What the person changed in the window is logged with it, and the walk's inventory was

@@ -3,11 +3,9 @@ import { PageHeader } from '@/components/page-header'
 import { Button } from '@/components/ui/button'
 import { AgentGate } from './agent-gate'
 import { Backups } from './backups'
+import { useCopy } from './copy'
 import { inventoryError, type DataLocation } from './inventory-api'
 import { useInventory } from './inventory-context'
-
-/** How long «Path copied.» stays, in milliseconds. */
-const copiedFor = 3000
 
 /**
  * The inventory's file on this device and how to back it up. It asks the native process only
@@ -18,14 +16,7 @@ function DatabaseFile() {
   const { dataLocation } = useInventory()
   const [location, setLocation] = useState<DataLocation | null>(null)
   const [error, setError] = useState<string | null>(null)
-  // `at` tells each click apart, so that copying again shows the confirmation anew.
-  const [copied, setCopied] = useState<{ ok: boolean; at: number } | null>(null)
-  // A confirmation goes away by itself; a failure stays, since it says what to do instead.
-  useEffect(() => {
-    if (!copied?.ok) return
-    const timer = setTimeout(() => setCopied(null), copiedFor)
-    return () => clearTimeout(timer)
-  }, [copied])
+  const { copied, copy } = useCopy()
   useEffect(() => {
     let current = true
     dataLocation().then(
@@ -36,14 +27,6 @@ function DatabaseFile() {
       current = false
     }
   }, [dataLocation])
-  const copy = async (path: string) => {
-    try {
-      await navigator.clipboard.writeText(path)
-      setCopied({ ok: true, at: Date.now() })
-    } catch {
-      setCopied({ ok: false, at: Date.now() })
-    }
-  }
   return (
     <section className="panel max-w-3xl p-6" aria-labelledby="database-file-heading">
       <h2 id="database-file-heading" className="section-heading">
@@ -128,9 +111,9 @@ export function RealSettingsPage() {
       <section className="panel max-w-3xl p-6">
         <h2 className="section-heading">Data source</h2>
         <p className="mt-4 text-xs leading-6 text-muted-foreground">
-          Applications, components, resources, observations, incidents and events are stored in
-          SQLite in the operating system’s DevHQ application data directory. The demo is a separate,
-          fixed example and is never imported automatically.
+          Applications, components, resources, references, observations, incidents and events are
+          stored in SQLite in the operating system’s DevHQ application data directory. The demo is a
+          separate, fixed example and is never imported automatically.
         </p>
         <p className="mt-3 text-xs leading-6 text-muted-foreground">
           Records come from three sources, always labelled: manual entries you type, HTTP checks

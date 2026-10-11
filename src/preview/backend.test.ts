@@ -8,7 +8,7 @@ import type {
   MonitorStatus,
   ObservationPage,
 } from '@/features/inventory/inventory-api'
-import { previewBackend, readOnly } from './backend'
+import { previewBackend, readOnly, sharedRepositories } from './backend'
 import { sampleDatabase } from './sample'
 
 const now = Date.parse('2026-09-30T12:00:00Z')
@@ -50,6 +50,81 @@ describe('the preview’s simulated native process', () => {
       'Database host',
       'Dev laptop',
       'Web host',
+    ])
+  })
+
+  it('nests each system’s references and derives the repositories several systems share', () => {
+    const { database, snapshot } = preview()
+    // As stored, in the order they were saved, under their own system.
+    expect(snapshot.applications.find((item) => item.id === 'shop')!.references).toEqual(
+      database.applications.find((item) => item.id === 'shop')!.references,
+    )
+    expect(snapshot.resources.find((item) => item.id === 'web-host')!.references).toEqual([
+      {
+        id: 'web-logs',
+        kind: 'logs',
+        target: '/var/log/nginx',
+        label: 'Nginx',
+        machineId: 'web-host',
+      },
+    ])
+    // Blog and Shop are parts of one monorepo: the snapshot's order, applications first.
+    expect(snapshot.sharedRepositories).toEqual([
+      {
+        target: 'https://github.com/example/web',
+        systems: [
+          { type: 'application', id: 'blog' },
+          { type: 'application', id: 'shop' },
+        ],
+      },
+    ])
+  })
+
+  it('compares repositories as the native process does: by exact URL, among systems', () => {
+    const system = (id: string, ...targets: [string, 'repository' | 'documentation'][]) => ({
+      id,
+      name: id,
+      description: '',
+      lifecycle: 'production' as const,
+      version: null,
+      components: [],
+      references: targets.map(([target, kind], index) => ({
+        id: `${id}-${index}`,
+        kind,
+        target,
+        label: null,
+        machineId: null,
+      })),
+    })
+    const repo = 'https://github.com/me/platform'
+    const shared = sharedRepositories(
+      [
+        system('api', [repo, 'repository']),
+        // Another spelling of the same place is another repository; a document is no repository.
+        system('docs', [`${repo}/`, 'repository'], [repo, 'documentation']),
+        system('web', [repo, 'repository'], [repo, 'repository']),
+        system('blog', ['https://github.com/me/blog', 'repository']),
+      ],
+      [
+        {
+          id: 'host',
+          name: 'Host',
+          kind: 'server',
+          description: '',
+          operatingSystem: '',
+          references: [{ id: 'h', kind: 'repository', target: repo, label: null, machineId: null }],
+        },
+      ],
+    )
+    expect(shared).toEqual([
+      {
+        target: repo,
+        systems: [
+          { type: 'application', id: 'api' },
+          { type: 'application', id: 'web' },
+          { type: 'resource', id: 'host' },
+        ],
+      },
     ])
   })
 

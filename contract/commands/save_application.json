@@ -8,6 +8,21 @@
     "components": [
       { "id": "api", "name": "API", "kind": "backend", "resourceId": "host" },
       { "name": "Database", "kind": "database", "resourceId": null }
+    ],
+    "references": [
+      {
+        "id": "shop-repo",
+        "kind": "repository",
+        "target": "https://github.com/me/shop",
+        "label": null,
+        "machineId": null
+      },
+      {
+        "kind": "local_copy",
+        "target": "C:\\src\\shop",
+        "label": "Laptop clone",
+        "machineId": "spare"
+      }
     ]
   }
 }

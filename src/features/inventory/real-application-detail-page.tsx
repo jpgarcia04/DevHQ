@@ -29,6 +29,7 @@ import { useInventory } from './inventory-context'
 import { InventoryState } from './inventory-state'
 import { RecordActions } from './record-forms'
 import { EventRecordList, IncidentRecordList } from './record-lists'
+import { ReferenceList } from './reference-list'
 import { useTimeline } from './timeline'
 
 const tabs = [
@@ -193,6 +194,16 @@ function ApplicationDetail({ app }: { app: InventoryApplication }) {
                   {app.components.length === 0 && (
                     <p className="text-xs text-muted-foreground">No components registered.</p>
                   )}
+                </div>
+              </section>
+              <section className="panel p-5">
+                <h2 className="section-heading">References</h2>
+                <p className="mt-1.5 text-xs text-muted-foreground">
+                  Where it is, as you or an agent declared it. DevHQ copies them; it opens and
+                  checks none.
+                </p>
+                <div className="mt-4">
+                  <ReferenceList subject={subject} references={app.references} />
                 </div>
               </section>
             </div>

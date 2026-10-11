@@ -1,4 +1,5 @@
-use crate::records::Actor;
+use crate::records::{Actor, Subject};
+use crate::references::{self, Reference, ReferenceInput, SharedRepository};
 use crate::{change_log, http_check, records};
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
@@ -64,6 +65,8 @@ pub struct Resource {
     pub kind: String,
     pub description: String,
     pub operating_system: String,
+    /// Where it is: its documentation, its logs, its dashboard… in the order they were saved.
+    pub references: Vec<Reference>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -76,6 +79,8 @@ pub struct ResourceInput {
     pub kind: String,
     pub description: String,
     pub operating_system: String,
+    /// The complete list: the save replaces the stored one.
+    pub references: Vec<ReferenceInput>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -107,6 +112,9 @@ pub struct Application {
     pub lifecycle: String,
     pub version: Option<String>,
     pub components: Vec<Component>,
+    /// Where it is: its repository, its local copies, its documentation… in the order they were
+    /// saved.
+    pub references: Vec<Reference>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -120,6 +128,8 @@ pub struct ApplicationInput {
     pub lifecycle: String,
     pub version: Option<String>,
     pub components: Vec<ComponentInput>,
+    /// The complete list: the save replaces the stored one.
+    pub references: Vec<ReferenceInput>,
 }
 
 /// One consistent read of the local workspace: inventory plus its operational records.
@@ -128,6 +138,8 @@ pub struct ApplicationInput {
 pub struct Inventory {
     pub applications: Vec<Application>,
     pub resources: Vec<Resource>,
+    /// Each repository more than one system declares, derived from their references at this read.
+    pub shared_repositories: Vec<SharedRepository>,
     pub observations: Vec<records::Observation>,
     pub incidents: Vec<records::Incident>,
     pub events: Vec<records::Event>,
@@ -201,8 +213,8 @@ pub(crate) fn plain(path: &Path) -> String {
     }
 }
 
-pub(crate) const SCHEMA_VERSION: i64 = 10;
-const MIGRATIONS: [(i64, &str); 10] = [
+pub(crate) const SCHEMA_VERSION: i64 = 11;
+const MIGRATIONS: [(i64, &str); 11] = [
     (1, include_str!("../migrations/001_inventory.sql")),
     (2, include_str!("../migrations/002_inventory_details.sql")),
     (3, include_str!("../migrations/003_operational_records.sql")),
@@ -213,6 +225,7 @@ const MIGRATIONS: [(i64, &str); 10] = [
     (8, include_str!("../migrations/008_agent_access.sql")),
     (9, include_str!("../migrations/009_agent_log.sql")),
     (10, include_str!("../migrations/010_change_log.sql")),
+    (11, include_str!("../migrations/011_references.sql")),
 ];
 
 /// Opens the inventory, upgrading its schema first if it is older than this build's.
@@ -363,7 +376,7 @@ pub(crate) fn allowed(value: &str, choices: &[&str], label: &str) -> Result<(), 
 pub fn list(path: &Path) -> Result<Inventory, ApiError> {
     let mut db = open(path)?;
     let tx = db.transaction().map_err(ApiError::database)?;
-    let resources = {
+    let mut resources = {
         let mut statement = tx.prepare("SELECT id, name, kind, description, operating_system FROM resources ORDER BY name COLLATE NOCASE, id").map_err(ApiError::database)?;
         let result = statement
             .query_map([], |row| {
@@ -373,6 +386,7 @@ pub fn list(path: &Path) -> Result<Inventory, ApiError> {
                     kind: row.get(2)?,
                     description: row.get(3)?,
                     operating_system: row.get(4)?,
+                    references: Vec::new(),
                 })
             })
             .map_err(ApiError::database)?
@@ -380,6 +394,14 @@ pub fn list(path: &Path) -> Result<Inventory, ApiError> {
             .map_err(ApiError::database)?;
         result
     };
+    for resource in &mut resources {
+        resource.references = references::of(
+            &tx,
+            &Subject::Resource {
+                id: resource.id.clone(),
+            },
+        )?;
+    }
     let mut applications = {
         let mut statement = tx.prepare("SELECT id, name, description, lifecycle, version FROM applications ORDER BY name COLLATE NOCASE, id").map_err(ApiError::database)?;
         let result = statement
@@ -391,6 +413,7 @@ pub fn list(path: &Path) -> Result<Inventory, ApiError> {
                     lifecycle: row.get(3)?,
                     version: row.get(4)?,
                     components: Vec::new(),
+                    references: Vec::new(),
                 })
             })
             .map_err(ApiError::database)?
@@ -413,8 +436,10 @@ pub fn list(path: &Path) -> Result<Inventory, ApiError> {
                 .map_err(ApiError::database)?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(ApiError::database)?;
+            app.references = references::of(&tx, &Subject::Application { id: app.id.clone() })?;
         }
     }
+    let shared_repositories = references::shared_repositories(&applications, &resources);
     let subjects: Vec<_> = applications
         .iter()
         .map(|app| records::Subject::Application { id: app.id.clone() })
@@ -435,6 +460,7 @@ pub fn list(path: &Path) -> Result<Inventory, ApiError> {
     Ok(Inventory {
         applications,
         resources,
+        shared_repositories,
         observations,
         incidents,
         events,
@@ -455,8 +481,8 @@ pub fn save_resource(path: &Path, input: ResourceInput) -> Result<Resource, ApiE
     Ok(resource)
 }
 
-/// Saves a resource inside the caller's write transaction, which the caller commits, and logs
-/// the change there as `by`'s: None when the save changed nothing.
+/// Saves a resource and its complete reference list inside the caller's write transaction, which
+/// the caller commits, and logs the change there as `by`'s: None when the save changed nothing.
 pub(crate) fn save_resource_in(
     tx: &Transaction,
     input: ResourceInput,
@@ -487,18 +513,45 @@ pub(crate) fn save_resource_in(
         MAX_NAME,
         "Operating system",
     )?;
+    let subject = Subject::Resource { id: id.clone() };
+    // Its own paths can be on itself, as it is about to be.
+    let references = references::validated(
+        tx,
+        &subject,
+        input.references,
+        Some(&references::Machine {
+            id: &id,
+            name: &name,
+            kind: &input.kind,
+        }),
+    )?;
+    if input.kind != "workstation" {
+        // Other systems' local copies on it would be left on something that is no workstation.
+        let copies = references::paths_on(tx, &id, Some("local_copy"))?;
+        if !copies.is_empty() {
+            return Err(ApiError::invalid(format!(
+                "{name} holds local copies of other systems: {}. A local copy is on a workstation, so move them to another workstation, or remove them, before making {name} a {}.",
+                listed(&copies),
+                input.kind
+            )));
+        }
+    }
     tx.execute(
         "INSERT INTO resources (id, name, kind, description, operating_system) VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT(id) DO UPDATE SET name=excluded.name, kind=excluded.kind, description=excluded.description, operating_system=excluded.operating_system",
         params![id, name, input.kind, description, operating_system],
     )
     .map_err(ApiError::database)?;
+    // The submitted reference list is the complete set, written once the resource it can be the
+    // machine of exists.
+    references::replace(tx, &subject, &references)?;
     let resource = Resource {
         id,
         name,
         kind: input.kind,
         description,
         operating_system,
+        references,
     };
     let change = change_log::resource_saved(tx, by, before.as_ref(), &resource)?;
     Ok((resource, change))
@@ -624,6 +677,8 @@ pub(crate) fn save_application_in(
             resource_id: part.resource_id,
         });
     }
+    let subject = Subject::Application { id: id.clone() };
+    let references = references::validated(tx, &subject, input.references, None)?;
     tx.execute(
         "INSERT INTO applications (id, name, lifecycle, description, version) VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT(id) DO UPDATE SET name=excluded.name, lifecycle=excluded.lifecycle, description=excluded.description, version=excluded.version",
@@ -636,6 +691,8 @@ pub(crate) fn save_application_in(
         tx.execute("INSERT INTO components (id, application_id, name, kind, resource_id) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![component.id, id, component.name, component.kind, component.resource_id]).map_err(ApiError::database)?;
     }
+    // So is the reference list.
+    references::replace(tx, &subject, &references)?;
     let application = Application {
         id,
         name,
@@ -643,6 +700,7 @@ pub(crate) fn save_application_in(
         lifecycle: input.lifecycle,
         version,
         components,
+        references,
     };
     let change = change_log::application_saved(tx, by, before.as_ref(), &application)?;
     Ok((application, change))
@@ -663,6 +721,7 @@ pub(crate) fn application_in(tx: &Transaction, id: &str) -> Result<Option<Applic
                     lifecycle: row.get(3)?,
                     version: row.get(4)?,
                     components: Vec::new(),
+                    references: Vec::new(),
                 })
             },
         )
@@ -686,26 +745,35 @@ pub(crate) fn application_in(tx: &Transaction, id: &str) -> Result<Option<Applic
         .map_err(ApiError::database)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(ApiError::database)?;
+    application.references = references::of(tx, &Subject::Application { id: id.to_owned() })?;
     Ok(Some(application))
 }
 
-/// The resource as stored, read inside the caller's transaction; None if there is none.
+/// The resource as stored, with its references, read inside the caller's transaction; None if
+/// there is none.
 pub(crate) fn resource_in(tx: &Transaction, id: &str) -> Result<Option<Resource>, ApiError> {
-    tx.query_row(
-        "SELECT id, name, kind, description, operating_system FROM resources WHERE id = ?1",
-        [id],
-        |row| {
-            Ok(Resource {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                kind: row.get(2)?,
-                description: row.get(3)?,
-                operating_system: row.get(4)?,
-            })
-        },
-    )
-    .optional()
-    .map_err(ApiError::database)
+    let Some(mut resource) = tx
+        .query_row(
+            "SELECT id, name, kind, description, operating_system FROM resources WHERE id = ?1",
+            [id],
+            |row| {
+                Ok(Resource {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    kind: row.get(2)?,
+                    description: row.get(3)?,
+                    operating_system: row.get(4)?,
+                    references: Vec::new(),
+                })
+            },
+        )
+        .optional()
+        .map_err(ApiError::database)?
+    else {
+        return Ok(None);
+    };
+    resource.references = references::of(tx, &Subject::Resource { id: id.to_owned() })?;
+    Ok(Some(resource))
 }
 
 /// Which kinds of record reference a subject. History is never deleted, so any keeps it.
@@ -735,8 +803,9 @@ fn listed(items: &[String]) -> String {
     }
 }
 
-/// Deletes an application that has no records, with its components and HTTP check. One with
-/// observations, incidents or events is kept: DevHQ never erases history. Archive it instead.
+/// Deletes an application that has no records, with its components, references and HTTP check.
+/// One with observations, incidents or events is kept: DevHQ never erases history. Archive it
+/// instead.
 pub fn delete_application(path: &Path, id: &str) -> Result<(), ApiError> {
     let mut db = open(path)?;
     let tx = db
@@ -763,14 +832,15 @@ pub(crate) fn delete_application_in(
             listed(&history)
         )));
     }
-    // Its components and its HTTP check go with it (ON DELETE CASCADE).
+    // Its components, its references and its HTTP check go with it (ON DELETE CASCADE).
     tx.execute("DELETE FROM applications WHERE id = ?1", [id])
         .map_err(ApiError::database)?;
     let change = change_log::application_deleted(tx, by, &before)?;
     Ok((name, change))
 }
 
-/// Deletes a resource that no component runs on and that has no records, with its HTTP check.
+/// Deletes a resource that no component runs on, that holds no other system's paths and that has
+/// no records, with its references and its HTTP check.
 pub fn delete_resource(path: &Path, id: &str) -> Result<(), ApiError> {
     let mut db = open(path)?;
     let tx = db
@@ -811,6 +881,15 @@ pub(crate) fn delete_resource_in(
             listed(&users)
         )));
     }
+    // Removing other systems' paths would change their configuration without their own entry in
+    // the change log; the schema refuses it too (RESTRICT).
+    let paths = references::paths_on(tx, id, None)?;
+    if !paths.is_empty() {
+        return Err(ApiError::invalid(format!(
+            "{name} holds paths of other systems: {}. Remove those references, or put them on another machine, first.",
+            listed(&paths)
+        )));
+    }
     let history = history_of(tx, "resource_id", id)?;
     if !history.is_empty() {
         return Err(ApiError::invalid(format!(
@@ -818,6 +897,9 @@ pub(crate) fn delete_resource_in(
             listed(&history)
         )));
     }
+    // Its own references go first: some can be on itself, and SQLite applies the machine's
+    // RESTRICT at once, before the subject's CASCADE would remove them.
+    references::remove_all(tx, &Subject::Resource { id: id.to_owned() })?;
     // Its HTTP check goes with it (ON DELETE CASCADE).
     tx.execute("DELETE FROM resources WHERE id = ?1", [id])
         .map_err(ApiError::database)?;
@@ -847,6 +929,7 @@ pub(crate) mod tests {
                 kind: "backend".into(),
                 resource_id,
             }],
+            references: vec![],
         }
     }
 
@@ -862,6 +945,7 @@ pub(crate) mod tests {
                 kind: "server".into(),
                 description: String::new(),
                 operating_system: "Linux".into(),
+                references: vec![],
             },
         )
         .unwrap();
@@ -883,6 +967,7 @@ pub(crate) mod tests {
                     kind: "backend".into(),
                     resource_id: Some(resource.id),
                 }],
+                references: vec![],
             },
         )
         .unwrap();
@@ -896,6 +981,7 @@ pub(crate) mod tests {
                 lifecycle: "development".into(),
                 version: None,
                 components: vec![],
+                references: vec![],
             },
         )
         .unwrap();
@@ -926,6 +1012,7 @@ pub(crate) mod tests {
                 kind: "server".into(),
                 description: String::new(),
                 operating_system: String::new(),
+                references: vec![],
             },
         )
         .unwrap();
@@ -944,6 +1031,7 @@ pub(crate) mod tests {
                     kind: "backend".into(),
                     resource_id: Some("gone".into()),
                 }],
+                references: vec![],
             },
         )
         .unwrap_err();
@@ -963,6 +1051,7 @@ pub(crate) mod tests {
                 kind: "server".into(),
                 description: "  Rack 2 \n".into(),
                 operating_system: " Debian 13 ".into(),
+                references: vec![],
             },
         )
         .unwrap();
@@ -1057,6 +1146,7 @@ pub(crate) mod tests {
                 kind: "server".into(),
                 description: long(1000),
                 operating_system: long(120),
+                references: vec![],
             },
         )
         .is_ok());
@@ -1068,6 +1158,7 @@ pub(crate) mod tests {
                 kind: "server".into(),
                 description: String::new(),
                 operating_system: long(121),
+                references: vec![],
             },
         )
         .unwrap_err();
@@ -1091,6 +1182,7 @@ pub(crate) mod tests {
                 kind: "server".into(),
                 description: String::new(),
                 operating_system: String::new(),
+                references: vec![],
             },
         )
         .unwrap()
@@ -1175,6 +1267,7 @@ pub(crate) mod tests {
                     resource_id: component.resource_id.clone(),
                 })
                 .collect(),
+            references: vec![],
         };
         save_application(&path, edit(Some("1.1"))).unwrap();
         save_application(&path, edit(Some("1.1"))).unwrap();
@@ -1188,6 +1281,7 @@ pub(crate) mod tests {
                 kind: renamed.kind.clone(),
                 description: renamed.description.clone(),
                 operating_system: renamed.operating_system.clone(),
+                references: vec![],
             },
         )
         .unwrap();
@@ -1477,6 +1571,7 @@ pub(crate) mod tests {
                 kind: "docker".into(),
                 resource_id: Some("host".into()),
             }],
+            references: vec![],
         };
         // Archiving, as a refused deletion suggests, keeps working.
         let archived = save_application(&path, archive(shop.description.clone())).unwrap();
@@ -1491,6 +1586,7 @@ pub(crate) mod tests {
                 kind: "server".into(),
                 description: host.description.clone(),
                 operating_system: host.operating_system.clone(),
+                references: vec![],
             },
         )
         .is_ok());
@@ -1527,6 +1623,7 @@ pub(crate) mod tests {
             kind: "server".into(),
             description: String::new(),
             operating_system: String::new(),
+            references: vec![],
         };
         assert!(save_resource(&path, named(emoji(60))).is_ok());
         let error = save_resource(&path, named(emoji(61))).unwrap_err();
@@ -1697,6 +1794,7 @@ pub(crate) mod tests {
                 kind: "server".into(),
                 description: String::new(),
                 operating_system: String::new(),
+                references: vec![],
             },
         );
         release.send(()).unwrap();
@@ -1951,6 +2049,9 @@ pub(crate) mod tests {
                 "observations_application_id",
                 "observations_reported",
                 "observations_resource_id",
+                "system_references_application_id",
+                "system_references_machine_id",
+                "system_references_resource_id",
             ]
         );
         // Events point at the rebuilt observations table; nothing is left half renamed.
@@ -2605,7 +2706,7 @@ pub(crate) mod tests {
         let version: i64 = db
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 10);
+        assert_eq!(version, SCHEMA_VERSION);
         for (table, rows) in tables.iter().zip(&before) {
             assert_eq!(&dump(&db, table), rows, "{table}");
         }
@@ -2756,6 +2857,225 @@ pub(crate) mod tests {
         let fresh = list(&path).unwrap();
         assert_eq!(fresh.changes_since, None);
         assert!(fresh.changes.is_empty());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn upgrades_v10_with_references_without_changing_any_row() {
+        let path = path();
+        let db = database_at(&path, 10);
+        db.execute_batch(
+            "INSERT INTO resources (id, name, kind, description, operating_system)
+               VALUES ('host', 'Host', 'server', '', 'Linux'), ('laptop', 'Laptop', 'workstation', '', 'Windows 11');
+             INSERT INTO applications (id, name, lifecycle, description, version) VALUES ('shop', 'Shop', 'production', 'Store', '2.0');
+             INSERT INTO components (id, application_id, name, kind, resource_id) VALUES ('api', 'shop', 'API', 'backend', 'host');
+             INSERT INTO observations (id, resource_id, result, summary, source, observed_at, valid_until, recorded_at, agent)
+               VALUES ('obs-agent', 'host', 'healthy', 'Looked fine', 'agent', 500, 900, 600, 'claude-code');
+             INSERT INTO events (id, resource_id, kind, outcome, title, detail, source, observation_id, occurred_at, recorded_at, agent)
+               VALUES ('evt-agent', 'host', 'observation', 'success', 'Observation: Healthy', 'Looked fine', 'agent', 'obs-agent', 500, 600, 'claude-code');
+             INSERT INTO incidents (id, application_id, title, description, severity, status, source, opened_at, updated_at)
+               VALUES ('inc', 'shop', 'Down', '', 'critical', 'open', 'manual', 700, 700);
+             INSERT INTO http_checks (resource_id, url, expected_status, timeout_seconds, valid_for_minutes, updated_at, monitor, monitor_interval_minutes)
+               VALUES ('host', 'http://host/health', 200, 5, 15, 800, 'active', 5);
+             INSERT INTO agent_access VALUES (1, 'write', 900);
+             INSERT INTO change_log (id, application_id, resource_id, subject_name, source, agent, action, summary, changes, occurred_at)
+               VALUES ('change-version', 'shop', NULL, 'Shop', 'manual', NULL, 'updated', 'Updated application «Shop»: version «1.9» → «2.0»',
+                       '[{\"field\":\"version\",\"before\":\"1.9\",\"after\":\"2.0\"}]', 1000),
+                      ('change-host', NULL, 'host', 'Host', 'agent', 'codex', 'created', 'Added resource «Host» (server, Linux)', NULL, 400);
+             INSERT INTO change_log_start VALUES (1, 300);",
+        )
+        .unwrap();
+        let tables = [
+            "resources",
+            "applications",
+            "components",
+            "observations",
+            "incidents",
+            "events",
+            "http_checks",
+            "agent_access",
+            "change_log",
+            "change_log_start",
+        ];
+        let before: Vec<_> = tables.iter().map(|table| dump(&db, table)).collect();
+        drop(db);
+
+        let upgraded = list(&path).unwrap();
+        assert!(upgraded
+            .applications
+            .iter()
+            .all(|item| item.references.is_empty()));
+        assert!(upgraded
+            .resources
+            .iter()
+            .all(|item| item.references.is_empty()));
+        assert!(upgraded.shared_repositories.is_empty());
+        let db = Connection::open(&path).unwrap();
+        let version: i64 = db
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        for (table, rows) in tables.iter().zip(&before) {
+            assert_eq!(&dump(&db, table), rows, "{table}");
+        }
+        assert!(dump(&db, "system_references").is_empty());
+        // Each reference goes with its system; a machine holding a path stays.
+        assert_eq!(
+            strings(
+                &db,
+                "SELECT \"from\" || ' → ' || \"table\" || ' ' || on_delete FROM pragma_foreign_key_list('system_references') ORDER BY 1"
+            ),
+            [
+                "application_id → applications CASCADE",
+                "machine_id → resources RESTRICT",
+                "resource_id → resources CASCADE",
+            ]
+        );
+        assert_eq!(
+            strings(&db, "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'system_references' AND name NOT LIKE 'sqlite_autoindex%' ORDER BY name"),
+            [
+                "system_references_application_id",
+                "system_references_machine_id",
+                "system_references_resource_id",
+            ]
+        );
+        drop(db);
+
+        // The schema holds what SQL can say on its own, whatever wrote the row.
+        let db = open(&path).unwrap();
+        let reference = |subject: (Option<&str>, Option<&str>),
+                         kind: &str,
+                         target: &str,
+                         label: Option<&str>,
+                         machine: Option<&str>| {
+            db.execute(
+                "INSERT INTO system_references (id, application_id, resource_id, kind, target, label, machine_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![Uuid::new_v4().to_string(), subject.0, subject.1, kind, target, label, machine],
+            )
+        };
+        let shop = (Some("shop"), None);
+        let refused = [
+            (
+                reference(
+                    (Some("shop"), Some("host")),
+                    "dashboard",
+                    "https://x.example",
+                    None,
+                    None,
+                ),
+                "two systems",
+            ),
+            (
+                reference((None, None), "dashboard", "https://x.example", None, None),
+                "no system",
+            ),
+            (
+                reference(
+                    (Some("gone"), None),
+                    "dashboard",
+                    "https://x.example",
+                    None,
+                    None,
+                ),
+                "a system that is gone",
+            ),
+            (
+                reference(shop, "wiki", "https://x.example", None, None),
+                "unknown kind",
+            ),
+            (reference(shop, "dashboard", "", None, None), "no target"),
+            (
+                reference(shop, "dashboard", " https://x.example", None, None),
+                "padded target",
+            ),
+            (
+                reference(
+                    shop,
+                    "logs",
+                    &format!("/{}", "a".repeat(2048)),
+                    None,
+                    Some("host"),
+                ),
+                "target too long",
+            ),
+            (
+                reference(shop, "dashboard", "https://x.example", Some(""), None),
+                "empty label",
+            ),
+            (
+                reference(shop, "dashboard", "https://x.example", Some("Ops "), None),
+                "padded label",
+            ),
+            (
+                reference(
+                    shop,
+                    "dashboard",
+                    "https://x.example",
+                    Some(&"a".repeat(121)),
+                    None,
+                ),
+                "label too long",
+            ),
+            (
+                reference(shop, "logs", "https://logs.example", None, Some("host")),
+                "a URL on a machine",
+            ),
+            (
+                reference(shop, "logs", "/var/log/shop", None, None),
+                "a path on no machine",
+            ),
+            (
+                reference(shop, "logs", "logs/shop", None, Some("host")),
+                "a relative path",
+            ),
+            (
+                reference(shop, "repository", "/srv/git/shop", None, Some("host")),
+                "a repository path",
+            ),
+            (
+                reference(shop, "dashboard", "/srv/grafana", None, Some("host")),
+                "a dashboard path",
+            ),
+            (
+                reference(shop, "local_copy", "https://github.com/me/shop", None, None),
+                "a local copy URL",
+            ),
+            (
+                reference(shop, "logs", "/var/log/shop", None, Some("ghost")),
+                "a machine that is not there",
+            ),
+        ];
+        for (result, why) in refused {
+            assert!(result.is_err(), "{why}");
+        }
+        for (subject, kind, target, machine) in [
+            (shop, "repository", "https://github.com/me/shop", None),
+            (shop, "documentation", "HTTPS://Docs.example/shop", None),
+            (shop, "local_copy", r"C:\src\shop", Some("laptop")),
+            (shop, "local_copy", "c:/src/shop", Some("laptop")),
+            (shop, "logs", r"\\nas\logs\shop", Some("host")),
+            (
+                (None, Some("host")),
+                "logs",
+                "/var/log/syslog",
+                Some("host"),
+            ),
+        ] {
+            assert!(
+                reference(subject, kind, target, None, machine).is_ok(),
+                "{kind} {target}"
+            );
+        }
+        // A machine that holds a path stays; deleting a system takes its references with it.
+        assert!(db
+            .execute("DELETE FROM resources WHERE id = 'laptop'", [])
+            .is_err());
+        db.execute("DELETE FROM incidents", []).unwrap();
+        db.execute("DELETE FROM applications WHERE id = 'shop'", [])
+            .unwrap();
+        assert_eq!(dump(&db, "system_references").len(), 1);
+        drop(db);
         std::fs::remove_file(path).unwrap();
     }
 

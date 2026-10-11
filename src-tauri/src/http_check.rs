@@ -103,33 +103,40 @@ fn not_configured(subject: &Subject) -> ApiError {
     ))
 }
 
-/// A plain http(s) URL. Credentials are refused because DevHQ sends none; the fragment is
-/// dropped because it is never sent.
-fn endpoint_url(value: &str) -> Result<Url, ApiError> {
+/// A web address as DevHQ keeps one, here and in a system's references: http or https, with a
+/// host, without a user name or password (DevHQ sends no credentials and keeps URLs in plain
+/// text), and 2048 characters at most. `what` names it in the messages: «The endpoint URL».
+pub(crate) fn web_url(value: &str, what: &str) -> Result<Url, ApiError> {
     let text = value.trim();
     if text.is_empty() {
-        return Err(ApiError::invalid("The endpoint URL is required."));
+        return Err(ApiError::invalid(format!("{what} is required.")));
     }
     if text.len() > MAX_URL_LENGTH {
         return Err(ApiError::invalid(format!(
-            "The endpoint URL is longer than {MAX_URL_LENGTH} characters."
+            "{what} is longer than {MAX_URL_LENGTH} characters."
         )));
     }
-    let mut url = Url::parse(text)
-        .map_err(|error| ApiError::invalid(format!("The endpoint URL is not valid: {error}.")))?;
+    let url = Url::parse(text)
+        .map_err(|error| ApiError::invalid(format!("{what} is not valid: {error}.")))?;
     if !matches!(url.scheme(), "http" | "https") {
-        return Err(ApiError::invalid(
-            "The endpoint URL must start with http:// or https://.",
-        ));
+        return Err(ApiError::invalid(format!(
+            "{what} must start with http:// or https://."
+        )));
     }
     if url.host_str().is_none_or(str::is_empty) {
-        return Err(ApiError::invalid("The endpoint URL needs a host."));
+        return Err(ApiError::invalid(format!("{what} needs a host.")));
     }
     if !url.username().is_empty() || url.password().is_some() {
         return Err(ApiError::invalid(
             "Credentials in the URL are not supported. DevHQ sends no credentials.",
         ));
     }
+    Ok(url)
+}
+
+/// The URL a check requests. The fragment is dropped because it is never sent.
+fn endpoint_url(value: &str) -> Result<Url, ApiError> {
+    let mut url = web_url(value, "The endpoint URL")?;
     url.set_fragment(None);
     Ok(url)
 }
@@ -662,6 +669,7 @@ pub(crate) mod tests {
                 kind: "server".into(),
                 description: String::new(),
                 operating_system: String::new(),
+                references: vec![],
             },
         )
         .unwrap();
@@ -678,6 +686,7 @@ pub(crate) mod tests {
                 lifecycle: "production".into(),
                 version: None,
                 components: vec![],
+                references: vec![],
             },
         )
         .unwrap();

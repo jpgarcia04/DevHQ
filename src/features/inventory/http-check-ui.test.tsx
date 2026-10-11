@@ -99,11 +99,26 @@ const snapshot: InventorySnapshot = {
       lifecycle: 'production',
       version: null,
       components: [{ id: 'api', name: 'API', kind: 'backend', resourceId: 'db-host' }],
+      references: [],
     },
   ],
   resources: [
-    { id: 'web-host', name: 'Web host', kind: 'server', description: '', operatingSystem: '' },
-    { id: 'db-host', name: 'Database host', kind: 'server', description: '', operatingSystem: '' },
+    {
+      id: 'web-host',
+      name: 'Web host',
+      kind: 'server',
+      description: '',
+      operatingSystem: '',
+      references: [],
+    },
+    {
+      id: 'db-host',
+      name: 'Database host',
+      kind: 'server',
+      description: '',
+      operatingSystem: '',
+      references: [],
+    },
   ],
   observations: [shopChecked, webFailure, dbManual, shopManual],
   incidents: [],
@@ -118,6 +133,7 @@ const snapshot: InventorySnapshot = {
   changes: [],
   changesSince: null,
   automatedHistory: { limit: 200, truncated: [] },
+  sharedRepositories: [],
 }
 
 function renderWith(ui: ReactNode, value: InventoryContextValue, path = '/') {

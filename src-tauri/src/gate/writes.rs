@@ -5,8 +5,8 @@
 //!   case logs each change in the change log, as the agent's, in the same transaction, after the
 //!   gate checks there, with SQLite's write lock held, that the person still lets agents write.
 //! - Edits are partial: what an agent leaves out is kept, so that changing one field can never
-//!   erase another by omission. A component list, when given, is the complete list, as in the
-//!   window's form.
+//!   erase another by omission. A component or reference list, when given, is the complete list,
+//!   as in the window's form.
 
 use super::{pick, system_type, text, Session};
 use crate::access;
@@ -18,6 +18,7 @@ use crate::records::{
     self, Actor, EventInput, IncidentInput, IncidentStatusInput, Lifeline, ObservationInput,
     Subject,
 };
+use crate::references::{Reference, ReferenceInput};
 use rusqlite::{Transaction, TransactionBehavior};
 use serde_json::{json, Map, Value};
 
@@ -99,7 +100,21 @@ fn subject_in(
 /// A resource named by ID or, failing that, by exact name: its ID. An unknown one is passed on
 /// as an ID, and the use case refuses it with its own message.
 fn resource_id(tx: &Transaction, named: &str) -> Result<String, ApiError> {
-    let resources = candidates(tx, "resource")?;
+    resource_named(tx, named, None)
+}
+
+/// Like `resource_id`, but also knowing `saving`, the resource being saved (its ID and its name
+/// as it will be), which can be the machine of its own paths even before it exists.
+fn resource_named(
+    tx: &Transaction,
+    named: &str,
+    saving: Option<(&str, &str)>,
+) -> Result<String, ApiError> {
+    let mut resources = candidates(tx, "resource")?;
+    if let Some((id, name)) = saving {
+        resources.retain(|(other, _)| other != id);
+        resources.push((id.to_owned(), name.to_owned()));
+    }
     if resources.iter().any(|(id, _)| id == named) {
         return Ok(named.to_owned());
     }
@@ -113,6 +128,40 @@ fn resource_id(tx: &Transaction, named: &str) -> Result<String, ApiError> {
         _ => Err(ApiError::invalid(format!(
             "Several resources are named {named}; use the resource's id."
         ))),
+    }
+}
+
+/// The `references` an agent gives, read inside the transaction: the complete list when given,
+/// with each `machine` named by ID or exact name, and the stored list (`kept`) when left out.
+/// `saving` is the resource being saved, which can be the machine of its own paths.
+fn references_argument(
+    tx: &Transaction,
+    arguments: &Map<String, Value>,
+    kept: Option<&[Reference]>,
+    saving: Option<(&str, &str)>,
+) -> Result<Vec<ReferenceInput>, ApiError> {
+    match arguments.get("references") {
+        None => Ok(kept
+            .map(|references| references.iter().map(ReferenceInput::from).collect())
+            .unwrap_or_default()),
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|item| {
+                let item = item.as_object().ok_or_else(|| {
+                    ApiError::invalid("Each reference must be an object with kind and target.")
+                })?;
+                Ok(ReferenceInput {
+                    id: optional_text(item, "id")?.map(str::to_owned),
+                    kind: text(item, "kind")?.to_owned(),
+                    target: text(item, "target")?.to_owned(),
+                    label: optional_text(item, "label")?.map(str::to_owned),
+                    machine_id: optional_text(item, "machine")?
+                        .map(|named| resource_named(tx, named, saving))
+                        .transpose()?,
+                })
+            })
+            .collect(),
+        Some(_) => Err(ApiError::invalid("references must be a list.")),
     }
 }
 
@@ -216,6 +265,12 @@ impl Session {
                     .collect::<Result<Vec<_>, ApiError>>()?,
                 Some(_) => return Err(ApiError::invalid("components must be a list.")),
             };
+            let references = references_argument(
+                tx,
+                arguments,
+                existing.as_ref().map(|item| item.references.as_slice()),
+                None,
+            )?;
             let (saved, change) = inventory::save_application_in(
                 tx,
                 ApplicationInput {
@@ -225,6 +280,7 @@ impl Session {
                     lifecycle,
                     version,
                     components,
+                    references,
                 },
                 agent,
             )?;
@@ -252,15 +308,26 @@ impl Session {
                     },
                 }
             };
+            // A new resource gets its ID here, so that its own paths can name it as their machine.
+            let id = existing
+                .as_ref()
+                .map_or_else(|| uuid::Uuid::new_v4().to_string(), |item| item.id.clone());
+            let name = keep(
+                "name",
+                existing.as_ref().map(|item| item.name.clone()),
+                Some("name is required to add a resource."),
+            )?;
+            let references = references_argument(
+                tx,
+                arguments,
+                existing.as_ref().map(|item| item.references.as_slice()),
+                Some((&id, &name)),
+            )?;
             let (saved, change) = inventory::save_resource_in(
                 tx,
                 ResourceInput {
-                    id: existing.as_ref().map(|item| item.id.clone()),
-                    name: keep(
-                        "name",
-                        existing.as_ref().map(|item| item.name.clone()),
-                        Some("name is required to add a resource."),
-                    )?,
+                    id: Some(id.clone()),
+                    name,
                     kind: keep(
                         "kind",
                         existing.as_ref().map(|item| item.kind.clone()),
@@ -272,6 +339,7 @@ impl Session {
                         existing.as_ref().map(|item| item.operating_system.clone()),
                         None,
                     )?,
+                    references,
                 },
                 agent,
             )?;
@@ -526,6 +594,21 @@ fn with_system(extra: Value) -> Value {
     super::system_arguments(extra)
 }
 
+/// Where a system is, as save_application and save_resource take it.
+fn references_schema() -> Value {
+    json!({
+        "type": "array",
+        "description": "Where the system is: inventory the agent declares, which DevHQ never opens or checks. Include the existing references with their ids (from get_system) to keep them; the same kind, target and machine cannot appear twice.",
+        "items": { "type": "object", "properties": {
+            "id": { "type": "string", "description": "An existing reference's id, to keep it." },
+            "kind": { "type": "string", "enum": ["repository", "local_copy", "documentation", "logs", "dashboard"], "description": "repository and dashboard take an http(s) URL; local_copy an absolute path on a workstation; documentation and logs either." },
+            "target": { "type": "string", "description": "An http(s) URL without user name or password, or an absolute path (C:\\…, \\\\server\\share\\… or /…), as it should be shown and copied. A repository is the code's canonical web address, never a local remote or an SSH URL." },
+            "label": { "type": ["string", "null"], "description": "An optional name for people that tells two references of one kind apart. Never a locator." },
+            "machine": { "type": ["string", "null"], "description": "For a path, required: the resource it is on, by id or exact name. For a URL, leave it out." },
+        }, "required": ["kind", "target"], "additionalProperties": false },
+    })
+}
+
 fn named(kind: &str) -> Value {
     json!({
         "id": { "type": "string", "description": format!("The {kind}'s id, from list_systems.") },
@@ -542,7 +625,7 @@ pub(super) fn tools() -> Vec<Value> {
         tool(
             "save_application",
             "Add or edit an application",
-            "Adds an application (name and lifecycle required), or edits the one with the given id. An edit keeps what it leaves out. `components`, when given, is the complete list: include the existing ones with their ids (from get_system) to keep them; `runsOn` names a resource by id or exact name, or null. `version: null` clears the version. Logged as the agent's change.",
+            "Adds an application (name and lifecycle required), or edits the one with the given id. An edit keeps what it leaves out. `components`, when given, is the complete list: include the existing ones with their ids (from get_system) to keep them; `runsOn` names a resource by id or exact name, or null. `references`, when given, is likewise the complete list of where the application is (see the item's description). `version: null` clears the version. Logged as the agent's change.",
             json!({
                 "id": { "type": "string", "description": "The application to edit; leave out to add one." },
                 "name": { "type": "string" },
@@ -555,6 +638,7 @@ pub(super) fn tools() -> Vec<Value> {
                     "kind": { "type": "string", "enum": ["backend", "database", "docker", "frontend"] },
                     "runsOn": { "type": ["string", "null"], "description": "A resource's id or exact name." },
                 }, "required": ["name", "kind"], "additionalProperties": false } },
+                "references": references_schema(),
             }),
             &[],
             overwriting.clone(),
@@ -562,13 +646,14 @@ pub(super) fn tools() -> Vec<Value> {
         tool(
             "save_resource",
             "Add or edit a resource",
-            "Adds a resource (name and kind required), or edits the one with the given id, keeping what the edit leaves out. Logged as the agent's change.",
+            "Adds a resource (name and kind required), or edits the one with the given id, keeping what the edit leaves out. `references`, when given, is the complete list of where the resource is (see the item's description); a resource can be the machine of its own paths, named by its id or its name. One that holds other systems' local copies cannot stop being a workstation. Logged as the agent's change.",
             json!({
                 "id": { "type": "string", "description": "The resource to edit; leave out to add one." },
                 "name": { "type": "string" },
                 "kind": { "type": "string", "enum": ["server", "workstation"] },
                 "description": { "type": "string" },
                 "operatingSystem": { "type": "string" },
+                "references": references_schema(),
             }),
             &[],
             overwriting.clone(),
@@ -576,7 +661,7 @@ pub(super) fn tools() -> Vec<Value> {
         tool(
             "delete_application",
             "Delete an application without history",
-            "Deletes an application that has no observations, incidents or events, with its components and HTTP check. One with history is refused: DevHQ never erases history; set its lifecycle to archived instead. Logged as the agent's change.",
+            "Deletes an application that has no observations, incidents or events, with its components, references and HTTP check. One with history is refused: DevHQ never erases history; set its lifecycle to archived instead. Logged as the agent's change.",
             named("application"),
             &[],
             json!({ "destructiveHint": true, "idempotentHint": false }),
@@ -584,7 +669,7 @@ pub(super) fn tools() -> Vec<Value> {
         tool(
             "delete_resource",
             "Delete a resource without history",
-            "Deletes a resource that no component runs on and that has no observations, incidents or events, with its HTTP check. Anything else is refused and explained. Logged as the agent's change.",
+            "Deletes a resource that no component runs on, that holds no other system's paths and that has no observations, incidents or events, with its references and its HTTP check. Anything else is refused and explained. Logged as the agent's change.",
             named("resource"),
             &[],
             json!({ "destructiveHint": true, "idempotentHint": false }),

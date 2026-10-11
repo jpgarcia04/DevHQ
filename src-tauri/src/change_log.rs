@@ -1,5 +1,5 @@
 //! One log of every significant change to the inventory's configuration (applications, resources,
-//! components and HTTP checks), which has no `source` of its own, whoever makes it: the person in
+//! components, references and HTTP checks), which has no `source` of its own, whoever makes it: the person in
 //! the window (`manual`) or an agent through the agent gate (`agent`, with its name). Records
 //! (observations, incidents, events) say who reported them in their own `source`, so they are not
 //! repeated here. The use cases write each entry in the same transaction as its change, so there
@@ -14,6 +14,7 @@
 use crate::http_check::HttpCheck;
 use crate::inventory::{ApiError, Application, Resource};
 use crate::records::{format_time, now_ms, time_at, Actor, Subject};
+use crate::references::{self, Reference};
 use rusqlite::types::Type;
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
@@ -24,8 +25,21 @@ use uuid::Uuid;
 const MAX_SUMMARY: usize = 500;
 
 /// The fields each kind of configuration logs, by the keys the window knows them by.
-const APPLICATION_FIELDS: [&str; 5] = ["name", "lifecycle", "version", "description", "components"];
-const RESOURCE_FIELDS: [&str; 4] = ["name", "kind", "operatingSystem", "description"];
+const APPLICATION_FIELDS: [&str; 6] = [
+    "name",
+    "lifecycle",
+    "version",
+    "description",
+    "components",
+    "references",
+];
+const RESOURCE_FIELDS: [&str; 5] = [
+    "name",
+    "kind",
+    "operatingSystem",
+    "description",
+    "references",
+];
 const CHECK_FIELDS: [&str; 6] = [
     "url",
     "expectedStatus",
@@ -244,6 +258,69 @@ fn component_summary(application: &Application, resources: &[(String, String)]) 
         .collect()
 }
 
+/// Each reference to read: «local copy «Clone» C:\src\shop on Laptop», with the machine's name.
+fn reference_summary(references: &[Reference], resources: &[(String, String)]) -> Vec<String> {
+    references
+        .iter()
+        .map(|reference| {
+            let label = reference
+                .label
+                .as_ref()
+                .map(|label| format!(" «{label}»"))
+                .unwrap_or_default();
+            let on = reference
+                .machine_id
+                .as_ref()
+                .map(|id| {
+                    let machine = resources
+                        .iter()
+                        .find(|(resource, _)| resource == id)
+                        .map_or(id.as_str(), |(_, name)| name.as_str());
+                    format!(" on {machine}")
+                })
+                .unwrap_or_default();
+            format!(
+                "{}{label} {}{on}",
+                references::kind_label(&reference.kind),
+                reference.target
+            )
+        })
+        .collect()
+}
+
+/// The references a system was created with, for its summary: nothing when there are none.
+fn created_with_references(references: &[Reference], resources: &[(String, String)]) -> String {
+    if references.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "; references: {}",
+            reference_summary(references, resources).join(", ")
+        )
+    }
+}
+
+/// How a system's references changed, to read, if they did.
+fn reference_changes(
+    before: &[Reference],
+    after: &[Reference],
+    resources: &[(String, String)],
+) -> Option<String> {
+    let (was, is) = (
+        reference_summary(before, resources),
+        reference_summary(after, resources),
+    );
+    if was != is {
+        Some(format!("references {} → {}", listed(&was), listed(&is)))
+    } else if before != after {
+        // The same kinds, targets, labels and machines, but other references (removed and added
+        // again).
+        Some(format!("references replaced: {}", listed(&is)))
+    } else {
+        None
+    }
+}
+
 fn listed(parts: &[String]) -> String {
     if parts.is_empty() {
         "none".to_owned()
@@ -292,10 +369,19 @@ fn application_changes(
         // The same names, kinds and resources, but other components (removed and added again).
         changes.push(format!("components replaced: {}", listed(&is)));
     }
+    changes.extend(reference_changes(
+        &before.references,
+        &after.references,
+        resources,
+    ));
     changes
 }
 
-fn resource_changes(before: &Resource, after: &Resource) -> Vec<String> {
+fn resource_changes(
+    before: &Resource,
+    after: &Resource,
+    resources: &[(String, String)],
+) -> Vec<String> {
     let mut changes = Vec::new();
     if before.name != after.name {
         changes.push(format!(
@@ -317,6 +403,11 @@ fn resource_changes(before: &Resource, after: &Resource) -> Vec<String> {
     if before.description != after.description {
         changes.push("description changed".to_owned());
     }
+    changes.extend(reference_changes(
+        &before.references,
+        &after.references,
+        resources,
+    ));
     changes
 }
 
@@ -351,7 +442,7 @@ pub(crate) fn application_saved(
             (
                 "created",
                 format!(
-                    "Added application «{}» ({}{}){}",
+                    "Added application «{}» ({}{}){}{}",
                     after.name,
                     after.lifecycle,
                     after
@@ -363,7 +454,8 @@ pub(crate) fn application_saved(
                         String::new()
                     } else {
                         format!(" with {}", parts.join(", "))
-                    }
+                    },
+                    created_with_references(&after.references, &resources)
                 ),
             )
         }
@@ -403,18 +495,20 @@ pub(crate) fn resource_saved(
     if before.is_some() && changes.is_empty() {
         return Ok(None);
     }
+    let resources = resource_names(db)?;
     let (action, summary) = match before {
         None => (
             "created",
             format!(
-                "Added resource «{}» ({}{})",
+                "Added resource «{}» ({}{}){}",
                 after.name,
                 after.kind,
                 if after.operating_system.is_empty() {
                     String::new()
                 } else {
                     format!(", {}", after.operating_system)
-                }
+                },
+                created_with_references(&after.references, &resources)
             ),
         ),
         Some(before) => (
@@ -422,7 +516,7 @@ pub(crate) fn resource_saved(
             format!(
                 "Updated resource «{}»: {}",
                 after.name,
-                resource_changes(before, after).join("; ")
+                resource_changes(before, after, &resources).join("; ")
             ),
         ),
     };
@@ -624,6 +718,7 @@ mod tests {
             kind: "server".into(),
             description: description.into(),
             operating_system: operating_system.into(),
+            references: vec![],
         }
     }
 

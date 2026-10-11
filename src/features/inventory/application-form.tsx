@@ -7,6 +7,8 @@ import { DeleteSubject } from './delete-subject'
 import { inventoryError, type ApplicationInput, type InventoryApplication } from './inventory-api'
 import { useInventory } from './inventory-context'
 import { textLimits } from './limits'
+import { ReferenceFields } from './reference-fields'
+import { referenceInputs } from './references'
 
 type DraftComponent = ApplicationInput['components'][number]
 
@@ -26,6 +28,9 @@ export function ApplicationForm({
   const [lifecycle, setLifecycle] = useState<Lifecycle>(application?.lifecycle ?? 'development')
   const [version, setVersion] = useState(application?.version ?? '')
   const [components, setComponents] = useState<DraftComponent[]>(application?.components ?? [])
+  const [references, setReferences] = useState<ApplicationInput['references']>(
+    application?.references ?? [],
+  )
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const updateComponent = (index: number, patch: Partial<DraftComponent>) =>
@@ -47,6 +52,7 @@ export function ApplicationForm({
             lifecycle,
             version: version.trim() || null,
             components,
+            references: referenceInputs(references),
           })
           onDone()
         } catch (cause) {
@@ -181,6 +187,7 @@ export function ApplicationForm({
           </div>
         ))}
       </div>
+      <ReferenceFields references={references} onChange={setReferences} />
       {error && (
         <p role="alert" className="text-xs text-rose-300">
           {error}

@@ -2,11 +2,9 @@ import { useEffect, useId, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { formatDateTime } from '@/shared/time'
 import { cn } from '@/shared/utils'
+import { useCopy } from './copy'
 import { inventoryError, type AgentAccess, type AgentAccessMode } from './inventory-api'
 import { useInventory } from './inventory-context'
-
-/** How long «Command copied.» stays, in milliseconds. */
-const copiedFor = 3000
 
 const modes: { value: AgentAccessMode; label: string; detail: string }[] = [
   {
@@ -44,7 +42,7 @@ export function AgentGate() {
   const [loadError, setLoadError] = useState<string | null>(null)
   const [saving, setSaving] = useState<AgentAccessMode | null>(null)
   const [saveError, setSaveError] = useState<string | null>(null)
-  const [copied, setCopied] = useState<{ ok: boolean; at: number } | null>(null)
+  const { copied, copy } = useCopy()
   useEffect(() => {
     let current = true
     agentAccess().then(
@@ -55,11 +53,6 @@ export function AgentGate() {
       current = false
     }
   }, [agentAccess])
-  useEffect(() => {
-    if (!copied?.ok) return
-    const timer = setTimeout(() => setCopied(null), copiedFor)
-    return () => clearTimeout(timer)
-  }, [copied])
 
   const choose = async (mode: AgentAccessMode) => {
     if (saving) return
@@ -72,14 +65,6 @@ export function AgentGate() {
       setSaveError(inventoryError(cause))
     } finally {
       setSaving(null)
-    }
-  }
-  const copy = async (command: string) => {
-    try {
-      await navigator.clipboard.writeText(command)
-      setCopied({ ok: true, at: Date.now() })
-    } catch {
-      setCopied({ ok: false, at: Date.now() })
     }
   }
 
