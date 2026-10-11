@@ -884,6 +884,88 @@ mod tests {
         std::fs::remove_dir_all(&world.folder).unwrap();
     }
 
+    /// A credential in a remote's URL reaches neither the reader's answer nor the inventory, in any
+    /// form of URL DevHQ keeps: the reading's remotes are cleaned, and the secret is nowhere in the
+    /// database's files.
+    #[test]
+    fn keeps_no_credential_of_a_remote_in_a_reading_or_the_inventory() {
+        let world = World::new("readings-credentials");
+        let laptop = world.workstation("Laptop");
+        let copy = world.repository(
+            "shop",
+            "file://demo-user:demo-pass@server.example/share/repo",
+        );
+        for (name, url) in [
+            (
+                "web",
+                "https://web-user:web-pass@github.com/me/shop?private_token=query-pass",
+            ),
+            ("token", "https://token-pass@github.com/me/shop"),
+            ("daemon", "git://daemon-pass@git.example/shop.git"),
+            ("unc", r"file://unc-user:unc-pass@server.example\share\repo"),
+            ("ssh", "ssh://git:ssh-pass@host.example/shop.git"),
+        ] {
+            git(&copy, &["remote", "add", name, url]);
+        }
+        save_application(
+            &world.database,
+            application("Shop", vec![copy_at(&copy, &laptop)]),
+        )
+        .unwrap();
+        world.choose(&laptop);
+        let read = world.read(&Which::ThisWorkstation).unwrap();
+        assert!(read.failures.is_empty(), "{:?}", read.failures);
+        let mut urls: Vec<(String, Option<String>)> = read.readings[0]
+            .remotes
+            .clone()
+            .unwrap()
+            .into_iter()
+            .map(|remote| (remote.name, remote.url))
+            .collect();
+        urls.sort();
+        let kept = |name: &str, url: &str| (name.to_owned(), Some(url.to_owned()));
+        assert_eq!(
+            urls,
+            [
+                kept("daemon", "git://git.example/shop.git"),
+                kept("origin", "file://server.example/share/repo"),
+                kept("ssh", "ssh://git@host.example/shop.git"),
+                kept("token", "https://github.com/me/shop"),
+                kept("unc", r"file://server.example\share\repo"),
+                kept("web", "https://github.com/me/shop"),
+            ]
+        );
+        let secrets = [
+            "demo-user",
+            "demo-pass",
+            "web-user",
+            "web-pass",
+            "query-pass",
+            "token-pass",
+            "daemon-pass",
+            "unc-user",
+            "unc-pass",
+            "ssh-pass",
+        ];
+        // What the window and the gate show is what the inventory keeps.
+        let shown = serde_json::to_string(&list(&world.database).unwrap()).unwrap();
+        // The database's own files, whatever SQLite left in its log.
+        let mut stored = Vec::new();
+        for suffix in ["", "-wal"] {
+            let file = PathBuf::from(format!("{}{suffix}", world.database.display()));
+            if let Ok(bytes) = std::fs::read(file) {
+                stored.extend(bytes);
+            }
+        }
+        let stored = String::from_utf8_lossy(&stored);
+        assert!(stored.contains("server.example/share/repo"));
+        for secret in secrets {
+            assert!(!shown.contains(secret), "{secret} shown");
+            assert!(!stored.contains(secret), "{secret} stored");
+        }
+        std::fs::remove_dir_all(&world.folder).unwrap();
+    }
+
     #[test]
     fn a_copy_removed_or_moved_while_it_was_read_keeps_nothing() {
         let world = World::new("readings-in-flight");

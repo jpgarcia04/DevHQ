@@ -1,10 +1,11 @@
 //! A copy's remotes, as DevHQ keeps them and compares them.
 //!
 //! libgit2 gives a remote's URL as its config has it, credentials included
-//! (`https://user:token@host/…`). DevHQ keeps only the forms it knows, cleaned: http(s) without a
-//! user name, password, query or fragment; `ssh://` without a password; `user@host:path`; `git://`,
-//! `file://` and absolute paths. Anything else (`ext::`, which is a command line, a remote helper's
-//! `name::address`, a relative path) is kept by its name only, without its URL.
+//! (`https://user:token@host/…`, `file://user:password@server/share/…`). DevHQ keeps only the forms
+//! it knows, cleaned: http(s) without a user name, password, query or fragment; `ssh://` without a
+//! password; `user@host:path`; `git://` and `file://` without a user name or password; and absolute
+//! paths. Anything else (`ext::`, which is a command line, a remote helper's `name::address`, a
+//! relative path) is kept by its name only, without its URL.
 //!
 //! Comparing a copy's remote with the repository its system declares needs both normalized, since
 //! the real remote is often `git@github.com:me/shop.git` while the declared repository is
@@ -35,12 +36,18 @@ pub(crate) fn sanitized(url: &str) -> Option<String> {
     } else if lower.starts_with("ssh://") || lower.starts_with("git://") {
         let mut parsed = Url::parse(text).ok()?;
         parsed.host_str()?;
-        // The user of an SSH URL (`git@`) names an account, not a secret; a password is one.
+        // The user of an SSH URL (`git@`) names an account, not a secret; a password is one. The
+        // git protocol has no accounts, so whatever stands before its @ can only be a secret.
+        if lower.starts_with("git://") {
+            parsed.set_username("").ok()?;
+        }
         parsed.set_password(None).ok()?;
         parsed.set_query(None);
         parsed.set_fragment(None);
         parsed.to_string()
-    } else if lower.starts_with("file://") || absolute_path(text) {
+    } else if lower.starts_with("file://") {
+        without_user_info(text)
+    } else if absolute_path(text) {
         text.to_owned()
     } else if let Some((_, host, path)) = scp_like(text) {
         // `user@host:path` has no place for a password. Written as `user:password@host:path`,
@@ -54,6 +61,23 @@ pub(crate) fn sanitized(url: &str) -> Option<String> {
         return None;
     };
     (cleaned.len() <= MAX_URL).then_some(cleaned)
+}
+
+/// A `file://` URL without what stands before the @ of its authority, a user name and a password
+/// (`file://user:password@server/share/repo` keeps `file://server/share/repo`); the rest as written.
+/// It is cut by hand because a WHATWG parser refuses user info in a file URL instead of exposing
+/// it, and rewriting the path (percent-encoding, `\`) would change what the remote names. The
+/// authority ends where a URL's does, at the first `/`, `\`, `?` or `#`; an @ after that is part
+/// of the path.
+fn without_user_info(text: &str) -> String {
+    let (scheme, rest) = text.split_at("file://".len());
+    let authority = rest
+        .find(['/', '\\', '?', '#'])
+        .map_or(rest, |end| &rest[..end]);
+    match authority.rfind('@') {
+        Some(at) => format!("{scheme}{}", &rest[at + 1..]),
+        None => text.to_owned(),
+    }
 }
 
 /// An absolute path on any system: `/…`, `C:\…`, `C:/…` or `\\server\share\…`.
@@ -119,7 +143,7 @@ mod tests {
 
     #[test]
     fn keeps_only_known_forms_and_never_a_credential() {
-        let cases: [(&str, Option<&str>); 22] = [
+        let cases: [(&str, Option<&str>); 32] = [
             (
                 "https://github.com/me/shop.git",
                 Some("https://github.com/me/shop.git"),
@@ -153,7 +177,44 @@ mod tests {
                 Some("git@github.com:me/shop.git"),
             ),
             ("host.example:shop.git", Some("host.example:shop.git")),
+            // The git protocol has no accounts: a user name there is a secret too.
+            (
+                "git://token123@git.example/shop.git",
+                Some("git://git.example/shop.git"),
+            ),
+            (
+                "git://me:secret@git.example/shop.git",
+                Some("git://git.example/shop.git"),
+            ),
             ("file:///srv/git/shop.git", Some("file:///srv/git/shop.git")),
+            (
+                "file://server.example/share/shop",
+                Some("file://server.example/share/shop"),
+            ),
+            // User info before a file URL's host, in every way a URL can end its authority; an @
+            // in the path is a path.
+            (
+                "file://demo-user:demo-pass@server.example/share/repo",
+                Some("file://server.example/share/repo"),
+            ),
+            (
+                "FILE://token@server.example/share/repo",
+                Some("FILE://server.example/share/repo"),
+            ),
+            (
+                "file://me:p@ss@server.example/share/repo",
+                Some("file://server.example/share/repo"),
+            ),
+            (
+                r"file://me:secret@server.example\share\repo",
+                Some(r"file://server.example\share\repo"),
+            ),
+            ("file://me:secret@/srv/shop", Some("file:///srv/shop")),
+            ("file://me:secret@server", Some("file://server")),
+            (
+                "file:///srv/me@work/shop.git",
+                Some("file:///srv/me@work/shop.git"),
+            ),
             ("/srv/git/shop.git", Some("/srv/git/shop.git")),
             (r"C:\git\shop.git", Some(r"C:\git\shop.git")),
             ("D:/git/shop", Some("D:/git/shop")),
