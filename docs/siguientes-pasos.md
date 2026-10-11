@@ -9,22 +9,24 @@ Escrita el 6 oct 2026 desde una sesión local en la laptop con Windows, puesta a
 fusionar el registro de cambios y proponer el diseño de las referencias, y el 7 oct, al implementar
 las referencias con las decisiones que la persona aprobó y al ver pasar su CI; y el 11 oct, al probar
 cómo se puede leer una copia local sin que leerla ejecute nada, proponer el diseño de la etapa 3,
-ponerlo al día sobre `main` tras fusionarse las referencias y revisarlo con las cuestiones de la
-persona.
+ponerlo al día sobre `main` tras fusionarse las referencias, revisarlo con las cuestiones de la
+persona y, al final del día, fusionarlo con la auditoría de Codex resuelta.
 
 ## El plan, en corto
 
 Revisado `main` contra la visión, el siguiente paso estructural era anclar cada sistema a lo que es
-en el mundo real. La visión, la puerta para agentes (esquema v9), el registro de cambios común (v10)
-y las referencias (v11) están en `main`: cada aplicación y recurso dice dónde está su repositorio,
-sus copias locales, su documentación, sus logs y su panel. Ahora:
+en el mundo real. La visión, la puerta para agentes (esquema v9), el registro de cambios común (v10),
+las referencias (v11) y la primera fuente observada sobre ellas, la actividad de las copias locales
+(etapa 3, v12), están en `main`: cada aplicación y recurso dice dónde está su repositorio, sus copias
+locales, su documentación, sus logs y su panel, y DevHQ lee esas copias cuando se le pide, sin que
+leerlas ejecute nada de lo que se lee.
 
-1. **Primera fuente observada sobre esas anclas** (etapa 3, diseño revisado abajo): la actividad de
-   las copias locales, leída cuando se pide y sin que leerla ejecute nada de lo que se lee.
-
-Después, según lo que pidan preguntas concretas: bases de datos compartidas y dominios como tipos de
-recurso, relaciones nuevas, despliegues con versión, commit y destino, credenciales, operaciones y
-supervisión con la ventana cerrada, en el orden de «Líneas de evolución posibles» de la visión.
+**La próxima prioridad no está decidida.** Se elegirá después de evaluar el producto tal como está y
+contrastarlo con la visión y sus preguntas. Hasta entonces, nada de lo que esta nota o la visión
+mencionan es un compromiso: bases de datos compartidas y dominios como tipos de recurso, relaciones
+nuevas, despliegues con versión, commit y destino, credenciales, operaciones y supervisión con la
+ventana cerrada («Líneas de evolución posibles» de la visión) son posibilidades, y la que se haga
+saldrá de una pregunta concreta.
 
 No conviene hacer todavía: una tabla genérica de entidades, un motor de grafos, una entidad
 «proyecto», una capa de «integraciones» antes de tener una segunda fuente real, event sourcing,
@@ -45,7 +47,9 @@ permisos por agente ni descubrir repositorios por su cuenta.
   comparada por igualdad exacta; un destino es una URL http(s) o una ruta absoluta, y la etiqueta es
   un nombre para personas, nunca un localizador. Son inventario declarado, no evidencia: no llevan
   `source`.
-- **La etapa 3** se implementa en `claude/local-activity-design`, que sale de `main` (`aff9dd7`)
+- **La etapa 3** está **fusionada** en `main` con [#6](https://github.com/jpgarcia04/DevHQ/pull/6)
+  (`db82470`, 11 oct), con todo el CI de Linux y de Windows en verde y la auditoría de Codex
+  resuelta (abajo). Se implementó en `claude/local-activity-design`, que salía de `main` (`aff9dd7`)
   desde que #5 se fusionó; antes salía de su punta. La persona aprobó la dirección del diseño el 11
   oct, y la revisión de ese día no dejó nada pendiente de ella. Hecho en un primer commit: el lector
   (`devhq --read-copy`, libgit2 encerrado, con plazo), la batería hostil, el esquema v12
@@ -81,7 +85,7 @@ permisos por agente ni descubrir repositorios por su cuenta.
   negó abrir `.git/config`, un error de clase `Os` que el lector ya respondía como `unreadable` con el
   motivo de libgit2. La prueba exigía la frase de DevHQ; ahora admite las dos (sin mirar las palabras
   del sistema, que salen en su idioma). En la laptop siempre lo detecta DevHQ, también con `TMP`
-  acentuado. El pase siguiente ([run 38151813941](https://github.com/jpgarcia04/DevHQ/actions/runs/38151813941)) pasó los tests en los dos pases y la caminata, pero falló la comprobación de que los tests no dejan nada en `TMP`: quedaban la config de Git vacía y el marcador de la batería, creados una vez por ejecución desde el primer commit de la etapa. Ahora el marcador se compila en la carpeta de la batería, que la prueba borra, y `GIT_CONFIG_GLOBAL` apunta a una ruta que no existe (Git se salta una config global ausente); en la laptop, con un `TMP` nuevo, no queda nada. Con ese cambio ([run 38152754066](https://github.com/jpgarcia04/DevHQ/actions/runs/38152754066)) pasaron los 3 jobs de Windows: los tres pases de tests (128 cada uno, 0 entradas dejadas en `TMP`), el instalador y la caminata; y el CI de Linux. Falta que la persona revise y fusione el PR.
+  acentuado. El pase siguiente ([run 38151813941](https://github.com/jpgarcia04/DevHQ/actions/runs/38151813941)) pasó los tests en los dos pases y la caminata, pero falló la comprobación de que los tests no dejan nada en `TMP`: quedaban la config de Git vacía y el marcador de la batería, creados una vez por ejecución desde el primer commit de la etapa. Ahora el marcador se compila en la carpeta de la batería, que la prueba borra, y `GIT_CONFIG_GLOBAL` apunta a una ruta que no existe (Git se salta una config global ausente); en la laptop, con un `TMP` nuevo, no queda nada. Con ese cambio ([run 38152754066](https://github.com/jpgarcia04/DevHQ/actions/runs/38152754066)) pasaron los 3 jobs de Windows: los tres pases de tests (128 cada uno, 0 entradas dejadas en `TMP`), el instalador y la caminata; y el CI de Linux.
 - **La auditoría de Codex sobre #6** (de solo lectura, frente a `main`, sobre `e18c30e`) encontró dos
   defectos, confirmados y corregidos en commits aparte, cada uno con una prueba que falla sin el
   arreglo. Una URL `file://usuario:contraseña@servidor/…` se guardaba tal cual, contraseña incluida:
@@ -92,7 +96,11 @@ permisos por agente ni descubrir repositorios por su cuenta.
   entradas, es un fallo de DevHQ que no se guarda (la lectura no tiene dónde decir «desconocido» para
   esos datos, y darle dónde exigiría cambiar el esquema y la ventana por un caso que no se da en la
   práctica); un log que el sistema no deja leer deja la copia `unreadable`. Las líneas se leen como
-  Git (`show_one_reflog_ent`), así que una que no es una entrada ya no cuenta como stash.
+  Git (`show_one_reflog_ent`), así que una que no es una entrada ya no cuenta como stash. Con las dos
+  correcciones (`4dbcccd`) pasaron los 4 jobs del CI de Linux
+  ([run 38158290651](https://github.com/jpgarcia04/DevHQ/actions/runs/38158290651)) y los 3 de
+  Windows ([run 38158290652](https://github.com/jpgarcia04/DevHQ/actions/runs/38158290652)), y la
+  persona fusionó el PR.
 - **Fuera de alcance, para después**: el bundle de la ventana pasó de unos 497 a 517 kB y Vite avisa
   de que supera 500 kB; es un aviso, en una app que carga desde disco, y no se cambió la configuración
   por él. Una aplicación que ya no declara ninguna copia local no ofrece «Show every reading» en la
@@ -129,15 +137,20 @@ permisos por agente ni descubrir repositorios por su cuenta.
 
 ## Qué hacer, en orden
 
-1. **Etapa 3, actividad de las copias locales**: revisar y fusionar
-   [#6](https://github.com/jpgarcia04/DevHQ/pull/6), con todo el CI en verde (ver «Estado»).
-2. **Abrir una referencia, si la persona lo quiere**, solo como subproducto: un comando Rust
-   `open_reference(id)` que lee la referencia de SQLite y abre en el navegador solo URL http(s); la
-   ventana nunca pasa una URL y el WebView no gana plugin ni permiso. Una ruta no se abre hasta que
-   DevHQ sepa en qué estación corre, y entonces solo se muestra la carpeta en el explorador, nunca se
-   abre un archivo: abrir una ruta que escribió un agente podría ejecutar un programa.
+1. **Decidir la próxima prioridad**: evaluar DevHQ tal como está, con la etapa 3 ya en `main`,
+   y contrastarlo con [docs/vision.md](vision.md) y sus preguntas antes de elegir. Ninguna etapa ni
+   funcionalidad nueva está elegida todavía.
+2. **Una propuesta, no decidida: abrir una referencia, si la persona lo quiere**, solo como
+   subproducto: un comando Rust `open_reference(id)` que lee la referencia de SQLite y abre en el
+   navegador solo URL http(s); la ventana nunca pasa una URL y el WebView no gana plugin ni permiso.
+   Una ruta no se abre hasta que DevHQ sepa en qué estación corre, y entonces solo se muestra la
+   carpeta en el explorador, nunca se abre un archivo: abrir una ruta que escribió un agente podría
+   ejecutar un programa.
 
-## Etapa 3: diseño revisado
+## Etapa 3: diseño revisado, ya implementado
+
+Implementado y fusionado con [#6](https://github.com/jpgarcia04/DevHQ/pull/6); el README describe lo
+que hace. Se conserva aquí por las decisiones y por lo comprobado que lo justifican.
 
 Responde «¿qué lleva meses sin actividad?» y «¿qué trabajo existe solo en una máquina?», y prepara
 «¿qué tiene cambios sin desplegar?»: guarda el commit de HEAD, que la etapa de despliegues comparará
@@ -568,8 +581,9 @@ El 11 oct la persona leyó el diseño, aceptó la dirección general y pidió re
 6. **Puerta**: bastan los tres modos; leer exige Read and write, no deja entrada en el registro de
    cambios y guarda qué agente la pidió; las limitaciones quedan escritas.
 
-No queda ninguna decisión pendiente de la persona: se implementa en un PR desde
-`claude/local-activity-design`, y los textos de las reglas que cambian se revisan en ese PR.
+No quedó ninguna decisión pendiente de la persona: se implementó en
+[#6](https://github.com/jpgarcia04/DevHQ/pull/6), desde `claude/local-activity-design`, y los textos
+de las reglas que cambian se revisaron en ese PR.
 
 ## Lo que solo se puede hacer en la laptop
 
