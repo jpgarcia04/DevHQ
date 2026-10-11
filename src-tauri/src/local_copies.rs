@@ -568,14 +568,13 @@ pub(crate) mod tests {
         folder
     }
 
-    /// An empty Git config, so that the tests' `git` never reads the machine's own.
-    fn no_config() -> &'static Path {
-        static EMPTY: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-        EMPTY.get_or_init(|| {
-            let path = folder("git-config").join("config");
-            std::fs::write(&path, "").unwrap();
-            path
-        })
+    /// No global Git config, so that the tests' `git` never reads the machine's own: Git skips a
+    /// global config that is not there, and this one cannot be, in a folder nobody creates. No
+    /// file is left behind in the temporary folder, which the Windows workflow checks.
+    fn no_config() -> PathBuf {
+        crate::inventory::tests::resolved_temp_dir()
+            .join("devhq-no-such-folder")
+            .join("gitconfig")
     }
 
     /// Runs the installed `git` with `args` in `dir`, as a person would, without the machine's

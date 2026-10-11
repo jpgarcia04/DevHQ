@@ -15,7 +15,6 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::OnceLock;
 use std::time::{Duration, SystemTime};
 
 /// Every config key `git help --config` lists that names a program Git runs, as that list
@@ -167,41 +166,41 @@ fn main() {
 }
 "#;
 
-/// The marker program, compiled once for the whole test run with the toolchain that builds the
-/// tests: a real executable, which Windows needs, and the same on every system.
-fn marker() -> &'static Path {
-    static MARKER_PROGRAM: OnceLock<PathBuf> = OnceLock::new();
-    MARKER_PROGRAM.get_or_init(|| {
-        let dir = folder("marker");
-        let source = dir.join("marker.rs");
-        std::fs::write(&source, MARKER).unwrap();
-        let program = dir.join(format!("marker{}", std::env::consts::EXE_SUFFIX));
-        // Cargo names itself in CARGO; rustc sits next to it.
-        let rustc = std::env::var_os("CARGO")
-            .map(|cargo| {
-                Path::new(&cargo).with_file_name(format!("rustc{}", std::env::consts::EXE_SUFFIX))
-            })
-            .filter(|rustc| rustc.is_file())
-            .unwrap_or_else(|| "rustc".into());
-        let output = Command::new(rustc)
-            .args(["--edition", "2021", "-C", "debuginfo=0", "-o"])
-            .arg(&program)
-            .arg(&source)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        program
-    })
+/// The marker program, compiled into `dir` with the toolchain that builds the tests: a real
+/// executable, which Windows needs, and the same on every system. It lives in the battery's own
+/// folder, so that nothing of it outlives the test.
+fn compile_marker(dir: &Path) -> PathBuf {
+    std::fs::create_dir(dir).unwrap();
+    let source = dir.join("marker.rs");
+    std::fs::write(&source, MARKER).unwrap();
+    let program = dir.join(format!("marker{}", std::env::consts::EXE_SUFFIX));
+    // Cargo names itself in CARGO; rustc sits next to it.
+    let rustc = std::env::var_os("CARGO")
+        .map(|cargo| {
+            Path::new(&cargo).with_file_name(format!("rustc{}", std::env::consts::EXE_SUFFIX))
+        })
+        .filter(|rustc| rustc.is_file())
+        .unwrap_or_else(|| "rustc".into());
+    let output = Command::new(rustc)
+        .args(["--edition", "2021", "-C", "debuginfo=0", "-o"])
+        .arg(&program)
+        .arg(&source)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    program
 }
 
-/// The battery's folders: `bin` (the PATH copies), `keys` (one marker per key), `hooks` (for
-/// `core.hooksPath`) and `copies` (the repositories), and `marks.txt` once anything ran.
+/// The battery's folders: `marker` (the compiled marker), `bin` (the PATH copies), `keys` (one
+/// marker per key), `hooks` (for `core.hooksPath`) and `copies` (the repositories), and
+/// `marks.txt` once anything ran.
 struct Battery {
     root: PathBuf,
+    marker: PathBuf,
 }
 
 impl Battery {
@@ -210,7 +209,8 @@ impl Battery {
         for dir in ["bin", "keys", "hooks", "copies"] {
             std::fs::create_dir(root.join(dir)).unwrap();
         }
-        Self { root }
+        let marker = compile_marker(&root.join("marker"));
+        Self { root, marker }
     }
 
     fn copies(&self) -> PathBuf {
@@ -220,12 +220,12 @@ impl Battery {
     /// A marker at `dir/name`, linked rather than copied: one file on disk however many names.
     fn plant(&self, dir: &Path, name: &str) -> PathBuf {
         let path = dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
-        if std::fs::hard_link(marker(), &path).is_err() {
-            std::fs::copy(marker(), &path).unwrap();
+        if std::fs::hard_link(&self.marker, &path).is_err() {
+            std::fs::copy(&self.marker, &path).unwrap();
         }
         // A hook is found by its bare name; on Windows, plant that name too.
         if cfg!(windows) && dir.ends_with("hooks") {
-            std::fs::copy(marker(), dir.join(name)).unwrap();
+            std::fs::copy(&self.marker, dir.join(name)).unwrap();
         }
         path
     }
