@@ -45,6 +45,15 @@ const pages: { name: string; path: string; open?: string }[] = [
     path: '/preview.html#/infrastructure?resource=web-host',
     open: 'Show observation history',
   },
+  // A copy read on another computer, with a remote unlike the declared repository.
+  { name: 'application local copies', path: '/preview.html#/applications/blog' },
+  {
+    name: 'readings of a resource',
+    path: '/preview.html#/infrastructure?resource=laptop',
+    open: 'Show every reading',
+  },
+  // The preview refuses to read: the panel shows the refusal.
+  { name: 'read all refused', path: '/preview.html#/', open: 'Read all on this computer' },
   { name: 'incidents', path: '/preview.html#/incidents?incident=inc-disk' },
   { name: 'activity', path: '/preview.html#/activity' },
   { name: 'settings', path: '/preview.html#/settings' },

@@ -7,8 +7,11 @@ import {
   inventoryError,
   type InventorySnapshot,
   type MonitorStatus,
+  type ReadOutcome,
+  type ThisWorkstation,
 } from './inventory-api'
 import { InventoryContext, type LoadState, type Mode } from './inventory-context'
+import { readAllTargets } from './local-copies'
 
 const nativeAvailable = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 // Re-evaluates validity while the window stays open. It reads no data and runs no checks:
@@ -24,6 +27,9 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
   const [checking, setChecking] = useState<string[]>([])
   const [monitor, setMonitor] = useState<MonitorStatus | null>(null)
   const [monitorError, setMonitorError] = useState<string | null>(null)
+  const [thisWorkstation, setThisWorkstation] = useState<ThisWorkstation | null>(null)
+  const [workstationError, setWorkstationError] = useState<string | null>(null)
+  const [readingCopies, setReadingCopies] = useState<string[]>([])
   // What the last status said, to tell when the inventory may have changed since.
   const seen = useRef<{ recorded: number; changes: number } | null>(null)
   // Reads overlap: a quiet read can still be in flight when a write's reload starts, and answer
@@ -31,6 +37,25 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
   // so the window never goes back to a state from before a write it has shown.
   const issued = useRef(0)
   const applied = useRef(0)
+  // Only the latest question about this workstation is answered on screen.
+  const asked = useRef(0)
+
+  // Kept apart from the inventory: the list stays as the native process gives it, and a failure
+  // here leaves the inventory shown. Asked after each read, because whether the choice holds (the
+  // resource exists and is a workstation) depends on the inventory.
+  const askWorkstation = useCallback(async () => {
+    const question = ++asked.current
+    try {
+      const answer = await inventoryApi.thisWorkstation()
+      if (question !== asked.current) return
+      setThisWorkstation(answer)
+      setWorkstationError(null)
+    } catch (cause) {
+      if (question !== asked.current) return
+      setThisWorkstation(null)
+      setWorkstationError(inventoryError(cause))
+    }
+  }, [])
 
   const read = useCallback(async () => {
     const ticket = ++issued.current
@@ -42,6 +67,7 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
         setNow(Date.now())
         setError(null)
         setLoadState('ready')
+        void askWorkstation()
       }
       return true
     } catch (cause) {
@@ -53,7 +79,7 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
       }
       return false
     }
-  }, [])
+  }, [askWorkstation])
 
   const reload = useCallback(async () => {
     setLoadState('loading')
@@ -128,6 +154,52 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  // Each copy is read in a confined process of its own, one after another, up to 30 s each; the
+  // window stays usable meanwhile.
+  const readCopies = async (referenceIds: string[] | null) => {
+    const ids =
+      referenceIds ??
+      (snapshot ? readAllTargets(snapshot, thisWorkstation).map((copy) => copy.referenceId) : [])
+    setReadingCopies((current) => [...current, ...ids])
+    try {
+      let outcome: ReadOutcome
+      try {
+        outcome = await inventoryApi.readCopies(referenceIds)
+      } catch (cause) {
+        // Before reading, the native process checks what was asked and answers; a copy it could
+        // not read once it started is in the outcome's failures. So a rejected call read nothing.
+        const message = inventoryError(cause)
+        const sentence = /[.!?]$/.test(message) ? message : `${message}.`
+        throw new Error(`${sentence} Nothing was read.`, { cause })
+      }
+      setThisWorkstation(outcome.thisWorkstation)
+      setWorkstationError(null)
+      if (!(await reload()))
+        throw new Error(
+          'The readings were kept, but the inventory could not be reloaded. Retry loading it.',
+        )
+      return outcome
+    } finally {
+      setReadingCopies((current) => {
+        const left = [...current]
+        // One entry per request: a copy asked for twice stays marked until both are done.
+        for (const id of ids) {
+          const index = left.indexOf(id)
+          if (index >= 0) left.splice(index, 1)
+        }
+        return left
+      })
+    }
+  }
+
+  const chooseWorkstation = async (resourceId: string | null) => {
+    const answer = await inventoryApi.setThisWorkstation(resourceId)
+    asked.current++
+    setThisWorkstation(answer)
+    setWorkstationError(null)
+    return answer
+  }
+
   return (
     <InventoryContext.Provider
       value={{
@@ -165,6 +237,12 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
         checking,
         monitor,
         monitorError,
+        thisWorkstation,
+        workstationError,
+        setThisWorkstation: chooseWorkstation,
+        readCopies,
+        readingCopies,
+        olderReadings: inventoryApi.olderReadings,
       }}
     >
       {children}

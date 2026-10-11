@@ -93,9 +93,20 @@ function nothing(): PreviewDatabase {
   }
 }
 
+/** Readings of the laptop's dotfiles: one every 6 hours, by an agent, more than a page. */
+export const dotfilesReadings = 205
+
 /**
- * Two readings of the Shop's clone on the laptop: three days ago, clean and published; two hours
- * ago, with a commit on no remote, a stash and changes. Blog declares the same clone, never read.
+ * Readings of the sample's local copies, in the order they were recorded:
+ * - the Shop's clone on the laptop: five days ago, before it was cloned there (not a copy); three
+ *   days ago, clean and published; two hours ago, with a commit on no remote, a stash and changes.
+ *   Blog declares the same clone, never read.
+ * - Blog's clone on the desktop, another computer, read there yesterday: a detached HEAD in a
+ *   rebase left halfway, more than 1000 commits on no remote, a working tree that took too long,
+ *   and a remote that is not the repository Blog declares.
+ * - the laptop's dotfiles, read every 6 hours at a path it has since moved from, and not found
+ *   there the last time: more readings than a page holds.
+ * - the archived Old site's clone, with a stash: kept, but out of Read all and of Overview.
  */
 function sampleReadings(now: number): CopyReading[] {
   const reading = (id: string, minutesAgo: number, facts: Partial<CopyReading>): CopyReading => ({
@@ -126,8 +137,73 @@ function sampleReadings(now: number): CopyReading[] {
     worktreeUnknown: null,
     ...facts,
   })
+  const notRead = {
+    branch: null,
+    head: null,
+    lastCommitAt: null,
+    unpublishedOnHead: null,
+    unpublishedElsewhere: null,
+    stashes: null,
+    syncedAt: null,
+    remotes: null,
+    changed: null,
+    untracked: null,
+    unverifiable: null,
+  }
+  const dotfiles = (index: number) =>
+    reading(`dotfiles-${index}`, (dotfilesReadings - index) * 6 * 60 + 45, {
+      subject: { type: 'resource', id: 'laptop' },
+      referenceId: 'laptop-dotfiles',
+      path: 'C:\\Users\\you\\dotfiles',
+      agent: 'claude-code',
+      head: 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678',
+      lastCommitAt: at(now, 40 * 24 * 60),
+      syncedAt: at(now, 40 * 24 * 60),
+      remotes: [{ name: 'origin', url: 'https://github.com/you/dotfiles' }],
+      ...(index === dotfilesReadings - 1
+        ? { ...notRead, outcome: 'missing' as const, detail: 'Nothing is at this path.' }
+        : {}),
+    })
   return [
+    reading('reading-gone', 5 * 24 * 60, {
+      ...notRead,
+      outcome: 'not_a_copy',
+      detail:
+        'No repository starts at this folder. DevHQ does not look in the folders above it: declare the folder at the root of the copy.',
+    }),
+    ...Array.from({ length: dotfilesReadings - 1 }, (_, index) => dotfiles(index)),
+    reading('old-site-read', 4 * 24 * 60, {
+      subject: { type: 'application', id: 'old-site' },
+      referenceId: 'old-site-clone',
+      path: 'C:\\Users\\you\\src\\old-site',
+      head: '0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c',
+      lastCommitAt: at(now, 400 * 24 * 60),
+      syncedAt: at(now, 400 * 24 * 60),
+      stashes: 2,
+      remotes: [{ name: 'origin', url: 'https://github.com/example/old-site.git' }],
+    }),
     reading('reading-old', 3 * 24 * 60, {}),
+    reading('blog-desktop-read', 26 * 60, {
+      subject: blog,
+      referenceId: 'blog-desktop',
+      machineId: 'desktop',
+      path: '/home/you/src/blog',
+      branch: null,
+      head: '7e6d5c4b3a291807f6e5d4c3b2a1908f7e6d5c4b',
+      lastCommitAt: at(now, 30 * 60),
+      unpublishedElsewhere: 1001,
+      syncedAt: null,
+      remotes: [
+        { name: 'origin', url: 'git@gitlab.com:you/blog.git' },
+        { name: 'deploy', url: null },
+      ],
+      operation: 'rebase',
+      changed: null,
+      untracked: null,
+      unverifiable: null,
+      worktreeUnknown: 'Reading the working tree took longer than 30 s, so DevHQ stopped it.',
+    }),
+    dotfiles(dotfilesReadings - 1),
     reading('reading-new', 120, {
       head: '9b8a7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a07',
       lastCommitAt: at(now, 140),
@@ -430,6 +506,30 @@ export function sampleDatabase(scenario: Scenario, now: number): PreviewDatabase
             label: null,
             machineId: 'laptop',
           },
+          {
+            id: 'blog-desktop',
+            kind: 'local_copy',
+            target: '/home/you/src/blog',
+            label: null,
+            machineId: 'desktop',
+          },
+        ],
+      },
+      {
+        id: 'old-site',
+        name: 'Old site',
+        description: 'Replaced by Blog',
+        lifecycle: 'archived',
+        version: null,
+        components: [],
+        references: [
+          {
+            id: 'old-site-clone',
+            kind: 'local_copy',
+            target: 'C:\\Users\\you\\src\\old-site',
+            label: null,
+            machineId: 'laptop',
+          },
         ],
       },
     ],
@@ -443,12 +543,29 @@ export function sampleDatabase(scenario: Scenario, now: number): PreviewDatabase
         references: [],
       },
       {
+        id: 'desktop',
+        name: 'Home desktop',
+        kind: 'workstation',
+        description: '',
+        operatingSystem: 'Fedora 44',
+        references: [],
+      },
+      {
         id: 'laptop',
         name: 'Dev laptop',
         kind: 'workstation',
         description: '',
         operatingSystem: 'Windows 11',
-        references: [],
+        // Its dotfiles, moved since they were last read.
+        references: [
+          {
+            id: 'laptop-dotfiles',
+            kind: 'local_copy',
+            target: 'C:\\Users\\you\\src\\dotfiles',
+            label: 'Dotfiles',
+            machineId: 'laptop',
+          },
+        ],
       },
       {
         id: 'web-host',

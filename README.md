@@ -34,6 +34,10 @@ sin ejecutar nada de lo que nombran. **No funciona en segundo plano ni opera sis
   cuándo y cada campo antes y después, en Activity junto a lo demás.
 - En Mi inventario, las referencias de cada aplicación y recurso: dónde está su repositorio, sus
   copias locales en cada estación de trabajo, su documentación, sus logs y su panel, para copiarlas.
+- En Mi inventario, las copias locales de esta estación de trabajo, leídas cuando pulsas Read o
+  Read all on this computer, sin ejecutar nada de lo que nombran: cada copia con su última lectura,
+  sus lecturas anteriores bajo demanda, un panel Local copies en Overview y la última actividad de
+  cada aplicación. Settings › This computer dice qué estación de trabajo es este equipo.
 - Una comprobación HTTP(S) de solo lectura por aplicación o recurso, que se ejecuta a
   petición o, si activas su supervisión, cada 5–60 min mientras DevHQ está abierto, y
   registra una observación automática con su evidencia técnica.
@@ -325,6 +329,34 @@ registro de cambios; cada lectura guarda en qué máquina se hizo. Las VMs clona
 esta estación salvo las de aplicaciones archivadas, una tras otra: nunca al abrir DevHQ, nunca con un
 temporizador, nunca con la ventana cerrada. Las copias de otra máquina las lee DevHQ en esa máquina. DevHQ
 no busca copias: lee solo las rutas que el inventario declara.
+
+**En la ventana.** Settings › This computer dice qué estación de trabajo es este equipo, desde cuándo y
+en qué archivo, o por qué DevHQ no lo sabe, y deja elegir entre los recursos de tipo Workstation (o
+ninguno); si no hay ninguno, manda a Infrastructure a crearlo, y si el sistema no da identificador o el
+archivo no se puede leer, no ofrece elegir. La ventana pregunta qué estación es este equipo aparte de
+`list_inventory`, después de cada lectura del inventario, porque que la elección valga depende de él; si
+esa pregunta falla, el inventario se sigue mostrando y el fallo se dice donde importa. En las
+referencias de cada aplicación y recurso, cada copia local muestra su última lectura en pasado: el
+resultado (Read, Not found, Not a copy, Not readable), el momento, la máquina, la etiqueta
+«Automated · Local read» con el agente que la pidió, si fue uno, y lo que encontró (HEAD, último
+commit, commits sin publicar con «1000+», stashes, working tree o por qué se desconoce, una operación a
+medias, el último contacto con un remoto y los remotos, los que no se guardaron con su nombre y sin
+URL). Dice si la lectura se hizo en otra ruta o máquina de las declaradas hoy y si sus remotos parecen
+el repositorio declarado. Read aparece solo en las copias de esta estación y se desactiva mientras esa
+copia se lee; en las de otra máquina, la ventana dice que las lee DevHQ allí, y sin estación conocida,
+por qué no lee ninguna y dónde elegirla. Un fallo de DevHQ al leer se muestra y no guarda nada. «Show
+every reading» carga, solo al abrirlo, todas las lecturas del sistema, las más nuevas primero y de
+200 en 200, en una línea cada una, y dice cuándo están todas y qué lecturas son de rutas que el
+sistema ya no declara; se ofrece en los sistemas que declaran alguna copia local, y las de un sistema
+que ya no declara ninguna siguen guardadas y la puerta las da (`history`). Overview tiene un panel
+**Local copies**, junto a Supervision y fuera de «Needs attention»: cuántas copias tiene esta estación y
+Read all on this computer, que las lee en serie y dice cuántas leyó y cuáles no pudo; el trabajo que
+solo existía en una copia, las copias que no se encontraron donde se declaran, las de esta estación
+nunca leídas y cuántas de otros equipos nunca se leyeron, las mismas listas que da la puerta y sin las
+aplicaciones archivadas. Applications, en cada tarjeta, y el Overview de cada aplicación dicen su
+última actividad: el commit más nuevo entre las últimas lecturas de sus copias, con la máquina y el
+momento de esa lectura, y cuántas copias nunca se leyeron; si ninguna se leyó, que la actividad se
+desconoce. Nunca dicen «inactiva».
 
 ### Comprobación HTTP(S)
 
@@ -646,7 +678,12 @@ supervisado que tiene más resultados de los que lleva un snapshot. Los comandos
 siguen las mismas reglas de ventana y paginación que Rust (lo prueba
 `src/preview/backend.test.ts`), toda escritura se rechaza sin guardar nada y una franja propia
 sobre la ventana dice que son datos de ejemplo; la ventana ocupa el resto, así que el aviso no
-tapa nada al desplazarse. `?scenario=empty` y `?scenario=unavailable` muestran un inventario
+tapa nada al desplazarse. Sus copias locales cubren una leída en este equipo con trabajo sin
+publicar, otra leída en otra estación con HEAD suelto, un rebase a medias, más de 1000 commits sin
+publicar, el working tree desconocido y un remoto que no es el repositorio declarado, una nunca leída,
+una movida desde su última lectura que entonces no se encontró, con 205 lecturas (más de una página),
+una lectura `not_a_copy` en el historial y la copia de una aplicación archivada; Read y Read all se
+rechazan como toda escritura. `?scenario=empty` y `?scenario=unavailable` muestran un inventario
 vacío o ilegible. El bundle de producción se construye desde `index.html` y no contiene nada de
 esto. `npm run e2e` usa el Chrome instalado (en CI, el del runner) o el ejecutable que indique
 `DEVHQ_CHROMIUM`; nunca descarga navegadores, y reutiliza un `npm run dev` en marcha. Antes de

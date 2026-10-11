@@ -63,8 +63,11 @@ permisos por agente ni descubrir repositorios por su cuenta.
   Windows, y falla sin el arreglo. La batería encontró un fallo real antes de
   existir el primer commit: la API de reflog de libgit2 (`git_reflog_read`) crea un log vacío cuando una
   ref no tiene, y leía escribiendo en `.git/modules/sub/logs/refs/remotes/origin/main`; ahora esos logs se
-  leen como archivos. Falta la ventana (Settings › This computer, la última lectura de cada copia con
-  Read, el panel Local copies y la actividad en Applications), la preview, la caminata nativa y el PR.
+  leen como archivos. Hecha después la ventana (Settings › This computer, la última lectura de cada
+  copia con Read y sus lecturas anteriores, el panel Local copies con Read all y la última actividad en
+  Applications), con la preview y sus pruebas. Esta estación se pide aparte de `list_inventory`, después
+  de cada lectura del inventario, para no cambiar lo que `list` devuelve. Falta la caminata nativa y el
+  PR.
 - **La primera carga, medida en las dos caminatas de #5.** La caminata dice cuánto tarda la ventana
   en poder manejarse tras arrancar DevHQ y, en el primer paso (y en cualquiera que falle), si la
   página está visible, cuánto lleva cargada y cuándo se pidió y se respondió cada llamada a DevHQ, en
@@ -97,7 +100,7 @@ permisos por agente ni descubrir repositorios por su cuenta.
 
 ## Qué hacer, en orden
 
-1. **Etapa 3, actividad de las copias locales**: terminar la ventana sobre lo ya hecho (ver «Estado»
+1. **Etapa 3, actividad de las copias locales**: la caminata nativa sobre lo ya hecho (ver «Estado»
    y «Etapa 3: diseño revisado», abajo) y abrir el PR desde `claude/local-activity-design`.
 2. **Abrir una referencia, si la persona lo quiere**, solo como subproducto: un comando Rust
    `open_reference(id)` que lee la referencia de SQLite y abre en el navegador solo URL http(s); la

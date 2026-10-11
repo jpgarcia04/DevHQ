@@ -80,6 +80,24 @@ export function inventoryContext(
     checking: [],
     monitor: { checks: [], error: null, recorded: 0, changes: 0 },
     monitorError: null,
+    thisWorkstation: {
+      resourceId: null,
+      chosenAt: null,
+      problem: 'not_chosen',
+      message:
+        'No workstation has been chosen as this computer yet: choose one in Settings › This computer.',
+      file: '/home/you/.local/share/com.devhq.desktop/this-workstation.json',
+      storedAt: null,
+    },
+    workstationError: null,
+    setThisWorkstation: vi.fn(async () => {
+      throw new Error('setThisWorkstation is not mocked in this test')
+    }),
+    readCopies: vi.fn(async () => {
+      throw new Error('readCopies is not mocked in this test')
+    }),
+    readingCopies: [],
+    olderReadings: vi.fn(async () => ({ readings: [], more: false })),
     ...overrides,
   }
 }

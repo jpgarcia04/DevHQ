@@ -16,7 +16,10 @@ import type {
   MonitorStatus,
   ObservationInput,
   ObservationPage,
+  ReadingPage,
+  ReadOutcome,
   ResourceInput,
+  ThisWorkstation,
 } from './inventory-api'
 
 export type Mode = 'demo' | 'real'
@@ -63,6 +66,25 @@ export interface InventoryContextValue {
   monitor: MonitorStatus | null
   /** The window could not receive supervision status. */
   monitorError: string | null
+  /**
+   * Which workstation this computer is, asked of the native process apart from the inventory
+   * after each read of it, since whether the choice holds depends on the inventory. Null until
+   * it answers, or when it could not.
+   */
+  thisWorkstation: ThisWorkstation | null
+  /** The window could not ask which workstation this computer is. */
+  workstationError: string | null
+  /** Chooses an existing workstation as this computer; null forgets the choice. */
+  setThisWorkstation: (resourceId: string | null) => Promise<ThisWorkstation>
+  /**
+   * Reads, now, the local copies named, or (null) every one of this workstation but those of
+   * archived applications; resolves once the reloaded inventory shows what was kept.
+   */
+  readCopies: (referenceIds: string[] | null) => Promise<ReadOutcome>
+  /** Reference ids of the local copies this window asked to read and that are being read. */
+  readingCopies: string[]
+  /** Reads a system's readings, a page at a time; it writes nothing. */
+  olderReadings: (subject: EntityRef, before: string | null) => Promise<ReadingPage>
 }
 
 export const InventoryContext = createContext<InventoryContextValue | null>(null)

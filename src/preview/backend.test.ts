@@ -11,7 +11,7 @@ import type {
   ThisWorkstation,
 } from '@/features/inventory/inventory-api'
 import { previewBackend, readOnly, remoteLocation, sharedRepositories } from './backend'
-import { sampleDatabase } from './sample'
+import { dotfilesReadings, sampleDatabase } from './sample'
 
 const now = Date.parse('2026-09-30T12:00:00Z')
 const web: EntityRef = { type: 'resource', id: 'web-host' }
@@ -51,6 +51,7 @@ describe('the preview’s simulated native process', () => {
     expect(snapshot.resources.map((item) => item.name)).toEqual([
       'Database host',
       'Dev laptop',
+      'Home desktop',
       'Web host',
     ])
   })
@@ -141,21 +142,40 @@ describe('the preview’s simulated native process', () => {
         copy.movedSinceRead,
       ]),
     ).toEqual([
-      // Applications first, in the snapshot's order: Blog's clone was never read.
+      // Applications first, in the snapshot's order: Blog's clone on the laptop was never read;
+      // its clone on the desktop has a remote that is not the repository Blog declares.
       ['blog-clone', null, null, false, false],
+      ['blog-desktop', 'blog-desktop-read', 'differs', true, false],
+      // An archived application's copy keeps its reading and what it held.
+      ['old-site-clone', 'old-site-read', 'undeclared', true, false],
       ['shop-clone', 'reading-new', 'matches', true, false],
+      // The laptop's dotfiles were last read where they no longer are, and not found there.
+      ['laptop-dotfiles', `dotfiles-${dotfilesReadings - 1}`, null, false, true],
     ])
     expect(backend('this_workstation')).toMatchObject({ resourceId: 'laptop', problem: null })
     // A system's readings, newest first, from the newest or from one already shown.
     const shop: EntityRef = { type: 'application', id: 'shop' }
     const page = backend('older_readings', { subject: shop, before: null }) as ReadingPage
-    expect([ids(page.readings), page.more]).toEqual([['reading-new', 'reading-old'], false])
+    expect([ids(page.readings), page.more]).toEqual([
+      ['reading-new', 'reading-old', 'reading-gone'],
+      false,
+    ])
     expect(
       ids(
         (backend('older_readings', { subject: shop, before: 'reading-new' }) as ReadingPage)
           .readings,
       ),
-    ).toEqual(['reading-old'])
+    ).toEqual(['reading-old', 'reading-gone'])
+    // More readings than a page: 200, then the rest, without gaps or repeats.
+    const laptop: EntityRef = { type: 'resource', id: 'laptop' }
+    const first = backend('older_readings', { subject: laptop, before: null }) as ReadingPage
+    expect([first.readings.length, first.more]).toEqual([200, true])
+    const rest = backend('older_readings', {
+      subject: laptop,
+      before: first.readings.at(-1)!.id,
+    }) as ReadingPage
+    expect([rest.readings.length, rest.more]).toEqual([dotfilesReadings - 200, false])
+    expect(new Set(ids([...first.readings, ...rest.readings])).size).toBe(dotfilesReadings)
     expect(() => backend('older_readings', { subject: web, before: 'reading-new' })).toThrow()
     // Reading a copy and choosing this computer write: refused.
     for (const command of ['read_copies', 'set_this_workstation'])
