@@ -722,12 +722,24 @@ con un componente sobre el recurso. Sin tocar la ventana, Applications debe most
 su Change con la etiqueta «Agent · native-walk». En la copia del respaldo, el registro de cambios
 debe tener, como tuyos, el alta del recurso, la de la aplicación y la comprobación, y ninguna marca de
 inicio, porque la base v6 de la que parte estaba vacía. Con la app sin el vigilante de `data_version`, ese
-paso no ve la aplicación en 15 s y falla. Por último cierra la ventana como
+paso no ve la aplicación en 15 s y falla. Después crea una estación de trabajo, la elige en
+Settings › This computer (la puerta debe ver la misma elección) y declara como copia local de la
+aplicación una copia hostil que construye con el `git` instalado (`e2e/native/hostile-copy.ts`):
+un commit en ningún remoto, un archivo cambiado, uno nuevo y uno cambiado bajo un driver de filtro, y
+un programa marcador en `core.fsmonitor`, los drivers de filtro, `diff.external`, `credential.helper`,
+`core.sshCommand`, `gpg.program` con `log.showSignature` y cuatro hooks. La lee con Read, con Read all
+on this computer y con `read_copies` desde la puerta: la ventana debe mostrar lo que encontró (el
+commit sin publicar, «1 changed file · 1 new entry · 1 file DevHQ could not verify», el remoto que
+coincide con el repositorio declarado) y, sola, la lectura que pidió el agente; tras cada lectura,
+ningún marcador puede haber corrido y ningún archivo de la copia puede haber cambiado, aparecido o
+desaparecido (contenido, tamaño y fecha de modificación, `.git` incluido). Al final, `git status`
+sobre la misma copia sí ejecuta el fsmonitor: la copia es hostil de verdad. Por último cierra la ventana como
 lo hace su botón, nunca por WebDriver: con `WM_DELETE_WINDOW` en X11 (un script de Python que llama
 a libX11, porque bajo Xvfb no hay gestor de ventanas que lo envíe) o con `WM_CLOSE` en Windows. El
 proceso debe terminar, sin dejar `inventory.sqlite3-wal`, y el archivo debe haber pasado a WAL; la
 puerta, que sigue abierta, debe ver la ventana cerrada en menos de 10 s (el recorrido anota cuánto
-tardó) y terminar al cerrarse su entrada.
+tardó) y terminar al cerrarse su entrada. En la base deben quedar las tres lecturas, en la estación elegida y
+con la ruta declarada, y solo la última con el agente.
 Antes de hacer clic espera a que el elemento deje de moverse, porque el contenido que llega tarde
 empuja la página, y guarda una captura por paso en `test-results/native/`. `DEVHQ_APP` lo apunta a
 otro ejecutable.

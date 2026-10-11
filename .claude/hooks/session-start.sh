@@ -28,6 +28,13 @@ if [ ${#packages[@]} -gt 0 ]; then
   $SUDO apt-get install -y -qq --no-install-recommends "${packages[@]}" >/dev/null
 fi
 
+# DevHQ tells this computer from another by a fingerprint of /etc/machine-id, and the native walk
+# chooses this computer in Settings. A bare container can have none, or an empty one, as systemd
+# leaves it in images: give it one of its own, once. A desktop or a CI runner already has one.
+if [ ! -s /etc/machine-id ]; then
+  tr -d '-' < /proc/sys/kernel/random/uuid | $SUDO tee /etc/machine-id >/dev/null
+fi
+
 # The lockfile is written by npm 11, as on desktops and in CI (Node 24). npm 10, which the
 # container may bring, drops the libc fields of every platform-specific package whenever it
 # rewrites the lockfile, so adding a dependency here would also rewrite unrelated entries.

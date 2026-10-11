@@ -48,8 +48,9 @@ file that has uncommitted changes with `git checkout`.
 ## Cloud sessions
 
 - `.claude/hooks/session-start.sh` installs WebKitGTK, WebKitWebDriver, Xvfb and
-  tauri-driver, upgrades the container's npm to 11, runs `npm ci`, fetches crates and exports
-  `DEVHQ_CHROMIUM`. It only runs when the branch the session starts on contains it. If it did
+  tauri-driver, gives the container an `/etc/machine-id` if it has none (DevHQ needs one to
+  choose this computer, and the native walk chooses it), upgrades the container's npm to 11,
+  runs `npm ci`, fetches crates and exports `DEVHQ_CHROMIUM`. It only runs when the branch the session starts on contains it. If it did
   not run, run it by hand:
   `CLAUDE_CODE_REMOTE=true CLAUDE_PROJECT_DIR=$PWD bash .claude/hooks/session-start.sh`.
 - `npm run e2e` never downloads a browser. Without `DEVHQ_CHROMIUM` it looks for the system
