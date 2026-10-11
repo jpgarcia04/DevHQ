@@ -13,6 +13,7 @@ mod writes;
 use crate::access;
 use crate::attention::{self, AttentionItem};
 use crate::http_check::HttpCheck;
+use crate::identity;
 use crate::inventory::{self, ApiError, Inventory};
 use crate::local_copies::readings::{self, LocalCopy};
 use crate::local_copies::Reader;
@@ -24,25 +25,9 @@ use std::collections::HashMap;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
-/// Tauri's identifier for DevHQ, which names its data directory. A test holds it to
-/// `tauri.conf.json`.
-pub const IDENTIFIER: &str = "com.devhq.desktop";
-
 /// Revisions of the protocol this server speaks, newest first. A client asking for one of them
 /// gets it; any other gets the newest, and decides whether to go on.
 const PROTOCOL_VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
-
-/// What the person's DevHQ opens: `inventory.sqlite3` in the data directory Tauri gives it
-/// (`app_data_dir`, which is the system's data directory followed by the identifier).
-pub fn default_database() -> Option<PathBuf> {
-    dirs::data_dir().map(|dir| dir.join(IDENTIFIER).join("inventory.sqlite3"))
-}
-
-/// The local data folder the window's DevHQ keeps this computer's settings in (Tauri's
-/// `app_local_data_dir`): where it says which workstation this computer is.
-pub fn default_local_data() -> Option<PathBuf> {
-    dirs::data_local_dir().map(|dir| dir.join(IDENTIFIER))
-}
 
 /// `devhq --mcp [--database <path>]`: serves stdin and stdout until the client closes stdin.
 /// Returns the process exit code.
@@ -59,10 +44,12 @@ pub fn main(args: impl IntoIterator<Item = String>) -> i32 {
             other => return usage(&format!("unknown argument {other}")),
         }
     }
-    let Some(database) = database.or_else(default_database) else {
+    // What this executable's window opens: the installed DevHQ's inventory, or development data
+    // (see `identity`).
+    let Some(database) = database.or_else(identity::database) else {
         return usage("the system has no data directory; pass --database");
     };
-    let Some(local) = default_local_data() else {
+    let Some(local) = identity::local_data() else {
         return usage("the system has no local data directory");
     };
     let stdin = std::io::stdin();
@@ -306,6 +293,12 @@ impl Session {
         if let Some(stored_at) = &location.stored_at {
             notes.push(format!(
                 "The system keeps this file at {stored_at}, not where DevHQ asked for it. A DevHQ started another way (from the Start menu or File Explorer) may see a different inventory."
+            ));
+        }
+        if identity::development() {
+            notes.push(format!(
+                "This DevHQ executable was not packed by DevHQ's installer, so without --database it opens development data ({}), apart from the installed DevHQ's inventory.",
+                identity::DEVELOPMENT
             ));
         }
         Ok(json!({
@@ -2311,23 +2304,19 @@ mod tests {
         remove(&path);
     }
 
+    /// The tests run an executable the installer never packed, as `tauri dev` and `target/` do.
     #[test]
-    fn opens_the_inventory_the_app_opens() {
-        let config: Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
-        assert_eq!(config["identifier"], IDENTIFIER);
-        // Resolved by Tauri itself, as `run` does, for an app with DevHQ's identifier.
-        let mut context = tauri::test::mock_context(tauri::test::noop_assets());
-        context.config_mut().identifier = IDENTIFIER.into();
-        let app = tauri::test::mock_builder().build(context).unwrap();
-        use tauri::Manager;
-        assert_eq!(
-            default_database().unwrap(),
-            app.path().app_data_dir().unwrap().join("inventory.sqlite3")
+    fn says_when_it_keeps_development_data() {
+        let path = path();
+        seed(&path);
+        let status = answer(&path, "status", json!({}));
+        assert!(
+            status["notes"].as_array().unwrap().iter().any(|note| note
+                .as_str()
+                .unwrap()
+                .contains("development data (com.devhq.desktop.dev)")),
+            "{status:#}"
         );
-        // And the window's local folder, where it says which workstation this computer is.
-        assert_eq!(
-            default_local_data().unwrap(),
-            app.path().app_local_data_dir().unwrap()
-        );
+        remove(&path);
     }
 }

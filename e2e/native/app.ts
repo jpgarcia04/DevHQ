@@ -18,6 +18,20 @@ const config = JSON.parse(readFileSync(join(root, 'src-tauri', 'tauri.conf.json'
 }
 const windows = process.platform === 'win32'
 
+/**
+ * What every executable DevHQ's installer did not pack keeps its data under, and how its window
+ * is titled (src-tauri/src/identity.rs): the walk drives only such executables.
+ */
+const identifier = `${config.identifier}.dev`
+const title = `${config.app.windows[0]!.title} (development data)`
+
+/**
+ * The marker Tauri's bundler patches in the executable it packs into the installer: present as is,
+ * the executable was never packed and keeps development data. Read from the file, without running
+ * it, so that a packed one is refused before it could open the installed DevHQ's inventory.
+ */
+const UNPACKED = '__TAURI_BUNDLE_TYPE_VAR_UNK'
+
 /** The executable under test: DEVHQ_APP, or the debug build `npm run e2e:native` makes. */
 export function appBinary() {
   const binary =
@@ -29,35 +43,54 @@ export function appBinary() {
 }
 
 /**
- * Where DevHQ keeps its data, isolated from any real inventory. Linux follows XDG, so the walk
- * points every XDG directory into a new temporary folder. Windows resolves its folders through
- * the shell's known-folder API, which no environment variable redirects: there the walk only
- * runs when neither DevHQ folder exists yet, and removes the ones it created. It never reads,
- * writes or removes a data directory it did not create.
+ * Where DevHQ keeps its data, isolated from any real inventory. The walk drives only an
+ * executable DevHQ's installer did not pack, whose data is development data, apart from the
+ * installed DevHQ's. Linux follows XDG, so the walk points every XDG directory into a new
+ * temporary folder. Windows resolves its folders through the shell's known-folder API, which no
+ * environment variable redirects: there the walk only runs when neither development folder
+ * exists yet, and removes the ones it created. It never reads, writes or removes a data directory
+ * it did not create. Then it asks the executable's agent gate where the window will keep its
+ * inventory, which must be that folder.
  */
-export async function isolate() {
-  if (windows) {
-    const { APPDATA, LOCALAPPDATA } = process.env
-    if (!APPDATA || !LOCALAPPDATA) throw new Error('APPDATA and LOCALAPPDATA must be set.')
-    const data = join(APPDATA, config.identifier)
-    // WebView2 keeps its own profile here.
-    const local = join(LOCALAPPDATA, config.identifier)
-    for (const folder of [data, local])
-      if (existsSync(folder))
-        throw new Error(
-          `${folder} already exists. The native walk would use it, so it refuses to run: it only ` +
-            'runs where DevHQ has no data yet, such as a fresh CI runner.',
-        )
-    return {
-      env: { ...process.env },
-      dataDirectory: data,
-      cleanup: async () => {
-        if (process.env.DEVHQ_E2E_KEEP_DATA) return
-        for (const folder of [data, local])
-          await rm(folder, { recursive: true, force: true, maxRetries: 5 })
-      },
-    }
+export async function isolate(binary: string) {
+  if (!readFileSync(binary).includes(UNPACKED))
+    throw new Error(
+      `${binary} was packed by DevHQ's installer, so it keeps the installed DevHQ's data. The ` +
+        'native walk drives only executables the installer did not pack.',
+    )
+  const isolated = windows ? await isolateWindows() : await isolateLinux()
+  const asked = await databaseOf(binary, isolated.env)
+  const expected = join(isolated.dataDirectory, 'inventory.sqlite3')
+  // Windows compares names regardless of case.
+  if (windows ? asked.toLowerCase() !== expected.toLowerCase() : asked !== expected)
+    throw new Error(`${binary} would keep its inventory at ${asked}, not at ${expected}.`)
+  return isolated
+}
+
+async function isolateWindows() {
+  const { APPDATA, LOCALAPPDATA } = process.env
+  if (!APPDATA || !LOCALAPPDATA) throw new Error('APPDATA and LOCALAPPDATA must be set.')
+  const data = join(APPDATA, identifier)
+  // WebView2 keeps its own profile here.
+  const local = join(LOCALAPPDATA, identifier)
+  for (const folder of [data, local])
+    if (existsSync(folder))
+      throw new Error(
+        `${folder} already exists. The native walk would use it, so it refuses to run: it only ` +
+          'runs where DevHQ has no development data yet, such as a fresh CI runner.',
+      )
+  return {
+    env: { ...process.env },
+    dataDirectory: data,
+    cleanup: async () => {
+      if (process.env.DEVHQ_E2E_KEEP_DATA) return
+      for (const folder of [data, local])
+        await rm(folder, { recursive: true, force: true, maxRetries: 5 })
+    },
   }
+}
+
+async function isolateLinux() {
   if (process.platform !== 'linux') throw new Error('tauri-driver supports Linux and Windows only.')
   const home = await mkdtemp(join(tmpdir(), 'devhq-native-'))
   const env = {
@@ -69,12 +102,45 @@ export async function isolate() {
   }
   return {
     env,
-    dataDirectory: join(env.XDG_DATA_HOME, config.identifier),
+    dataDirectory: join(env.XDG_DATA_HOME, identifier),
     cleanup: async () => {
       if (!process.env.DEVHQ_E2E_KEEP_DATA)
         await rm(home, { recursive: true, force: true, maxRetries: 5 })
     },
   }
+}
+
+/**
+ * The inventory the executable's window opens, as its agent gate's `status` names it when no
+ * `--database` is given. The folder does not exist yet, so the gate opens nothing and creates
+ * nothing: it only says where.
+ */
+async function databaseOf(binary: string, env: NodeJS.ProcessEnv) {
+  const messages = [
+    { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18' } },
+    { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'status' } },
+  ]
+  const result = spawnSync(binary, ['--mcp'], {
+    env,
+    input: messages.map((message) => `${JSON.stringify(message)}\n`).join(''),
+    encoding: 'utf8',
+    timeout: 30_000,
+  })
+  if (result.status !== 0)
+    throw new Error(`${binary} --mcp failed (${result.status}): ${result.stderr}`)
+  const replies = result.stdout
+    .split('\n')
+    .filter((line) => line.trim())
+    .map((line) => JSON.parse(line) as { id: number; result?: { structuredContent?: Status } })
+  const status = replies.find((reply) => reply.id === 2)?.result?.structuredContent
+  if (!status) throw new Error(`The agent gate gave no status: ${result.stdout}`)
+  if (status.exists) throw new Error(`${status.database.database} already holds an inventory.`)
+  return status.database.database
+}
+
+interface Status {
+  database: { database: string }
+  exists: boolean
 }
 
 /** Remembers a helper process, so that the walk stops it however it ends. */
@@ -292,21 +358,24 @@ function powershell(script: string) {
  * Asks the window to close as its close button does, never through WebDriver: on Windows a
  * WM_CLOSE to its main window, on X11 the WM_DELETE_WINDOW message a window manager sends.
  * Under Xvfb there is no window manager, so a short Python script sends it through libX11.
+ * Either way the window must carry the title that says it keeps development data.
  */
 export function closeWindow(pid: number, env: NodeJS.ProcessEnv) {
   if (windows) {
     powershell(`
       $ErrorActionPreference = 'Stop'
       Add-Type -Namespace DevHQ -Name User32 -MemberDefinition '[DllImport("user32.dll", SetLastError = true)] public static extern bool PostMessageW(IntPtr window, uint message, IntPtr w, IntPtr l);'
-      $window = (Get-Process -Id ${pid}).MainWindowHandle
+      $process = Get-Process -Id ${pid}
+      $window = $process.MainWindowHandle
       if ($window -eq [IntPtr]::Zero) { throw 'DevHQ has no main window' }
+      if ($process.MainWindowTitle -cne '${title}') { throw "The window is titled '$($process.MainWindowTitle)', not '${title}'" }
       if (-not [DevHQ.User32]::PostMessageW($window, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)) { throw 'PostMessage failed' }
     `)
     return
   }
   const result = spawnSync(
     'python3',
-    [join(import.meta.dirname, 'close-x11-window.py'), String(pid), config.app.windows[0]!.title],
+    [join(import.meta.dirname, 'close-x11-window.py'), String(pid), title],
     { env, encoding: 'utf8' },
   )
   if (result.status !== 0)
