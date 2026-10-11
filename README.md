@@ -763,8 +763,11 @@ Antes de hacer clic espera a que el elemento deje de moverse, porque el contenid
 empuja la página, y guarda una captura por paso en `test-results/native/`. `DEVHQ_APP` lo apunta a
 otro ejecutable.
 
-Nunca toca un inventario real. Solo maneja un ejecutable que el instalador no empaquetó (lee la
-marca en el archivo, sin ejecutarlo, y rechaza uno empaquetado), que guarda datos de desarrollo. En
+Nunca toca un inventario real. Solo maneja un ejecutable que el instalador no empaquetó, que guarda
+datos de desarrollo: antes de lanzar nada o mirar ninguna carpeta lee el archivo, sin ejecutarlo, y
+exige la marca sin parchear exactamente una vez; sin ella (empaquetado, o un ejecutable cuya marca
+no conoce) o repetida, se niega. Vitest lo comprueba (`e2e/native/app.test.ts`) con ejecutables
+sintéticos y sustitutos que registran cada proceso y carpeta: ninguno se toca. En
 Linux, todas las carpetas XDG apuntan a una carpeta temporal y, si no hay pantalla, arranca su
 propio Xvfb. Windows resuelve sus carpetas con la API de carpetas conocidas, que ninguna variable
 de entorno redirige: allí solo corre si aún no existen las carpetas `com.devhq.desktop.dev` en

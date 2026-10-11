@@ -7,6 +7,8 @@ const executablePath = process.env.DEVHQ_CHROMIUM
 
 export default defineConfig({
   testDir: 'e2e',
+  // The native walk runs on its own (npm run e2e:native); Vitest tests its guards.
+  testIgnore: 'native/**',
   fullyParallel: true,
   forbidOnly: Boolean(process.env.CI),
   reporter: 'list',

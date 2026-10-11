@@ -27,10 +27,32 @@ const title = `${config.app.windows[0]!.title} (development data)`
 
 /**
  * The marker Tauri's bundler patches in the executable it packs into the installer: present as is,
- * the executable was never packed and keeps development data. Read from the file, without running
- * it, so that a packed one is refused before it could open the installed DevHQ's inventory.
+ * the executable was never packed and keeps development data. An unpacked executable holds it once;
+ * the packed one, none (it reads `..._NSS` there). The other `__TAURI_BUNDLE_TYPE_VAR_` strings are
+ * the values `bundle_type` compares against, in every executable (the unpacked release one holds
+ * `..._NSS` too), so only this one tells them apart.
  */
-const UNPACKED = '__TAURI_BUNDLE_TYPE_VAR_UNK'
+const UNPACKED = Buffer.from('__TAURI_BUNDLE_TYPE_VAR_UNK')
+
+/**
+ * Refuses, from the file alone and before anything runs or any folder is looked at, an
+ * executable that does not plainly say the installer never packed it: exactly one unpatched
+ * marker. None means the installer packed it, or that it carries no marker this walk knows;
+ * several leave unclear which one Tauri reads. Either way it could keep the installed DevHQ's data.
+ */
+export function refusePacked(binary: string) {
+  const file = readFileSync(binary)
+  let found = 0
+  for (let at = file.indexOf(UNPACKED); at >= 0; at = file.indexOf(UNPACKED, at + 1)) found++
+  if (found === 1) return
+  throw new Error(
+    found === 0
+      ? `${binary} has no unpatched bundle marker: DevHQ's installer packed it, so it keeps the ` +
+          "installed DevHQ's data, or it is not a DevHQ executable this walk knows."
+      : `${binary} has ${found} unpatched bundle markers, so which one Tauri reads is unclear.` +
+          ' The native walk drives only executables that plainly were never packed.',
+  )
+}
 
 /** The executable under test: DEVHQ_APP, or the debug build `npm run e2e:native` makes. */
 export function appBinary() {
@@ -53,11 +75,7 @@ export function appBinary() {
  * inventory, which must be that folder.
  */
 export async function isolate(binary: string) {
-  if (!readFileSync(binary).includes(UNPACKED))
-    throw new Error(
-      `${binary} was packed by DevHQ's installer, so it keeps the installed DevHQ's data. The ` +
-        'native walk drives only executables the installer did not pack.',
-    )
+  refusePacked(binary)
   const isolated = windows ? await isolateWindows() : await isolateLinux()
   const asked = await databaseOf(binary, isolated.env)
   const expected = join(isolated.dataDirectory, 'inventory.sqlite3')

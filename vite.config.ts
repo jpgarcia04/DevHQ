@@ -19,7 +19,8 @@ export default defineConfig({
     environment: 'jsdom',
     setupFiles: ['./src/test/setup.ts'],
     css: false,
-    // Playwright runs those, in a browser: npm run e2e.
-    exclude: [...configDefaults.exclude, 'e2e/**'],
+    // Playwright runs the specs, in a browser: npm run e2e. The native walk's own guards are
+    // tested here, without running the app (e2e/native/*.test.ts).
+    exclude: [...configDefaults.exclude, 'e2e/*.spec.ts'],
   },
 })
