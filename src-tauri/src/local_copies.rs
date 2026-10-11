@@ -976,13 +976,14 @@ pub(crate) mod tests {
                 reading.refs.outcome, "unreadable",
                 "{forbidden}: {reading:?}"
             );
+            // The system's reason, whoever met the denial: DevHQ looking again after libgit2 found
+            // nothing, or libgit2 itself when the system let it see `.git` but not open its config
+            // (as on the Windows runner under a TMP with spaces and accents). The system's words
+            // are in its own language, so only DevHQ's and libgit2's are checked.
+            let detail = reading.refs.detail.as_deref().unwrap();
             assert!(
-                reading
-                    .refs
-                    .detail
-                    .as_deref()
-                    .unwrap()
-                    .starts_with("The system did not let DevHQ look"),
+                detail.starts_with("The system did not let DevHQ look")
+                    || detail.starts_with("could not open"),
                 "{forbidden}: {reading:?}"
             );
             // Allowed again, the same copy reads.

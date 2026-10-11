@@ -71,10 +71,17 @@ permisos por agente ni descubrir repositorios por su cuenta.
   y la puerta; ningún marcador corre, ningún archivo cambia, y `git status` sobre la misma copia sí
   ejecuta su fsmonitor. Pasó en el CI de Linux
   ([run 38150025121](https://github.com/jpgarcia04/DevHQ/actions/runs/38150025121), los 4 jobs) con el
-  lector encerrado por seccomp; en Windows, `devhq --read-copy` sobre la misma copia se comprobó en la
-  laptop fuera de la caminata, y la caminata la corre el workflow de Windows en el PR. Falta ver ese
-  workflow, medir cuánto crece el instalador (en #5: artefacto de 3 371 793 bytes, `devhq.exe`
-  instalado de 13 136 384) y fusionar.
+  lector encerrado por seccomp. En el PR [#6](https://github.com/jpgarcia04/DevHQ/pull/6), el workflow
+  de Windows ([run 38150395994](https://github.com/jpgarcia04/DevHQ/actions/runs/38150395994)) pasó la
+  caminata entera bajo la protección en tiempo real, con el lector encerrado en su Job Object, y midió
+  el instalador: `setup.exe` de 3 389 953 bytes en #5 a 4 075 038 (+685 085, un 20 %), y `devhq.exe`
+  instalado de 13 136 384 a 15 141 376 (+2 004 992, un 15 %), casi todo libgit2. Sus tests de Rust
+  fallaron en el segundo pase, con `TMP` en una carpeta con espacios y acentos: la copia con `.git`
+  negado salió `unreadable`, como debe, pero por otro camino: el sistema dejó a libgit2 ver `.git` y le
+  negó abrir `.git/config`, un error de clase `Os` que el lector ya respondía como `unreadable` con el
+  motivo de libgit2. La prueba exigía la frase de DevHQ; ahora admite las dos (sin mirar las palabras
+  del sistema, que salen en su idioma). En la laptop siempre lo detecta DevHQ, también con `TMP`
+  acentuado, así que lo comprueba el siguiente pase de Windows. Falta ese pase y fusionar.
 - **Fuera de alcance, para después**: el bundle de la ventana pasó de unos 497 a 517 kB y Vite avisa
   de que supera 500 kB; es un aviso, en una app que carga desde disco, y no se cambió la configuración
   por él. Una aplicación que ya no declara ninguna copia local no ofrece «Show every reading» en la
