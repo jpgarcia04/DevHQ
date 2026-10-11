@@ -234,6 +234,41 @@ jobs:
           path: test-results/native/
           retention-days: 7
           if-no-files-found: ignore
+      # The walk drove a release executable the installer did not pack: it must have kept its data
+      # under the development identifier, and created nothing where the installed DevHQ keeps its
+      # own. Its agent gate, started as an MCP client starts it, must name the same inventory.
+      - name: The walked executable kept development data, apart from the installed DevHQ's
+        run: |
+          $data = Join-Path $env:APPDATA 'com.devhq.desktop.dev'
+          $local = Join-Path $env:LOCALAPPDATA 'com.devhq.desktop.dev'
+          foreach ($folder in @((Join-Path $env:APPDATA 'com.devhq.desktop'), (Join-Path $env:LOCALAPPDATA 'com.devhq.desktop'))) {
+            if (Test-Path $folder) { throw "The walked executable created $folder" }
+          }
+          if (-not (Test-Path (Join-Path $data 'inventory.sqlite3'))) { throw "No inventory in $data" }
+          if (-not (Get-ChildItem (Join-Path $data 'backups') -Filter 'inventory-*.sqlite3')) { throw "No backups in $data" }
+          if (-not (Test-Path (Join-Path $local 'EBWebView'))) { throw "No WebView2 profile in $local" }
+          $start = New-Object System.Diagnostics.ProcessStartInfo $env:DEVHQ_APP, '--mcp'
+          $start.UseShellExecute = $false
+          $start.RedirectStandardInput = $true
+          $start.RedirectStandardOutput = $true
+          $gate = [System.Diagnostics.Process]::Start($start)
+          $gate.StandardInput.WriteLine('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}')
+          $gate.StandardInput.WriteLine('{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"status"}}')
+          $gate.StandardInput.Close()
+          $out = $gate.StandardOutput.ReadToEnd()
+          if (-not $gate.WaitForExit(30000)) { throw 'The gate did not end when its input closed' }
+          $status = ($out -split "`n" | Where-Object { $_.Trim() } | ForEach-Object { $_ | ConvertFrom-Json })[1].result.structuredContent
+          $expected = Join-Path $data 'inventory.sqlite3'
+          "The walked executable's gate opens $($status.database.database)"
+          if ($status.database.database -ne $expected) { throw "It opens $($status.database.database), not $expected" }
+          if (-not ($status.notes -match 'development data')) { throw "Its status does not say it keeps development data: $out" }
+      # Brought where the installed DevHQ keeps its data, as a person brings an inventory from
+      # another computer: the installed DevHQ opens it, and the uninstaller later keeps or deletes
+      # it with its backups.
+      - name: Hand the walk's data to the installed DevHQ
+        run: |
+          Move-Item (Join-Path $env:APPDATA 'com.devhq.desktop.dev') (Join-Path $env:APPDATA 'com.devhq.desktop')
+          Move-Item (Join-Path $env:LOCALAPPDATA 'com.devhq.desktop.dev') (Join-Path $env:LOCALAPPDATA 'com.devhq.desktop')
       - name: Install DevHQ silently, as the current user
         run: |
           $installer = Get-ChildItem src-tauri/target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
@@ -244,7 +279,8 @@ jobs:
           if (-not $app) { throw "No DevHQ executable in $folder" }
           "DEVHQ_INSTALLED=$($app.FullName)" >> $env:GITHUB_ENV
       # The installed app has no DevTools port to drive, so this only checks that it starts on
-      # the walk's inventory, brings up WebView2 and ends when its window is closed.
+      # the walk's inventory, brings up WebView2 where the installed DevHQ keeps its profile, with
+      # the plain title, and ends when its window is closed.
       - name: Open and close the installed DevHQ
         run: |
           $data = Join-Path $env:APPDATA 'com.devhq.desktop'
@@ -258,6 +294,7 @@ jobs:
           if ($process.HasExited) { throw "The installed DevHQ exited at start, with code $($process.ExitCode)" }
           if ($process.MainWindowHandle -eq [IntPtr]::Zero) { throw 'The installed DevHQ showed no window' }
           "Window: $($process.MainWindowTitle)"
+          if ($process.MainWindowTitle -cne 'DevHQ') { throw "The installed DevHQ is titled '$($process.MainWindowTitle)'" }
           while (-not (Test-Path $webviewProfile) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
           if (-not (Test-Path $webviewProfile)) { throw 'WebView2 never started in the installed DevHQ' }
           Start-Sleep -Seconds 5
@@ -300,6 +337,11 @@ jobs:
           if ($replies[2].result.isError) { throw "attention: $out" }
           "Attention: $($replies[2].result.structuredContent.status)"
           if ($gate.ExitCode -ne 0) { throw 'The gate failed' }
+          if ($status.notes -match 'development data') { throw "The installed DevHQ's gate says it keeps development data: $out" }
+          # Neither the installed window nor its gate touched development data.
+          foreach ($folder in @((Join-Path $env:APPDATA 'com.devhq.desktop.dev'), (Join-Path $env:LOCALAPPDATA 'com.devhq.desktop.dev'))) {
+            if (Test-Path $folder) { throw "The installed DevHQ created $folder" }
+          }
       # The uninstaller deletes the data folder only when "Delete the application data" is
       # ticked on its confirmation page, which a silent uninstall never shows.
       - name: Uninstall silently and check what stays

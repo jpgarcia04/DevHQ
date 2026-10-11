@@ -5,8 +5,9 @@
  * real window; this walk is the one test that crosses it.
  *
  * It starts from a schema v6 inventory in rollback-journal mode, as DevHQ files were before
- * write-ahead logging, in a data directory of its own (see `isolate`). It never touches a
- * real inventory and it talks to no server but its own, on 127.0.0.1.
+ * write-ahead logging, in a data directory of its own (see `isolate`). It drives only an
+ * executable DevHQ's installer did not pack, which keeps development data, never touches a real
+ * inventory and talks to no server but its own, on 127.0.0.1.
  *
  * Run it with `npm run e2e:native`, which builds the debug app first. DEVHQ_APP points it at
  * another build. Screenshots of every step land in test-results/native/.
@@ -220,7 +221,7 @@ function agentGate(binary: string, database: string, env: NodeJS.ProcessEnv) {
 }
 
 const helpers: ChildProcess[] = []
-const isolated = await isolate()
+const isolated = await isolate(appBinary())
 // The hostile copy lives outside DevHQ's data, as a person's working copies do.
 const copies = await mkdtemp(join(tmpdir(), 'devhq-copies-'))
 const server = await healthServer()

@@ -324,7 +324,8 @@ read` («Automated · Local read»), el lector y su versión (`reader`, «libgit
 **Esta estación de trabajo.** DevHQ solo lee copias de la estación de trabajo en la que corre, y eso no
 lo dice el inventario, que puede viajar a otro equipo: lo guarda `this-workstation.json`, en la carpeta
 local de DevHQ (`%LOCALAPPDATA%\com.devhq.desktop` en Windows, que no viaja con un perfil móvil;
-`~/.local/share/com.devhq.desktop` en Linux, junto al inventario). Back up now no lo copia. Guarda, por
+en Linux, junto al inventario, en `~/.local/share/com.devhq.desktop.dev`; una build de desarrollo
+usa `com.devhq.desktop.dev`, ver [Arquitectura](#arquitectura)). Back up now no lo copia. Guarda, por
 equipo, el recurso elegido en cada inventario y cuándo; cada equipo se distingue por una huella, el
 SHA-256 de una etiqueta de DevHQ y del identificador del sistema (`MachineGuid` en Windows,
 `/etc/machine-id` en Linux), que nunca se guarda en bruto. Así, copiar el home a otro equipo, o
@@ -540,9 +541,12 @@ claude mcp add --scope user devhq -- "<ruta del ejecutable de DevHQ>" --mcp
 
 El instalador pone el ejecutable en `%LOCALAPPDATA%\DevHQ`. El cliente lanza la puerta al empezar una
 sesión y la termina al cerrarla (al cerrarse stdin): no abre ningún puerto, no acepta conexiones, no
-queda nada corriendo ni guarda credenciales. Abre el mismo `inventory.sqlite3` que la app, en el
-directorio de datos que Tauri le da (`%APPDATA%\com.devhq.desktop` en Windows; un test lo compara con
-el que resuelve Tauri), o el que se le indique con `--database <ruta>`. Si ahí no hay inventario, lo
+queda nada corriendo ni guarda credenciales. Abre el mismo `inventory.sqlite3` que la ventana del
+mismo ejecutable, en el directorio de datos que Tauri le da (`%APPDATA%\com.devhq.desktop` para el
+ejecutable instalado en Windows; un test lo compara con el que resuelve Tauri), o el que se le indique
+con `--database <ruta>`. Registrada con un ejecutable que no empaquetó el instalador, como el de
+`target/`, abre los datos de desarrollo (ver [Arquitectura](#arquitectura)), y `status` lo dice en
+sus notas. Si ahí no hay inventario, lo
 dice y no crea uno vacío donde tu DevHQ no lo encontraría.
 
 Hasta dónde llega un agente lo decides tú en Settings → **Agent gate**: **Off** (por defecto, también
@@ -558,7 +562,7 @@ only:
 
 | Herramienta    | Qué responde                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `status`       | Qué archivo abrió, dónde lo guarda de verdad el sistema (`storedAt`, como Settings), su versión de esquema, si hay una ventana de DevHQ abierta sobre él (`windowOpen`), cuántos sistemas tiene, qué estación de trabajo es este equipo (`thisWorkstation`, o por qué no se sabe) y qué no puede saber                                                                                                                                                                    |
+| `status`       | Qué archivo abrió, dónde lo guarda de verdad el sistema (`storedAt`, como Settings), su versión de esquema, si hay una ventana de DevHQ abierta sobre él (`windowOpen`), cuántos sistemas tiene, qué estación de trabajo es este equipo (`thisWorkstation`, o por qué no se sabe), qué no puede saber y, si su ejecutable no lo empaquetó el instalador, que sin `--database` abre datos de desarrollo                                                                    |
 | `attention`    | «¿Qué necesita mi atención?» con el mismo orden que Overview, la cobertura, lo nunca observado y lo que nada supervisa; el estado solo es `covered` si todo tiene evidencia vigente. Aparte, sin ordenar y diciendo que no es salud, `localCopies`: las copias cuya última lectura tenía trabajo que solo existía allí, las que no se encontraron y las de esta estación nunca leídas                                                                                     |
 | `list_systems` | Cada aplicación y recurso con su estado de evidencia y última observación, incidencias activas, comprobación HTTP, relaciones y referencias, con la máquina de cada ruta y qué otros sistemas declaran el mismo repositorio (`sameRepositoryAs`): un agente encuentra así su sistema por su carpeta o su repositorio. Cada copia local dice si es de esta estación, su última lectura y lo derivado, y cada sistema el commit más nuevo que encontraron (`localActivity`) |
 | `get_system`   | Una aplicación o recurso (por ID, o por nombre exacto sin distinguir mayúsculas) con sus referencias, sus observaciones, incidencias y eventos cargados, y desde cuándo su historial automático está completo                                                                                                                                                                                                                                                             |
@@ -683,6 +687,10 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 npm run tauri build       # ejecutable e instalador NSIS para Windows
 ```
 
+Todo ejecutable que no empaquetó el instalador, empezando por `npm run tauri dev`, guarda datos de
+desarrollo en `com.devhq.desktop.dev`, aparte del inventario de la DevHQ instalada, y su ventana se
+titula «DevHQ (development data)» (ver [Arquitectura](#arquitectura)).
+
 `preview.html` existe solo en desarrollo: carga la ventana real sobre un proceso nativo
 simulado con `@tauri-apps/api/mocks` y datos de ejemplo relativos al reloj, con un recurso
 supervisado que tiene más resultados de los que lleva un snapshot. Los comandos de lectura
@@ -755,11 +763,18 @@ Antes de hacer clic espera a que el elemento deje de moverse, porque el contenid
 empuja la página, y guarda una captura por paso en `test-results/native/`. `DEVHQ_APP` lo apunta a
 otro ejecutable.
 
-Nunca toca un inventario real. En Linux, todas las carpetas XDG apuntan a una carpeta temporal y,
-si no hay pantalla, arranca su propio Xvfb. Windows resuelve sus carpetas con la API de carpetas
-conocidas, que ninguna variable de entorno redirige: allí solo corre si aún no existen las
-carpetas de DevHQ en `%APPDATA%` y `%LOCALAPPDATA%` (en un equipo con datos se niega) y al
-terminar borra las que creó. Con la versión síncrona de `watch_http_monitor`, este recorrido falla
+Nunca toca un inventario real. Solo maneja un ejecutable que el instalador no empaquetó, que guarda
+datos de desarrollo: antes de lanzar nada o mirar ninguna carpeta lee el archivo, sin ejecutarlo, y
+exige la marca sin parchear exactamente una vez; sin ella (empaquetado, o un ejecutable cuya marca
+no conoce) o repetida, se niega. Vitest lo comprueba (`e2e/native/app.test.ts`) con ejecutables
+sintéticos y sustitutos que registran cada proceso y carpeta: ninguno se toca. En
+Linux, todas las carpetas XDG apuntan a una carpeta temporal y, si no hay pantalla, arranca su
+propio Xvfb. Windows resuelve sus carpetas con la API de carpetas conocidas, que ninguna variable
+de entorno redirige: allí solo corre si aún no existen las carpetas `com.devhq.desktop.dev` en
+`%APPDATA%` y `%LOCALAPPDATA%` (en un equipo con datos de desarrollo se niega) y al terminar borra
+las que creó; las de la DevHQ instalada no las mira. Antes de abrir la ventana pregunta a la puerta
+del ejecutable, sin `--database`, dónde guardará su inventario, y debe ser esa carpeta; al cerrarla
+comprueba que se titula «DevHQ (development data)». Con la versión síncrona de `watch_http_monitor`, este recorrido falla
 en su primer paso: en Linux el pánico no puede atravesar la llamada de WebKitGTK que entrega la
 petición, así que el proceso abortaba y la ventana se cerraba en cuanto abría Mi inventario.
 
@@ -774,9 +789,14 @@ ejecuta después el binario de tests directamente, desde la carpeta del paquete 
 con la protección en tiempo real de Microsoft Defender activa, como el recorrido. Construye
 la app de release y su instalador NSIS con `npm run tauri build` y guarda el instalador como
 artefacto. Compila después la misma app con el puerto de DevTools de la build de prueba y la
-recorre sobre WebView2. Instala el instalador en silencio para el usuario actual, abre la app
-instalada sobre el inventario del recorrido (debe mostrar su ventana, arrancar WebView2 y terminar
-al cerrarla sin dejar `-wal`) y la desinstala en silencio: deben quedar el inventario y sus
+recorre sobre WebView2. Ese ejecutable no lo empaquetó el instalador: sus datos, sus respaldos y su
+perfil de WebView2 deben estar en `com.devhq.desktop.dev`, nada en `com.devhq.desktop`, y su puerta,
+lanzada como la lanza un cliente MCP, debe abrir ese inventario y decir que son datos de desarrollo.
+Después lleva esos datos a `com.devhq.desktop`, como quien trae un inventario de otro equipo, instala
+el instalador en silencio para el usuario actual, abre la app instalada sobre ese inventario (debe
+mostrar su ventana titulada «DevHQ», arrancar WebView2 en `%LOCALAPPDATA%\com.devhq.desktop` y
+terminar al cerrarla sin dejar `-wal`), comprueba que su puerta abre `%APPDATA%\com.devhq.desktop`
+sin crear datos de desarrollo, y la desinstala en silencio: deben quedar el inventario y sus
 respaldos. Después la instala otra vez y la desinstala como una persona
 (`.github/windows/uninstall-deleting-data.ps1`): lanza `uninstall.exe` sin `/S`, comprueba que
 «Delete the application data» aparece desmarcada, la marca con `BM_SETCHECK` (la plantilla lee la
@@ -938,6 +958,37 @@ archivo por archivo porque Windows resuelve así: una carpeta que existe en los 
 a la real, aunque guarde archivos de las dos. Un junction en Windows y un enlace simbólico en Linux
 lo prueban, porque llegan a la carpeta de datos por otra ruta igual que la redirección, que un test
 no puede montar.
+
+Las carpetas de datos llevan el nombre del identificador de la app, y una sola decisión
+(`src-tauri/src/identity.rs`) lo elige para la ventana y para la puerta, así que todo lo que guarda
+DevHQ lo sigue: el inventario, sus respaldos y el lock de la ventana en la carpeta de datos, y
+`this-workstation.json` y el perfil de WebView2 en la local. Solo el ejecutable que empaquetó el
+instalador NSIS usa `com.devhq.desktop`, el de `tauri.conf.json`, que el instalador y su
+desinstalador conocen; cualquier otro usa `com.devhq.desktop.dev`, y su ventana se titula
+«DevHQ (development data)»:
+
+| Ejecutable                                                               | Datos (inventario, `backups/`, lock)   | Carpeta local (estación, WebView2)     |
+| ------------------------------------------------------------------------ | -------------------------------------- | -------------------------------------- |
+| El que instaló el instalador NSIS (Windows)                              | `%APPDATA%\com.devhq.desktop`          | `%LOCALAPPDATA%\com.devhq.desktop`     |
+| `npm run tauri dev`, una build debug o el release de `target/` (Windows) | `%APPDATA%\com.devhq.desktop.dev`      | `%LOCALAPPDATA%\com.devhq.desktop.dev` |
+| Cualquier build en Linux (DevHQ no publica paquete)                      | `~/.local/share/com.devhq.desktop.dev` | la misma                               |
+
+Los distingue una marca que el bundler de Tauri parchea en el ejecutable justo antes de meterlo en
+el instalador (`tauri::utils::platform::bundle_type`); el de `target/` la conserva sin parchear.
+Solo dice cómo se construyó el archivo. No prueba que esté instalado en ningún sitio: una copia del
+ejecutable instalado, lanzada desde cualquier carpeta, usa los datos de la instalación. No decide
+dónde guarda el sistema los archivos: un DevHQ lanzado desde una app empaquetada (MSIX) ve `AppData`
+redirigido con cualquiera de los dos identificadores. Y `--database` sigue abriendo el archivo que
+nombre. Sirve para que una build de desarrollo no abra por defecto el inventario de cada día, ni lo
+migre a un esquema que ninguna versión publicada tiene; no es una barrera. Otros paquetes (deb, rpm,
+AppImage, msi) usan datos de desarrollo hasta que DevHQ los publique y compruebe la marca que dejan,
+y en macOS `bundle_type` responde `App` para todo ejecutable, empaquetado o no, así que allí no hay
+marca que leer. La instalación existente sigue en su carpeta: nada mueve, migra ni abre datos de un
+identificador a otro, y lo que una build de desarrollo guardó antes con `com.devhq.desktop` (también
+en la carpeta de un paquete MSIX) queda donde está. Un test comprueba que la ventana y la puerta
+resuelven las mismas carpetas con los dos identificadores, como Tauri; el recorrido nativo, que solo
+maneja ejecutables sin empaquetar, que sus datos acaban en `com.devhq.desktop.dev`; y el workflow de
+Windows, que el ejecutable instalado usa `com.devhq.desktop`.
 
 La v4 reconstruye `observations` y `events` (SQLite no cambia
 un CHECK con ALTER) conservando filas, IDs, `rowid` (desempate de orden), claves foráneas,

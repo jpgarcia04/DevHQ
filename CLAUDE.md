@@ -84,16 +84,27 @@ dependency): through tauri-driver and WebKitWebDriver on Linux; on Windows msedg
 to the DevTools port that only the build from `e2e/native/build.ts` opens, because tauri-driver
 cannot launch a Tauri app on WebView2 150 or later. It finds elements by XPath on visible text and labels, so renaming a
 label, a button or a heading it uses means updating `main.ts`. It never touches a real
-inventory: on Linux every XDG directory points into a temporary folder; on Windows it refuses
-to run while `%APPDATA%` or `%LOCALAPPDATA%` already hold DevHQ folders. It closes the window
+inventory: it drives only an executable the installer did not pack (development data, see
+below); on Linux every XDG directory points into a temporary folder; on Windows it refuses
+to run while `%APPDATA%` or `%LOCALAPPDATA%` already hold `com.devhq.desktop.dev`. It closes the window
 through the system (X11 `WM_DELETE_WINDOW`, Win32 `WM_CLOSE`), never through WebDriver, whose
 Close Window only destroys the WebView. Screenshots of each step land in `test-results/native/`.
+
+## Development data
+
+`src-tauri/src/identity.rs` names the data folders for the window and the gate alike: only the
+executable the NSIS installer packed (Tauri's bundle marker) keeps `com.devhq.desktop`, the
+person's inventory; `tauri dev`, debug builds, `target/release` and the tests keep
+`com.devhq.desktop.dev`, and the window title says «development data». The marker says how the
+file was built, not where it is installed, and it does not stop MSIX redirection or `--database`:
+never point a development build at the person's inventory. Anything that resolves a data path
+goes through `identity`.
 
 ## Local Windows sessions
 
 The Claude and Codex desktop apps are packaged (MSIX), and Windows redirects AppData for every
 process they start: `npm run tauri dev` and your own shell read and write the package's copy
-(`%LOCALAPPDATA%\Packages\<package>\LocalCache\Roaming\com.devhq.desktop`), merged with the real
+(`%LOCALAPPDATA%\Packages\<package>\LocalCache\Roaming\com.devhq.desktop.dev`), merged with the real
 `%APPDATA%`, while File Explorer and the installed DevHQ see only the real one. Settings shows
 the path the file really has (`storedAt`). To look at or change the real `%APPDATA%`, run the
 command outside the package, through WMI (`Invoke-CimMethod Win32_Process -MethodName Create`).

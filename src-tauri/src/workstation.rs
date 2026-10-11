@@ -1,13 +1,14 @@
 //! Which workstation this computer is. A `workstation` resource is shared inventory; that this
 //! installation runs on that resource is not, so it lives outside `inventory.sqlite3`, in
 //! `this-workstation.json` in DevHQ's local data folder (`%LOCALAPPDATA%\com.devhq.desktop` on
-//! Windows, which a roaming profile does not carry). Back up now does not copy it. Only the window
-//! changes it; the agent gate only reads it, as it reads the access mode.
+//! Windows, which a roaming profile does not carry; `com.devhq.desktop.dev` for development data,
+//! see `identity`). Back up now does not copy it. Only the window changes it; the agent gate only
+//! reads it, as it reads the access mode.
 //!
 //! The file keeps, per computer, the resource chosen in each inventory and when. A computer is
 //! told apart by a fingerprint: the SHA-256 of a DevHQ label and the system's machine identifier
 //! (`MachineGuid` on Windows, `/etc/machine-id` on Linux), never the identifier itself. On Linux
-//! that folder is the inventory's own (`~/.local/share/com.devhq.desktop`), and copying a whole
+//! that folder is the inventory's own (`~/.local/share/<identifier>`), and copying a whole
 //! home to another computer, or sharing one between two, is common: without the fingerprint the
 //! other computer would take itself for this one and keep readings of its own paths as this one's.
 //! With it, another computer finds no entry of its own and has simply not chosen yet, and two that

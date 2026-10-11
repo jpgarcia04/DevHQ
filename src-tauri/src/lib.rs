@@ -4,6 +4,7 @@ mod backup;
 mod change_log;
 pub mod gate;
 mod http_check;
+mod identity;
 mod inventory;
 #[cfg(test)]
 mod ipc_contract;
@@ -334,6 +335,10 @@ fn manage<R: tauri::Runtime>(
 }
 
 pub fn run() {
+    // Which data folders this executable keeps: the installed DevHQ's, or development data apart
+    // from them (see `identity`). The agent gate makes the same decision.
+    let mut context = tauri::generate_context!();
+    identity::apply(context.config_mut());
     tauri::Builder::default()
         .setup(|app| {
             let path = app.path().app_data_dir()?.join("inventory.sqlite3");
@@ -357,7 +362,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(commands())
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building DevHQ")
         .run(|app, event| {
             // Closing the window ends supervision: runs in flight are cancelled, none start, and
