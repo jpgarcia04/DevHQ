@@ -40,10 +40,11 @@ fn optional_text<'a>(
     }
 }
 
+/// A whole number however JSON writes it (`30` or `30.0`), as the schema accepts it.
 fn optional_integer(arguments: &Map<String, Value>, key: &str) -> Result<Option<i64>, ApiError> {
     match arguments.get(key) {
         None | Some(Value::Null) => Ok(None),
-        Some(value) => value.as_i64().map(Some).ok_or_else(|| {
+        Some(value) => super::arguments::whole(value).map(Some).ok_or_else(|| {
             ApiError::invalid(format!("The argument {key} must be a whole number."))
         }),
     }
@@ -576,15 +577,13 @@ impl Session {
     /// nothing. Each is kept only while the person still lets agents write, checked inside its
     /// transaction with SQLite's write lock held.
     pub(super) fn read_copies(&self, arguments: &Map<String, Value>) -> Result<Value, ApiError> {
-        let which = match (arguments.get("referenceId"), arguments.get("type")) {
-            (Some(_), Some(_)) => {
-                return Err(ApiError::invalid(
-                    "Name either one reference (referenceId) or one system (type and id or name), not both.",
-                ))
-            }
-            (Some(_), None) => Which::References(vec![text(arguments, "referenceId")?.to_owned()]),
-            (None, Some(_)) => Which::System(super::find_system(&self.inventory()?, arguments)?),
-            (None, None) => Which::ThisWorkstation,
+        // The rules already refused a reference with a system, and a system without its type.
+        let which = if let Some(reference) = optional_text(arguments, "referenceId")? {
+            Which::References(vec![reference.to_owned()])
+        } else if arguments.contains_key("type") {
+            Which::System(super::find_system(&self.inventory()?, arguments)?)
+        } else {
+            Which::ThisWorkstation
         };
         let reader = match &self.reader {
             Some(reader) => reader.clone(),
@@ -644,8 +643,8 @@ fn references_schema() -> Value {
 
 fn named(kind: &str) -> Value {
     json!({
-        "id": { "type": "string", "description": format!("The {kind}'s id, from list_systems.") },
-        "name": { "type": "string", "description": "Or its exact name, ignoring case." },
+        "id": { "type": "string", "description": format!("The {kind}'s id, from list_systems. Give id, name, or both.") },
+        "name": { "type": "string", "description": format!("Or its exact name, ignoring case. Given with id, it must be that {kind}'s name, or nothing is done.") },
     })
 }
 
@@ -764,7 +763,7 @@ pub(super) fn tools() -> Vec<Value> {
             "Sets up a system's only HTTP check, a read-only GET (url required; expectedStatus 200, timeoutSeconds 5 and validForMinutes 60 by default), or changes it, keeping what the change leaves out. supervisionIntervalMinutes (5 to 60) has DevHQ run it on that schedule while its window is open; null runs it only when asked; validity must outlast the interval. With a DevHQ window open (status: windowOpen), that window runs a newly supervised check within about 2 s, and the answer's note says so. Logged as the agent's change.",
             with_system(json!({
                 "url": { "type": "string" },
-                "expectedStatus": { "type": "integer" },
+                "expectedStatus": { "type": "integer", "minimum": 200, "maximum": 599, "description": "A final HTTP status, never a 3xx: redirects are followed." },
                 "timeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 10 },
                 "validForMinutes": { "type": "integer", "minimum": 1, "maximum": 43200 },
                 "supervisionIntervalMinutes": { "type": ["integer", "null"], "minimum": 5, "maximum": 60 },
@@ -809,10 +808,10 @@ pub(super) fn tools() -> Vec<Value> {
             "Read local copies",
             "Reads, now, the local copies declared on this workstation (status: thisWorkstation), as Read does in DevHQ: one reference (referenceId), the copies of one system (type and id or name), or, with neither, every one but those of archived applications. Each reading is kept as DevHQ's own evidence (source read) with this agent as who asked, and says what the copy held at that moment: whether it was there, its branch and HEAD, its newest commit date, commits on no remote, stashes, remotes (without credentials), an operation left halfway, and how many files changed, are new or could not be verified. Never file names, contents, authors or messages. DevHQ reads with libgit2 in a process that cannot start programs, so nothing the repository names runs, and it writes nothing in the copy; code that hostile data managed to run inside that reader would still have the person's rights. Nothing leaves this computer, and no configuration changes. Copies on other machines are read by DevHQ there.",
             json!({
-                "referenceId": { "type": "string", "description": "One local copy's reference id, from list_systems." },
-                "type": { "type": "string", "enum": ["application", "resource"] },
-                "id": { "type": "string", "description": "The system's id, from list_systems." },
-                "name": { "type": "string", "description": "Or its exact name, ignoring case." },
+                "referenceId": { "type": "string", "description": "One local copy's reference id, from list_systems. Never with type, id or name." },
+                "type": { "type": "string", "enum": ["application", "resource"], "description": "With id or name: the system whose copies to read." },
+                "id": { "type": "string", "description": "The system's id, from list_systems; only with type." },
+                "name": { "type": "string", "description": "Or its exact name, ignoring case; only with type. Given with id, it must be that system's name, or nothing is done." },
             }),
             &[],
             json!({ "destructiveHint": false, "idempotentHint": false, "openWorldHint": false }),

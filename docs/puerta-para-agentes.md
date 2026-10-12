@@ -25,3 +25,8 @@ abierta. Lo que solo se ve en la laptop:
 
 Solo Claude Code se ha probado como cliente. Codex u otro cliente MCP por stdio deberían funcionar
 igual (la puerta solo usa `initialize`, `ping`, `tools/list` y `tools/call`), pero nadie lo ha visto.
+
+Desde que la puerta comprueba los argumentos contra los esquemas que publica, un cliente que mande
+claves que una herramienta no declara, o `null` en un campo opcional que no lo admite (como hacen
+algunos clientes con todo lo que el modelo deja vacío), recibe `invalid_input` donde antes la puerta lo
+ignoraba. Ningún cliente real se ha probado aún contra la puerta estricta, tampoco Claude Code.

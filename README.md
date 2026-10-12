@@ -565,7 +565,7 @@ only:
 | `status`       | Qué archivo abrió, dónde lo guarda de verdad el sistema (`storedAt`, como Settings), su versión de esquema, si hay una ventana de DevHQ abierta sobre él (`windowOpen`), cuántos sistemas tiene, qué estación de trabajo es este equipo (`thisWorkstation`, o por qué no se sabe), qué no puede saber y, si su ejecutable no lo empaquetó el instalador, que sin `--database` abre datos de desarrollo                                                                    |
 | `attention`    | «¿Qué necesita mi atención?» con el mismo orden que Overview, la cobertura, lo nunca observado y lo que nada supervisa; el estado solo es `covered` si todo tiene evidencia vigente. Aparte, sin ordenar y diciendo que no es salud, `localCopies`: las copias cuya última lectura tenía trabajo que solo existía allí, las que no se encontraron y las de esta estación nunca leídas                                                                                     |
 | `list_systems` | Cada aplicación y recurso con su estado de evidencia y última observación, incidencias activas, comprobación HTTP, relaciones y referencias, con la máquina de cada ruta y qué otros sistemas declaran el mismo repositorio (`sameRepositoryAs`): un agente encuentra así su sistema por su carpeta o su repositorio. Cada copia local dice si es de esta estación, su última lectura y lo derivado, y cada sistema el commit más nuevo que encontraron (`localActivity`) |
-| `get_system`   | Una aplicación o recurso (por ID, o por nombre exacto sin distinguir mayúsculas) con sus referencias, sus observaciones, incidencias y eventos cargados, y desde cuándo su historial automático está completo                                                                                                                                                                                                                                                             |
+| `get_system`   | Una aplicación o recurso (por ID, por nombre exacto sin distinguir mayúsculas, o por ambos si son del mismo sistema) con sus referencias, sus observaciones, incidencias y eventos cargados, y desde cuándo su historial automático está completo                                                                                                                                                                                                                         |
 | `history`      | Los resultados automáticos anteriores de un sistema, o las lecturas de sus copias locales (`records: "readings"`), de 200 en 200, como la carga bajo demanda de la ventana                                                                                                                                                                                                                                                                                                |
 
 Con Read and write, el agente también hace lo que tú haces en la ventana, pasando por los mismos
@@ -652,6 +652,31 @@ como sano. La atención se calcula con la copia en Rust de las reglas de la vent
 error de DevHQ) solo existe en el proceso de la ventana, y `status` dice que la puerta no lo conoce.
 Un fallo de un caso de uso vuelve como resultado con `isError` y el mismo mensaje que vería la
 ventana; un método o una herramienta desconocidos, como error de JSON-RPC.
+
+**Los argumentos se comprueban antes de abrir nada.** Cada herramienta publica en `tools/list` su
+`inputSchema`, con el que un cliente, y el modelo detrás de él, construye sus llamadas, y la puerta
+comprueba cada llamada contra ese mismo esquema antes de abrir el inventario o hacer nada: un
+argumento que la herramienta no declara, también dentro de un componente o de una referencia
+(`descripton`, `components[0].runOn`, un `type` en `delete_resource`), uno de otro tipo (`"id": 1`),
+un valor fuera de su lista o de su rango, y uno obligatorio que falta. Los esquemas usan un
+subconjunto pequeño de JSON Schema (`type`, `enum`, `properties`, `required`,
+`additionalProperties: false`, `items`, `minimum` y `maximum`) y la puerta lo comprueba entero: un
+test recorre todos los esquemas publicados y falla si alguno usa otra palabra clave, o deja un objeto
+abierto o un entero sin límites, para que ningún esquema anuncie una regla que la puerta no aplica.
+Como en JSON Schema, un número sin parte fraccionaria es un entero: `30.0` vale como `30`, y `30.5`
+se rechaza. `null` solo vale donde el esquema lo admite (`version`, `runsOn`, `label` y `machine` de
+una referencia, `supervisionIntervalMinutes`, y `before` en `history`), con el significado que da la
+descripción; en cualquier otro campo se rechaza en vez de ignorarse. Las reglas entre argumentos que
+ese subconjunto no expresa están en la descripción de cada herramienta y se comprueban igual, antes
+de abrir nada: nombrar el sistema por `id` o por `name`; en `read_copies`, una referencia o un
+sistema con su `type`, no ambos; `before` con observaciones y eventos; nombre y lifecycle, o nombre
+y tipo, para dar de alta. Un `id` y un `name` juntos deben nombrar el mismo sistema, y si no, la
+llamada se rechaza en vez de tomar el `id` y callar el `name`; esto se comprueba al buscar el
+sistema, dentro de la transacción en las escrituras, porque necesita el inventario. Un rechazo es un
+resultado con `isError` y el código `invalid_input` cuyo texto dice cada problema con su ruta, qué
+se acepta ahí y, si un nombre parece mal escrito, cuál se quiso decir; no se hizo nada. Solo se
+comprueban los argumentos de la herramienta: el resto de `params` (`_meta`, y lo que añadan
+revisiones posteriores del protocolo) es del protocolo, y la puerta no lo rechaza.
 
 En Windows, una puerta lanzada desde una app empaquetada (MSIX), como la app de escritorio de Claude,
 ve `AppData` redirigido (ver [Arquitectura](#arquitectura)) y podría leer y escribir otro inventario,
@@ -1121,7 +1146,13 @@ lock de la ventana: compartido entre dos ventanas, sin crear nada al preguntar, 
 sistema cuando se mata el proceso que lo tenía; y, con peticiones
 reales a un servidor local, que la evidencia programada es idéntica a la manual; y, a través del manejador real de comandos sobre el
 runtime simulado de Tauri y desde un hilo sin runtime asíncrono como el principal, que la ventana puede
-abrir el `Channel` de estado. La ventana
+abrir el `Channel` de estado. Los argumentos de la puerta se prueban con una llamada a cada una de
+sus 19 herramientas con un argumento que no declara, rechazada sin buscar siquiera el inventario y,
+con la puerta abierta para escribir, sin cambiar una fila; con las llamadas que antes se aceptaban en
+silencio (un campo mal escrito o en otra capitalización, `null` donde no cabe, un componente con
+`runOn`, un `type` de más y un `id` que contradice al `name` en un borrado, un `id` numérico, `30.5`
+como entero) y con las que se aceptan (`30.0`, `id` y `name` del mismo sistema, `null` donde el
+esquema lo admite, `_meta` y otros campos del protocolo en `params`). La ventana
 de historial se prueba por su límite exacto, los eventos que acompañan a cada resultado, el
 aviso de lo omitido en cada vista, la paginación de observaciones y de eventos de varios
 sistemas a la vez (sin huecos ni duplicados, con empates al mismo milisegundo, resultados

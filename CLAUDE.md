@@ -136,8 +136,11 @@ progress, because a new push cancels it.
 
 `devhq --mcp` (`src-tauri/src/gate.rs`) serves the inventory to an MCP client over stdio: no
 window, no port, alive only while the client keeps stdin open. Every tool calls the same use cases
-as the window's commands; never give it a shortcut around their validation. It never creates an
-inventory that does not exist. While a window is open, its process notices what other connections
+as the window's commands; never give it a shortcut around their validation. Before a tool runs or
+anything opens, its arguments are checked against the `inputSchema` it publishes and the rules its
+description states (`gate/arguments.rs`): a schema keyword the check does not enforce fails a test,
+so never publish a rule the gate does not apply, and state every rule between arguments in the
+tool's description. It never creates an inventory that does not exist. While a window is open, its process notices what other connections
 commit (`Monitor::notice_changes`, `PRAGMA data_version` every 2 s) and holds the lock that tells
 `status` a window is open (`window_lock.rs`). The native walk drives the gate as a child process.
 What remains to check or decide: `docs/puerta-para-agentes.md`. To try it
