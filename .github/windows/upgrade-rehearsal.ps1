@@ -613,7 +613,12 @@ function Invoke-PhaseH {
   Test-InstalledStatus $status 'old'
   Test-Contents $Installed 'old' | Out-Null
   Test-WritesRefused $Installed 'old' 'H'
-  $differences = @(Compare-Trees (Read-State 'files-pre-upgrade') (Get-DataTrees) | Where-Object { -not (Test-InventoryFile $_) })
+  # Compare-Trees hands back its array as one object: unroll it before filtering.
+  $trees = Get-DataTrees
+  Save-State $trees 'files-post-H'
+  $all = Compare-Trees (Read-State 'files-pre-upgrade') $trees
+  Note 'Files that differ from before the upgrade, after the old build opened again' $(if ($all.Count) { $all -join '; ' } else { 'none' })
+  $differences = @($all | Where-Object { -not (Test-InventoryFile $_) })
   Check 'Backups, witnesses, this-workstation.json and the set-aside files are byte for byte as before the upgrade' ($differences.Count -eq 0) ($differences -join '; ')
   $differences = Compare-Trees (Read-State 'files-dev-post-G') (Get-DevTrees)
   Check 'The old build left the development data alone' ($differences.Count -eq 0) ($differences -join '; ')
