@@ -267,51 +267,45 @@ impl Session {
         }
     }
 
-    /// The gate never creates an empty inventory where the person's DevHQ would not find it.
-    fn existing(&self) -> Result<(), ApiError> {
-        if self.database.is_file() {
-            Ok(())
-        } else {
-            Err(ApiError::invalid(format!(
-                "There is no DevHQ inventory at {}. Open DevHQ once to create it, or start the gate with --database <path>.",
-                self.database.display()
-            )))
-        }
+    /// The inventory, opened as it is for reading: never created, upgraded or converted, and
+    /// refused unless it is in this build's schema (see `inventory::open_as_found`).
+    fn read(&self) -> Result<rusqlite::Connection, ApiError> {
+        inventory::open_as_found(&self.database, inventory::Use::Read)
     }
 
     /// Whether the person lets agents `read` or `write` through the gate, checked on every call
     /// so that a change in Settings applies at once.
     fn allow(&self, need: &str) -> Result<(), ApiError> {
-        self.existing()?;
-        permitted(&access::mode(&inventory::open(&self.database)?)?, need)
+        permitted(&access::mode(&self.read()?)?, need)
     }
 
     fn inventory(&self) -> Result<Inventory, ApiError> {
-        self.existing()?;
-        inventory::list(&self.database)
+        inventory::list_from(&mut self.read()?)
     }
 
+    /// Always answered, whatever the file is, and without changing it: what the gate found there,
+    /// and, only for an inventory it serves, the access mode and, if the person lets agents in,
+    /// what it holds. Nothing it could not read is presented as known.
     fn status(&self) -> Result<Value, ApiError> {
         let location = inventory::DataLocation::of(&self.database);
         let exists = self.database.is_file();
-        let access = if exists {
-            Some(access::mode(&inventory::open(&self.database)?)?)
-        } else {
-            None
-        };
-        // What the inventory holds is for agents the person let in, and so is which of its
-        // workstations this computer is.
-        let (counts, this_workstation) = if access.as_deref().is_some_and(|mode| mode != "off") {
-            let inventory = self.inventory()?;
-            (
-                json!({ "applications": inventory.applications.len(), "resources": inventory.resources.len() }),
-                json!(self.this_workstation(&inventory)),
-            )
-        } else {
-            (Value::Null, Value::Null)
+        let (db, found) = inventory::examine(&self.database);
+        let mut notes = Vec::new();
+        let (access, counts, this_workstation) = match (db, &found) {
+            (Some(mut db), inventory::Found::Current) => match self.served(&mut db) {
+                Ok(served) => served,
+                Err(error) => {
+                    notes.push(format!(
+                        "DevHQ could not read the inventory: {} ({}). What it holds and its access mode are unknown.",
+                        error.message, error.code
+                    ));
+                    (None, Value::Null, Value::Null)
+                }
+            },
+            _ => (None, Value::Null, Value::Null),
         };
         let window_open = crate::window_lock::window_open(&self.database);
-        let mut notes = vec![
+        notes.extend([
             match window_open {
                 Some(true) => "A DevHQ window is open on this inventory. It notices what the gate commits within about 2 s: it shows it, and its supervision follows a check configured, paused, removed or run here.",
                 Some(false) => "No DevHQ window is open on this inventory, so nothing supervises its HTTP checks: they run only when asked. What the gate writes is there when DevHQ opens.",
@@ -319,7 +313,7 @@ impl Session {
             }
             .to_owned(),
             "Supervision's live state (runs in flight, next run, DevHQ's own run errors) exists only in the DevHQ window's process; the gate does not know it.".to_owned(),
-        ];
+        ]);
         if let Some(stored_at) = &location.stored_at {
             notes.push(format!(
                 "The system keeps this file at {stored_at}, not where DevHQ asked for it. A DevHQ started another way (from the Start menu or File Explorer) may see a different inventory."
@@ -334,7 +328,13 @@ impl Session {
         Ok(json!({
             "database": location,
             "exists": exists,
-            "schemaVersion": exists.then_some(inventory::SCHEMA_VERSION),
+            "schemaVersion": found.stored(),
+            "schema": {
+                "stored": found.stored(),
+                "supported": inventory::SCHEMA_VERSION,
+                "state": found.state(),
+                "meaning": found.meaning(),
+            },
             "access": access,
             "windowOpen": window_open,
             "counts": counts,
@@ -342,6 +342,24 @@ impl Session {
             "client": self.client,
             "notes": notes,
         }))
+    }
+
+    /// The access mode of an inventory the gate serves and, for agents the person let in, how
+    /// many systems it holds and which of its workstations this computer is.
+    fn served(
+        &self,
+        db: &mut rusqlite::Connection,
+    ) -> Result<(Option<String>, Value, Value), ApiError> {
+        let mode = access::mode(db)?;
+        if mode == "off" {
+            return Ok((Some(mode), Value::Null, Value::Null));
+        }
+        let inventory = inventory::list_from(db)?;
+        Ok((
+            Some(mode),
+            json!({ "applications": inventory.applications.len(), "resources": inventory.resources.len() }),
+            json!(self.this_workstation(&inventory)),
+        ))
     }
 
     /// Which workstation this computer is, by the association the window keeps.
@@ -491,18 +509,19 @@ impl Session {
     }
 
     fn history(&self, arguments: &Map<String, Value>) -> Result<Value, ApiError> {
-        let inventory = self.inventory()?;
+        let mut db = self.read()?;
+        let inventory = inventory::list_from(&mut db)?;
         let subject = find_system(&inventory, arguments)?;
         match arguments.get("records").and_then(Value::as_str) {
             Some("observations") => {
                 let before = text(arguments, "before")?;
-                let page = records::older_observations(&self.database, &subject, before)?;
+                let page = records::older_observations_in(&mut db, &subject, before)?;
                 Ok(json!({ "observations": page.observations, "more": page.more }))
             }
             Some("events") => {
                 let before = text(arguments, "before")?;
                 let page =
-                    records::older_events(&self.database, std::slice::from_ref(&subject), before)?;
+                    records::older_events_in(&mut db, std::slice::from_ref(&subject), before)?;
                 Ok(json!({ "events": page.events, "more": page.more }))
             }
             // Readings start from the newest when no reading is named.
@@ -511,7 +530,7 @@ impl Session {
                     None | Some(Value::Null) => None,
                     Some(_) => Some(text(arguments, "before")?),
                 };
-                let page = readings::older_readings(&self.database, &subject, before)?;
+                let page = readings::older_readings_in(&mut db, &subject, before)?;
                 Ok(json!({ "readings": page.readings, "more": page.more }))
             }
             _ => Err(ApiError::invalid(
@@ -902,7 +921,7 @@ fn read_tools() -> Vec<Value> {
         read_only(
             "status",
             "DevHQ status",
-"Which inventory file the gate opened, where the system really keeps it, its schema version, whether the person lets agents read or write through the gate (`access`: off, read or write), whether a DevHQ window is open on it (`windowOpen`; null when the system cannot say), how many systems it holds, which of its workstations this computer is (`thisWorkstation`, or why DevHQ does not know: only the window chooses it), and what the gate cannot know. Always answered, even with the gate off.",
+"Which inventory file the gate opened, where the system really keeps it, what the file is (`schema`: the version it stores, the one this DevHQ supports, and its state: current, outdated, newer, not_an_inventory, unreadable or missing; `schemaVersion` is the stored one, null when unknown), whether the person lets agents read or write through the gate (`access`: off, read or write), whether a DevHQ window is open on it (`windowOpen`; null when the system cannot say), how many systems it holds, which of its workstations this computer is (`thisWorkstation`, or why DevHQ does not know: only the window chooses it), and what the gate cannot know. Access, counts and workstation are null unless the inventory is current, which is the only kind the gate serves. Always answered, even with the gate off, and never changes the file.",
             json!({}),
             &[],
         ),
@@ -2796,5 +2815,325 @@ mod tests {
         assert_eq!(replies[3]["result"]["tools"].as_array().unwrap().len(), 19);
         assert_eq!(replies[4]["result"]["isError"], true);
         remove(&path);
+    }
+
+    /// Every entry of `folder`, with a file's bytes and when each was last written: what a read
+    /// through the gate must leave exactly as it found it.
+    fn files(folder: &Path) -> Vec<(String, Option<Vec<u8>>, std::time::SystemTime)> {
+        let mut found: Vec<_> = std::fs::read_dir(folder)
+            .unwrap()
+            .map(|entry| {
+                let entry = entry.unwrap();
+                let metadata = entry.metadata().unwrap();
+                (
+                    entry.file_name().to_string_lossy().into_owned(),
+                    metadata
+                        .is_file()
+                        .then(|| std::fs::read(entry.path()).unwrap()),
+                    metadata.modified().unwrap(),
+                )
+            })
+            .collect();
+        found.sort();
+        found
+    }
+
+    /// What lies at the gate's path, as each case makes it.
+    type Make = fn(&Path);
+
+    /// A case: what it makes at the gate's path, what the gate must find there (whether it
+    /// exists, the schema version it stores, its state, the access and counts status gives) and
+    /// the code every read and write is refused with; None when reads are answered.
+    type Case = (
+        &'static str,
+        Make,
+        bool,
+        Value,
+        &'static str,
+        Value,
+        Value,
+        Option<&'static str>,
+    );
+
+    /// A v12 inventory as `seed` leaves it (write-ahead logged, Read only), replaced by a backup
+    /// of itself: a rollback-journal file, as every DevHQ backup is.
+    fn backup_copy(path: &Path) {
+        seed(path);
+        let copy = crate::backup::back_up(path).unwrap();
+        std::fs::copy(&copy.path, path).unwrap();
+    }
+
+    fn sqlite(path: &Path, sql: &str) {
+        rusqlite::Connection::open(path)
+            .unwrap()
+            .execute_batch(sql)
+            .unwrap();
+    }
+
+    /// A read never creates, upgrades, converts or touches an inventory, whatever the file is;
+    /// status says what it is, and nothing it could not read is presented as known.
+    #[test]
+    fn reads_leave_every_file_as_they_found_it_and_status_says_what_it_is() {
+        use crate::inventory::tests::database_at;
+        let counts = json!({ "applications": 1, "resources": 2 });
+        let cases: [Case; 13] = [
+            (
+                "v6, rollback journal",
+                |path| drop(database_at(path, 6)),
+                true,
+                json!(6),
+                "outdated",
+                Value::Null,
+                Value::Null,
+                Some("schema_outdated"),
+            ),
+            (
+                "v6, write-ahead log",
+                |path| {
+                    database_at(path, 6)
+                        .pragma_update_and_check(None, "journal_mode", "WAL", |row| {
+                            row.get::<_, String>(0)
+                        })
+                        .unwrap();
+                },
+                true,
+                json!(6),
+                "outdated",
+                Value::Null,
+                Value::Null,
+                Some("schema_outdated"),
+            ),
+            (
+                "v11, Read only",
+                |path| {
+                    database_at(path, 11)
+                        .execute(
+                            "INSERT INTO agent_access (id, mode, changed_at) VALUES (1, 'read', 0)",
+                            [],
+                        )
+                        .unwrap();
+                },
+                true,
+                json!(11),
+                "outdated",
+                Value::Null,
+                Value::Null,
+                Some("schema_outdated"),
+            ),
+            (
+                "v12 backup, rollback journal, Read only",
+                backup_copy,
+                true,
+                json!(12),
+                "current",
+                json!("read"),
+                counts.clone(),
+                None,
+            ),
+            (
+                "v12, write-ahead log, Read only",
+                |path| drop(seed(path)),
+                true,
+                json!(12),
+                "current",
+                json!("read"),
+                counts.clone(),
+                None,
+            ),
+            (
+                "v12, write-ahead log, Off",
+                |path| {
+                    seed(path);
+                    crate::access::set_agent_access(path, "off").unwrap();
+                },
+                true,
+                json!(12),
+                "current",
+                json!("off"),
+                Value::Null,
+                Some("access_denied"),
+            ),
+            (
+                "v13",
+                |path| {
+                    database_at(path, 12)
+                        .pragma_update(None, "user_version", 13)
+                        .unwrap();
+                },
+                true,
+                json!(13),
+                "newer",
+                Value::Null,
+                Value::Null,
+                Some("schema_newer"),
+            ),
+            (
+                "empty file",
+                |path| std::fs::write(path, b"").unwrap(),
+                true,
+                Value::Null,
+                "not_an_inventory",
+                Value::Null,
+                Value::Null,
+                Some("not_an_inventory"),
+            ),
+            (
+                "another program's SQLite database",
+                |path| {
+                    sqlite(
+                        path,
+                        "CREATE TABLE notes (body TEXT); INSERT INTO notes VALUES ('mine');",
+                    )
+                },
+                true,
+                Value::Null,
+                "not_an_inventory",
+                Value::Null,
+                Value::Null,
+                Some("not_an_inventory"),
+            ),
+            (
+                "a SQLite database stamped 12 without DevHQ's tables",
+                |path| {
+                    sqlite(
+                        path,
+                        "CREATE TABLE notes (body TEXT); PRAGMA user_version = 12;",
+                    )
+                },
+                true,
+                Value::Null,
+                "not_an_inventory",
+                Value::Null,
+                Value::Null,
+                Some("not_an_inventory"),
+            ),
+            (
+                "a text file",
+                |path| std::fs::write(path, "hello\n").unwrap(),
+                true,
+                Value::Null,
+                "unreadable",
+                Value::Null,
+                Value::Null,
+                Some("database_error"),
+            ),
+            (
+                "a folder",
+                |path| std::fs::create_dir(path).unwrap(),
+                false,
+                Value::Null,
+                "unreadable",
+                Value::Null,
+                Value::Null,
+                Some("database_error"),
+            ),
+            (
+                "nothing",
+                |_| {},
+                false,
+                Value::Null,
+                "missing",
+                Value::Null,
+                Value::Null,
+                Some("invalid_input"),
+            ),
+        ];
+        let reads = [
+            ("attention", json!({})),
+            ("list_systems", json!({})),
+            (
+                "get_system",
+                json!({ "type": "resource", "name": "Web host" }),
+            ),
+            (
+                "history",
+                json!({ "type": "resource", "name": "Web host", "records": "readings" }),
+            ),
+        ];
+        // None of these may write: the gate is at most open for reading in every case.
+        let writes = [
+            ("save_resource", json!({ "name": "New", "kind": "server" })),
+            ("delete_resource", json!({ "name": "Spare box" })),
+            (
+                "record_observation",
+                json!({ "type": "resource", "name": "Web host", "result": "healthy", "summary": "Fine", "validForMinutes": 60 }),
+            ),
+            ("backup", json!({})),
+        ];
+        for (case, make, exists, stored, state, access, counted, refused) in cases {
+            let path = path();
+            let folder = path.parent().unwrap().to_owned();
+            make(&path);
+            let before = files(&folder);
+            let mut agent = session(&path, "claude-code");
+
+            let status = use_tool(&mut agent, "status", json!({})).unwrap();
+            assert_eq!(status["exists"], exists, "{case}: {status:#}");
+            assert_eq!(status["schemaVersion"], stored, "{case}: {status:#}");
+            assert_eq!(
+                (
+                    status["schema"]["stored"].clone(),
+                    status["schema"]["supported"].clone(),
+                    status["schema"]["state"].as_str()
+                ),
+                (
+                    stored.clone(),
+                    json!(inventory::SCHEMA_VERSION),
+                    Some(state)
+                ),
+                "{case}: {status:#}"
+            );
+            assert!(status["schema"]["meaning"].is_string(), "{case}");
+            assert_eq!(status["access"], access, "{case}: {status:#}");
+            assert_eq!(status["counts"], counted, "{case}: {status:#}");
+            assert_eq!(
+                status["thisWorkstation"].is_null(),
+                counted.is_null(),
+                "{case}: {status:#}"
+            );
+
+            for (tool, arguments) in &reads {
+                match (refused, use_tool(&mut agent, tool, arguments.clone())) {
+                    (None, Ok(_)) => {}
+                    (Some(code), Err(text)) => {
+                        assert!(
+                            text.ends_with(&format!("({code})")),
+                            "{case}, {tool}: {text}"
+                        );
+                        if !matches!(code, "access_denied" | "invalid_input") {
+                            assert!(
+                                text.contains("Nothing was read or changed."),
+                                "{case}, {tool}: {text}"
+                            );
+                        }
+                    }
+                    (expected, outcome) => {
+                        panic!("{case}, {tool}: expected {expected:?}, got {outcome:?}")
+                    }
+                }
+            }
+            for (tool, arguments) in &writes {
+                let text = use_tool(&mut agent, tool, arguments.clone()).unwrap_err();
+                let code = refused.unwrap_or("access_denied");
+                assert!(
+                    text.ends_with(&format!("({code})")),
+                    "{case}, {tool}: {text}"
+                );
+            }
+            assert_eq!(files(&folder), before, "{case}: the folder changed");
+            std::fs::remove_dir_all(folder).unwrap();
+        }
+
+        // Without even its folder, nothing is created either.
+        let base = path();
+        let nowhere = base
+            .parent()
+            .unwrap()
+            .join("nowhere")
+            .join("inventory.sqlite3");
+        let status = answer(&nowhere, "status", json!({}));
+        assert_eq!(status["schema"]["state"], "missing");
+        assert!(!nowhere.parent().unwrap().exists());
+        remove(&base);
     }
 }

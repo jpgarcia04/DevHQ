@@ -181,14 +181,15 @@ impl Session {
 
     /// Makes a configuration change and its log entry in one write transaction, only while the
     /// person lets agents write: checked inside it, under SQLite's write lock, so that closing
-    /// the gate in Settings can never race a change.
+    /// the gate in Settings can never race a change. The inventory is opened as it is: never
+    /// created, upgraded or converted to another journal mode, and refused unless it is in this
+    /// build's schema.
     fn change(
         &self,
         apply: impl FnOnce(&Transaction, &Actor) -> Result<Value, ApiError>,
     ) -> Result<Value, ApiError> {
-        self.existing()?;
         let actor = self.actor()?;
-        let mut db = inventory::open(&self.database)?;
+        let mut db = inventory::open_as_found(&self.database, inventory::Use::Write)?;
         let tx = db
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(ApiError::database)?;
@@ -566,8 +567,8 @@ impl Session {
         Ok(json!({ "event": event }))
     }
 
+    /// Run once `allow` found the inventory current and open for writing.
     pub(super) fn backup(&self) -> Result<Value, ApiError> {
-        self.existing()?;
         Ok(json!({ "backup": backup::back_up(&self.database)? }))
     }
 

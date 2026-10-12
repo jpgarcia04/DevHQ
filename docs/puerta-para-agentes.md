@@ -21,6 +21,21 @@ abierta. Lo que solo se ve en la laptop:
   `storedAt` y si `windowOpen` ve la ventana del DevHQ instalado. El lock está junto al inventario, y
   Windows también redirige ese archivo.
 
+## Lo que queda para la actualización explícita
+
+Las consultas y los cambios de configuración de la puerta abren el inventario tal como lo encuentran
+y solo sirven el esquema actual. Lo demás espera a la actualización explícita de inventarios, que hará
+que ninguna apertura actualice sola:
+
+- Los registros (`record_observation`, `open_incident`, `update_incident`, `record_event`),
+  `run_check`, `backup` y `read_copies` comprueban el archivo antes de empezar, pero luego pasan por
+  los casos de uso de la ventana, que lo abren con `inventory::open`: un inventario en rollback pasa a
+  WAL al escribir, y si entre la comprobación y la escritura otro proceso sustituye el archivo por un
+  inventario más antiguo o lo borra, esa apertura lo actualiza o crea uno vacío.
+- Un inventario más antiguo no sirve a ningún agente hasta que la ventana lo abre, y la ventana lo
+  actualiza sin preguntar y sin respaldo previo; Back up now, sobre uno antiguo, también actualiza
+  antes de copiar.
+
 ## Por probar con otros clientes
 
 Solo Claude Code se ha probado como cliente. Codex u otro cliente MCP por stdio deberían funcionar

@@ -2,7 +2,9 @@ use crate::local_copies::readings::{self, LocalCopy};
 use crate::records::{Actor, Subject};
 use crate::references::{self, Reference, ReferenceInput, SharedRepository};
 use crate::{change_log, http_check, records};
-use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
+use rusqlite::{
+    params, Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
+};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::time::Duration;
@@ -331,6 +333,169 @@ fn migrate(db: &mut Connection) -> Result<(), ApiError> {
     Ok(())
 }
 
+/// What the agent gate finds at an inventory's path, told without changing anything there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Found {
+    /// No file there.
+    Missing,
+    /// A DevHQ inventory in this build's schema: the only kind the gate serves.
+    Current,
+    /// A DevHQ inventory in an older schema, which only the window upgrades.
+    Outdated(i64),
+    /// A DevHQ inventory in a schema newer than this build knows.
+    Newer(i64),
+    /// A SQLite database without DevHQ's tables: `empty` when it has no table at all.
+    Foreign { empty: bool },
+    /// Not readable as a SQLite database, and why: not one, damaged, locked, a folder…
+    Unreadable(String),
+}
+
+impl Found {
+    /// The schema version the file holds, when it is a DevHQ inventory: never a guess.
+    pub(crate) fn stored(&self) -> Option<i64> {
+        match self {
+            Self::Current => Some(SCHEMA_VERSION),
+            Self::Outdated(version) | Self::Newer(version) => Some(*version),
+            Self::Missing | Self::Foreign { .. } | Self::Unreadable(_) => None,
+        }
+    }
+
+    pub(crate) fn state(&self) -> &'static str {
+        match self {
+            Self::Missing => "missing",
+            Self::Current => "current",
+            Self::Outdated(_) => "outdated",
+            Self::Newer(_) => "newer",
+            Self::Foreign { .. } => "not_an_inventory",
+            Self::Unreadable(_) => "unreadable",
+        }
+    }
+
+    /// What it means for the person and for an agent, in a sentence or two.
+    pub(crate) fn meaning(&self) -> String {
+        match self {
+            Self::Missing => "There is no file there. The gate never creates one: DevHQ's window creates the inventory the first time it opens.".to_owned(),
+            Self::Current => format!("A DevHQ inventory in schema version {SCHEMA_VERSION}, the one this DevHQ reads."),
+            Self::Outdated(version) => format!("A DevHQ inventory in schema version {version}, older than this DevHQ's ({SCHEMA_VERSION}). The gate never upgrades an inventory and serves nothing from this one. DevHQ's window upgrades it when it opens it, without making a backup first."),
+            Self::Newer(version) => format!("A DevHQ inventory in schema version {version}, written by a DevHQ newer than this one (schema {SCHEMA_VERSION}). This DevHQ cannot read it, and the gate serves nothing from it."),
+            Self::Foreign { empty: true } => "An empty file or a SQLite database without tables: not a DevHQ inventory. The gate never turns a file into one.".to_owned(),
+            Self::Foreign { empty: false } => "A SQLite database without DevHQ's tables: not a DevHQ inventory. The gate never turns a file into one.".to_owned(),
+            Self::Unreadable(why) => format!("DevHQ could not read the file as a SQLite database ({why}), so what it holds, its schema included, is unknown."),
+        }
+    }
+
+    /// Why the gate serves nothing from the file at `path`; never asked of `Current`.
+    pub(crate) fn refusal(&self, path: &Path) -> ApiError {
+        let at = path.display();
+        let (code, message) = match self {
+            Self::Missing => {
+                return ApiError::invalid(format!(
+                    "There is no DevHQ inventory at {at}. Open DevHQ once to create it, or start the gate with --database <path>."
+                ))
+            }
+            Self::Current => {
+                return ApiError::database(format!("{at} is a current inventory, served, not refused."))
+            }
+            Self::Outdated(_) => ("schema_outdated", self.meaning()),
+            Self::Newer(_) => ("schema_newer", self.meaning()),
+            Self::Foreign { .. } => ("not_an_inventory", self.meaning()),
+            Self::Unreadable(_) => ("database_error", self.meaning()),
+        };
+        ApiError {
+            code,
+            message: format!("{at}: {message} Nothing was read or changed."),
+        }
+    }
+}
+
+/// What a connection the gate opens may do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Use {
+    /// No statement on it writes: SQLite refuses any that would.
+    Read,
+    /// The configuration changes the gate makes inside its own write transaction.
+    Write,
+}
+
+/// What is at `path`, told without changing anything there, and the connection that read it when
+/// the file is a SQLite database.
+///
+/// The connection never creates the file or its folder, never changes the journal mode, never
+/// upgrades the schema and has `query_only` on, so no statement on it writes. It still opens the
+/// file to read and write, without creating it, because that is what leaves nothing behind: a
+/// read-only connection to a write-ahead-logged database creates its `-wal` and `-shm` files and
+/// cannot remove them when it closes, while this one, closing last, folds the (empty) log back and
+/// removes both. A rollback-journal database, as every DevHQ backup is, is only read.
+pub(crate) fn examine(path: &Path) -> (Option<Connection>, Found) {
+    match std::fs::metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return (None, Found::Missing)
+        }
+        Err(error) => return (None, Found::Unreadable(error.to_string())),
+        Ok(metadata) if !metadata.is_file() => {
+            return (None, Found::Unreadable("it is not a file".to_owned()))
+        }
+        Ok(_) => {}
+    }
+    let db = match connect_as_found(path) {
+        Ok(db) => db,
+        Err(error) => return (None, Found::Unreadable(error.to_string())),
+    };
+    match classify(&db) {
+        Ok(found) => (Some(db), found),
+        Err(error) => (None, Found::Unreadable(error.to_string())),
+    }
+}
+
+/// Opens the inventory at `path` as it is, for the agent gate, which never creates, upgrades or
+/// converts one (see `examine`). Only an inventory in this build's schema is served; anything else
+/// is refused with what was found there.
+pub(crate) fn open_as_found(path: &Path, purpose: Use) -> Result<Connection, ApiError> {
+    match examine(path) {
+        (Some(db), Found::Current) => {
+            if purpose == Use::Write {
+                db.pragma_update(None, "query_only", "OFF")
+                    .map_err(ApiError::database)?;
+            }
+            Ok(db)
+        }
+        (_, found) => Err(found.refusal(path)),
+    }
+}
+
+/// A connection to the existing file at `path` on which no statement writes.
+fn connect_as_found(path: &Path) -> rusqlite::Result<Connection> {
+    let db = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    db.busy_timeout(Duration::from_secs(5))?;
+    db.pragma_update(None, "query_only", "ON")?;
+    db.pragma_update(None, "foreign_keys", "ON")?;
+    Ok(db)
+}
+
+/// Which file the connection reads. Only a DevHQ inventory has `applications` and `resources`
+/// (since its first schema) and a `user_version` from 1 on, which its upgrades set.
+fn classify(db: &Connection) -> rusqlite::Result<Found> {
+    let version: i64 = db.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    let (tables, devhq): (i64, i64) = db.query_row(
+        "SELECT count(*), count(*) FILTER (WHERE name IN ('applications', 'resources'))
+         FROM sqlite_master WHERE type = 'table'",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    Ok(if version < 1 || devhq < 2 {
+        Found::Foreign { empty: tables == 0 }
+    } else if version < SCHEMA_VERSION {
+        Found::Outdated(version)
+    } else if version > SCHEMA_VERSION {
+        Found::Newer(version)
+    } else {
+        Found::Current
+    })
+}
+
 /// Longest texts DevHQ accepts. The window enforces the same limits as you type.
 pub(crate) const MAX_NAME: usize = 120;
 pub(crate) const MAX_TITLE: usize = 160;
@@ -387,7 +552,12 @@ pub(crate) fn allowed(value: &str, choices: &[&str], label: &str) -> Result<(), 
 }
 
 pub fn list(path: &Path) -> Result<Inventory, ApiError> {
-    let mut db = open(path)?;
+    list_from(&mut open(path)?)
+}
+
+/// One consistent read of the inventory on `db`, in one read transaction: `list` on a connection
+/// the caller opened, such as the agent gate's, which opens the inventory as it finds it.
+pub(crate) fn list_from(db: &mut Connection) -> Result<Inventory, ApiError> {
     let tx = db.transaction().map_err(ApiError::database)?;
     let mut resources = {
         let mut statement = tx.prepare("SELECT id, name, kind, description, operating_system FROM resources ORDER BY name COLLATE NOCASE, id").map_err(ApiError::database)?;
@@ -2165,7 +2335,7 @@ pub(crate) mod tests {
     }
 
     /// A database as an earlier release (schema `version`) left it, with enforcement off.
-    fn database_at(path: &Path, version: i64) -> Connection {
+    pub(crate) fn database_at(path: &Path, version: i64) -> Connection {
         let db = Connection::open(path).unwrap();
         db.pragma_update(None, "foreign_keys", "OFF").unwrap();
         for (number, sql) in &MIGRATIONS {
@@ -3210,6 +3380,41 @@ pub(crate) mod tests {
             "unsupported inventory schema version {}",
             SCHEMA_VERSION + 1
         )));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    /// The agent gate's connection: it never creates the file, nothing it runs to read writes,
+    /// and one to write writes only inside the gate's own transaction.
+    #[test]
+    fn opens_an_inventory_as_it_finds_it() {
+        let path = path();
+        // Nothing there: no file, also when the connection itself is asked.
+        assert_eq!(examine(&path).1, Found::Missing);
+        assert!(connect_as_found(&path).is_err());
+        assert!(!path.exists());
+        let refused = open_as_found(&path, Use::Read).unwrap_err();
+        assert!(refused.message.contains("There is no DevHQ inventory at"));
+        resource(&path, "Host");
+        let reader = open_as_found(&path, Use::Read).unwrap();
+        let refused = reader.execute("DELETE FROM resources", []).unwrap_err();
+        assert!(refused.to_string().contains("readonly"), "{refused}");
+        drop(reader);
+        let writer = open_as_found(&path, Use::Write).unwrap();
+        assert_eq!(writer.execute("DELETE FROM resources", []).unwrap(), 1);
+        drop(writer);
+        // Never converted: a rollback journal stays one, also after a write.
+        let db = Connection::open(&path).unwrap();
+        db.pragma_update(None, "journal_mode", "DELETE").unwrap();
+        drop(db);
+        open_as_found(&path, Use::Write)
+            .unwrap()
+            .execute("DELETE FROM agent_access", [])
+            .unwrap();
+        let mode: String = Connection::open(&path)
+            .unwrap()
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(mode, "delete");
         std::fs::remove_file(path).unwrap();
     }
 }

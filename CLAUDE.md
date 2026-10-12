@@ -140,7 +140,11 @@ as the window's commands; never give it a shortcut around their validation. Befo
 anything opens, its arguments are checked against the `inputSchema` it publishes and the rules its
 description states (`gate/arguments.rs`): a schema keyword the check does not enforce fails a test,
 so never publish a rule the gate does not apply, and state every rule between arguments in the
-tool's description. It never creates an inventory that does not exist. While a window is open, its process notices what other connections
+tool's description. It never creates an inventory that does not exist. It reads, and changes the
+configuration, through `inventory::open_as_found`, which never creates, upgrades or converts the file
+and serves only the current schema; never through `inventory::open`, which does all three. Records,
+`run_check`, `backup` and `read_copies` still reach `inventory::open` through the window's use cases
+after that check: closing that gap belongs to the explicit upgrade (`docs/puerta-para-agentes.md`). While a window is open, its process notices what other connections
 commit (`Monitor::notice_changes`, `PRAGMA data_version` every 2 s) and holds the lock that tells
 `status` a window is open (`window_lock.rs`). The native walk drives the gate as a child process.
 What remains to check or decide: `docs/puerta-para-agentes.md`. To try it
