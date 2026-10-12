@@ -347,10 +347,13 @@ function Test-Contents([string] $Exe, [string] $Build) {
   Check "Its component still runs on $Server, by id" ($component.Count -eq 1 -and $component[0].runsOn.id -eq $ids.server) ($component | ConvertTo-Json -Compress -Depth 5)
   $references = @($application[0].references)
   Check 'Its repository and its local copy on the workstation are still declared' ($references.Count -eq 2) ($references | ConvertTo-Json -Compress -Depth 6)
+  # Opening the incident logged an event of its own ("Incident opened"), beside the deployment.
   $detail = $results[1].structured.system
-  Check 'Its event and its incident are still there' (@($detail.events).Count -eq 1 -and @($detail.incidents).Count -eq 1 -and $detail.events[0].id -eq $ids.event) "events $(@($detail.events).Count), incidents $(@($detail.incidents).Count)"
-  $server = $results[2].structured.system
-  Check "$Server keeps its observation, and $Marker still uses it" (@($server.observations).Count -eq 1 -and $server.observations[0].id -eq $ids.observation -and @($server.usedBy).Count -ge 1) "observations $(@($server.observations).Count), usedBy $($server.usedBy | ConvertTo-Json -Compress -Depth 5)"
+  $events = @($detail.events | ForEach-Object { $_.id } | Sort-Object)
+  $expected = @($ids.event, $ids.incidentEvent | Sort-Object)
+  Check 'Its deployment event, its incident and the event that opened it are still there, same ids' ((($events -join ',') -eq ($expected -join ',')) -and @($detail.incidents).Count -eq 1 -and $detail.incidents[0].id -eq $ids.incident) "events $($events -join ', '); incidents $(@($detail.incidents | ForEach-Object { $_.id }) -join ', ')"
+  $serverDetail = $results[2].structured.system
+  Check "$Server keeps its observation, and $Marker still uses it" (@($serverDetail.observations).Count -eq 1 -and $serverDetail.observations[0].id -eq $ids.observation -and @($serverDetail.usedBy).Count -ge 1) "observations $(@($serverDetail.observations).Count), usedBy $($serverDetail.usedBy | ConvertTo-Json -Compress -Depth 5)"
   $results
 }
 
@@ -450,7 +453,8 @@ function Invoke-PhaseC {
     (Call 'get_system' @{ type = 'application'; name = $Marker }),
     (Call 'get_system' @{ type = 'resource'; name = $Server })
   ) 'the record ids the rehearsal follows'
-  $ids.event = $detail[0].structured.system.events[0].id
+  $ids.event = @($detail[0].structured.system.events | Where-Object { $_.kind -eq 'deployment' })[0].id
+  $ids.incidentEvent = @($detail[0].structured.system.events | Where-Object { $_.kind -eq 'incident' })[0].id
   $ids.incident = $detail[0].structured.system.incidents[0].id
   $ids.observation = $detail[1].structured.system.observations[0].id
   Save-State $ids 'ids'
@@ -632,13 +636,13 @@ function Invoke-PhaseReport {
     }
     $lines.Add('')
   }
-  foreach ($phase in 'Inputs', 'B', 'C', 'D', 'E', 'F', 'G', 'H') {
-    $file = Join-Path $ReportDir "phase-$phase.json"
-    if (-not (Test-Path $file)) { $lines.Add("## Phase ${phase}: did not run"); $lines.Add(''); continue }
+  foreach ($name in 'Inputs', 'B', 'C', 'D', 'E', 'F', 'G', 'H') {
+    $file = Join-Path $ReportDir "phase-$name.json"
+    if (-not (Test-Path $file)) { $lines.Add("## Phase ${name}: did not run"); $lines.Add(''); continue }
     $result = Get-Content -Raw $file | ConvertFrom-Json -AsHashtable -Depth 30
     $failed = @($result.checks | Where-Object { $_.ok -eq $false }).Count
     $passed = @($result.checks | Where-Object { $_.ok -eq $true }).Count
-    $lines.Add("## Phase ${phase}: $(if ($failed) { "FAILED ($failed failed, $passed passed)" } else { "passed ($passed checks)" }), $($result.seconds) s")
+    $lines.Add("## Phase ${name}: $(if ($failed) { "FAILED ($failed failed, $passed passed)" } else { "passed ($passed checks)" }), $($result.seconds) s")
     $lines.Add('')
     foreach ($check in $result.checks) {
       $mark = if ($check.ok -eq $true) { 'PASS' } elseif ($check.ok -eq $false) { '**FAIL**' } else { 'NOTE' }
