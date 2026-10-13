@@ -1040,6 +1040,16 @@ pánico que en Linux abortaba el proceso al abrir Mi inventario (lo comprueba `n
   a la vez, o cualquier otro) nunca se reemplaza ni se escribe. Un archivo que ya existe, aunque esté
   vacío, nunca se inicializa: DevHQ no lo dejó así, porque nunca nombra medio inventario, y se rechaza
   con `not_an_inventory`. Como los respaldos, crear necesita un sistema de archivos que admita enlaces.
+  Tampoco crea uno donde, sin archivo, quedan con su nombre los archivos que SQLite guarda junto a una
+  base (`inventory.sqlite3-journal`, `-wal` o `-shm`), tengan lo que tengan: SQLite empareja una base
+  con su journal y su log solo por el nombre, así que reproduciría el journal de otra base sobre el
+  inventario nuevo, dañándolo, o leería el log de otra como parte de él; y pueden ser lo único que
+  queda de las últimas escrituras de un inventario que alguien movió o borró. La ventana lo rechaza con
+  `leftover_files`, dice qué archivos encontró y no crea, lee, aplica ni borra nada, hasta que DevHQ
+  vuelva a arrancar: hay que devolver a la carpeta el inventario al que pertenecen, que la ventana
+  recupera entonces como cualquier otro, o sacarlos de ella. Los mira justo antes de dar el nombre al
+  inventario nuevo; si para entonces el nombre ya lo tiene un archivo (el inventario nuevo de otra
+  ventana que arranca a la vez, que ya escribe su log), son de ese archivo y no se rechaza nada.
   Si el inventario desaparece con la ventana abierta, ningún comando crea otro: cada uno responde que
   no hay inventario y que la ventana solo crea uno al arrancar. Al volver a abrir DevHQ, como la
   primera vez, crea uno nuevo y vacío.
@@ -1079,9 +1089,15 @@ actualiza al abrirlo y sin respaldo previo, como siempre hizo.
 La recuperación de SQLite no es una migración, pero también cambia archivos: deshace el journal de
 rollback de una escritura interrumpida, o vuelca en el archivo un log que ninguna conexión mantiene,
 y conserva todo lo confirmado. La ventana solo la deja hacerse al arrancar, y sobre un inventario del
-esquema actual. No es una garantía absoluta: la conexión de un caso de uso puede escribir, así que si
-con la ventana abierta otro programa deja a medias el archivo, o pone otro en su lugar, SQLite lo
-recupera al abrirlo antes de que DevHQ mire qué es.
+esquema actual. No es una garantía absoluta. SQLite empareja una base con su journal y su log solo por
+el nombre de los archivos, y nada en ellos dice a qué base pertenecen, así que lo que un programa
+ponga junto al inventario, SQLite lo aplica, y DevHQ solo puede mirar antes de que SQLite lo haga. Uno
+que otro programa escriba en el instante entre que la ventana comprueba que no quedan archivos
+sueltos y da el nombre al inventario nuevo se aplicaría. Ningún proceso de DevHQ crea esos archivos
+sin la base (la ventana construye el inventario nuevo con otro nombre, y la puerta nunca crea uno),
+así que hace falta otro programa que los escriba justo entonces. Y la conexión de un caso de uso
+puede escribir, así que si con la ventana abierta otro programa deja a medias el archivo, o pone otro
+en su lugar, SQLite lo recupera al abrirlo antes de que DevHQ mire qué es.
 
 La base usa write-ahead logging (WAL): un lector trabaja sobre el último estado
 confirmado sin esperar a nadie y un escritor no espera a los lectores; solo los escritores se
@@ -1097,8 +1113,8 @@ arranque. Ninguna consulta ni escritura lo convierte. Settings muestra la
 ruta exacta del archivo (`data_location` no abre la base, así que responde aunque no se pueda
 leer): con DevHQ abierto se respalda con Back up now (ver [Respaldo](#respaldo)); con DevHQ
 cerrado también basta copiarlo. Para restaurar un respaldo o una copia, con DevHQ cerrado se pone
-en lugar del archivo, con el nombre `inventory.sqlite3`, y se borran `-wal` y `-shm` si quedaron,
-para que ningún log del archivo anterior se aplique a la copia.
+en lugar del archivo, con el nombre `inventory.sqlite3`, y se borran `-wal`, `-shm` y `-journal` si
+quedaron, para que ni el log ni el journal del archivo anterior se apliquen a la copia.
 
 Esa ruta es la que DevHQ pide, y el sistema puede guardar el archivo en otra. Un enlace simbólico o un
 junction llevan a otra carpeta, y Windows redirige `AppData` para un DevHQ lanzado desde una app
@@ -1321,9 +1337,14 @@ v6, un v11 en WAL y un v13 en rollback y en WAL y los rechazan sin cambiar un by
 journal y sin crear `backups/`; con una conexión cuyo archivo pasa a la v11 después de abrirse, que
 rechaza leer y escribir sin actualizarlo; con un agente al que se le cierra la puerta después de abrir
 su conexión; con un inventario que desaparece con la ventana abierta y que nadie vuelve a crear; con un
-archivo vacío que nunca se inicializa; con la ventana que arranca donde no hay nada y crea un inventario
-en WAL; y con arranques sobre escritores a los que se mata a medias: un v12 se recupera con lo
-confirmado, y un v6 y un v13 se rechazan sin cambiar ningún archivo. La concurrencia de SQLite se
+archivo vacío que nunca se inicializa, tampoco con un journal al lado; con la ventana que arranca donde
+no hay nada y crea un inventario en WAL; con arranques sobre escritores a los que se mata a medias: un
+v12 se recupera con lo confirmado, y un v6 y un v13 se rechazan sin cambiar ningún archivo; y con el
+journal de una escritura que reescribía doscientos recursos, y con el log de otra ya confirmada, que
+quedan sin su inventario: la ventana no crea ninguno (sin la protección, el journal dañaba el
+inventario nuevo, como dice `PRAGMA integrity_check`, y el log le metía los recursos del anterior),
+no cambia ningún byte de lo que quedó y, devuelto el inventario, lo recupera íntegro y con lo
+confirmado. La concurrencia de SQLite se
 prueba sin esperas medidas: una lectura no espera a una escritura en curso, una escritura no espera a
 una lectura abierta (que conserva su estado), cuatro arranques simultáneos crean un único inventario
 sin dejar nombres provisionales, un inventario actual en rollback no lo convierte ninguna consulta ni

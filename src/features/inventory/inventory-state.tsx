@@ -24,6 +24,10 @@ const refusedUntilRestart: Record<string, { title: string; next: string }> = {
     title: 'Inventory unavailable',
     next: 'DevHQ looks at the file again the next time it starts.',
   },
+  leftover_files: {
+    title: 'Inventory unavailable',
+    next: 'DevHQ looks at the folder again the next time it starts.',
+  },
 }
 
 export function InventoryState({ children }: { children: React.ReactNode }) {

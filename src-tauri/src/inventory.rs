@@ -354,6 +354,12 @@ pub(crate) fn write<T>(
 /// replaced or written to. A folder that cannot hold a second name for a file (a hard link) cannot
 /// hold a new inventory either; DevHQ's backups need the same.
 ///
+/// Nor where a file SQLite keeps beside a database is there without the database (`leftovers`):
+/// SQLite pairs a database with its rollback journal and its write-ahead log by name alone, so it
+/// would play another database's journal back into the new inventory, damaging it, or read
+/// another database's log as part of it. Those files may be all that is left of an inventory's
+/// last writes, and they are refused and left as they are, never deleted.
+///
 /// The new file uses a rollback journal: `start` switches it to write-ahead logging once it is in
 /// place, as it does for any current inventory.
 pub(crate) fn create(path: &Path) -> Result<bool, ApiError> {
@@ -387,6 +393,19 @@ pub(crate) fn create(path: &Path) -> Result<bool, ApiError> {
             .open(&building)
             .and_then(|file| file.sync_all())
             .map_err(|error| failed(&error))?;
+        // Looked at just before naming it. An inventory's own files appear only once the
+        // inventory has its name (another window's new one, say), so with them there `path` is
+        // taken; without it, they belong to a database that is not there.
+        let left = leftovers(path).map_err(|error| failed(&error))?;
+        if !left.is_empty() {
+            return match std::fs::symlink_metadata(path) {
+                Ok(_) => Ok(false),
+                Err(error) if error.kind() == ErrorKind::NotFound => {
+                    Err(left_without_a_database(path, &left))
+                }
+                Err(error) => Err(failed(&error)),
+            };
+        }
         match std::fs::hard_link(&building, path) {
             Ok(()) => Ok(true),
             Err(error) if error.kind() == ErrorKind::AlreadyExists => Ok(false),
@@ -396,6 +415,34 @@ pub(crate) fn create(path: &Path) -> Result<bool, ApiError> {
     // Named or not, the building name goes: the inventory keeps `path`.
     let _ = std::fs::remove_file(&building);
     built
+}
+
+/// The files SQLite keeps beside the database at `path` that are there: its rollback journal, its
+/// write-ahead log and the log's index, whatever they hold (anything with the name counts).
+fn leftovers(path: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let mut found = Vec::new();
+    for suffix in ["-journal", "-wal", "-shm"] {
+        let file = beside(path, suffix);
+        match std::fs::symlink_metadata(&file) {
+            Ok(_) => found.push(file),
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(found)
+}
+
+/// Why the window creates no inventory at `path`, where `left` are there without a database.
+fn left_without_a_database(path: &Path, left: &[PathBuf]) -> ApiError {
+    let names: Vec<_> = left.iter().map(|file| file.display().to_string()).collect();
+    ApiError {
+        code: "leftover_files",
+        message: format!(
+            "There is no DevHQ inventory at {}, yet files SQLite keeps beside a database are there ({}): they may hold the last writes of an inventory that is no longer there. SQLite would apply them to any new file with that name, so DevHQ creates no inventory there and leaves them as they are. Put back the inventory they belong to, or move them out of the folder, and start DevHQ again. Nothing was read or changed.",
+            path.display(),
+            listed(&names),
+        ),
+    }
 }
 
 /// What the window does with the inventory at `path` when it starts, before its commands or its
@@ -2639,13 +2686,20 @@ pub(crate) mod tests {
 
     /// A new inventory is made only where there is no file: an empty file, which DevHQ did not
     /// make (it never names half an inventory), is never initialized, by the window or anything.
+    /// With SQLite's files beside it, it is still a file that is there, not files left without one.
     #[test]
     fn never_turns_an_existing_file_into_an_inventory() {
         let path = nothing();
         std::fs::write(&path, b"").unwrap();
         assert!(!create(&path).unwrap(), "a file is there");
+        std::fs::write(beside(&path, "-journal"), b"").unwrap();
+        assert!(!create(&path).unwrap(), "a file is there, with its journal");
         let refused = start(&path).unwrap_err();
         assert_eq!(refused.code, "not_an_inventory");
+        assert_eq!(std::fs::read(beside(&path, "-journal")).unwrap(), b"");
+        // A use case's connection may write, and SQLite deletes a journal beside an empty file
+        // when it opens it; the window opens none once `start` refused the file.
+        std::fs::remove_file(beside(&path, "-journal")).unwrap();
         assert!(list(&path).is_err());
         assert!(save_resource(&path, host()).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), b"");
@@ -4713,5 +4767,122 @@ pub(crate) mod tests {
             assert_eq!(files(), before, "v{version}: its files were changed");
             std::fs::remove_dir_all(&folder).unwrap();
         }
+    }
+
+    /// Leaves at `path` what a process killed in the middle of `sql` leaves of the inventory there.
+    /// With a rollback journal, `sql` runs in a transaction that never commits, on a cache so small
+    /// that it already wrote to the file: the file holds part of it, and the journal what it
+    /// replaced. With a write-ahead log, `sql` commits while another connection holds the log, so
+    /// that it is only in the log, which is left without its index. Made of copies of the files
+    /// taken while the connections hold them, as a crash leaves them.
+    fn crashed(path: &Path, sql: &str) {
+        let held = Connection::open(path).unwrap();
+        let mode: String = held
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .unwrap();
+        let suffix = if mode == "wal" {
+            held.query_row("SELECT count(*) FROM resources", [], |_| Ok(()))
+                .unwrap();
+            Connection::open(path).unwrap().execute_batch(sql).unwrap();
+            "-wal"
+        } else {
+            held.pragma_update(None, "cache_size", 2).unwrap();
+            held.execute_batch(&format!("BEGIN; {sql}")).unwrap();
+            "-journal"
+        };
+        let file = std::fs::read(path).unwrap();
+        let left = std::fs::read(beside(path, suffix)).unwrap();
+        assert!(left.len() as u64 > LOG_HEADER, "{suffix} holds the write");
+        // Rolls back or folds the log, and removes what it used.
+        drop(held);
+        for gone in ["-wal", "-shm", "-journal"] {
+            let _ = std::fs::remove_file(beside(path, gone));
+        }
+        std::fs::write(path, file).unwrap();
+        std::fs::write(beside(path, suffix), left).unwrap();
+        let found = examine(path, |_| Ok(())).0;
+        assert!(matches!(found, Found::NeedsRecovery(_)), "{found:?}");
+    }
+
+    /// Adds 200 resources with long names to the inventory at `path`: more pages than `crashed`'s
+    /// cache holds, so that rewriting them all writes to the file before it commits.
+    fn filled(path: &Path) {
+        for number in 0..200 {
+            resource(path, &format!("Resource {number:03} {}", "x".repeat(60)));
+        }
+    }
+
+    /// What SQLite's integrity check finds in the inventory at `path`: "ok" when nothing.
+    fn integrity(path: &Path) -> String {
+        Connection::open(path)
+            .unwrap()
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    fn resource_names(path: &Path) -> Vec<String> {
+        let mut names: Vec<_> = list(path)
+            .unwrap()
+            .resources
+            .into_iter()
+            .map(|resource| resource.name)
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// A journal or a log that an inventory left, without the inventory: no new one is created
+    /// beside them, which SQLite would play the journal back into, damaging it, or read the log
+    /// as part of; and they are kept as they are, so that with the inventory put back the window
+    /// recovers it with what it holds.
+    #[test]
+    fn never_creates_an_inventory_beside_another_ones_files() {
+        for logged in [false, true] {
+            let case = if logged { "log" } else { "journal" };
+            let folder = std::env::temp_dir().join(format!("devhq-left-{}", Uuid::new_v4()));
+            std::fs::create_dir(&folder).unwrap();
+            let path = folder.join("inventory.sqlite3");
+            if logged {
+                start(&path).unwrap();
+            } else {
+                drop(database_at(&path, SCHEMA_VERSION));
+            }
+            filled(&path);
+            let before = resource_names(&path);
+            crashed(&path, "UPDATE resources SET name = 'Renamed ' || name");
+            let file = std::fs::read(&path).unwrap();
+            std::fs::remove_file(&path).unwrap();
+            let left = files_of(&path);
+            let refused = start(&path).unwrap_err();
+            assert_eq!(
+                refused.code, "leftover_files",
+                "{case}: {}",
+                refused.message
+            );
+            // Nothing created, played back, folded or removed, and no name the build used.
+            assert_eq!(files_of(&path), left, "{case}");
+            assert!(!path.exists(), "{case}");
+            // Put back, the inventory they belong to is recovered with what was committed.
+            std::fs::write(&path, file).unwrap();
+            start(&path).unwrap();
+            assert_eq!(integrity(&path), "ok", "{case}");
+            let expected: Vec<_> = if logged {
+                before
+                    .iter()
+                    .map(|name| format!("Renamed {name}"))
+                    .collect()
+            } else {
+                before
+            };
+            assert_eq!(resource_names(&path), expected, "{case}");
+            std::fs::remove_dir_all(&folder).unwrap();
+        }
+        // An index without its log, or anything else with one of those names, is refused too.
+        let path = nothing();
+        std::fs::write(beside(&path, "-shm"), b"").unwrap();
+        assert_eq!(start(&path).unwrap_err().code, "leftover_files");
+        assert!(!path.exists());
+        assert_eq!(std::fs::read(beside(&path, "-shm")).unwrap(), b"");
+        std::fs::remove_file(beside(&path, "-shm")).unwrap();
     }
 }

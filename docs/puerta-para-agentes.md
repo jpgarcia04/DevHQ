@@ -42,6 +42,10 @@ en la ventana:
   inventario, y su verificación rechaza una copia de otra versión.
 - Con la ventana abierta, una conexión de un caso de uso puede escribir: si otro programa deja a medias
   el archivo o pone otro en su lugar, SQLite lo recupera al abrirlo antes de que DevHQ mire qué es.
+- SQLite empareja una base con su journal y su log solo por el nombre. Al arrancar, la ventana no crea
+  un inventario junto a los que quedaron sin su base; pero un journal o un log que otro programa ponga
+  en el instante entre esa comprobación y el nombre del inventario nuevo se aplicaría. Cerrarlo del todo
+  pediría que ningún otro programa pudiera escribir en la carpeta mientras tanto.
 
 ## Lo que la lectura sin cambios no cubre
 
