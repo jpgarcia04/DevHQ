@@ -158,6 +158,7 @@ $next = [NsisWindow]::GetDlgItem($dialog, [NsisWindow]::IDOK)
 # for a click. A click that arrives while it is disabled is ignored, so keep clicking.
 $deadline = (Get-Date).AddMinutes(2)
 $pressed = ''
+$closing = $false
 while (-not $process.HasExited -and (Get-Date) -lt $deadline) {
   Start-Sleep -Milliseconds 500
   $other = [NsisWindow]::OtherDialogs($process.Id, $dialog)
@@ -168,10 +169,19 @@ while (-not $process.HasExited -and (Get-Date) -lt $deadline) {
   if ([NsisWindow]::IsWindow($checkbox) -or -not [NsisWindow]::IsWindow($dialog)) { continue }
   $next = [NsisWindow]::GetDlgItem($dialog, [NsisWindow]::IDOK)
   if ([NsisWindow]::IsWindowEnabled($next)) {
-    $text = [NsisWindow]::TextOf($next)
-    if ($text -ne $pressed) { "The uninstaller finished; pressing '$text'." }
-    $pressed = $text
-    [NsisWindow]::PressNext($dialog)
+    try {
+      $text = [NsisWindow]::TextOf($next)
+      if ($text -ne $pressed) { "The uninstaller finished; pressing '$text'." }
+      $pressed = $text
+      [NsisWindow]::PressNext($dialog)
+      $closing = $true
+    } catch {
+      # Once Close is pressed, the uninstaller destroys its dialog as soon as its own loop gets
+      # to it, which can fall between the checks above and the messages sent here: the button
+      # then answers no message, and the click cannot be posted. A button that is no longer a
+      # window after a press explains that; anything else still fails the step.
+      if (-not $closing -or [NsisWindow]::IsWindow($next)) { throw }
+    }
   }
 }
 if (-not $process.HasExited) {
