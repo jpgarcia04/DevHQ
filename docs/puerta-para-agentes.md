@@ -29,13 +29,14 @@ respaldo verificado (README, «Actualizar un inventario antiguo»); la puerta re
 antiguo con `schema_outdated` y no tiene herramienta para actualizarlo. Cada escritura de un agente
 comprueba el esquema y el acceso dentro de su propia transacción. Lo que queda abierto:
 
-- **Decisión pendiente.** Un inventario antiguo que necesita recuperación (`needs_recovery`, y
-  recuperado en una copia es de un esquema anterior) no se recupera ni se actualiza: la ventana lo
-  deja como está y dice que se restaure el respaldo. Es lo que deja una actualización interrumpida
-  antes del commit, y entonces su respaldo, publicado antes de migrar, tiene exactamente lo confirmado.
-  La alternativa sería que Back up and upgrade, con el consentimiento de la persona, guardara primero
-  una copia de los archivos sin recuperar, dejara que SQLite los recuperara y siguiera como siempre;
-  cambia archivos de un inventario antiguo, así que no se hizo sin decidirlo.
+- **Decidido, por ahora:** un inventario antiguo que necesita recuperación (`needs_recovery`, y
+  recuperado en una copia es de un esquema anterior) no se recupera, no se respalda y no se actualiza,
+  y la ventana no presume que algún respaldo tenga lo mismo (README, «Un inventario antiguo que
+  necesita recuperación»). Lo que queda abierto: si ningún respaldo tiene lo que tienen sus archivos,
+  o la persona no puede compararlos, DevHQ no ofrece ningún camino, y la comparación es a mano, con la
+  CLI de SQLite. La alternativa descartada por ahora: que Back up and upgrade, con el consentimiento de
+  la persona, guardara primero una copia de los archivos sin recuperar, dejara que SQLite los
+  recuperara y siguiera como siempre.
 - En Windows no hay forma documentada de forzar a disco los nombres de una carpeta: DevHQ confirma el
   contenido del respaldo y de su manifiesto antes de migrar, no sus nombres, que NTFS anota en su
   diario. Que sobrevivan a un corte de luz justo después no está probado; en Linux se confirman con la

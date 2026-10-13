@@ -204,8 +204,13 @@ pub fn inspect(path: &Path) -> Inspection {
             inspection.problems = snapshot.problems;
         }
         (_, Some(Err(error))) => inspection.problems = vec![error.message],
+        // What was found, what is not known, and what keeps every way back open. No backup is
+        // presumed: the files may come from an upgrade that ended before its commit, from an older
+        // DevHQ or another program that ended in the middle of a write, or from anywhere else.
         (Found::NeedsRecovery(_), _) => inspection.problems = vec![
-            "Its files need recovering, and DevHQ does not recover an inventory in an older schema on its own, so it cannot back it up or upgrade it. If DevHQ was upgrading it when it closed, the backup it made first is in the backups folder (its name ends in -v and the inventory's version, and a .json manifest is beside it) and holds everything the inventory held: close DevHQ, move the inventory and its -journal, -wal and -shm files to another folder without deleting them, copy that backup in their place as inventory.sqlite3, and start DevHQ again.".to_owned(),
+            "Its files need recovering before anything in them can be read, and DevHQ recovers files only for an inventory in its own schema. So it neither backs this one up nor upgrades it, and it recovered, moved, deleted and replaced none of its files.".to_owned(),
+            "What they hold is unknown until they are recovered, and so is whether any backup holds the same: the inventory's latest committed changes may be only in them. Without its -journal the file may be left half-written, and without its -wal committed changes are lost.".to_owned(),
+            "Keep inventory.sqlite3 and, where they are, its -journal, -wal and -shm together and unchanged, and copy them all to another folder before anything else. Do not open them meanwhile with another program, which would recover them in place, nor with an older DevHQ, which may also upgrade them without a backup. A file's name does not make it this inventory's backup: with DevHQ closed, put a backup in their place only if its .json manifest names this inventory, its SHA-256 is the one the manifest records, and it holds the same as a copy of these files recovered apart. If DevHQ was upgrading this inventory when it closed, the backup that upgrade made is the one to compare.".to_owned(),
         ],
         _ => {}
     }
@@ -867,7 +872,7 @@ fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::inventory::tests::{database_at, dump, helper, kill, resolved_temp_dir};
+    use crate::inventory::tests::{database_at, dump, helper, kill, resolved_temp_dir, writer};
     use crate::inventory::{beside, examine, start, MIGRATIONS};
     use std::path::PathBuf;
 
@@ -1937,8 +1942,9 @@ line break', 'manual', 800, 800);",
     /// A DevHQ that ends, for any reason, in the middle of an upgrade leaves the inventory holding
     /// what it held and its verified backup: once SQLite recovers its files, the inventory is again
     /// what the person was shown, and so is the backup. DevHQ does not recover an inventory in an
-    /// older schema on its own, so it refuses it, changing none of its files, and says where the
-    /// backup is; put in place of the inventory, as the README says, the backup upgrades.
+    /// older schema on its own, so it refuses it, changing none of its files, and says how to tell
+    /// whether a backup holds what they hold; checked as the README says and put in place of the
+    /// inventory, the backup upgrades.
     #[test]
     fn an_upgrade_that_ends_before_its_commit_leaves_its_backup_to_put_back() {
         for logged in [false, true] {
@@ -1978,20 +1984,6 @@ line break', 'manual', 800, 800);",
                 );
             }
 
-            // What SQLite's recovery gives, found on a copy: what the person was shown.
-            let apart = folder.join("apart");
-            std::fs::create_dir(&apart).unwrap();
-            for name in ["inventory.sqlite3", unfinished] {
-                std::fs::write(apart.join(name), &left[name]).unwrap();
-            }
-            drop(
-                Connection::open(apart.join("inventory.sqlite3"))
-                    .unwrap()
-                    .query_row("SELECT count(*) FROM resources", [], |_| Ok(())),
-            );
-            assert_eq!(fingerprint_of(&apart.join("inventory.sqlite3")), shown);
-            std::fs::remove_dir_all(&apart).unwrap();
-
             // The window refuses it, and says what to do, without touching a file.
             let refused = start(&path).unwrap_err();
             assert_eq!(refused.code, "schema_outdated", "{}", refused.message);
@@ -2005,17 +1997,38 @@ line break', 'manual', 800, 800);",
                 (inspection.state, inspection.upgradable),
                 ("needs_recovery", false)
             );
-            assert!(
-                inspection.problems[0]
-                    .contains("copy that backup in their place as inventory.sqlite3"),
-                "{:?}",
-                inspection.problems
-            );
+            presumes_no_backup(&inspection.problems);
             let refused = upgrade_to(&path, 6, &shown).unwrap_err();
             assert_eq!(refused.code, "needs_recovery");
             assert_eq!(files(&folder), left);
 
-            // The README's way back: the inventory's files out of the folder, the backup in.
+            // The README's checks. The manifest names this inventory, and the backup's bytes are
+            // the ones it records.
+            let backup = folder.join("backups").join(BACKUP_V6);
+            let manifest: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(folder.join("backups").join(format!("{BACKUP_V6}.json"))).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(manifest["inventory"], path.display().to_string());
+            assert_eq!(manifest["schemaVersion"], 6);
+            assert_eq!(
+                manifest["sha256"],
+                hex(&Sha256::digest(std::fs::read(&backup).unwrap()))
+            );
+            // A copy of the inventory's files, recovered apart by SQLite, holds what the backup
+            // holds: what the person was shown.
+            let apart = folder.join("apart");
+            std::fs::create_dir(&apart).unwrap();
+            for name in ["inventory.sqlite3", unfinished] {
+                std::fs::write(apart.join(name), &left[name]).unwrap();
+            }
+            let recovered = whole(&readonly(&apart.join("inventory.sqlite3")));
+            assert_eq!(recovered, whole(&readonly(&backup)));
+            assert_eq!(fingerprint_of(&apart.join("inventory.sqlite3")), shown);
+            std::fs::remove_dir_all(&apart).unwrap();
+            assert_eq!(files(&folder), left);
+
+            // The way back: the inventory's files out of the folder, the backup in.
             let aside = folder.join("set aside");
             std::fs::create_dir(&aside).unwrap();
             for name in ["inventory.sqlite3", unfinished, "inventory.sqlite3-shm"] {
@@ -2031,6 +2044,92 @@ line break', 'manual', 800, 800);",
             assert_eq!(upgraded.from, 6);
             start(&path).unwrap();
             assert_eq!(crate::inventory::list(&path).unwrap().resources.len(), 2);
+            remove(&path);
+        }
+    }
+
+    /// What the inspection says of an inventory in an older schema whose files need recovering:
+    /// what DevHQ found and did not do, what is unknown, and how to keep every way back open, with no
+    /// backup presumed to exist or to hold what the files hold, and none chosen by its name.
+    fn presumes_no_backup(problems: &[String]) {
+        let said = problems.join(" ");
+        for found in [
+            "Its files need recovering",
+            "it recovered, moved, deleted and replaced none of its files",
+            "whether any backup holds the same",
+            "copy them all to another folder before anything else",
+            "A file's name does not make it this inventory's backup",
+            "its .json manifest names this inventory",
+            "it holds the same as a copy of these files recovered apart",
+        ] {
+            assert!(said.contains(found), "{found}: {problems:?}");
+        }
+        for presumed in [
+            "holds everything",
+            "the backup it made first",
+            "copy that backup",
+        ] {
+            assert!(!said.contains(presumed), "{presumed}: {problems:?}");
+        }
+    }
+
+    /// An inventory in an older schema left needing recovery by something other than an upgrade (an
+    /// older DevHQ, or another program, that ended in the middle of a write, or committed changes
+    /// that are only in its log), with no backup anywhere: the window's start, the inspection and an
+    /// upgrade the person asks for presume none, make none, and recover, move, delete or replace
+    /// none of its files.
+    #[test]
+    fn an_older_inventory_left_needing_recovery_is_kept_as_it_is_with_no_backup_presumed() {
+        for logged in [false, true] {
+            let path = path();
+            let folder = path.parent().unwrap().to_owned();
+            historical(&path, 6, logged);
+            if logged {
+                // Copies of the files taken while a connection held them: a change committed only
+                // in the log, which is left without its index.
+                let held = Connection::open(&path).unwrap();
+                held.query_row("SELECT count(*) FROM resources", [], |_| Ok(()))
+                    .unwrap();
+                Connection::open(&path)
+                    .unwrap()
+                    .execute(
+                        "UPDATE resources SET name = 'Renamed by an older DevHQ' WHERE id = 'host'",
+                        [],
+                    )
+                    .unwrap();
+                let file = std::fs::read(&path).unwrap();
+                let log = std::fs::read(beside(&path, "-wal")).unwrap();
+                drop(held);
+                for gone in ["-wal", "-shm"] {
+                    let _ = std::fs::remove_file(beside(&path, gone));
+                }
+                std::fs::write(&path, file).unwrap();
+                std::fs::write(beside(&path, "-wal"), log).unwrap();
+            } else {
+                kill(writer(&path, "journal"), &path);
+            }
+            assert!(matches!(
+                examine(&path, |_| Ok(())).0,
+                Found::NeedsRecovery(_)
+            ));
+            let on_disk = files(&folder);
+
+            let refused = start(&path).unwrap_err();
+            assert_eq!(refused.code, "schema_outdated", "{}", refused.message);
+            let inspection = inspect(&path);
+            assert_eq!(
+                (
+                    inspection.state,
+                    inspection.upgradable,
+                    inspection.fingerprint.as_deref()
+                ),
+                ("needs_recovery", false, None)
+            );
+            presumes_no_backup(&inspection.problems);
+            let refused = upgrade_to(&path, 6, "anything").unwrap_err();
+            assert_eq!(refused.code, "needs_recovery", "{}", refused.message);
+            assert_eq!(files(&folder), on_disk);
+            assert!(!folder.join("backups").exists());
             remove(&path);
         }
     }

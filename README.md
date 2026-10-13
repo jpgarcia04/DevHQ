@@ -628,11 +628,10 @@ que no tiene ninguna herramienta para ello. Lo implementa `src-tauri/src/upgrade
   - Si DevHQ termina antes de publicar el respaldo, el inventario no se tocó (nada lo escribe antes) y
     puede quedar un `.partial`, que Settings lista como incompleto.
   - Si termina después de publicarlo y antes del commit (lo matan, se va la luz), lo confirmado sigue
-    siendo el estado anterior, pero el archivo queda con un journal o un log que hay que recuperar.
-    DevHQ no recupera por su cuenta un inventario de un esquema anterior (ver
-    [Arquitectura](#arquitectura)), así que al arrancar lo rechaza sin tocar sus archivos y dice qué
-    hacer: el respaldo publicado tiene exactamente lo que el inventario tenía, porque con el lock nadie
-    pudo confirmar nada después; se restaura como dice abajo y se vuelve a actualizar.
+    siendo el estado anterior, y ese respaldo lo tiene entero, porque con el lock nadie pudo confirmar
+    nada después. Pero el archivo queda con un journal o un log que hay que recuperar, y DevHQ no
+    recupera por su cuenta un inventario de un esquema anterior: al arrancar lo rechaza sin tocar sus
+    archivos (ver «Un inventario antiguo que necesita recuperación», abajo).
   - Si termina después del commit, el inventario ya es v12: al arrancar, la ventana lo recupera como
     cualquier inventario actual y lo sirve.
   - Dos actualizaciones a la vez, desde dos ventanas, las ordena el lock. La segunda, al obtenerlo,
@@ -643,10 +642,10 @@ que no tiene ninguna herramienta para ello. Lo implementa `src-tauri/src/upgrade
   los borra. Copia el respaldo y su manifiesto a otro sitio. DevHQ no los borra ni los reescribe nunca.
 - **Restaurar un respaldo** se hace a mano; DevHQ no restaura desde la ventana.
   1. Cierra DevHQ.
-  2. Comprueba el respaldo: su SHA-256 debe ser el del manifiesto (en PowerShell,
-     `Get-FileHash -Algorithm SHA256 <archivo>`; en Linux, `sha256sum <archivo>`) y, con la CLI de
-     SQLite, `PRAGMA integrity_check` debe responder `ok` y `PRAGMA user_version` la versión del
-     manifiesto.
+  2. Comprueba el respaldo: su manifiesto debe nombrar este inventario (`inventory`), su SHA-256 debe
+     ser el del manifiesto (en PowerShell, `Get-FileHash -Algorithm SHA256 <archivo>`; en Linux,
+     `sha256sum <archivo>`) y, con la CLI de SQLite, `PRAGMA integrity_check` debe responder `ok` y
+     `PRAGMA user_version` la versión del manifiesto. El nombre del archivo no basta.
   3. Aparta a otra carpeta, sin borrarlos, `inventory.sqlite3` y, si están, `inventory.sqlite3-wal`,
      `inventory.sqlite3-shm` e `inventory.sqlite3-journal`.
   4. Copia el respaldo a la carpeta de datos con el nombre `inventory.sqlite3`, dejando el original en
@@ -655,6 +654,39 @@ que no tiene ninguna herramienta para ello. Lo implementa `src-tauri/src/upgrade
      vez.
 
   Lo que se escribió después del respaldo no está en él.
+
+- **Un inventario antiguo que necesita recuperación** no se recupera, no se respalda y no se
+  actualiza. Lo deja así una actualización que terminó después de publicar su respaldo y antes del
+  commit, pero también un DevHQ anterior u otro programa que terminó a mitad de una escritura, o un
+  `-journal`, `-wal` o `-shm` de origen desconocido, y nada en los archivos dice cuál fue.
+  - **Lo comprobado.** Al arrancar, la ventana copia los archivos a una carpeta temporal, deja que
+    SQLite recupere la copia, mira su versión y la borra. Si es de un esquema anterior, Mi inventario
+    muestra **Inventory needs a schema upgrade** sin ofrecer Back up and upgrade (`inspect_upgrade`
+    responde `needs_recovery`) y dice lo que sigue; Back up now y la puerta lo rechazan sin escribir
+    nada. Ni la ventana ni la puerta recuperan, mueven, borran ni reemplazan ninguno de sus archivos.
+  - **Lo desconocido.** Qué tienen exactamente hasta recuperarlos, y si algún respaldo tiene lo mismo:
+    lo último que se confirmó puede estar solo en ellos. Sin su `-journal` el archivo puede quedar
+    escrito a medias, y sin su `-wal` se pierden cambios confirmados. Solo de una actualización
+    interrumpida antes del commit se sabe que su respaldo tiene todo lo confirmado, pero ni su nombre
+    ni su manifiesto dicen que los archivos vengan de esa actualización: tras una actualización que
+    falló, por ejemplo, un DevHQ anterior pudo seguir escribiendo en el inventario.
+  - **Qué hacer**, a mano:
+    1. Cierra DevHQ. No abras el inventario con otro programa, porque SQLite lo recuperaría en su
+       sitio, ni con un DevHQ anterior, que además podría actualizarlo sin respaldo.
+    2. Copia `inventory.sqlite3` y, si están, `inventory.sqlite3-journal`, `-wal` y `-shm`, juntos y con
+       esos nombres, a una carpeta fuera de la carpeta de datos. No borres ni renombres ninguno.
+    3. Busca en `backups/` un respaldo cuyo manifiesto nombre este inventario (`inventory`); si una
+       actualización se interrumpió, el suyo es el de su hora (`takenAt`). Compruébalo como en el
+       paso 2 de «Restaurar un respaldo».
+    4. Comprueba que tiene lo mismo que los archivos: pon otra copia de ellos, con sus nombres, en otra
+       carpeta y ábrela con la CLI de SQLite, que recupera esa copia y no el original. En esa carpeta,
+       `sqlite3 inventory.sqlite3 .dump > recuperado.sql`, y para el respaldo,
+       `sqlite3 <respaldo> .dump > respaldo.sql`, deben dar el mismo texto
+       (`fc.exe /b recuperado.sql respaldo.sql` en Windows, `cmp recuperado.sql respaldo.sql` en Linux),
+       y `PRAGMA user_version`, que `.dump` no incluye, la misma versión en los dos.
+    5. Solo si coinciden, restáuralo como dice «Restaurar un respaldo»: no se pierde nada confirmado.
+       Si no coinciden, o no hay respaldo, no pongas ninguno en su lugar y conserva los archivos como
+       están: esta versión de DevHQ no ofrece otro camino.
 
 - **Volver a una versión anterior de DevHQ.** Un DevHQ anterior no lee la v12: volver es restaurar el
   respaldo previo a la actualización, de su versión, como arriba, y lo escrito después se pierde. Los
@@ -1230,9 +1262,11 @@ Un inventario más antiguo se queda tal cual hasta que la persona lo actualiza: 
 **Inventory needs a schema upgrade**, lo describe y ofrece Back up and upgrade si puede garantizarlo;
 Settings sigue mostrando dónde están el archivo y su carpeta de respaldos, y Back up now lo rechaza sin
 crear nada. Uno más nuevo dice **Inventory from a newer DevHQ**, sin reintentar, porque la respuesta no
-cambiaría hasta volver a arrancar. Un inventario antiguo que además necesita recuperación (lo deja así,
-por ejemplo, una actualización interrumpida antes del commit) se rechaza sin recuperarlo ni actualizarlo:
-la ventana dice que se restaure el respaldo que la actualización publicó antes de migrar.
+cambiaría hasta volver a arrancar. Un inventario antiguo que además necesita recuperación (lo deja así
+una actualización interrumpida antes del commit, pero también un DevHQ anterior u otro programa que
+terminó a mitad de una escritura) se rechaza sin recuperarlo, respaldarlo ni actualizarlo, y sin
+presumir que algún respaldo tenga lo mismo: la ventana dice qué conservar y qué comprobar de un
+respaldo antes de ponerlo en su lugar (ver [Actualizar un inventario antiguo](#actualizar-un-inventario-antiguo)).
 
 La recuperación de SQLite no es una migración, pero también cambia archivos: deshace el journal de
 rollback de una escritura interrumpida, o vuelca en el archivo un log que ninguna conexión mantiene,
@@ -1266,8 +1300,10 @@ arranque. Ninguna consulta ni escritura lo convierte. Settings muestra la
 ruta exacta del archivo (`data_location` no abre la base, así que responde aunque no se pueda
 leer): con DevHQ abierto se respalda con Back up now (ver [Respaldo](#respaldo)); con DevHQ
 cerrado también basta copiarlo. Para restaurar un respaldo o una copia, con DevHQ cerrado se pone
-en lugar del archivo, con el nombre `inventory.sqlite3`, y se borran `-wal`, `-shm` y `-journal` si
-quedaron, para que ni el log ni el journal del archivo anterior se apliquen a la copia.
+en lugar del archivo, con el nombre `inventory.sqlite3`, y se apartan a otra carpeta, sin borrarlos,
+`-wal`, `-shm` y `-journal` si quedaron: así ni el log ni el journal del archivo anterior se aplican a
+la copia, y lo que tengan sigue ahí (ver «Restaurar un respaldo» en
+[Actualizar un inventario antiguo](#actualizar-un-inventario-antiguo)).
 
 Esa ruta es la que DevHQ pide, y el sistema puede guardar el archivo en otra. Un enlace simbólico o un
 junction llevan a otra carpeta, y Windows redirige `AppData` para un DevHQ lanzado desde una app
@@ -1423,8 +1459,11 @@ una fila de más, un nombre de respaldo o de manifiesto ocupado, unos nombres qu
 en disco (el respaldo y su manifiesto se quedan) o una carpeta imposible; una migración
 que falla, pierde una fila, cambia un valor o su tipo, abre la puerta a los agentes o supervisa una
 comprobación no confirma nada y deja el respaldo; un proceso al que se mata antes del commit deja el
-inventario rechazado sin tocarlo y un respaldo que, puesto en su lugar, se actualiza; uno al que se mata
-después lo deja servible; tres procesos a la vez hacen un solo respaldo y una sola actualización; y la
+inventario rechazado sin tocarlo y un respaldo cuyo manifiesto nombra el inventario y su SHA-256, que
+tiene lo mismo que una copia recuperada aparte de los archivos y que, puesto en su lugar, se actualiza;
+uno al que se mata después lo deja servible; un v6 que ya necesitaba recuperación, con un journal o con
+cambios confirmados solo en su log y sin respaldo alguno, se rechaza sin tocar ni crear un archivo y sin
+presumir un respaldo; tres procesos a la vez hacen un solo respaldo y una sola actualización; y la
 ventana, por el manejador real de comandos, sirve el inventario en cuanto la persona lo actualiza),
 vigencia y sustitución de observaciones de ambos orígenes, orden de atención, errores de
 carga visibles y recuperables, comprobaciones contra un servidor local (estado esperado,
