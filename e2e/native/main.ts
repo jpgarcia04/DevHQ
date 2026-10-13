@@ -322,9 +322,17 @@ try {
   console.log(`The window could be driven ${Date.now() - launched} ms after DevHQ started`)
   let ui = window(session)
   const resource = region('Build server')
-  /** The data folder's files, but the window's lock, which the window holds while it lives. */
+  /**
+   * The inventory's own files and its backups folder: everything beside the inventory that DevHQ
+   * writes for it. The window's lock is left out, since the window holds it while it lives, and so
+   * is the rest of the folder, which on Linux is also the local data folder where WebKitGTK keeps
+   * its profile.
+   */
   const dataFiles = async () =>
-    (await readdir(dataDirectory)).filter((name) => !name.endsWith('.window-lock')).sort()
+    (await readdir(dataDirectory))
+      .filter((name) => name === 'backups' || name.startsWith('inventory.sqlite3'))
+      .filter((name) => !name.endsWith('.window-lock'))
+      .sort()
 
   await step('An older inventory is refused and left exactly as it was', async () => {
     await ui.see('Inventory needs a schema upgrade')
