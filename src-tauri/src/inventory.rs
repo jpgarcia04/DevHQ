@@ -2,10 +2,20 @@ use crate::local_copies::readings::{self, LocalCopy};
 use crate::records::{Actor, Subject};
 use crate::references::{self, Reference, ReferenceInput, SharedRepository};
 use crate::{change_log, http_check, records};
-use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
+use rusqlite::{
+    params, Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
+};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
-use std::time::Duration;
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
+use std::fmt::Write as _;
+use std::fs::File;
+#[cfg(windows)]
+use std::fs::TryLockError;
+use std::io::{ErrorKind, Read};
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+use std::time::{Duration, SystemTime};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize)]
@@ -331,6 +341,616 @@ fn migrate(db: &mut Connection) -> Result<(), ApiError> {
     Ok(())
 }
 
+/// What the agent gate finds at an inventory's path, told without changing anything there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Found {
+    /// No file there.
+    Missing,
+    /// A DevHQ inventory that declares this build's schema and has its tables, columns and
+    /// indexes: the only kind the gate serves.
+    Current,
+    /// A file that declares this build's schema without having its structure: what differs.
+    Mismatch(Vec<String>),
+    /// A DevHQ inventory that declares an older schema, which only the window upgrades.
+    Outdated(i64),
+    /// A DevHQ inventory that declares a schema newer than this build knows.
+    Newer(i64),
+    /// A SQLite database without DevHQ's tables: `empty` when it has no table at all.
+    Foreign { empty: bool },
+    /// A file SQLite would have to recover, changing its files, before reading anything in it;
+    /// the gate never does.
+    NeedsRecovery(Recovery),
+    /// Not readable as a SQLite database, and why: not one, damaged, locked, a folder…
+    Unreadable(String),
+}
+
+/// What SQLite would have to recover before a file could be read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Recovery {
+    /// A rollback journal that a write left behind (a hot journal): until SQLite plays it back,
+    /// the file may hold half of that write.
+    Journal,
+    /// A write-ahead log holding changes that no connection holds open.
+    Log,
+    /// A write-ahead log without the index (`-shm`) through which SQLite reads it.
+    LogWithoutIndex,
+}
+
+impl Found {
+    /// The schema version the file declares, when it is a DevHQ inventory that could be read:
+    /// never a guess.
+    pub(crate) fn stored(&self) -> Option<i64> {
+        match self {
+            Self::Current | Self::Mismatch(_) => Some(SCHEMA_VERSION),
+            Self::Outdated(version) | Self::Newer(version) => Some(*version),
+            Self::Missing | Self::Foreign { .. } | Self::NeedsRecovery(_) | Self::Unreadable(_) => {
+                None
+            }
+        }
+    }
+
+    pub(crate) fn state(&self) -> &'static str {
+        match self {
+            Self::Missing => "missing",
+            Self::Current => "current",
+            Self::Mismatch(_) => "mismatch",
+            Self::Outdated(_) => "outdated",
+            Self::Newer(_) => "newer",
+            Self::Foreign { .. } => "not_an_inventory",
+            Self::NeedsRecovery(_) => "needs_recovery",
+            Self::Unreadable(_) => "unreadable",
+        }
+    }
+
+    /// Whether the file has the structure of the schema it declares: `matches` and `differs` only
+    /// for this build's schema, the one DevHQ can compare; `not_checked` for any other version;
+    /// None when no schema could be read.
+    pub(crate) fn structure(&self) -> Option<&'static str> {
+        match self {
+            Self::Current => Some("matches"),
+            Self::Mismatch(_) => Some("differs"),
+            Self::Outdated(_) | Self::Newer(_) => Some("not_checked"),
+            Self::Missing | Self::Foreign { .. } | Self::NeedsRecovery(_) | Self::Unreadable(_) => {
+                None
+            }
+        }
+    }
+
+    /// What it means for the person and for an agent, in a sentence or two.
+    pub(crate) fn meaning(&self) -> String {
+        match self {
+            Self::Missing => "There is no file there. The gate never creates one: DevHQ's window creates the inventory the first time it opens.".to_owned(),
+            Self::Current => format!("A DevHQ inventory that declares schema version {SCHEMA_VERSION}, the one this DevHQ reads, and has every table, column and index of that schema. Its integrity (each page and row) was not checked."),
+            Self::Mismatch(differences) => format!("A file that declares schema version {SCHEMA_VERSION}, the one this DevHQ reads, without that schema's structure: {}. The gate serves nothing from it, so what it holds is unknown.", differences.join("; ")),
+            Self::Outdated(version) => format!("A DevHQ inventory that declares schema version {version}, older than this DevHQ's ({SCHEMA_VERSION}). The gate never upgrades an inventory and serves nothing from this one. DevHQ's window upgrades it when it opens it, without making a backup first."),
+            Self::Newer(version) => format!("A DevHQ inventory that declares schema version {version}, written by a DevHQ newer than this one (schema {SCHEMA_VERSION}). This DevHQ cannot read it, and the gate serves nothing from it."),
+            Self::Foreign { empty: true } => "An empty file or a SQLite database without tables: not a DevHQ inventory. The gate never turns a file into one.".to_owned(),
+            Self::Foreign { empty: false } => "A SQLite database without DevHQ's tables: not a DevHQ inventory. The gate never turns a file into one.".to_owned(),
+            Self::NeedsRecovery(Recovery::Journal) => "A rollback journal (-journal) beside the file, left by a write that did not finish: until SQLite plays it back, the file may hold half of that write. Playing it back changes the file, and the gate never does; SQLite does it the next time a program that writes opens the file, as DevHQ's window does. Until then what the file holds, its schema version included, is unknown.".to_owned(),
+            Self::NeedsRecovery(Recovery::Log) => "A write-ahead log (-wal) with changes that no connection holds open: whoever wrote them, DevHQ's window or another program, ended without folding them into the file (it crashed, was killed, or closed while another connection was reading). Reading them needs SQLite to recover the log, which changes the files, and the gate never does; DevHQ's window recovers and folds it when it opens. Until then what the inventory holds, its schema version included, is unknown.".to_owned(),
+            Self::NeedsRecovery(Recovery::LogWithoutIndex) => "A write-ahead log (-wal) without its index (-shm): SQLite would have to rebuild the index from the log, creating a file, before reading anything, and the gate never does; DevHQ's window does it when it opens. Until then what the inventory holds, its schema version included, is unknown.".to_owned(),
+            Self::Unreadable(why) => format!("DevHQ could not read the file as a SQLite database ({why}), so what it holds, its schema included, is unknown."),
+        }
+    }
+
+    /// Why the gate serves nothing from the file at `path`; never asked of `Current`.
+    pub(crate) fn refusal(&self, path: &Path) -> ApiError {
+        let at = path.display();
+        let (code, message) = match self {
+            Self::Missing => {
+                return ApiError::invalid(format!(
+                    "There is no DevHQ inventory at {at}. Open DevHQ once to create it, or start the gate with --database <path>."
+                ))
+            }
+            Self::Current => {
+                return ApiError::database(format!("{at} is a current inventory, served, not refused."))
+            }
+            Self::Mismatch(_) => ("schema_mismatch", self.meaning()),
+            Self::Outdated(_) => ("schema_outdated", self.meaning()),
+            Self::Newer(_) => ("schema_newer", self.meaning()),
+            Self::Foreign { .. } => ("not_an_inventory", self.meaning()),
+            Self::NeedsRecovery(_) => ("needs_recovery", self.meaning()),
+            Self::Unreadable(_) => ("database_error", self.meaning()),
+        };
+        ApiError {
+            code,
+            message: format!("{at}: {message} Nothing was read or changed."),
+        }
+    }
+}
+
+/// How many times the gate looks again at files that changed while it looked or read.
+const LOOKS: usize = 3;
+
+/// What is at `path`, told without changing any of its files, and, when it is an inventory in this
+/// build's schema, what `read` made of it on a connection that cannot change them either.
+///
+/// SQLite changes a database's files just by opening it in some states, whatever the connection
+/// is allowed to do: the first connection to a write-ahead log left by a process that ended
+/// rebuilds its index (`-shm`), the last one to close folds the log back into the file and deletes
+/// it, one that finds a rollback journal left by an interrupted write plays it back, and any but an
+/// `immutable` one creates the log of a write-ahead-logged file that has none. So the gate first
+/// looks at the files without SQLite (`OnDisk`) and only opens a connection where SQLite will not
+/// write: a read-only one that reads a log through its index without writing either
+/// (`readonly_shm`), or, for a logged file without a log, an `immutable` one, whose read counts only
+/// if the files are still as they were afterwards. A file that needs recovering is refused with
+/// what was found, and so is one SQLite reports so when opening it.
+///
+/// One race remains: if the last connection to the database closes between the look and the
+/// opening, it folds the log into the file and deletes it, and a `readonly_shm` connection then
+/// creates an empty log. Nothing the database holds changes, but "without changing any of its
+/// files" holds for everything except that empty `-wal`.
+pub(crate) fn examine<T>(
+    path: &Path,
+    mut read: impl FnMut(&mut Connection) -> Result<T, ApiError>,
+) -> (Found, Option<Result<T, ApiError>>) {
+    let mut changing = String::new();
+    for _ in 0..LOOKS {
+        let disk = match OnDisk::look(path) {
+            Ok(disk) => disk,
+            Err(found) => return (found, None),
+        };
+        let way = match disk.way(path) {
+            Ok(way) => way,
+            Err(Some(found)) => return (found, None),
+            Err(None) => {
+                changing = "the log's index went away".to_owned();
+                continue;
+            }
+        };
+        // What a snapshot read has to find again afterwards for the read to count: the file's
+        // bytes, since a write within the same tick of the clock can leave its size and time.
+        let before = match way {
+            Way::Snapshot => match content(path) {
+                Ok(content) => Some(content),
+                Err(error) => return (Found::Unreadable(error.to_string()), None),
+            },
+            Way::Shared => None,
+        };
+        // A writer that changed the file under a snapshot can make anything read from it wrong,
+        // an error included: then neither counts, and the gate looks again.
+        let changed = || {
+            way == Way::Snapshot
+                && (OnDisk::look(path).as_ref() != Ok(&disk) || content(path).ok() != before)
+        };
+        let opened = connect(path, way).and_then(|db| classify(&db).map(|found| (db, found)));
+        let (mut db, found) = match opened {
+            Ok(opened) => opened,
+            Err(error) => match found_by(&error) {
+                Some(found) if !changed() => return (found, None),
+                _ => {
+                    changing = error.to_string();
+                    continue;
+                }
+            },
+        };
+        let outcome = (found == Found::Current).then(|| read(&mut db));
+        drop(db);
+        if changed() {
+            changing = "another connection wrote to it while DevHQ read it".to_owned();
+            continue;
+        }
+        return (found, outcome);
+    }
+    (
+        Found::Unreadable(format!(
+            "its files kept changing while DevHQ looked at them: {changing}"
+        )),
+        None,
+    )
+}
+
+/// Reads the inventory at `path` as it is (see `examine`): only an inventory in this build's
+/// schema is read, and anything else is refused with what was found there.
+pub(crate) fn read_as_found<T>(
+    path: &Path,
+    read: impl FnMut(&mut Connection) -> Result<T, ApiError>,
+) -> Result<T, ApiError> {
+    match examine(path, read) {
+        (_, Some(outcome)) => outcome,
+        (found, None) => Err(found.refusal(path)),
+    }
+}
+
+/// A connection for the gate to change the inventory at `path` in its own transaction, opened
+/// only once a look that changes nothing (see `examine`) found it in this build's schema and
+/// needing no recovery: the gate never creates, upgrades or converts an inventory to another
+/// journal mode. The file is classified again on this connection, so that one replaced meanwhile
+/// is not written; one left needing recovery in that moment is recovered by SQLite, as any write
+/// does.
+pub(crate) fn open_to_write(path: &Path) -> Result<Connection, ApiError> {
+    read_as_found(path, |_| Ok(()))?;
+    let db = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(ApiError::database)?;
+    db.busy_timeout(Duration::from_secs(5))
+        .map_err(ApiError::database)?;
+    db.pragma_update(None, "foreign_keys", "ON")
+        .map_err(ApiError::database)?;
+    match classify(&db).map_err(ApiError::database)? {
+        Found::Current => Ok(db),
+        found => Err(found.refusal(path)),
+    }
+}
+
+/// The bytes every SQLite database file starts with.
+const SQLITE_HEADER: &[u8] = b"SQLite format 3\0";
+/// The size of a write-ahead log's own header: a longer log holds changes.
+const LOG_HEADER: u64 = 32;
+
+/// How the gate reads a database without changing any of its files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Way {
+    /// Read-only, beside whatever connections hold it, with SQLite's usual locks: a rollback-journal
+    /// file, or a log that a connection holds open, read through its index without writing to
+    /// either (`readonly_shm`).
+    Shared,
+    /// A write-ahead-logged file whose log is gone or empty, so that the file holds everything:
+    /// read as a file that does not change (`immutable`), since any other connection would create
+    /// the log and its index. Nothing locks that read against a writer that opens the file
+    /// meanwhile, so the read counts only if afterwards the file holds the same bytes and no log,
+    /// index or journal came or went: a writer writes the file only by folding a log back into it.
+    Snapshot,
+}
+
+/// A database's files as they are on disk, looked at without SQLite: what decides how the gate may
+/// open it without changing any of them, and, compared before and after a snapshot, whether
+/// anything changed them meanwhile.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OnDisk {
+    /// The database file's size and last write.
+    len: u64,
+    modified: Option<SystemTime>,
+    /// Its first 100 bytes: SQLite's header, which says whether it uses a write-ahead log.
+    header: Vec<u8>,
+    /// The size of its write-ahead log (`-wal`), when there is one.
+    log: Option<u64>,
+    /// Whether the log's index (`-shm`) is there.
+    index: bool,
+    /// Whether a rollback journal (`-journal`) that SQLite could play back is there: one that is
+    /// not empty and whose header is not zeroed.
+    journal: bool,
+}
+
+impl OnDisk {
+    fn look(path: &Path) -> Result<Self, Found> {
+        let metadata = match std::fs::metadata(path) {
+            Err(error) if error.kind() == ErrorKind::NotFound => return Err(Found::Missing),
+            Err(error) => return Err(Found::Unreadable(error.to_string())),
+            Ok(metadata) if !metadata.is_file() => {
+                return Err(Found::Unreadable("it is not a file".to_owned()))
+            }
+            Ok(metadata) => metadata,
+        };
+        let unreadable = |error: std::io::Error| Found::Unreadable(error.to_string());
+        let mut header = Vec::with_capacity(100);
+        File::open(path)
+            .and_then(|file| file.take(100).read_to_end(&mut header))
+            .map_err(unreadable)?;
+        let size = |suffix| match std::fs::metadata(beside(path, suffix)) {
+            Ok(metadata) => Ok(Some(metadata.len())),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(unreadable(error)),
+        };
+        let mut first = [0];
+        let journal = match File::open(beside(path, "-journal")) {
+            Ok(mut journal) => match journal.read(&mut first) {
+                Ok(read) => read == 1 && first[0] != 0,
+                Err(error) => return Err(unreadable(error)),
+            },
+            Err(error) if error.kind() == ErrorKind::NotFound => false,
+            Err(error) => return Err(unreadable(error)),
+        };
+        Ok(Self {
+            len: metadata.len(),
+            modified: metadata.modified().ok(),
+            header,
+            log: size("-wal")?,
+            index: size("-shm")?.is_some(),
+            journal,
+        })
+    }
+
+    /// How the gate may read the file at `path` without changing it; or what it found, when it
+    /// may not read it; or None when the files changed while it looked, to look again.
+    fn way(&self, path: &Path) -> Result<Way, Option<Found>> {
+        if self.len == 0 {
+            return Err(Some(Found::Foreign { empty: true }));
+        }
+        if !self.header.starts_with(SQLITE_HEADER) {
+            return Err(Some(Found::Unreadable("file is not a database".to_owned())));
+        }
+        // Byte 19 of the header is 2 for a write-ahead-logged file: SQLite then opens its log.
+        let logged = self.header.get(19) == Some(&2);
+        let held = || match log_held(path) {
+            Ok(held) => Ok(held),
+            Err(error) if error.kind() == ErrorKind::NotFound => Err(None),
+            Err(error) => Err(Some(Found::Unreadable(error.to_string()))),
+        };
+        let snapshot = || {
+            if self.journal {
+                Err(Some(Found::NeedsRecovery(Recovery::Journal)))
+            } else {
+                Ok(Way::Snapshot)
+            }
+        };
+        match self.log {
+            // A log with changes in it: SQLite opens one whatever the header says.
+            Some(len) if len > LOG_HEADER => {
+                if !self.index {
+                    Err(Some(Found::NeedsRecovery(Recovery::LogWithoutIndex)))
+                } else if held()? {
+                    Ok(Way::Shared)
+                } else {
+                    Err(Some(Found::NeedsRecovery(Recovery::Log)))
+                }
+            }
+            // A connection that has not written yet holds an empty log; otherwise it was left
+            // empty, and the file holds everything.
+            Some(_) if self.index && held()? => Ok(Way::Shared),
+            Some(_) => snapshot(),
+            None if logged => snapshot(),
+            None => Ok(Way::Shared),
+        }
+    }
+}
+
+/// A digest of the bytes of the file at `path`.
+fn content(path: &Path) -> std::io::Result<[u8; 32]> {
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut File::open(path)?, &mut hasher)?;
+    Ok(hasher.finalize().into())
+}
+
+/// The file SQLite keeps beside the database at `path`: `-wal`, `-shm` or `-journal`.
+fn beside(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(suffix);
+    PathBuf::from(name)
+}
+
+/// Whether a connection in another process holds open the write-ahead log of the database at
+/// `path` (on Windows, one in this process counts too). Every connection to a logged database
+/// holds a shared lock on byte 128 of the log's index (`-shm`), SQLite's dead man's switch, for as
+/// long as it is open, and the system drops it when the process ends, however it ends: SQLite asks
+/// the same question, the same way, to decide whether a log needs recovering. This only asks: on
+/// Windows the exclusive lock it tries is let go at once, and on Unix `F_GETLK` only tests.
+///
+/// On Unix closing any descriptor of a file drops every lock this process holds on it, so this
+/// must never run while this process has a connection to the same database: the gate looks before
+/// it opens one, and holds one at a time.
+#[cfg(windows)]
+fn log_held(path: &Path) -> std::io::Result<bool> {
+    let index = File::open(beside(path, "-shm"))?;
+    match index.try_lock() {
+        Ok(()) => {
+            index.unlock()?;
+            Ok(false)
+        }
+        Err(TryLockError::WouldBlock) => Ok(true),
+        Err(TryLockError::Error(error)) => Err(error),
+    }
+}
+
+#[cfg(unix)]
+fn log_held(path: &Path) -> std::io::Result<bool> {
+    use std::os::fd::AsRawFd;
+    let index = File::open(beside(path, "-shm"))?;
+    // SAFETY: flock is a plain C struct, for which all zeroes is a valid value.
+    let mut lock: libc::flock = unsafe { std::mem::zeroed() };
+    // libc declares the lock types and whences as c_int, and flock's fields as c_short (Linux,
+    // macOS, the BSDs), which holds every one of them. Naming the type keeps the comparison below
+    // inferable, and makes a platform whose fields differ fail to build instead of casting silently.
+    lock.l_type = libc::F_WRLCK as libc::c_short;
+    lock.l_whence = libc::SEEK_SET as libc::c_short;
+    lock.l_start = 128;
+    lock.l_len = 1;
+    // SAFETY: the descriptor is open for the call, and F_GETLK only reads and writes `lock`.
+    if unsafe { libc::fcntl(index.as_raw_fd(), libc::F_GETLK, &raw mut lock) } == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // F_GETLK leaves F_UNLCK in l_type when no other process holds a lock that would conflict.
+    Ok(lock.l_type != libc::F_UNLCK as libc::c_short)
+}
+
+/// A read-only connection to the file at `path`, opened the `way` its files allow.
+fn connect(path: &Path, way: Way) -> rusqlite::Result<Connection> {
+    let parameter = match way {
+        Way::Shared => "readonly_shm=1",
+        Way::Snapshot => "immutable=1",
+    };
+    let uri = uri(path, parameter).ok_or_else(|| rusqlite::Error::InvalidPath(path.to_owned()))?;
+    let db = Connection::open_with_flags(
+        uri,
+        OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_URI
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    db.busy_timeout(Duration::from_secs(5))?;
+    Ok(db)
+}
+
+/// The file at `path` as a SQLite URI carrying `parameter`: SQLite takes `immutable` and
+/// `readonly_shm` only that way. Every byte but letters, digits and `/-._~:` is percent-encoded,
+/// so that a `?`, `#` or `%` in a folder's name stays part of the path. None for a Windows path
+/// that is not valid Unicode, which SQLite cannot be given.
+fn uri(path: &Path, parameter: &str) -> Option<String> {
+    #[cfg(windows)]
+    let bytes = {
+        path.to_str()?;
+        plain(path).replace('\\', "/").into_bytes()
+    };
+    #[cfg(unix)]
+    let bytes = std::os::unix::ffi::OsStrExt::as_bytes(path.as_os_str()).to_vec();
+    let mut encoded = String::with_capacity(bytes.len());
+    for byte in bytes {
+        if byte.is_ascii_alphanumeric() || b"/-._~:".contains(&byte) {
+            encoded.push(char::from(byte));
+        } else {
+            let _ = write!(encoded, "%{byte:02X}");
+        }
+    }
+    // An absolute path gets the empty authority: file:///home/…, file:///C:/…, file:////server/….
+    let drive =
+        encoded.as_bytes().get(1..3) == Some(b":/") && encoded.as_bytes()[0].is_ascii_alphabetic();
+    let authority = if encoded.starts_with('/') {
+        "//"
+    } else if cfg!(windows) && drive {
+        "///"
+    } else {
+        ""
+    };
+    Some(format!("file:{authority}{encoded}?{parameter}"))
+}
+
+/// What a SQLite error opening or reading a file says it is; None when its files changed between
+/// the look and the opening (an index or a log went away), to look again.
+fn found_by(error: &rusqlite::Error) -> Option<Found> {
+    use rusqlite::ffi;
+    if let rusqlite::Error::SqliteFailure(failure, _) = error {
+        match failure.extended_code {
+            // A hot journal, which a read-only connection does not play back.
+            ffi::SQLITE_READONLY_ROLLBACK => return Some(Found::NeedsRecovery(Recovery::Journal)),
+            // A log whose index needs rebuilding, or that no connection holds any more.
+            ffi::SQLITE_READONLY_RECOVERY | ffi::SQLITE_READONLY_CANTINIT => return None,
+            _ if failure.code == rusqlite::ErrorCode::CannotOpen => return None,
+            _ => {}
+        }
+    }
+    Some(Found::Unreadable(error.to_string()))
+}
+
+/// Which file the connection reads. Only a DevHQ inventory has `applications` and `resources`
+/// (since its first schema) and a `user_version` from 1 on, which its upgrades set; one that
+/// declares this build's version is current only if it also has this schema's structure.
+fn classify(db: &Connection) -> rusqlite::Result<Found> {
+    let version: i64 = db.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    let (tables, devhq): (i64, i64) = db.query_row(
+        "SELECT count(*), count(*) FILTER (WHERE name IN ('applications', 'resources'))
+         FROM sqlite_master WHERE type = 'table'",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    Ok(if version < 1 || devhq < 2 {
+        Found::Foreign { empty: tables == 0 }
+    } else if version < SCHEMA_VERSION {
+        Found::Outdated(version)
+    } else if version > SCHEMA_VERSION {
+        Found::Newer(version)
+    } else {
+        let differences = Structure::of(db)?.differences_from(Structure::expected());
+        if differences.is_empty() {
+            Found::Current
+        } else {
+            Found::Mismatch(differences)
+        }
+    })
+}
+
+/// The tables of a schema, each with its columns, and its indexes, each with its table: what
+/// tells whether a file has the schema it declares. Names and declarations only, never contents:
+/// whether each page and row is sound is SQLite's integrity check, which the gate never runs.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Structure {
+    /// Each column as `PRAGMA table_xinfo` gives it: its name, then its declaration.
+    tables: BTreeMap<String, Vec<(String, String)>>,
+    indexes: BTreeMap<String, String>,
+}
+
+impl Structure {
+    fn of(db: &Connection) -> rusqlite::Result<Self> {
+        let mut structure = Self::default();
+        let mut objects = db.prepare(
+            "SELECT type, name, tbl_name FROM sqlite_schema
+             WHERE type IN ('table', 'index') AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'",
+        )?;
+        let mut columns = db.prepare(
+            "SELECT name, type, \"notnull\", dflt_value, pk, hidden FROM pragma_table_xinfo(?1)",
+        )?;
+        let objects = objects
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get(1)?, row.get(2)?))
+            })?
+            .collect::<rusqlite::Result<Vec<(String, String, String)>>>()?;
+        for (kind, name, table) in objects {
+            if kind == "index" {
+                structure.indexes.insert(name, table);
+                continue;
+            }
+            let declared = columns
+                .query_map([&name], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        format!(
+                            "{} notnull={} default={:?} pk={} hidden={}",
+                            row.get::<_, String>(1)?,
+                            row.get::<_, i64>(2)?,
+                            row.get::<_, Option<String>>(3)?,
+                            row.get::<_, i64>(4)?,
+                            row.get::<_, i64>(5)?,
+                        ),
+                    ))
+                })?
+                .collect::<rusqlite::Result<_>>()?;
+            structure.tables.insert(name, declared);
+        }
+        Ok(structure)
+    }
+
+    /// This build's schema as its migrations make it, built once, in memory.
+    fn expected() -> &'static Self {
+        static EXPECTED: OnceLock<Structure> = OnceLock::new();
+        EXPECTED.get_or_init(|| {
+            let db = Connection::open_in_memory().expect("an in-memory database opens");
+            for (_, sql) in MIGRATIONS {
+                db.execute_batch(sql)
+                    .expect("this build's migrations build its schema");
+            }
+            Self::of(&db).expect("this build's schema can be read back")
+        })
+    }
+
+    /// What this structure lacks, or has otherwise, of `expected`'s. Tables and indexes that
+    /// `expected` does not have are not DevHQ's to judge, and are left out.
+    fn differences_from(&self, expected: &Self) -> Vec<String> {
+        let mut differences = Vec::new();
+        for (table, columns) in &expected.tables {
+            let Some(found) = self.tables.get(table) else {
+                differences.push(format!("no table {table}"));
+                continue;
+            };
+            for (column, declaration) in columns {
+                match found.iter().find(|(name, _)| name == column) {
+                    None => differences.push(format!("no column {table}.{column}")),
+                    Some((_, other)) if other != declaration => differences.push(format!(
+                        "column {table}.{column} declared as {other}, not {declaration}"
+                    )),
+                    Some(_) => {}
+                }
+            }
+            for (column, _) in found {
+                if !columns.iter().any(|(name, _)| name == column) {
+                    differences.push(format!(
+                        "column {table}.{column}, which the schema does not have"
+                    ));
+                }
+            }
+        }
+        for (index, table) in &expected.indexes {
+            match self.indexes.get(index) {
+                None => differences.push(format!("no index {index}")),
+                Some(other) if other != table => {
+                    differences.push(format!("index {index} on {other}, not {table}"))
+                }
+                Some(_) => {}
+            }
+        }
+        differences
+    }
+}
+
 /// Longest texts DevHQ accepts. The window enforces the same limits as you type.
 pub(crate) const MAX_NAME: usize = 120;
 pub(crate) const MAX_TITLE: usize = 160;
@@ -387,7 +1007,12 @@ pub(crate) fn allowed(value: &str, choices: &[&str], label: &str) -> Result<(), 
 }
 
 pub fn list(path: &Path) -> Result<Inventory, ApiError> {
-    let mut db = open(path)?;
+    list_from(&mut open(path)?)
+}
+
+/// One consistent read of the inventory on `db`, in one read transaction: `list` on a connection
+/// the caller opened, such as the agent gate's, which opens the inventory as it finds it.
+pub(crate) fn list_from(db: &mut Connection) -> Result<Inventory, ApiError> {
     let tx = db.transaction().map_err(ApiError::database)?;
     let mut resources = {
         let mut statement = tx.prepare("SELECT id, name, kind, description, operating_system FROM resources ORDER BY name COLLATE NOCASE, id").map_err(ApiError::database)?;
@@ -2165,7 +2790,7 @@ pub(crate) mod tests {
     }
 
     /// A database as an earlier release (schema `version`) left it, with enforcement off.
-    fn database_at(path: &Path, version: i64) -> Connection {
+    pub(crate) fn database_at(path: &Path, version: i64) -> Connection {
         let db = Connection::open(path).unwrap();
         db.pragma_update(None, "foreign_keys", "OFF").unwrap();
         for (number, sql) in &MIGRATIONS {
@@ -3211,5 +3836,406 @@ pub(crate) mod tests {
             SCHEMA_VERSION + 1
         )));
         std::fs::remove_file(path).unwrap();
+    }
+
+    /// The agent gate's reading connections never create a file and cannot write; its writing one
+    /// writes only an inventory a reading look found current, and never converts it.
+    #[test]
+    fn opens_an_inventory_as_it_finds_it() {
+        let path = path();
+        // Nothing there: no file, also when a connection itself is asked.
+        assert_eq!(examine(&path, |_| Ok(())).0, Found::Missing);
+        for way in [Way::Shared, Way::Snapshot] {
+            assert!(connect(&path, way).is_err(), "{way:?}");
+        }
+        assert!(!path.exists());
+        let refused = read_as_found(&path, |_| Ok(())).unwrap_err();
+        assert!(refused.message.contains("There is no DevHQ inventory at"));
+        assert!(open_to_write(&path).is_err());
+        assert!(!path.exists());
+        resource(&path, "Host");
+        let refused = read_as_found(&path, |db| {
+            db.execute("DELETE FROM resources", [])
+                .map_err(ApiError::database)
+        })
+        .unwrap_err();
+        assert!(refused.message.contains("readonly"), "{}", refused.message);
+        let writer = open_to_write(&path).unwrap();
+        assert_eq!(writer.execute("DELETE FROM resources", []).unwrap(), 1);
+        drop(writer);
+        // Never converted: a rollback journal stays one, also after a write.
+        let db = Connection::open(&path).unwrap();
+        db.pragma_update(None, "journal_mode", "DELETE").unwrap();
+        drop(db);
+        let refused = read_as_found(&path, |db| {
+            db.execute("DELETE FROM agent_access", [])
+                .map_err(ApiError::database)
+        })
+        .unwrap_err();
+        assert!(refused.message.contains("readonly"), "{}", refused.message);
+        open_to_write(&path)
+            .unwrap()
+            .execute("DELETE FROM agent_access", [])
+            .unwrap();
+        let mode: String = Connection::open(&path)
+            .unwrap()
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(mode, "delete");
+        std::fs::remove_file(path).unwrap();
+    }
+
+    /// Only a file with this schema's tables, columns and indexes is current: declaring its version
+    /// is not enough, and what differs is named. Tables and indexes of its own are not DevHQ's to
+    /// judge.
+    #[test]
+    fn tells_a_current_schema_from_one_that_only_declares_it() {
+        let found_after = |sql: &str| {
+            let path = path();
+            let db = database_at(&path, SCHEMA_VERSION);
+            db.execute_batch(sql).unwrap();
+            drop(db);
+            let found = examine(&path, |_| Ok(())).0;
+            std::fs::remove_file(path).unwrap();
+            found
+        };
+        assert_eq!(found_after(""), Found::Current);
+        assert_eq!(
+            found_after("CREATE TABLE notes (body TEXT); CREATE INDEX notes_body ON notes (body);"),
+            Found::Current
+        );
+        assert_eq!(
+            found_after("DROP TABLE agent_access"),
+            Found::Mismatch(vec!["no table agent_access".to_owned()])
+        );
+        assert_eq!(
+            found_after("ALTER TABLE resources ADD COLUMN extra TEXT"),
+            Found::Mismatch(vec![
+                "column resources.extra, which the schema does not have".to_owned()
+            ])
+        );
+        assert_eq!(
+            found_after("DROP INDEX events_reported"),
+            Found::Mismatch(vec!["no index events_reported".to_owned()])
+        );
+        // Stamped 12 with only the two tables that tell a DevHQ inventory apart.
+        let stamped = path();
+        let db = Connection::open(&stamped).unwrap();
+        db.execute_batch(
+            "CREATE TABLE applications (id TEXT PRIMARY KEY);
+             CREATE TABLE resources (id TEXT PRIMARY KEY);
+             PRAGMA user_version = 12;",
+        )
+        .unwrap();
+        drop(db);
+        let found = examine(&stamped, |_| Ok(())).0;
+        let Found::Mismatch(differences) = &found else {
+            panic!("{found:?}")
+        };
+        assert!(differences.contains(&"no table agent_access".to_owned()));
+        assert!(differences.contains(&"no column resources.name".to_owned()));
+        assert_eq!(
+            (found.state(), found.stored(), found.structure()),
+            ("mismatch", Some(SCHEMA_VERSION), Some("differs"))
+        );
+        assert_eq!(found.refusal(&stamped).code, "schema_mismatch");
+        std::fs::remove_file(stamped).unwrap();
+        // Upgraded by the window from an older schema, it has the same structure as a new one.
+        let upgraded = path();
+        drop(database_at(&upgraded, 6));
+        drop(open(&upgraded).unwrap());
+        assert_eq!(examine(&upgraded, |_| Ok(())).0, Found::Current);
+        std::fs::remove_file(upgraded).unwrap();
+    }
+
+    /// The gate gives SQLite the path as a URI, the only way to ask it to read without writing:
+    /// every byte that a URI reserves stays part of the path.
+    #[test]
+    fn gives_sqlite_any_path_as_a_uri() {
+        #[cfg(windows)]
+        {
+            let uri = |path: &str| uri(Path::new(path), "immutable=1").unwrap();
+            assert_eq!(
+                uri(r"C:\Data 1\a#b%c?d é\inventory.sqlite3"),
+                "file:///C:/Data%201/a%23b%25c%3Fd%20%C3%A9/inventory.sqlite3?immutable=1"
+            );
+            assert_eq!(
+                uri(r"\\?\C:\Data\inventory.sqlite3"),
+                "file:///C:/Data/inventory.sqlite3?immutable=1"
+            );
+            assert_eq!(
+                uri(r"\\?\UNC\server\share\inventory.sqlite3"),
+                "file:////server/share/inventory.sqlite3?immutable=1"
+            );
+            assert_eq!(
+                uri(r"\\server\share\inventory.sqlite3"),
+                "file:////server/share/inventory.sqlite3?immutable=1"
+            );
+            assert_eq!(
+                uri("inventory.sqlite3"),
+                "file:inventory.sqlite3?immutable=1"
+            );
+        }
+        #[cfg(unix)]
+        {
+            let uri = |path: &str| uri(Path::new(path), "readonly_shm=1").unwrap();
+            assert_eq!(
+                uri("/home/me/a#b%c?d é/inventory.sqlite3"),
+                "file:///home/me/a%23b%25c%3Fd%20%C3%A9/inventory.sqlite3?readonly_shm=1"
+            );
+            assert_eq!(
+                uri("inventory.sqlite3"),
+                "file:inventory.sqlite3?readonly_shm=1"
+            );
+        }
+        // A real folder with such a name, through both ways of reading.
+        let name = if cfg!(windows) {
+            "a b#c%d é"
+        } else {
+            "a b#c%d?e é"
+        };
+        let folder = std::env::temp_dir().join(format!("devhq-{name}-{}", Uuid::new_v4()));
+        std::fs::create_dir(&folder).unwrap();
+        let path = folder.join("inventory.sqlite3");
+        resource(&path, "Host");
+        let count = |path: &Path| {
+            read_as_found(path, |db| {
+                db.query_row("SELECT count(*) FROM resources", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .map_err(ApiError::database)
+            })
+        };
+        assert_eq!(count(&path).unwrap(), 1, "a snapshot of a logged file");
+        Connection::open(&path)
+            .unwrap()
+            .pragma_update(None, "journal_mode", "DELETE")
+            .unwrap();
+        assert_eq!(count(&path).unwrap(), 1, "a rollback-journal file, shared");
+        let names: Vec<_> = std::fs::read_dir(&folder)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["inventory.sqlite3"]);
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    /// A snapshot read counts only if no writer changed the file meanwhile: one that did is read
+    /// again, and what is answered is what the file holds after that write.
+    #[test]
+    fn reads_a_snapshot_again_when_a_writer_changed_the_file_meanwhile() {
+        let path = path();
+        resource(&path, "Host");
+        let mut reads = 0;
+        let (found, outcome) = examine(&path, |db| {
+            reads += 1;
+            let count: i64 = db
+                .query_row("SELECT count(*) FROM resources", [], |row| row.get(0))
+                .map_err(ApiError::database)?;
+            if reads == 1 {
+                // Its own connection writes, folds the log into the file and deletes it.
+                resource(&path, "Written meanwhile");
+            }
+            Ok(count)
+        });
+        assert_eq!(found, Found::Current);
+        assert_eq!((reads, outcome.unwrap().unwrap()), (2, 2));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    /// The environment variable that makes `writes_until_killed` write: what to leave behind, the
+    /// inventory's path and the file to create once it has, one per line.
+    const WRITER: &str = "DEVHQ_TEST_INVENTORY_WRITER";
+
+    /// Run by `writer` in a process of its own, which the test then kills as a crash would; on its
+    /// own, it does nothing. `log`: with a connection held open, as a window holds one, adds the
+    /// resource «Live box» to a write-ahead-logged inventory, which stays in the log. `journal`:
+    /// starts a write to a rollback-journal inventory, large enough to have reached the file
+    /// already, and never ends it.
+    #[test]
+    #[ignore = "a helper that other tests run in a process of its own"]
+    fn writes_until_killed() {
+        let Some(spec) = std::env::var_os(WRITER) else {
+            return;
+        };
+        let spec = spec.into_string().unwrap();
+        let [what, path, ready] = spec.split('\n').collect::<Vec<_>>()[..] else {
+            panic!("{spec}")
+        };
+        let path = Path::new(path);
+        // A plain connection: it neither upgrades the file nor changes its journal mode.
+        let held = Connection::open(path).unwrap();
+        match what {
+            "log" => {
+                held.query_row("SELECT count(*) FROM resources", [], |_| Ok(()))
+                    .unwrap();
+                // Its own connection commits and closes, and cannot fold the log while `held`
+                // is open.
+                resource(path, "Live box");
+            }
+            "journal" => {
+                held.pragma_update(None, "cache_size", 2).unwrap();
+                held.execute_batch(
+                    "BEGIN;
+                     CREATE TABLE ballast (bytes BLOB);
+                     WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 2000)
+                     INSERT INTO ballast SELECT randomblob(200) FROM n;",
+                )
+                .unwrap();
+            }
+            other => panic!("{other}"),
+        }
+        std::fs::write(ready, "").unwrap();
+        loop {
+            std::thread::sleep(Duration::from_secs(60));
+        }
+    }
+
+    /// A process of its own that has done `what` (see `writes_until_killed`) to the inventory at
+    /// `path` and goes on holding it until `kill` ends it, or until it is dropped, so that a test
+    /// that fails before killing it leaves nothing running.
+    pub(crate) struct Writer(std::process::Child);
+
+    impl Drop for Writer {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    pub(crate) fn writer(path: &Path, what: &str) -> Writer {
+        let ready = std::env::temp_dir().join(format!("devhq-writer-{}", Uuid::new_v4()));
+        let mut child = Writer(
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--ignored",
+                    "--exact",
+                    "inventory::tests::writes_until_killed",
+                    "--nocapture",
+                ])
+                .env(
+                    WRITER,
+                    format!("{what}\n{}\n{}", path.display(), ready.display()),
+                )
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        while !ready.exists() {
+            if let Some(status) = child.0.try_wait().unwrap() {
+                panic!("the writer ended before writing: {status}");
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the writer never wrote"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        std::fs::remove_file(ready).unwrap();
+        child
+    }
+
+    /// Kills `writer` as a crash ends a process, so that nothing in it gets to fold, roll back or
+    /// release anything, and waits until the system lets go of its locks on the inventory at
+    /// `path`, which Windows does as resources allow. Only the files' locks are asked about: no
+    /// connection is opened that SQLite could let change them.
+    pub(crate) fn kill(mut writer: Writer, path: &Path) {
+        writer.0.kill().unwrap();
+        writer.0.wait().unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let released = || {
+            if beside(path, "-shm").exists() {
+                return !log_held(path).unwrap();
+            }
+            // A plain read-only connection to a rollback-journal file creates nothing, and is
+            // refused with SQLITE_BUSY until the dead writer's lock is gone.
+            let db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+            match db.query_row("PRAGMA user_version", [], |_| Ok(())) {
+                Err(rusqlite::Error::SqliteFailure(failure, _)) => {
+                    failure.code != rusqlite::ErrorCode::DatabaseBusy
+                }
+                _ => true,
+            }
+        };
+        while !released() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the system never released the killed writer's locks"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// What a writer killed in the middle leaves is refused as needing recovery, and nothing the
+    /// gate does to find out writes, rolls back or folds any of the files.
+    #[test]
+    fn never_recovers_what_a_killed_writer_left() {
+        let folder = std::env::temp_dir().join(format!("devhq-killed-{}", Uuid::new_v4()));
+        std::fs::create_dir(&folder).unwrap();
+        let path = folder.join("inventory.sqlite3");
+        let files = || {
+            let mut found: Vec<_> = std::fs::read_dir(&folder)
+                .unwrap()
+                .map(|entry| {
+                    let entry = entry.unwrap();
+                    (entry.file_name(), std::fs::read(entry.path()).unwrap())
+                })
+                .collect();
+            found.sort();
+            found
+        };
+        let names = |found: &[(std::ffi::OsString, Vec<u8>)]| {
+            found
+                .iter()
+                .map(|(name, _)| name.to_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        };
+
+        resource(&path, "Host");
+        kill(writer(&path, "log"), &path);
+        let before = files();
+        assert_eq!(
+            names(&before),
+            [
+                "inventory.sqlite3",
+                "inventory.sqlite3-shm",
+                "inventory.sqlite3-wal"
+            ]
+        );
+        assert!(
+            before[2].1.len() as u64 > LOG_HEADER,
+            "the log holds the change"
+        );
+        assert_eq!(
+            examine(&path, |_| Ok(())).0,
+            Found::NeedsRecovery(Recovery::Log)
+        );
+        assert_eq!(files(), before);
+        // Without its index.
+        std::fs::remove_file(beside(&path, "-shm")).unwrap();
+        let before = files();
+        assert_eq!(
+            examine(&path, |_| Ok(())).0,
+            Found::NeedsRecovery(Recovery::LogWithoutIndex)
+        );
+        assert_eq!(files(), before);
+        std::fs::remove_dir_all(&folder).unwrap();
+
+        std::fs::create_dir(&folder).unwrap();
+        drop(database_at(&path, 6));
+        kill(writer(&path, "journal"), &path);
+        let before = files();
+        assert_eq!(
+            names(&before),
+            ["inventory.sqlite3", "inventory.sqlite3-journal"]
+        );
+        assert_eq!(
+            examine(&path, |_| Ok(())).0,
+            Found::NeedsRecovery(Recovery::Journal)
+        );
+        assert_eq!(files(), before);
+        std::fs::remove_dir_all(&folder).unwrap();
     }
 }

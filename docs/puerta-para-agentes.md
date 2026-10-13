@@ -21,7 +21,56 @@ abierta. Lo que solo se ve en la laptop:
   `storedAt` y si `windowOpen` ve la ventana del DevHQ instalado. El lock está junto al inventario, y
   Windows también redirige ese archivo.
 
+## Lo que queda para la actualización explícita
+
+Las consultas y los cambios de configuración de la puerta abren el inventario tal como lo encuentran
+y solo sirven el esquema actual. Lo demás espera a la actualización explícita de inventarios, que hará
+que ninguna apertura actualice sola:
+
+- Los registros (`record_observation`, `open_incident`, `update_incident`, `record_event`),
+  `run_check`, `backup` y `read_copies` comprueban el archivo antes de empezar, pero luego pasan por
+  los casos de uso de la ventana, que lo abren con `inventory::open`: un inventario en rollback pasa a
+  WAL al escribir, y si entre la comprobación y la escritura otro proceso sustituye el archivo por un
+  inventario más antiguo o lo borra, esa apertura lo actualiza o crea uno vacío.
+- Esas mismas escrituras comprueban el acceso antes de abrir su propia transacción, no dentro de ella
+  como los cambios de configuración: si la persona cierra la puerta en Settings justo en ese
+  instante, la escritura ya admitida sigue.
+- Un inventario más antiguo no sirve a ningún agente hasta que la ventana lo abre, y la ventana lo
+  actualiza sin preguntar y sin respaldo previo; Back up now, sobre uno antiguo, también actualiza
+  antes de copiar. Lo mismo vale para uno que la puerta rechaza con `needs_recovery`: la ventana lo
+  recupera al abrirlo y, si además es antiguo, lo actualiza sin respaldo.
+
+## Lo que la lectura sin cambios no cubre
+
+La puerta lee sin escribir en el inventario ni cambiar lo que contiene, y rechaza con `needs_recovery`
+lo que habría que recuperar (README, «Puerta para agentes»). Lo que eso no evita:
+
+- Mientras una consulta lee, unos milisegundos, la última conexión que se cierra, como la ventana al
+  cerrarla, no puede volcar su log en el archivo: SQLite solo lo hace si nadie más tiene abierta la
+  base. El log se queda, sin conexión que lo mantenga, y la puerta rechaza el inventario con
+  `needs_recovery` hasta que la ventana vuelve a abrirse y lo recupera. No se pierde nada confirmado.
+  Cualquier lector que no vuelque el log tiene el mismo efecto; volcarlo es justo el cambio que la
+  puerta no hace.
+- Si la última conexión se cierra entre que la puerta mira los archivos y SQLite abre el log, un
+  instante de microsegundos, SQLite crea un `-wal` vacío junto al inventario: abrir un archivo en WAL sin
+  log lo crea, y solo `immutable` lo evita, que no sirve para una base que alguien tiene abierta. No
+  cambia el contenido, y la siguiente apertura lo usa. Es el único archivo que una lectura de la puerta
+  puede crear: por eso el README promete que la lectura no cambia el contenido, no que deje intactos
+  todos los archivos.
+- Si quien mantiene el log termina justo después de que la puerta lo vea abierto, SQLite lee sus cambios
+  en memoria, sin cambiar ningún archivo, en vez de que la puerta lo rechace. Windows suelta los
+  bloqueos de un proceso muerto «cuando los recursos lo permiten»: durante ese momento la puerta lo ve
+  aún abierto y lee igual, sin escribir.
+- La comparación de estructura mira tablas, columnas e índices por nombre y declaración, no las
+  restricciones (`CHECK`, claves foráneas) ni el contenido: un archivo que la pasa puede estar dañado,
+  y por eso `status` dice que la integridad no se comprobó.
+
 ## Por probar con otros clientes
 
 Solo Claude Code se ha probado como cliente. Codex u otro cliente MCP por stdio deberían funcionar
 igual (la puerta solo usa `initialize`, `ping`, `tools/list` y `tools/call`), pero nadie lo ha visto.
+
+Desde que la puerta comprueba los argumentos contra los esquemas que publica, un cliente que mande
+claves que una herramienta no declara, o `null` en un campo opcional que no lo admite (como hacen
+algunos clientes con todo lo que el modelo deja vacío), recibe `invalid_input` donde antes la puerta lo
+ignoraba. Ningún cliente real se ha probado aún contra la puerta estricta, tampoco Claude Code.

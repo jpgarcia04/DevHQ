@@ -8,6 +8,7 @@
 //! transport); stderr is free for diagnostics. Every tool goes through the same use cases as the
 //! window's commands, with the same validation, limits and transactions.
 
+mod arguments;
 mod writes;
 
 use crate::access;
@@ -178,12 +179,51 @@ impl Session {
             "tools/call needs the tool's name.".to_owned(),
         ))?;
         let empty = Map::new();
+        // Only the tool's arguments are checked: the rest of `params` (`_meta`, and whatever a
+        // later revision of the protocol adds) belongs to the protocol, which lets it grow.
         let arguments = match params.get("arguments") {
             None | Some(Value::Null) => &empty,
             Some(Value::Object(arguments)) => arguments,
             Some(_) => return Err((INVALID_PARAMS, "Tool arguments must be an object.".into())),
         };
-        let outcome = match name {
+        let Some(schema) = tools()
+            .into_iter()
+            .find(|tool| tool["name"] == name)
+            .map(|tool| tool["inputSchema"].clone())
+        else {
+            return Err((INVALID_PARAMS, format!("Unknown tool {name}.")));
+        };
+        // Before anything opens: a call that does not match what the tool declares does nothing.
+        let mut problems = arguments::problems(&schema, arguments);
+        if problems.is_empty() {
+            problems = arguments::rules(name, arguments);
+        }
+        let outcome = if problems.is_empty() {
+            self.run(name, arguments)
+        } else {
+            Err(ApiError::invalid(format!(
+                "{name} was not run: {}",
+                problems.join(" ")
+            )))
+        };
+        // A tool that fails tells the agent why, as the window would tell the person; it is a
+        // result, not a protocol error, so the agent can read it and correct itself.
+        Ok(match outcome {
+            Ok(value) => json!({
+                "content": [{ "type": "text", "text": value.to_string() }],
+                "structuredContent": value,
+                "isError": false,
+            }),
+            Err(error) => json!({
+                "content": [{ "type": "text", "text": format!("{} ({})", error.message, error.code) }],
+                "isError": true,
+            }),
+        })
+    }
+
+    /// Runs a tool whose arguments match its schema and rules.
+    fn run(&self, name: &str, arguments: &Map<String, Value>) -> Result<Value, ApiError> {
+        match name {
             // Always answered, so that an agent can tell the person how to open the gate.
             "status" => self.status(),
             "attention" => self.allow("read").and_then(|()| self.attention()),
@@ -220,68 +260,54 @@ impl Session {
             "read_copies" => self
                 .allow("write")
                 .and_then(|()| self.read_copies(arguments)),
-            other => return Err((INVALID_PARAMS, format!("Unknown tool {other}."))),
-        };
-        // A tool that fails tells the agent why, as the window would tell the person; it is a
-        // result, not a protocol error, so the agent can read it and correct itself.
-        Ok(match outcome {
-            Ok(value) => json!({
-                "content": [{ "type": "text", "text": value.to_string() }],
-                "structuredContent": value,
-                "isError": false,
-            }),
-            Err(error) => json!({
-                "content": [{ "type": "text", "text": format!("{} ({})", error.message, error.code) }],
-                "isError": true,
-            }),
-        })
+            // `tools` declares it, but nothing here runs it: a test calls every tool it declares.
+            other => Err(ApiError::invalid(format!(
+                "DevHQ declares the tool {other} but cannot run it."
+            ))),
+        }
     }
 
-    /// The gate never creates an empty inventory where the person's DevHQ would not find it.
-    fn existing(&self) -> Result<(), ApiError> {
-        if self.database.is_file() {
-            Ok(())
-        } else {
-            Err(ApiError::invalid(format!(
-                "There is no DevHQ inventory at {}. Open DevHQ once to create it, or start the gate with --database <path>.",
-                self.database.display()
-            )))
-        }
+    /// What `read` makes of the inventory, read as it is on a connection that cannot change any of
+    /// its files: never created, upgraded, converted or recovered, and refused unless it is in this
+    /// build's schema (see `inventory::examine`).
+    fn read<T>(
+        &self,
+        read: impl FnMut(&mut rusqlite::Connection) -> Result<T, ApiError>,
+    ) -> Result<T, ApiError> {
+        inventory::read_as_found(&self.database, read)
     }
 
     /// Whether the person lets agents `read` or `write` through the gate, checked on every call
     /// so that a change in Settings applies at once.
     fn allow(&self, need: &str) -> Result<(), ApiError> {
-        self.existing()?;
-        permitted(&access::mode(&inventory::open(&self.database)?)?, need)
+        permitted(&self.read(|db| access::mode(db))?, need)
     }
 
     fn inventory(&self) -> Result<Inventory, ApiError> {
-        self.existing()?;
-        inventory::list(&self.database)
+        self.read(inventory::list_from)
     }
 
+    /// Always answered, whatever the file is, and without changing any of its files: what the gate
+    /// found there, and, only for an inventory it serves, the access mode and, if the person lets
+    /// agents in, what it holds. Nothing it could not read is presented as known.
     fn status(&self) -> Result<Value, ApiError> {
         let location = inventory::DataLocation::of(&self.database);
         let exists = self.database.is_file();
-        let access = if exists {
-            Some(access::mode(&inventory::open(&self.database)?)?)
-        } else {
-            None
-        };
-        // What the inventory holds is for agents the person let in, and so is which of its
-        // workstations this computer is.
-        let (counts, this_workstation) = if access.as_deref().is_some_and(|mode| mode != "off") {
-            let inventory = self.inventory()?;
-            (
-                json!({ "applications": inventory.applications.len(), "resources": inventory.resources.len() }),
-                json!(self.this_workstation(&inventory)),
-            )
-        } else {
-            (Value::Null, Value::Null)
+        let (found, served) = inventory::examine(&self.database, |db| self.served(db));
+        let mut notes = Vec::new();
+        let (access, counts, this_workstation) = match served {
+            Some(Ok(served)) => served,
+            Some(Err(error)) => {
+                notes.push(format!(
+                    "DevHQ could not read the inventory: {} ({}). What it holds and its access mode are unknown.",
+                    error.message, error.code
+                ));
+                (None, Value::Null, Value::Null)
+            }
+            None => (None, Value::Null, Value::Null),
         };
         let window_open = crate::window_lock::window_open(&self.database);
-        let mut notes = vec![
+        notes.extend([
             match window_open {
                 Some(true) => "A DevHQ window is open on this inventory. It notices what the gate commits within about 2 s: it shows it, and its supervision follows a check configured, paused, removed or run here.",
                 Some(false) => "No DevHQ window is open on this inventory, so nothing supervises its HTTP checks: they run only when asked. What the gate writes is there when DevHQ opens.",
@@ -289,7 +315,7 @@ impl Session {
             }
             .to_owned(),
             "Supervision's live state (runs in flight, next run, DevHQ's own run errors) exists only in the DevHQ window's process; the gate does not know it.".to_owned(),
-        ];
+        ]);
         if let Some(stored_at) = &location.stored_at {
             notes.push(format!(
                 "The system keeps this file at {stored_at}, not where DevHQ asked for it. A DevHQ started another way (from the Start menu or File Explorer) may see a different inventory."
@@ -304,7 +330,17 @@ impl Session {
         Ok(json!({
             "database": location,
             "exists": exists,
-            "schemaVersion": exists.then_some(inventory::SCHEMA_VERSION),
+            "schemaVersion": found.stored(),
+            "schema": {
+                "stored": found.stored(),
+                "supported": inventory::SCHEMA_VERSION,
+                "state": found.state(),
+                "structure": found.structure(),
+                // The gate never runs SQLite's integrity check: a schema it read is never
+                // presented as sound.
+                "integrity": found.stored().map(|_| "not_checked"),
+                "meaning": found.meaning(),
+            },
             "access": access,
             "windowOpen": window_open,
             "counts": counts,
@@ -312,6 +348,24 @@ impl Session {
             "client": self.client,
             "notes": notes,
         }))
+    }
+
+    /// The access mode of an inventory the gate serves and, for agents the person let in, how
+    /// many systems it holds and which of its workstations this computer is.
+    fn served(
+        &self,
+        db: &mut rusqlite::Connection,
+    ) -> Result<(Option<String>, Value, Value), ApiError> {
+        let mode = access::mode(db)?;
+        if mode == "off" {
+            return Ok((Some(mode), Value::Null, Value::Null));
+        }
+        let inventory = inventory::list_from(db)?;
+        Ok((
+            Some(mode),
+            json!({ "applications": inventory.applications.len(), "resources": inventory.resources.len() }),
+            json!(self.this_workstation(&inventory)),
+        ))
     }
 
     /// Which workstation this computer is, by the association the window keeps.
@@ -461,33 +515,35 @@ impl Session {
     }
 
     fn history(&self, arguments: &Map<String, Value>) -> Result<Value, ApiError> {
-        let inventory = self.inventory()?;
-        let subject = find_system(&inventory, arguments)?;
-        match arguments.get("records").and_then(Value::as_str) {
-            Some("observations") => {
-                let before = text(arguments, "before")?;
-                let page = records::older_observations(&self.database, &subject, before)?;
-                Ok(json!({ "observations": page.observations, "more": page.more }))
+        self.read(|db| {
+            let inventory = inventory::list_from(db)?;
+            let subject = find_system(&inventory, arguments)?;
+            match arguments.get("records").and_then(Value::as_str) {
+                Some("observations") => {
+                    let before = text(arguments, "before")?;
+                    let page = records::older_observations_in(db, &subject, before)?;
+                    Ok(json!({ "observations": page.observations, "more": page.more }))
+                }
+                Some("events") => {
+                    let before = text(arguments, "before")?;
+                    let page =
+                        records::older_events_in(db, std::slice::from_ref(&subject), before)?;
+                    Ok(json!({ "events": page.events, "more": page.more }))
+                }
+                // Readings start from the newest when no reading is named.
+                Some("readings") => {
+                    let before = match arguments.get("before") {
+                        None | Some(Value::Null) => None,
+                        Some(_) => Some(text(arguments, "before")?),
+                    };
+                    let page = readings::older_readings_in(db, &subject, before)?;
+                    Ok(json!({ "readings": page.readings, "more": page.more }))
+                }
+                _ => Err(ApiError::invalid(
+                    "records must be \"observations\", \"events\" or \"readings\".",
+                )),
             }
-            Some("events") => {
-                let before = text(arguments, "before")?;
-                let page =
-                    records::older_events(&self.database, std::slice::from_ref(&subject), before)?;
-                Ok(json!({ "events": page.events, "more": page.more }))
-            }
-            // Readings start from the newest when no reading is named.
-            Some("readings") => {
-                let before = match arguments.get("before") {
-                    None | Some(Value::Null) => None,
-                    Some(_) => Some(text(arguments, "before")?),
-                };
-                let page = readings::older_readings(&self.database, &subject, before)?;
-                Ok(json!({ "readings": page.readings, "more": page.more }))
-            }
-            _ => Err(ApiError::invalid(
-                "records must be \"observations\", \"events\" or \"readings\".",
-            )),
-        }
+        })
     }
 }
 
@@ -508,7 +564,7 @@ fn permitted(mode: &str, need: &str) -> Result<(), ApiError> {
     }
 }
 
-const INSTRUCTIONS: &str = "DevHQ is the person's local operations inventory: applications, the resources they run on, where each one is (its references: repository, local copies, documentation, logs, dashboard), and the evidence about them (observations, incidents, events, HTTP checks). Working in a folder, an agent can find its system by a local copy's path or by its repository's URL in `list_systems`. A local copy's readings say what it held when DevHQ read it, never what it holds now. Start with `attention` to answer «what needs my attention?». Never present a system without current evidence as healthy: unobserved and expired evidence are gaps, not health. Every record says who produced it (`source`: manual, http or agent) and when.";
+const INSTRUCTIONS: &str = "DevHQ is the person's local operations inventory: applications, the resources they run on, where each one is (its references: repository, local copies, documentation, logs, dashboard), and the evidence about them (observations, incidents, events, HTTP checks). Working in a folder, an agent can find its system by a local copy's path or by its repository's URL in `list_systems`. A local copy's readings say what it held when DevHQ read it, never what it holds now. Start with `attention` to answer «what needs my attention?». Never present a system without current evidence as healthy: unobserved and expired evidence are gaps, not health. Every record says who produced it (`source`: manual, http or agent) and when. Every call is checked against its tool's input schema and the rules its description states: an argument the tool does not declare, misspelled or of the wrong type, is refused (invalid_input) and nothing is done.";
 
 /// Every application, then every resource, in the inventory's order.
 fn subjects(inventory: &Inventory) -> Vec<Subject> {
@@ -786,8 +842,10 @@ fn system_type(arguments: &Map<String, Value>) -> Result<&'static str, ApiError>
     }
 }
 
-/// Among `candidates` (ID, name) of one kind, the one the arguments name by `id`, or else by
-/// `name` (exact, ignoring case and surrounding spaces): its subject and name.
+/// Among `candidates` (ID, name) of one kind, the one the arguments name by `id` or by `name`
+/// (exact, ignoring case and surrounding spaces): its subject and name. Given both, they must name
+/// the same one: an agent that sends one system's id with another's name is refused, never taken
+/// at its id.
 fn pick(
     kind: &str,
     candidates: &[(String, String)],
@@ -795,14 +853,22 @@ fn pick(
 ) -> Result<(Subject, String), ApiError> {
     let id = arguments.get("id").and_then(Value::as_str);
     let name = arguments.get("name").and_then(Value::as_str);
+    let named = |item: &str, name: &str| item.to_lowercase() == name.trim().to_lowercase();
     let found: Vec<&(String, String)> = match (id, name) {
         (Some(id), _) => candidates.iter().filter(|(item, _)| item == id).collect(),
         (None, Some(name)) => candidates
             .iter()
-            .filter(|(_, item)| item.to_lowercase() == name.trim().to_lowercase())
+            .filter(|(_, item)| named(item, name))
             .collect(),
         (None, None) => return Err(ApiError::invalid("Name the system by id or by name.")),
     };
+    if let (Some(id), Some(name), [(_, actual)]) = (id, name, found.as_slice()) {
+        if !named(actual, name) {
+            return Err(ApiError::invalid(format!(
+                "The {kind} with the id {id} is named «{actual}», not «{name}». Name it by its id, by its name, or by both when they are the same {kind}'s."
+            )));
+        }
+    }
     let (id, name) = match found.as_slice() {
         [(id, name)] => (id.clone(), name.clone()),
         [] => {
@@ -826,8 +892,8 @@ fn pick(
 fn system_arguments(extra: Value) -> Value {
     let mut properties = json!({
         "type": { "type": "string", "enum": ["application", "resource"] },
-        "id": { "type": "string", "description": "The system's id, from list_systems." },
-        "name": { "type": "string", "description": "Or its exact name, ignoring case." },
+        "id": { "type": "string", "description": "The system's id, from list_systems. Give id, name, or both." },
+        "name": { "type": "string", "description": "Or its exact name, ignoring case. Given with id, it must be that system's name, or nothing is done." },
     });
     if let (Value::Object(properties), Value::Object(extra)) = (&mut properties, extra) {
         properties.extend(extra);
@@ -862,7 +928,7 @@ fn read_tools() -> Vec<Value> {
         read_only(
             "status",
             "DevHQ status",
-"Which inventory file the gate opened, where the system really keeps it, its schema version, whether the person lets agents read or write through the gate (`access`: off, read or write), whether a DevHQ window is open on it (`windowOpen`; null when the system cannot say), how many systems it holds, which of its workstations this computer is (`thisWorkstation`, or why DevHQ does not know: only the window chooses it), and what the gate cannot know. Always answered, even with the gate off.",
+"Which inventory file the gate opened, where the system really keeps it, what the file is (`schema`: the version it declares, the one this DevHQ supports, its state: current, mismatch, outdated, newer, not_an_inventory, needs_recovery, unreadable or missing; whether it has the structure of this DevHQ's schema, compared table by table and column by column: matches, differs or not_checked for another version; its integrity, never checked by the gate: not_checked; `schemaVersion` is the declared one, null when unknown), whether the person lets agents read or write through the gate (`access`: off, read or write), whether a DevHQ window is open on it (`windowOpen`; null when the system cannot say), how many systems it holds, which of its workstations this computer is (`thisWorkstation`, or why DevHQ does not know: only the window chooses it), and what the gate cannot know. Access, counts and workstation are null unless the inventory is current, which is the only kind the gate serves. An inventory left needing recovery (a write that did not finish, or a log no connection holds) is reported, never recovered: DevHQ's window recovers it when it opens. Always answered, even with the gate off, and never writes to the inventory or changes what it holds; the one file it can create is an empty log (`-wal`), if the last connection to the inventory closes just as the gate opens it.",
             json!({}),
             &[],
         ),
@@ -893,7 +959,7 @@ fn read_tools() -> Vec<Value> {
             "Automated HTTP results (observations, or their events) older than one already shown, 200 at a time, for a system whose automated history get_system says is cut; or the readings of a system's local copies, newest first, 200 at a time (before optional: the first page starts from the newest).",
             system_arguments(json!({
                 "records": { "type": "string", "enum": ["observations", "events", "readings"] },
-                "before": { "type": "string", "description": "The id of the oldest observation, event or reading already shown." },
+                "before": { "type": ["string", "null"], "description": "The id of the oldest observation, event or reading already shown. Required for observations and events; for readings, left out or null, the first page starts from the newest." },
             })),
             &["type", "records"],
         ),
@@ -1317,10 +1383,10 @@ mod tests {
         .contains("No resource matches"));
         assert!(
             refusal(&path, "get_system", json!({ "type": "server", "id": host }))
-                .contains("type must be")
+                .contains("`type` must be one of \"application\", \"resource\"")
         );
         assert!(refusal(&path, "get_system", json!({ "type": "resource" }))
-            .contains("by id or by name"));
+            .contains("Name the system by `id` or by `name`"));
         // Two applications with one name: only the id tells them apart.
         save_application(
             &path,
@@ -1410,7 +1476,7 @@ mod tests {
             "history",
             json!({ "type": "resource", "id": host, "records": "notes", "before": "x" })
         )
-        .contains("records must be"));
+        .contains("`records` must be one of"));
         remove(&path);
     }
 
@@ -1762,7 +1828,7 @@ mod tests {
             (
                 "save_application",
                 json!({ "name": "Bad", "lifecycle": "production", "components": [{ "name": "X", "kind": "lambda" }] }),
-                "Invalid component kind",
+                "`components[0].kind` must be one of",
             ),
             (
                 "save_application",
@@ -1937,12 +2003,12 @@ mod tests {
             (
                 "save_application",
                 json!({ "id": shop, "references": "https://github.com/me/platform" }),
-                "references must be a list",
+                "`references` must be a list, not a string.",
             ),
             (
                 "save_application",
                 json!({ "id": shop, "references": [{ "target": "https://x.example" }] }),
-                "The argument kind is required",
+                "`references[0].kind` is required.",
             ),
             (
                 "save_application",
@@ -2064,7 +2130,7 @@ mod tests {
             with(json!({ "result": "fine", "summary": "?", "validForMinutes": 30 })),
         )
         .unwrap_err();
-        assert!(refused.contains("Invalid observation result"), "{refused}");
+        assert!(refused.contains("`result` must be one of"), "{refused}");
 
         // A new check takes the window's defaults; a change keeps what it leaves out.
         let set = use_tool(
@@ -2317,6 +2383,959 @@ mod tests {
                 .contains("development data (com.devhq.desktop.dev)")),
             "{status:#}"
         );
+        remove(&path);
+    }
+
+    /// Every row of every table, as text: what a refused call must leave exactly as it was.
+    fn rows(path: &Path) -> Vec<(String, Vec<String>)> {
+        let db = rusqlite::Connection::open(path).unwrap();
+        let tables: Vec<String> = db
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        tables
+            .into_iter()
+            .map(|table| {
+                let dumped = crate::inventory::tests::dump(&db, &table);
+                (table, dumped)
+            })
+            .collect()
+    }
+
+    /// Arguments each tool accepts, on the inventory `seed` makes: one call per tool it declares.
+    fn valid_calls() -> Vec<(&'static str, Value)> {
+        vec![
+            ("status", json!({})),
+            ("attention", json!({})),
+            ("list_systems", json!({})),
+            (
+                "get_system",
+                json!({ "type": "resource", "name": "Web host" }),
+            ),
+            (
+                "history",
+                json!({ "type": "resource", "name": "Web host", "records": "readings" }),
+            ),
+            (
+                "save_application",
+                json!({ "name": "New", "lifecycle": "development" }),
+            ),
+            ("save_resource", json!({ "name": "New", "kind": "server" })),
+            ("delete_application", json!({ "name": "Shop" })),
+            ("delete_resource", json!({ "name": "Spare box" })),
+            (
+                "record_observation",
+                json!({ "type": "application", "name": "Shop", "result": "healthy", "summary": "Fine", "validForMinutes": 60 }),
+            ),
+            (
+                "open_incident",
+                json!({ "type": "application", "name": "Shop", "title": "Down", "severity": "critical" }),
+            ),
+            (
+                "update_incident",
+                json!({ "incidentId": "none", "status": "resolved" }),
+            ),
+            (
+                "record_event",
+                json!({ "type": "application", "name": "Shop", "kind": "note", "outcome": "info", "title": "Noted" }),
+            ),
+            (
+                "save_check",
+                json!({ "type": "application", "name": "Shop", "url": "https://shop.example/" }),
+            ),
+            (
+                "set_check_paused",
+                json!({ "type": "resource", "name": "Web host", "paused": true }),
+            ),
+            (
+                "remove_check",
+                json!({ "type": "resource", "name": "Web host" }),
+            ),
+            (
+                "run_check",
+                json!({ "type": "resource", "name": "Web host" }),
+            ),
+            ("backup", json!({})),
+            ("read_copies", json!({})),
+        ]
+    }
+
+    #[test]
+    fn every_tool_refuses_an_argument_it_does_not_declare_before_opening_anything() {
+        let calls = valid_calls();
+        let declared: Vec<String> = tools()
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap().to_owned())
+            .collect();
+        let covered: Vec<String> = calls.iter().map(|(tool, _)| (*tool).to_owned()).collect();
+        assert_eq!(covered, declared, "one call per tool the gate declares");
+
+        // No inventory, not even its folder: a refused call never gets as far as looking for one.
+        let base = path();
+        let nowhere = base
+            .parent()
+            .unwrap()
+            .join("missing")
+            .join("inventory.sqlite3");
+        let mut agent = session(&nowhere, "claude-code");
+        for (tool, arguments) in &calls {
+            let mut stray = arguments.clone();
+            stray["unexpected"] = json!(true);
+            let refused = use_tool(&mut agent, tool, stray).unwrap_err();
+            assert!(
+                refused.starts_with(&format!(
+                    "{tool} was not run: `unexpected` is not an argument of this tool;"
+                )) && refused.ends_with("(invalid_input)"),
+                "{tool}: {refused}"
+            );
+            // With what it declares, it is run: it looks for the inventory, or answers status.
+            let outcome = use_tool(&mut agent, tool, arguments.clone());
+            match outcome {
+                Ok(status) => {
+                    assert_eq!((*tool, status["exists"].clone()), ("status", json!(false)))
+                }
+                Err(refused) => assert!(
+                    refused.contains("There is no DevHQ inventory"),
+                    "{tool}: {refused}"
+                ),
+            }
+        }
+        assert!(!nowhere.parent().unwrap().exists());
+
+        // With the gate open for writing, a refused call changes nothing and logs nothing.
+        let path = path();
+        seed(&path);
+        crate::access::set_agent_access(&path, "write").unwrap();
+        let before = rows(&path);
+        let mut agent = session(&path, "claude-code");
+        for (tool, arguments) in &calls {
+            let mut stray = arguments.clone();
+            stray["Name"] = json!("Other");
+            let refused = use_tool(&mut agent, tool, stray).unwrap_err();
+            assert!(
+                refused.contains("`Name` is not an argument"),
+                "{tool}: {refused}"
+            );
+        }
+        assert_eq!(rows(&path), before);
+        assert!(!path.parent().unwrap().join("backups").exists());
+        remove(&path);
+        remove(&base);
+    }
+
+    /// The calls the diagnosis of the gate reproduced, each of which used to be taken in silence.
+    #[test]
+    fn refuses_what_it_used_to_ignore_in_silence() {
+        let path = path();
+        let (shop, host) = seed(&path);
+        crate::access::set_agent_access(&path, "write").unwrap();
+        let mut agent = session(&path, "claude-code");
+        let shop_now = |path: &Path| -> Value {
+            let listed = inventory::list(path).unwrap();
+            json!(listed.applications.iter().find(|item| item.id == shop))
+        };
+        let kept = shop_now(&path);
+        // A resource without history, which nothing runs on: a delete that reached it would go.
+        let spare = inventory::list(&path)
+            .unwrap()
+            .resources
+            .into_iter()
+            .find(|item| item.name == "Spare box")
+            .unwrap()
+            .id;
+        let before = rows(&path);
+        for (tool, arguments, why) in [
+            // A misspelled field used to answer «nothing changed».
+            (
+                "save_application",
+                json!({ "id": shop, "descripton": "Changed" }),
+                "`descripton` is not an argument of this tool; it takes ",
+            ),
+            (
+                "save_application",
+                json!({ "id": shop, "Description": "Changed" }),
+                "Did you mean `description`?",
+            ),
+            (
+                "save_application",
+                json!({ "id": shop, "description": null }),
+                "`description` must be a string, not null.",
+            ),
+            // A component used to be saved without the resource it runs on.
+            (
+                "save_application",
+                json!({ "id": shop, "components": [{ "name": "API", "kind": "backend", "runOn": "Web host" }] }),
+                "`components[0].runOn` is not a field of `components[0]`; it takes ",
+            ),
+            (
+                "save_application",
+                json!({ "id": shop, "components": [{ "name": "API", "kind": "backend", "runOn": "Web host" }] }),
+                "Did you mean `runsOn`?",
+            ),
+            // A Host used to be deleted by its id, whatever the type and name said.
+            (
+                "delete_resource",
+                json!({ "type": "application", "name": "Nope", "id": spare }),
+                "`type` is not an argument of this tool; it takes ",
+            ),
+            (
+                "delete_resource",
+                json!({ "name": "Web host", "id": spare }),
+                "is named «Spare box», not «Web host»",
+            ),
+            (
+                "delete_resource",
+                json!({ "name": "Nope", "id": spare }),
+                "is named «Spare box», not «Nope»",
+            ),
+            (
+                "delete_application",
+                json!({ "name": "Web host", "id": shop }),
+                "is named «Shop», not «Web host»",
+            ),
+            // The id used to win over a name of another system, and a numeric id to be ignored.
+            (
+                "get_system",
+                json!({ "type": "application", "id": shop, "name": "Web host" }),
+                "is named «Shop», not «Web host»",
+            ),
+            (
+                "get_system",
+                json!({ "type": "resource", "id": 1, "name": "Web host" }),
+                "`id` must be a string, not 1.",
+            ),
+            (
+                "save_check",
+                json!({ "type": "resource", "id": host, "name": "Spare box", "url": "https://x.example/" }),
+                "is named «Web host», not «Spare box»",
+            ),
+            (
+                "status",
+                json!({ "verbose": true }),
+                "`verbose` is not an argument",
+            ),
+            (
+                "list_systems",
+                json!({ "filter": "Shop" }),
+                "`filter` is not an argument",
+            ),
+            // An id without its type used to read every copy of this workstation instead.
+            (
+                "read_copies",
+                json!({ "id": shop }),
+                "`id` and `name` name a system only with its `type`",
+            ),
+            (
+                "read_copies",
+                json!({ "referenceId": "r", "type": "application", "name": "Shop" }),
+                "not both",
+            ),
+            (
+                "read_copies",
+                json!({ "type": "application" }),
+                "Name the system by `id` or by `name`.",
+            ),
+            (
+                "record_observation",
+                json!({ "type": "application", "id": shop, "result": "healthy", "summary": "ok", "validForMinutes": 30.5 }),
+                "`validForMinutes` must be a whole number, not 30.5.",
+            ),
+            (
+                "record_observation",
+                json!({ "type": "application", "id": shop, "result": "healthy", "summary": "ok", "validForMinutes": 0 }),
+                "`validForMinutes` must be at least 1, not 0.",
+            ),
+            (
+                "history",
+                json!({ "type": "application", "id": shop, "records": "observations" }),
+                "`before` is required for observations and events",
+            ),
+            (
+                "history",
+                json!({ "type": "application", "id": shop, "records": "events", "before": null }),
+                "`before` is required for observations and events",
+            ),
+            (
+                "save_check",
+                json!({ "type": "application", "id": shop, "url": "https://x.example/", "expectedStatus": 700 }),
+                "`expectedStatus` must be at most 599, not 700.",
+            ),
+            (
+                "save_resource",
+                json!({ "description": "No name, no kind" }),
+                "name is required to add a resource. kind is required to add a resource",
+            ),
+        ] {
+            let refused = use_tool(&mut agent, tool, arguments.clone()).unwrap_err();
+            assert!(refused.contains(why), "{tool} {arguments}: {refused}");
+            assert!(refused.ends_with("(invalid_input)"), "{refused}");
+        }
+        assert_eq!(rows(&path), before);
+        assert_eq!(shop_now(&path), kept);
+
+        // Both selectors of one system, in any case: that system.
+        let detail = use_tool(
+            &mut agent,
+            "get_system",
+            json!({ "type": "application", "id": shop, "name": " SHOP " }),
+        )
+        .unwrap();
+        assert_eq!(detail["system"]["system"]["id"], shop.as_str());
+        let deleted = use_tool(
+            &mut agent,
+            "delete_resource",
+            json!({ "id": spare, "name": "spare BOX" }),
+        )
+        .unwrap();
+        assert_eq!(deleted["deleted"]["name"], "Spare box");
+        // A whole number written with a fractional part of zero is a whole number.
+        let observed = use_tool(
+            &mut agent,
+            "record_observation",
+            json!({ "type": "application", "id": shop, "result": "healthy", "summary": "ok", "validForMinutes": 30.0 }),
+        )
+        .unwrap();
+        let observation = &observed["observation"];
+        let lasts = |field: &str| {
+            time::OffsetDateTime::parse(
+                observation[field].as_str().unwrap(),
+                &time::format_description::well_known::Rfc3339,
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            lasts("validUntil") - lasts("observedAt"),
+            time::Duration::minutes(30)
+        );
+        let checked = use_tool(
+            &mut agent,
+            "save_check",
+            json!({ "type": "application", "id": shop, "url": "https://x.example/", "timeoutSeconds": 2.0 }),
+        )
+        .unwrap();
+        assert_eq!(checked["httpCheck"]["timeoutSeconds"], 2);
+        // Only what was accepted is logged.
+        let actions: Vec<String> = changes(&path)
+            .into_iter()
+            .map(|(_, action, _)| action)
+            .collect();
+        assert_eq!(actions, ["deleted", "check_saved"]);
+        assert!(inventory::list(&path)
+            .unwrap()
+            .resources
+            .iter()
+            .any(|item| item.id == host));
+        remove(&path);
+    }
+
+    /// Null is taken where the schema says so, and means what the tool's description says.
+    #[test]
+    fn takes_null_only_where_the_schema_does() {
+        let path = path();
+        let (shop, _) = seed(&path);
+        crate::access::set_agent_access(&path, "write").unwrap();
+        let mut agent = session(&path, "claude-code");
+        let saved = use_tool(
+            &mut agent,
+            "save_application",
+            json!({ "id": shop, "version": null,
+                    "components": [{ "name": "API", "kind": "backend", "runsOn": null }],
+                    "references": [{ "kind": "repository", "target": "https://github.com/me/shop", "label": null, "machine": null }] }),
+        )
+        .unwrap();
+        assert_eq!(saved["application"]["version"], Value::Null);
+        assert_eq!(
+            saved["application"]["components"][0]["resourceId"],
+            Value::Null
+        );
+        let checked = use_tool(
+            &mut agent,
+            "save_check",
+            json!({ "type": "application", "id": shop, "url": "https://shop.example/", "supervisionIntervalMinutes": null }),
+        )
+        .unwrap();
+        assert_eq!(checked["httpCheck"]["monitor"], "off");
+        let readings = use_tool(
+            &mut agent,
+            "history",
+            json!({ "type": "application", "id": shop, "records": "readings", "before": null }),
+        )
+        .unwrap();
+        assert_eq!(readings["readings"], json!([]));
+        for (tool, arguments, why) in [
+            (
+                "save_application",
+                json!({ "id": null, "name": "Other", "lifecycle": "development" }),
+                "`id` must be a string, not null.",
+            ),
+            (
+                "open_incident",
+                json!({ "type": "application", "id": shop, "title": "Down", "severity": "warning", "description": null }),
+                "`description` must be a string, not null.",
+            ),
+            (
+                "get_system",
+                json!({ "type": "application", "id": shop, "name": null }),
+                "`name` must be a string, not null.",
+            ),
+        ] {
+            let refused = use_tool(&mut agent, tool, arguments).unwrap_err();
+            assert!(refused.contains(why), "{tool}: {refused}");
+        }
+        remove(&path);
+    }
+
+    /// The tool's arguments are checked, never the rest of the request: `_meta` and whatever a
+    /// later revision of the protocol adds to `params` stay the protocol's.
+    #[test]
+    fn checks_the_arguments_and_leaves_the_protocol_extensible() {
+        let path = path();
+        seed(&path);
+        let replies = exchange(
+            &path,
+            &[
+                json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+                    "name": "get_system", "arguments": { "type": "resource", "name": "Web host" },
+                    "_meta": { "progressToken": "p-1", "io.example/trace": { "span": 7 } },
+                } }),
+                json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
+                    "name": "status", "_meta": {}, "task": { "ttl": 60000 },
+                } }),
+                json!({ "jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": { "name": "attention", "arguments": null } }),
+                json!({ "jsonrpc": "2.0", "id": 4, "method": "tools/list", "params": { "_meta": { "progressToken": 2 } } }),
+                // `_meta` inside the arguments is an argument like any other: the tool takes none.
+                json!({ "jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {
+                    "name": "attention", "arguments": { "_meta": {} },
+                } }),
+            ],
+        );
+        assert_eq!(replies[0]["result"]["isError"], false, "{:#}", replies[0]);
+        assert_eq!(
+            replies[0]["result"]["structuredContent"]["system"]["system"]["name"],
+            "Web host"
+        );
+        assert_eq!(replies[1]["result"]["isError"], false, "{:#}", replies[1]);
+        assert_eq!(replies[2]["result"]["isError"], false, "{:#}", replies[2]);
+        assert_eq!(replies[3]["result"]["tools"].as_array().unwrap().len(), 19);
+        assert_eq!(replies[4]["result"]["isError"], true);
+        remove(&path);
+    }
+
+    /// Every entry of `folder`, with a file's bytes and when each was last written: what a read
+    /// through the gate must leave exactly as it found it.
+    fn files(folder: &Path) -> Vec<(String, Option<Vec<u8>>, std::time::SystemTime)> {
+        let mut found: Vec<_> = std::fs::read_dir(folder)
+            .unwrap()
+            .map(|entry| {
+                let entry = entry.unwrap();
+                let metadata = entry.metadata().unwrap();
+                (
+                    entry.file_name().to_string_lossy().into_owned(),
+                    metadata
+                        .is_file()
+                        .then(|| std::fs::read(entry.path()).unwrap()),
+                    metadata.modified().unwrap(),
+                )
+            })
+            .collect();
+        found.sort();
+        found
+    }
+
+    /// What lies at the gate's path, as each case makes it.
+    type Make = fn(&Path);
+
+    /// A case: what it makes at the gate's path, what the gate must find there (whether it
+    /// exists, the schema version it stores, its state, the access and counts status gives) and
+    /// the code every read and write is refused with; None when reads are answered.
+    type Case = (
+        &'static str,
+        Make,
+        bool,
+        Value,
+        &'static str,
+        Value,
+        Value,
+        Option<&'static str>,
+    );
+
+    /// A v12 inventory as `seed` leaves it (write-ahead logged, Read only), replaced by a backup
+    /// of itself: a rollback-journal file, as every DevHQ backup is.
+    fn backup_copy(path: &Path) {
+        seed(path);
+        let copy = crate::backup::back_up(path).unwrap();
+        std::fs::copy(&copy.path, path).unwrap();
+    }
+
+    fn sqlite(path: &Path, sql: &str) {
+        rusqlite::Connection::open(path)
+            .unwrap()
+            .execute_batch(sql)
+            .unwrap();
+    }
+
+    /// A read never creates, upgrades, converts or touches an inventory, whatever the file is;
+    /// status says what it is, and nothing it could not read is presented as known.
+    #[test]
+    fn reads_leave_every_file_as_they_found_it_and_status_says_what_it_is() {
+        use crate::inventory::tests::{database_at, kill, writer};
+        let counts = json!({ "applications": 1, "resources": 2 });
+        let cases: [Case; 19] = [
+            (
+                "v6, rollback journal",
+                |path| drop(database_at(path, 6)),
+                true,
+                json!(6),
+                "outdated",
+                Value::Null,
+                Value::Null,
+                Some("schema_outdated"),
+            ),
+            (
+                "v6, write-ahead log",
+                |path| {
+                    database_at(path, 6)
+                        .pragma_update_and_check(None, "journal_mode", "WAL", |row| {
+                            row.get::<_, String>(0)
+                        })
+                        .unwrap();
+                },
+                true,
+                json!(6),
+                "outdated",
+                Value::Null,
+                Value::Null,
+                Some("schema_outdated"),
+            ),
+            (
+                "v11, Read only",
+                |path| {
+                    database_at(path, 11)
+                        .execute(
+                            "INSERT INTO agent_access (id, mode, changed_at) VALUES (1, 'read', 0)",
+                            [],
+                        )
+                        .unwrap();
+                },
+                true,
+                json!(11),
+                "outdated",
+                Value::Null,
+                Value::Null,
+                Some("schema_outdated"),
+            ),
+            (
+                "v12 backup, rollback journal, Read only",
+                backup_copy,
+                true,
+                json!(12),
+                "current",
+                json!("read"),
+                counts.clone(),
+                None,
+            ),
+            (
+                "v12, write-ahead log, Read only",
+                |path| drop(seed(path)),
+                true,
+                json!(12),
+                "current",
+                json!("read"),
+                counts.clone(),
+                None,
+            ),
+            (
+                "v12, write-ahead log, Off",
+                |path| {
+                    seed(path);
+                    crate::access::set_agent_access(path, "off").unwrap();
+                },
+                true,
+                json!(12),
+                "current",
+                json!("off"),
+                Value::Null,
+                Some("access_denied"),
+            ),
+            (
+                "v13",
+                |path| {
+                    database_at(path, 12)
+                        .pragma_update(None, "user_version", 13)
+                        .unwrap();
+                },
+                true,
+                json!(13),
+                "newer",
+                Value::Null,
+                Value::Null,
+                Some("schema_newer"),
+            ),
+            (
+                "empty file",
+                |path| std::fs::write(path, b"").unwrap(),
+                true,
+                Value::Null,
+                "not_an_inventory",
+                Value::Null,
+                Value::Null,
+                Some("not_an_inventory"),
+            ),
+            (
+                "another program's SQLite database",
+                |path| {
+                    sqlite(
+                        path,
+                        "CREATE TABLE notes (body TEXT); INSERT INTO notes VALUES ('mine');",
+                    )
+                },
+                true,
+                Value::Null,
+                "not_an_inventory",
+                Value::Null,
+                Value::Null,
+                Some("not_an_inventory"),
+            ),
+            (
+                "a SQLite database stamped 12 without DevHQ's tables",
+                |path| {
+                    sqlite(
+                        path,
+                        "CREATE TABLE notes (body TEXT); PRAGMA user_version = 12;",
+                    )
+                },
+                true,
+                Value::Null,
+                "not_an_inventory",
+                Value::Null,
+                Value::Null,
+                Some("not_an_inventory"),
+            ),
+            (
+                "v12 stamped, with only the tables that tell an inventory apart",
+                |path| {
+                    sqlite(
+                        path,
+                        "CREATE TABLE applications (id TEXT PRIMARY KEY);
+                         CREATE TABLE resources (id TEXT PRIMARY KEY);
+                         PRAGMA user_version = 12;",
+                    )
+                },
+                true,
+                json!(12),
+                "mismatch",
+                Value::Null,
+                Value::Null,
+                Some("schema_mismatch"),
+            ),
+            (
+                "v12 without agent_access",
+                |path| {
+                    seed(path);
+                    sqlite(path, "DROP TABLE agent_access");
+                },
+                true,
+                json!(12),
+                "mismatch",
+                Value::Null,
+                Value::Null,
+                Some("schema_mismatch"),
+            ),
+            (
+                "v12, Off, its write-ahead log left by a writer that was killed",
+                |path| {
+                    seed(path);
+                    crate::access::set_agent_access(path, "off").unwrap();
+                    kill(writer(path, "log"), path);
+                },
+                true,
+                Value::Null,
+                "needs_recovery",
+                Value::Null,
+                Value::Null,
+                Some("needs_recovery"),
+            ),
+            (
+                "v12, Read only, its write-ahead log left without its index",
+                |path| {
+                    seed(path);
+                    kill(writer(path, "log"), path);
+                    let mut index = path.as_os_str().to_owned();
+                    index.push("-shm");
+                    std::fs::remove_file(index).unwrap();
+                },
+                true,
+                Value::Null,
+                "needs_recovery",
+                Value::Null,
+                Value::Null,
+                Some("needs_recovery"),
+            ),
+            (
+                "v6, rollback journal left by a write that was killed",
+                |path| {
+                    drop(database_at(path, 6));
+                    kill(writer(path, "journal"), path);
+                },
+                true,
+                Value::Null,
+                "needs_recovery",
+                Value::Null,
+                Value::Null,
+                Some("needs_recovery"),
+            ),
+            (
+                "v12 backup, Read only, rollback journal left by a write that was killed",
+                |path| {
+                    backup_copy(path);
+                    kill(writer(path, "journal"), path);
+                },
+                true,
+                Value::Null,
+                "needs_recovery",
+                Value::Null,
+                Value::Null,
+                Some("needs_recovery"),
+            ),
+            (
+                "a text file",
+                |path| std::fs::write(path, "hello\n").unwrap(),
+                true,
+                Value::Null,
+                "unreadable",
+                Value::Null,
+                Value::Null,
+                Some("database_error"),
+            ),
+            (
+                "a folder",
+                |path| std::fs::create_dir(path).unwrap(),
+                false,
+                Value::Null,
+                "unreadable",
+                Value::Null,
+                Value::Null,
+                Some("database_error"),
+            ),
+            (
+                "nothing",
+                |_| {},
+                false,
+                Value::Null,
+                "missing",
+                Value::Null,
+                Value::Null,
+                Some("invalid_input"),
+            ),
+        ];
+        let reads = [
+            ("attention", json!({})),
+            ("list_systems", json!({})),
+            (
+                "get_system",
+                json!({ "type": "resource", "name": "Web host" }),
+            ),
+            (
+                "history",
+                json!({ "type": "resource", "name": "Web host", "records": "readings" }),
+            ),
+        ];
+        // None of these may write: the gate is at most open for reading in every case.
+        let writes = [
+            ("save_resource", json!({ "name": "New", "kind": "server" })),
+            ("delete_resource", json!({ "name": "Spare box" })),
+            (
+                "record_observation",
+                json!({ "type": "resource", "name": "Web host", "result": "healthy", "summary": "Fine", "validForMinutes": 60 }),
+            ),
+            ("backup", json!({})),
+        ];
+        for (case, make, exists, stored, state, access, counted, refused) in cases {
+            let path = path();
+            let folder = path.parent().unwrap().to_owned();
+            make(&path);
+            let before = files(&folder);
+            let mut agent = session(&path, "claude-code");
+
+            let status = use_tool(&mut agent, "status", json!({})).unwrap();
+            assert_eq!(status["exists"], exists, "{case}: {status:#}");
+            assert_eq!(status["schemaVersion"], stored, "{case}: {status:#}");
+            assert_eq!(
+                (
+                    status["schema"]["stored"].clone(),
+                    status["schema"]["supported"].clone(),
+                    status["schema"]["state"].as_str()
+                ),
+                (
+                    stored.clone(),
+                    json!(inventory::SCHEMA_VERSION),
+                    Some(state)
+                ),
+                "{case}: {status:#}"
+            );
+            assert!(status["schema"]["meaning"].is_string(), "{case}");
+            // Whether it has this schema's structure only once it was compared, and its
+            // integrity never as checked.
+            let structure = match state {
+                "current" => json!("matches"),
+                "mismatch" => json!("differs"),
+                "outdated" | "newer" => json!("not_checked"),
+                _ => Value::Null,
+            };
+            assert_eq!(
+                (
+                    status["schema"]["structure"].clone(),
+                    status["schema"]["integrity"].clone()
+                ),
+                (
+                    structure,
+                    if stored.is_null() {
+                        Value::Null
+                    } else {
+                        json!("not_checked")
+                    }
+                ),
+                "{case}: {status:#}"
+            );
+            assert_eq!(status["access"], access, "{case}: {status:#}");
+            assert_eq!(status["counts"], counted, "{case}: {status:#}");
+            assert_eq!(
+                status["thisWorkstation"].is_null(),
+                counted.is_null(),
+                "{case}: {status:#}"
+            );
+
+            for (tool, arguments) in &reads {
+                match (refused, use_tool(&mut agent, tool, arguments.clone())) {
+                    (None, Ok(_)) => {}
+                    (Some(code), Err(text)) => {
+                        assert!(
+                            text.ends_with(&format!("({code})")),
+                            "{case}, {tool}: {text}"
+                        );
+                        if !matches!(code, "access_denied" | "invalid_input") {
+                            assert!(
+                                text.contains("Nothing was read or changed."),
+                                "{case}, {tool}: {text}"
+                            );
+                        }
+                    }
+                    (expected, outcome) => {
+                        panic!("{case}, {tool}: expected {expected:?}, got {outcome:?}")
+                    }
+                }
+            }
+            for (tool, arguments) in &writes {
+                let text = use_tool(&mut agent, tool, arguments.clone()).unwrap_err();
+                let code = refused.unwrap_or("access_denied");
+                assert!(
+                    text.ends_with(&format!("({code})")),
+                    "{case}, {tool}: {text}"
+                );
+            }
+            assert_eq!(files(&folder), before, "{case}: the folder changed");
+            std::fs::remove_dir_all(folder).unwrap();
+        }
+
+        // Without even its folder, nothing is created either.
+        let base = path();
+        let nowhere = base
+            .parent()
+            .unwrap()
+            .join("nowhere")
+            .join("inventory.sqlite3");
+        let status = answer(&nowhere, "status", json!({}));
+        assert_eq!(status["schema"]["state"], "missing");
+        assert!(!nowhere.parent().unwrap().exists());
+        remove(&base);
+    }
+
+    /// An inventory that a connection holds open, as a window does, is read beside it without
+    /// touching any of its files, what that connection left in its log included. Once that
+    /// connection ends without folding the log, the gate says the inventory needs recovering and
+    /// goes on changing nothing, also for a call that access alone would refuse.
+    #[test]
+    fn reads_beside_an_open_connection_and_never_recovers_what_it_left() {
+        use crate::inventory::tests::{kill, writer};
+        let path = path();
+        let folder = path.parent().unwrap().to_owned();
+        seed(&path);
+        let live_box = |systems: &Value| {
+            systems["resources"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|resource| resource["system"]["name"] == "Live box")
+        };
+        let mut agent = session(&path, "claude-code");
+        let write = json!({ "name": "New", "kind": "server" });
+
+        let holder = writer(&path, "log");
+        let before = files(&folder);
+        let names: Vec<_> = before.iter().map(|(name, _, _)| name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "inventory.sqlite3",
+                "inventory.sqlite3-shm",
+                "inventory.sqlite3-wal"
+            ]
+        );
+        let status = use_tool(&mut agent, "status", json!({})).unwrap();
+        assert_eq!(
+            (
+                status["schema"]["state"].as_str(),
+                status["access"].as_str()
+            ),
+            (Some("current"), Some("read")),
+            "{status:#}"
+        );
+        // «Live box» is only in the holder's log.
+        let systems = use_tool(&mut agent, "list_systems", json!({})).unwrap();
+        assert!(live_box(&systems), "{systems:#}");
+        use_tool(&mut agent, "attention", json!({})).unwrap();
+        let refused = use_tool(&mut agent, "save_resource", write.clone()).unwrap_err();
+        assert!(refused.ends_with("(access_denied)"), "{refused}");
+        assert_eq!(
+            files(&folder),
+            before,
+            "reading beside the holder changed a file"
+        );
+
+        kill(holder, &path);
+        let before = files(&folder);
+        let status = use_tool(&mut agent, "status", json!({})).unwrap();
+        assert_eq!(status["schema"]["state"], "needs_recovery", "{status:#}");
+        assert_eq!(
+            (
+                &status["schemaVersion"],
+                &status["access"],
+                &status["counts"]
+            ),
+            (&Value::Null, &Value::Null, &Value::Null),
+            "{status:#}"
+        );
+        for (tool, arguments) in [
+            ("attention", json!({})),
+            ("list_systems", json!({})),
+            ("save_resource", write),
+        ] {
+            let refused = use_tool(&mut agent, tool, arguments).unwrap_err();
+            assert!(refused.ends_with("(needs_recovery)"), "{tool}: {refused}");
+        }
+        assert_eq!(
+            files(&folder),
+            before,
+            "the gate recovered what the holder left"
+        );
+
+        // DevHQ's window recovers it when it opens, and nothing committed was lost.
+        drop(inventory::open(&path).unwrap());
+        let systems = use_tool(&mut agent, "list_systems", json!({})).unwrap();
+        assert!(live_box(&systems), "{systems:#}");
         remove(&path);
     }
 }

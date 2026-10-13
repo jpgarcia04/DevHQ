@@ -2,7 +2,9 @@ use crate::inventory::{
     allowed, bounded_text, open, required_text, ApiError, MAX_DESCRIPTION, MAX_SUMMARY, MAX_TITLE,
 };
 use rusqlite::types::Type;
-use rusqlite::{params, OptionalExtension, Params, Row, Rows, Transaction, TransactionBehavior};
+use rusqlite::{
+    params, Connection, OptionalExtension, Params, Row, Rows, Transaction, TransactionBehavior,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BinaryHeap;
 use std::path::Path;
@@ -758,7 +760,16 @@ pub fn older_observations(
     subject: &Subject,
     before: &str,
 ) -> Result<ObservationPage, ApiError> {
-    let mut db = open(path)?;
+    older_observations_in(&mut open(path)?, subject, before)
+}
+
+/// `older_observations` on a connection the caller opened: the agent gate's, which opens the
+/// inventory as it finds it.
+pub(crate) fn older_observations_in(
+    db: &mut Connection,
+    subject: &Subject,
+    before: &str,
+) -> Result<ObservationPage, ApiError> {
     let tx = db.transaction().map_err(ApiError::database)?;
     ensure_subject(&tx, subject)?;
     let (application_id, resource_id) = subject.columns();
@@ -883,15 +894,30 @@ pub fn older_events(
     subjects: &[Subject],
     before: &str,
 ) -> Result<EventPage, ApiError> {
+    // Refused before the file is opened.
+    if subjects.is_empty() {
+        return Err(no_subjects());
+    }
+    older_events_in(&mut open(path)?, subjects, before)
+}
+
+fn no_subjects() -> ApiError {
+    ApiError::invalid("Choose at least one application or resource.")
+}
+
+/// `older_events` on a connection the caller opened: the agent gate's, which opens the inventory
+/// as it finds it.
+pub(crate) fn older_events_in(
+    db: &mut Connection,
+    subjects: &[Subject],
+    before: &str,
+) -> Result<EventPage, ApiError> {
     let mut subjects = subjects.to_vec();
     subjects.sort_by(|a, b| a.per_type().cmp(&b.per_type()));
     subjects.dedup();
     if subjects.is_empty() {
-        return Err(ApiError::invalid(
-            "Choose at least one application or resource.",
-        ));
+        return Err(no_subjects());
     }
-    let mut db = open(path)?;
     let tx = db.transaction().map_err(ApiError::database)?;
     for subject in &subjects {
         ensure_subject(&tx, subject)?;

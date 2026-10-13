@@ -269,7 +269,16 @@ pub fn older_readings(
     subject: &Subject,
     before: Option<&str>,
 ) -> Result<ReadingPage, ApiError> {
-    let mut db = open(path)?;
+    older_readings_in(&mut open(path)?, subject, before)
+}
+
+/// `older_readings` on a connection the caller opened: the agent gate's, which opens the inventory
+/// as it finds it.
+pub(crate) fn older_readings_in(
+    db: &mut Connection,
+    subject: &Subject,
+    before: Option<&str>,
+) -> Result<ReadingPage, ApiError> {
     let tx = db.transaction().map_err(ApiError::database)?;
     records::ensure_subject(&tx, subject)?;
     let (application_id, resource_id) = subject.columns();
