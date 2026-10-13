@@ -735,15 +735,19 @@ fn log_held(path: &Path) -> std::io::Result<bool> {
     let index = File::open(beside(path, "-shm"))?;
     // SAFETY: flock is a plain C struct, for which all zeroes is a valid value.
     let mut lock: libc::flock = unsafe { std::mem::zeroed() };
-    lock.l_type = libc::F_WRLCK as _;
-    lock.l_whence = libc::SEEK_SET as _;
+    // libc declares the lock types and whences as c_int, and flock's fields as c_short (Linux,
+    // macOS, the BSDs), which holds every one of them. Naming the type keeps the comparison below
+    // inferable, and makes a platform whose fields differ fail to build instead of casting silently.
+    lock.l_type = libc::F_WRLCK as libc::c_short;
+    lock.l_whence = libc::SEEK_SET as libc::c_short;
     lock.l_start = 128;
     lock.l_len = 1;
     // SAFETY: the descriptor is open for the call, and F_GETLK only reads and writes `lock`.
     if unsafe { libc::fcntl(index.as_raw_fd(), libc::F_GETLK, &raw mut lock) } == -1 {
         return Err(std::io::Error::last_os_error());
     }
-    Ok(lock.l_type != libc::F_UNLCK as _)
+    // F_GETLK leaves F_UNLCK in l_type when no other process holds a lock that would conflict.
+    Ok(lock.l_type != libc::F_UNLCK as libc::c_short)
 }
 
 /// A read-only connection to the file at `path`, opened the `way` its files allow.
