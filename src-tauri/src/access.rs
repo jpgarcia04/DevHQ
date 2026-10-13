@@ -3,9 +3,10 @@
 //! lives in the inventory, which both open. It is a statement of intent, not a security barrier:
 //! the inventory is the person's own file on their own disk.
 
-use crate::inventory::{allowed, open, plain, ApiError};
+use crate::inventory::{self, allowed, plain, ApiError};
+use crate::records::Actor;
 use crate::records::{format_time, now_ms};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::Serialize;
 use std::path::Path;
 
@@ -20,6 +21,23 @@ pub struct AgentAccess {
     /// This executable, for the command that registers the gate with an agent. None if the
     /// system cannot say.
     pub executable: Option<String>,
+}
+
+/// Whether the access mode in force allows what an agent needs: `read` or `write`.
+pub(crate) fn permitted(mode: &str, need: &str) -> Result<(), ApiError> {
+    let enough = match need {
+        "read" => mode != "off",
+        _ => mode == "write",
+    };
+    match (enough, mode) {
+        (true, _) => Ok(()),
+        (false, "off") => Err(ApiError::denied(
+            "The person has not opened the agent gate. They can choose Read only or Read and write in DevHQ, under Settings → Agent gate.",
+        )),
+        (false, _) => Err(ApiError::denied(
+            "The person opened the agent gate for reading only. To let agents change the inventory, they can choose Read and write in DevHQ, under Settings → Agent gate.",
+        )),
+    }
 }
 
 /// The mode in force, read with the caller's connection.
@@ -49,30 +67,37 @@ fn answer(db: &Connection) -> Result<AgentAccess, ApiError> {
 }
 
 pub fn agent_access(path: &Path) -> Result<AgentAccess, ApiError> {
-    answer(&open(path)?)
+    let mut db = inventory::open_current(path)?;
+    let tx = inventory::begin(&mut db, TransactionBehavior::Deferred)?;
+    answer(&tx)
 }
 
+/// Only the person changes it, at the window: never an agent.
 pub fn set_agent_access(path: &Path, mode: &str) -> Result<AgentAccess, ApiError> {
     allowed(mode, &MODES, "agent gate access")?;
-    let db = open(path)?;
-    db.execute(
-        "INSERT INTO agent_access (id, mode, changed_at) VALUES (1, ?1, ?2)
-         ON CONFLICT (id) DO UPDATE SET mode = excluded.mode, changed_at = excluded.changed_at",
-        params![mode, now_ms()],
-    )
-    .map_err(ApiError::database)?;
-    answer(&db)
+    inventory::write(path, &Actor::Person, |tx| {
+        tx.execute(
+            "INSERT INTO agent_access (id, mode, changed_at) VALUES (1, ?1, ?2)
+             ON CONFLICT (id) DO UPDATE SET mode = excluded.mode, changed_at = excluded.changed_at",
+            params![mode, now_ms()],
+        )
+        .map_err(ApiError::database)?;
+        answer(tx)
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inventory::open;
 
     fn path() -> std::path::PathBuf {
-        std::env::temp_dir().join(format!(
+        let path = std::env::temp_dir().join(format!(
             "devhq-access-test-{}.sqlite3",
             uuid::Uuid::new_v4()
-        ))
+        ));
+        inventory::start(&path).unwrap();
+        path
     }
 
     #[test]

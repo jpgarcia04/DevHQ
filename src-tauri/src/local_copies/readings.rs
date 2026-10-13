@@ -8,7 +8,7 @@
 //! makes its system's history: a system with readings is archived, not deleted.
 
 use super::{remotes, Facts, Reader, Remote, DEADLINE};
-use crate::inventory::{self, open, ApiError, Application, Resource};
+use crate::inventory::{self, open_current, ApiError, Application, Resource};
 use crate::records::{self, now_ms, time_at, Actor, Subject};
 use crate::workstation::{Computer, ThisWorkstation};
 use rusqlite::types::Type;
@@ -269,7 +269,7 @@ pub fn older_readings(
     subject: &Subject,
     before: Option<&str>,
 ) -> Result<ReadingPage, ApiError> {
-    older_readings_in(&mut open(path)?, subject, before)
+    older_readings_in(&mut open_current(path)?, subject, before)
 }
 
 /// `older_readings` on a connection the caller opened: the agent gate's, which opens the inventory
@@ -279,7 +279,7 @@ pub(crate) fn older_readings_in(
     subject: &Subject,
     before: Option<&str>,
 ) -> Result<ReadingPage, ApiError> {
-    let tx = db.transaction().map_err(ApiError::database)?;
+    let tx = inventory::begin(db, TransactionBehavior::Deferred)?;
     records::ensure_subject(&tx, subject)?;
     let (application_id, resource_id) = subject.columns();
     let cursor = match before {
@@ -333,21 +333,17 @@ pub(crate) struct Target {
 
 /// Keeps what a reader read in `target`, inside one write transaction: only while the reference
 /// still points where it did when the reading began (a copy removed or moved meanwhile records
-/// nothing, as a check removed in flight), and only while `authorize` lets this write happen,
-/// checked with SQLite's write lock held.
+/// nothing, as a check removed in flight), and, for an agent's request, only while the person lets
+/// agents write, checked with SQLite's write lock held (see `inventory::begin_write`).
 pub(crate) fn store(
     path: &Path,
     target: &Target,
     facts: &Facts,
     observed_at: i64,
     by: &Actor,
-    authorize: &dyn Fn(&Connection) -> Result<(), ApiError>,
 ) -> Result<CopyReading, ApiError> {
-    let mut db = open(path)?;
-    let tx = db
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(ApiError::database)?;
-    authorize(&tx)?;
+    let mut db = open_current(path)?;
+    let tx = inventory::begin_write(&mut db, by)?;
     let (application_id, resource_id) = target.subject.columns();
     let unchanged: bool = tx
         .query_row(
@@ -457,7 +453,6 @@ pub(crate) fn read_copies(
     reader: &Reader,
     which: &Which,
     by: &Actor,
-    authorize: &dyn Fn(&Connection) -> Result<(), ApiError>,
 ) -> Result<ReadOutcome, ApiError> {
     let snapshot = inventory::list(database)?;
     let this_workstation = computer.resolve(&snapshot.resources);
@@ -553,7 +548,7 @@ pub(crate) fn read_copies(
         let observed_at = now_ms();
         let result = reader
             .read(&target.path, DEADLINE)
-            .and_then(|facts| store(database, &target, &facts, observed_at, by, authorize));
+            .and_then(|facts| store(database, &target, &facts, observed_at, by));
         match result {
             Ok(reading) => readings.push(reading),
             // The gate closed meanwhile: nothing more may be written.
@@ -576,6 +571,7 @@ pub(crate) fn read_copies(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inventory::open;
     use crate::inventory::{
         delete_application, list, save_application, save_resource, ApplicationInput, ResourceInput,
     };
@@ -595,8 +591,10 @@ mod tests {
     impl World {
         fn new(name: &str) -> Self {
             let folder = folder(name);
+            let database = folder.join("inventory.sqlite3");
+            inventory::start(&database).unwrap();
             Self {
-                database: folder.join("inventory.sqlite3"),
+                database,
                 computer: Computer {
                     local: folder.join("local"),
                     fingerprint: Some("readings-test".into()),
@@ -634,7 +632,6 @@ mod tests {
                 &self.reader,
                 which,
                 &Actor::Person,
-                &|_| Ok(()),
             )
         }
 
@@ -994,16 +991,8 @@ mod tests {
             path: path_text(&copy),
         };
         let facts = world.reader.read(&target.path, DEADLINE).unwrap();
-        let keep = |target: &Target, authorize: &dyn Fn(&Connection) -> Result<(), ApiError>| {
-            store(
-                &world.database,
-                target,
-                &facts,
-                now_ms(),
-                &Actor::Person,
-                authorize,
-            )
-        };
+        let keep =
+            |target: &Target, by: &Actor| store(&world.database, target, &facts, now_ms(), by);
         // Moved meanwhile: another path, or another machine.
         let elsewhere = Target {
             path: "/moved".into(),
@@ -1014,10 +1003,11 @@ mod tests {
             ..target.clone()
         };
         for moved in [&elsewhere, &other_machine] {
-            assert_eq!(keep(moved, &|_| Ok(())).unwrap_err().code, "cancelled");
+            assert_eq!(keep(moved, &Actor::Person).unwrap_err().code, "cancelled");
         }
-        // Refused by whoever authorizes the write (the gate, once closed): nothing kept.
-        let refused = keep(&target, &|_| Err(ApiError::denied("closed")));
+        // Asked by an agent while the person does not let agents write: nothing kept.
+        let agent = Actor::agent("Reader").unwrap();
+        let refused = keep(&target, &agent);
         assert_eq!(refused.unwrap_err().code, "access_denied");
         // Removed meanwhile.
         save_application(
@@ -1028,7 +1018,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(keep(&target, &|_| Ok(())).unwrap_err().code, "cancelled");
+        assert_eq!(keep(&target, &Actor::Person).unwrap_err().code, "cancelled");
         let db = open(&world.database).unwrap();
         let rows: i64 = db
             .query_row("SELECT count(*) FROM copy_readings", [], |row| row.get(0))

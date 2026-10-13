@@ -9,9 +9,7 @@
 //!   as in the window's form.
 
 use super::{pick, system_type, text, Session};
-use crate::access;
 use crate::backup;
-use crate::change_log;
 use crate::http_check::{self, HttpCheckInput};
 use crate::inventory::{self, ApiError, ApplicationInput, ComponentInput, ResourceInput};
 use crate::local_copies::readings::{self, Which};
@@ -21,7 +19,7 @@ use crate::records::{
     Subject,
 };
 use crate::references::{Reference, ReferenceInput};
-use rusqlite::{Transaction, TransactionBehavior};
+use rusqlite::Transaction;
 use serde_json::{json, Map, Value};
 
 /// The name an agent gets when its client declared none.
@@ -183,9 +181,9 @@ impl Session {
     /// person lets agents write: asked first through a look that cannot change any file, so that a
     /// change refused for access opens nothing that can write, and asked again inside the
     /// transaction, under SQLite's write lock, which decides, so that closing the gate in Settings
-    /// can never race a change. The inventory is opened as it is: never created, upgraded,
-    /// recovered or converted to another journal mode, and refused unless it is in this build's
-    /// schema.
+    /// can never race a change. The inventory is opened as it is: never created, upgraded or
+    /// converted to another journal mode, and refused unless it is in this build's schema, which is
+    /// checked again in that transaction, so that a file replaced after the look is not written.
     fn change(
         &self,
         apply: impl FnOnce(&Transaction, &Actor) -> Result<Value, ApiError>,
@@ -193,10 +191,7 @@ impl Session {
         let actor = self.actor()?;
         self.allow("write")?;
         let mut db = inventory::open_to_write(&self.database)?;
-        let tx = db
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(ApiError::database)?;
-        super::permitted(&access::mode(&tx)?, "write")?;
+        let tx = inventory::begin_write(&mut db, &actor)?;
         let value = apply(&tx, &actor)?;
         tx.commit().map_err(ApiError::database)?;
         Ok(value)
@@ -467,27 +462,22 @@ impl Session {
     }
 
     /// Runs the check now, as Run check does, and records its observation as DevHQ's own
-    /// evidence (`source` http); the log says which agent asked for it.
+    /// evidence (`source` http) and, in the same transaction, the log entry that says which agent
+    /// asked for it: both, only while the person lets agents write, or neither.
     pub(super) fn run_check(&self, arguments: &Map<String, Value>) -> Result<Value, ApiError> {
         let inventory = self.inventory()?;
         let subject = super::find_system(&inventory, arguments)?;
+        let agent = self.actor()?;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(ApiError::check)?;
-        let observation = runtime.block_on(http_check::run_http_check(
+        let (observation, change) = runtime.block_on(http_check::run_http_check_by(
             &self.database,
-            subject.clone(),
+            subject,
             &Lifeline::default(),
+            Some(&agent),
         ))?;
-        let change = self.change(|tx, agent| {
-            Ok(json!(change_log::check_run(
-                tx,
-                agent,
-                &subject,
-                &observation.summary
-            )?))
-        })?;
         Ok(json!({ "observation": observation, "change": change }))
     }
 
@@ -570,9 +560,10 @@ impl Session {
         Ok(json!({ "event": event }))
     }
 
-    /// Run once `allow` found the inventory current and open for writing.
+    /// Run once `allow` found the inventory current and open for writing, which the backup asks
+    /// again on the connection that copies it, just before the copy.
     pub(super) fn backup(&self) -> Result<Value, ApiError> {
-        Ok(json!({ "backup": backup::back_up(&self.database)? }))
+        Ok(json!({ "backup": backup::back_up_by(&self.database, &self.actor()?)? }))
     }
 
     /// Reads local copies of this workstation in confined readers, as Read does in the window:
@@ -599,7 +590,6 @@ impl Session {
             &reader,
             &which,
             &self.actor()?,
-            &|tx| super::permitted(&access::mode(tx)?, "write"),
         )?;
         Ok(json!(outcome))
     }

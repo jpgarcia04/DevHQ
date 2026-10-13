@@ -496,6 +496,15 @@ export const inventoryApi = {
     invoke<ReadingPage>('older_readings', { subject, before }),
 }
 
+/** What kind of refusal DevHQ answered (`schema_outdated`, `access_denied`…), if it said. */
+export function inventoryErrorCode(error: unknown): string | null {
+  if (error && typeof error === 'object' && 'code' in error) {
+    const code = (error as { code: unknown }).code
+    if (typeof code === 'string') return code
+  }
+  return null
+}
+
 export function inventoryError(error: unknown): string {
   if (error && typeof error === 'object' && 'message' in error) {
     const message = (error as { message: unknown }).message

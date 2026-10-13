@@ -36,12 +36,15 @@ export interface PreviewDatabase {
   thisWorkstation: ThisWorkstation
   /** The files in the backups folder, newest first. */
   backups: BackupFile[]
-  /** Reading fails, as it would with an unreadable database. */
-  unavailable: boolean
+  /** Why every read is refused, as the native process refuses a database it cannot or will not
+   * read; null when it reads. */
+  unavailable: { code: string; message: string } | null
 }
 
 /** Where the native process would keep this computer's association, on Windows. */
 const associationFile = 'C:\\Users\\you\\AppData\\Local\\com.devhq.desktop\\this-workstation.json'
+/** Where the native process would keep the inventory, on Windows. */
+const previewDatabasePath = 'C:\\Users\\you\\AppData\\Roaming\\com.devhq.desktop\\inventory.sqlite3'
 
 const notChosen: ThisWorkstation = {
   resourceId: null,
@@ -58,8 +61,10 @@ const notChosen: ThisWorkstation = {
  *   automated results go back further than a snapshot carries.
  * - `empty`: nothing registered yet.
  * - `unavailable`: the inventory cannot be read.
+ * - `outdated`: the inventory is in an older schema, which DevHQ serves nothing from and never
+ *   upgrades on its own.
  */
-export const scenarios = ['history', 'empty', 'unavailable'] as const
+export const scenarios = ['history', 'empty', 'unavailable', 'outdated'] as const
 export type Scenario = (typeof scenarios)[number]
 
 const minute = 60_000
@@ -89,7 +94,7 @@ function nothing(): PreviewDatabase {
     copyReadings: [],
     thisWorkstation: notChosen,
     backups: [],
-    unavailable: false,
+    unavailable: null,
   }
 }
 
@@ -236,7 +241,23 @@ export function sampleDatabase(scenario: Scenario, now: number): PreviewDatabase
   if (scenario === 'empty') return nothing()
   // The backups folder can be read even when the inventory cannot.
   if (scenario === 'unavailable')
-    return { ...nothing(), backups: sampleBackups(now), unavailable: true }
+    return {
+      ...nothing(),
+      backups: sampleBackups(now),
+      unavailable: {
+        code: 'database_error',
+        message: 'Inventory database error: unable to open database file',
+      },
+    }
+  if (scenario === 'outdated')
+    return {
+      ...nothing(),
+      backups: sampleBackups(now),
+      unavailable: {
+        code: 'schema_outdated',
+        message: `${previewDatabasePath}: A DevHQ inventory that declares schema version 6, older than this DevHQ's (12). This DevHQ never upgrades an inventory when it opens it: neither its window nor the gate serves anything from this one, and both leave it as it is. Upgrading it is an explicit step, which this DevHQ does not offer yet. Nothing was read or changed.`,
+      },
+    }
   const time = (minutesAgo: number) => at(now, minutesAgo)
   const observations: Observation[] = []
   const events: RecordedEvent[] = []
@@ -663,6 +684,6 @@ export function sampleDatabase(scenario: Scenario, now: number): PreviewDatabase
       storedAt: null,
     },
     backups: sampleBackups(now),
-    unavailable: false,
+    unavailable: null,
   }
 }

@@ -31,6 +31,8 @@ export interface InventoryContextValue {
   snapshot: InventorySnapshot | null
   loadState: LoadState
   error: string | null
+  /** What kind of refusal the failed load was (`schema_outdated`, `schema_newer`…), if DevHQ said. */
+  errorCode: string | null
   /** Clock used to judge validity. Refreshed on load and periodically while open. */
   now: number
   reload: () => Promise<boolean>

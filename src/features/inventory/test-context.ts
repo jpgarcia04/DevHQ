@@ -37,6 +37,7 @@ export function inventoryContext(
     },
     loadState: 'ready',
     error: null,
+    errorCode: null,
     now: testNow,
     reload: vi.fn(async () => true),
     dataLocation: vi.fn(async () => ({

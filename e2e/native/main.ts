@@ -19,7 +19,7 @@
 import assert from 'node:assert/strict'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
-import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
 import { createServer, type RequestListener } from 'node:http'
 import { createServer as createHttpsServer } from 'node:https'
 import { tmpdir } from 'node:os'
@@ -36,6 +36,7 @@ import {
   launch,
   stopAll,
   until,
+  WEBVIEW2_DEBUG_PORT,
 } from './app.ts'
 import { hostileCopy } from './hostile-copy.ts'
 import { isTransient, reference, type Element, type Session } from './webdriver.ts'
@@ -131,7 +132,8 @@ const schemaVersion = migrationFiles.length
 
 /**
  * A schema v6 inventory in rollback-journal mode, as every DevHQ file was before it used
- * write-ahead logging: the walk checks that the real app converts it.
+ * write-ahead logging: the walk checks that the real app refuses it and changes none of its bytes,
+ * since no DevHQ upgrades an inventory when it opens it.
  */
 function seedVersion6(database: string) {
   const db = new DatabaseSync(database)
@@ -306,22 +308,76 @@ try {
   const binary = appBinary()
   const { env, dataDirectory } = isolated
   const database = join(dataDirectory, 'inventory.sqlite3')
+  // Where the v6 inventory goes once DevHQ has refused it: outside the data folder, in the walk's
+  // own temporary folder, which it removes at the end.
+  const aside = join(copies, 'inventory-v6.sqlite3')
   await mkdir(dataDirectory, { recursive: true })
   seedVersion6(database)
   assert.equal(journalOf(database), 'rollback')
+  const older = readFileSync(database)
   await display(env, helpers)
   console.log(`DevHQ: ${binary}\nData: ${dataDirectory}`)
-  const launched = Date.now()
+  let launched = Date.now()
   ;({ session, pid } = await launch(binary, env, helpers))
   console.log(`The window could be driven ${Date.now() - launched} ms after DevHQ started`)
-  const ui = window(session)
+  let ui = window(session)
   const resource = region('Build server')
+  /**
+   * The inventory's own files and its backups folder: everything beside the inventory that DevHQ
+   * writes for it. The window's lock is left out, since the window holds it while it lives, and so
+   * is the rest of the folder, which on Linux is also the local data folder where WebKitGTK keeps
+   * its profile.
+   */
+  const dataFiles = async () =>
+    (await readdir(dataDirectory))
+      .filter((name) => name === 'backups' || name.startsWith('inventory.sqlite3'))
+      .filter((name) => !name.endsWith('.window-lock'))
+      .sort()
 
-  await step('Mi inventario opens on the v6 inventory', async () => {
-    await ui.see('Nothing is registered yet.')
+  await step('An older inventory is refused and left exactly as it was', async () => {
+    await ui.see('Inventory needs a schema upgrade')
+    await ui.see('declares schema version 6')
     await ui.find("//button[@aria-pressed='true' and normalize-space()='My inventory']")
     assert.ok(alive(pid!), 'DevHQ is running')
-    // How long the first load took, upgrade included: the baseline for a slow one.
+    // Back up now never upgrades an inventory to copy it, and leaves no folder behind.
+    await ui.go('Settings')
+    await ui.see(database, "//section[@aria-labelledby='database-file-heading']")
+    await ui.click(button('Back up now'))
+    await ui.see('No backup was made.')
+    await ui.see('declares schema version 6')
+    assert.deepEqual(await dataFiles(), ['inventory.sqlite3'], 'no file was added')
+    assert.ok(readFileSync(database).equals(older), 'the v6 file changed')
+  })
+
+  await step('Closed and started again where no inventory is, it creates a new one', async () => {
+    closeWindow(pid!, env)
+    await until('DevHQ to exit', () => !alive(pid!), 20_000)
+    await session!.end()
+    session = undefined
+    assert.ok(readFileSync(database).equals(older), 'the v6 file changed when DevHQ closed')
+    // Set aside, so that its bytes can be checked at the end; nothing reads it again.
+    await copyFile(database, aside)
+    await rm(database)
+    // On Windows the next DevHQ opens the same DevTools port: wait until the WebView2 of the one
+    // that closed has let it go, so that the walk never attaches to a browser on its way out.
+    if (process.platform === 'win32')
+      await until(
+        'the closed WebView2 to let go of its DevTools port',
+        async () =>
+          !(await fetch(`http://127.0.0.1:${WEBVIEW2_DEBUG_PORT}/json/version`).then(
+            () => true,
+            () => false,
+          )),
+        30_000,
+      )
+    launched = Date.now()
+    ;({ session, pid } = await launch(binary, env, helpers))
+    console.log(`The window could be driven ${Date.now() - launched} ms after DevHQ started`)
+    ui = window(session)
+    await ui.see('Nothing is registered yet.')
+    await ui.find("//button[@aria-pressed='true' and normalize-space()='My inventory']")
+    assert.equal(journalOf(database), 'wal', 'the new inventory writes ahead')
+    // How long the first load took, creation included: the baseline for a slow one.
     console.log((await windowState(session!)).replaceAll(/^/gm, '  '))
   })
 
@@ -445,7 +501,7 @@ try {
       assert.equal(value("SELECT count(*) FROM observations WHERE source = 'manual'"), 1)
       assert.equal(value("SELECT count(*) FROM observations WHERE source = 'http'"), 2)
       // What the person changed in the window is logged with it, and the walk's inventory was
-      // empty when v10 came, so the log is complete.
+      // created in this schema, so the log is complete.
       assert.equal(
         value(
           "SELECT group_concat(action, ' ') FROM (SELECT action FROM change_log WHERE source = 'manual' ORDER BY rowid)",
@@ -607,6 +663,8 @@ try {
     } finally {
       inventory.close()
     }
+    // The v6 inventory DevHQ refused at the start still holds exactly what it did.
+    assert.ok(readFileSync(aside).equals(older), 'the v6 file changed')
   })
 } catch (error) {
   failed = true

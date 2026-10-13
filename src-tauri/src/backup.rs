@@ -8,10 +8,14 @@
 //! replaces a file. A failure removes the `.partial`, so a file with a final name is a copy that
 //! was complete and verified when it was made. Nothing deletes or rewrites a finished backup.
 //! A backup is not evidence about a system, so the timeline records nothing.
+//!
+//! Only an inventory in this build's schema is backed up, as it is: a backup never upgrades one
+//! to copy it, and refuses any other before it writes anything, the backups folder included.
 
-use crate::inventory::{open, stored_at, ApiError, SCHEMA_VERSION};
-use crate::records::{format_time, now_ms};
-use rusqlite::{Connection, OpenFlags};
+use crate::access;
+use crate::inventory::{self, stored_at, ApiError, SCHEMA_VERSION};
+use crate::records::{format_time, now_ms, Actor};
+use rusqlite::{Connection, OpenFlags, TransactionBehavior};
 use serde::Serialize;
 use std::fs::File;
 use std::io::ErrorKind;
@@ -97,17 +101,42 @@ fn file_name(taken_at: i64) -> Option<String> {
     ))
 }
 
-/// Backs up the inventory at `database` into its backups folder, now.
+/// Backs up the inventory at `database` into its backups folder, now, for the person.
 pub fn back_up(database: &Path) -> Result<Backup, ApiError> {
-    write(database, now_ms(), |_| Ok(()))
+    back_up_by(database, &Actor::Person)
+}
+
+/// Backs up the inventory for `by`: an agent's backup is made only while the person lets agents
+/// write, asked on the connection that copies, just before the copy.
+pub(crate) fn back_up_by(database: &Path, by: &Actor) -> Result<Backup, ApiError> {
+    write(database, by, now_ms(), |_| Ok(()))
+}
+
+/// A connection to the inventory at `database` from which to copy it: only an inventory in this
+/// build's schema, and, for an agent, only while the person lets agents write. `VACUUM INTO`
+/// cannot run inside a transaction, so this is asked in one that ends before the copy starts; if
+/// the schema changed in between, the copy does not have this build's version and `verify`
+/// refuses it.
+fn source(database: &Path, by: &Actor) -> Result<Connection, ApiError> {
+    let mut db = inventory::open_current(database)?;
+    {
+        let tx = inventory::begin(&mut db, TransactionBehavior::Deferred)?;
+        if let Actor::Agent(_) = by {
+            access::permitted(&access::mode(&tx)?, "write")?;
+        }
+    }
+    Ok(db)
 }
 
 /// `damage` runs on the `.partial` once the copy is written: tests use it to break the copy.
 fn write(
     database: &Path,
+    by: &Actor,
     taken_at: i64,
     damage: impl FnOnce(&Path) -> std::io::Result<()>,
 ) -> Result<Backup, ApiError> {
+    // Before anything is written: an inventory that cannot be backed up leaves no folder behind.
+    let db = source(database, by)?;
     let folder = folder_of(database);
     let name = file_name(taken_at).ok_or_else(|| {
         ApiError::backup("The system clock is out of range. Nothing was written.")
@@ -123,7 +152,7 @@ fn write(
             folder.display()
         )));
     }
-    finish(database, &folder, &name, &partial, taken_at, damage).map_err(|cause| {
+    finish(&db, &folder, &name, &partial, taken_at, damage).map_err(|cause| {
         ApiError::backup(match std::fs::remove_file(&partial) {
             Ok(()) => format!("{cause} The incomplete copy was removed, so no backup was added."),
             Err(error) => format!(
@@ -135,7 +164,7 @@ fn write(
 }
 
 fn finish(
-    database: &Path,
+    db: &Connection,
     folder: &Path,
     name: &str,
     partial: &Path,
@@ -145,9 +174,7 @@ fn finish(
     let target = partial
         .to_str()
         .ok_or("The backups folder's path is not valid Unicode, which SQLite needs.")?;
-    open(database)
-        .map_err(|error| error.message)?
-        .execute("VACUUM INTO ?1", [target])
+    db.execute("VACUUM INTO ?1", [target])
         .map_err(|error| format!("Copying the inventory failed: {error}."))?;
     damage(partial).map_err(|error| error.to_string())?;
     let (quick_check, schema_version, counts) = verify(partial)?;
@@ -308,6 +335,7 @@ impl Backups {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inventory::open;
     use crate::inventory::tests::{dump, holding, linked_folder, remove_linked, resolved_temp_dir};
     use crate::inventory::{list as snapshot, save_resource, ResourceInput};
     use crate::records::{record_event, EventInput, Subject};
@@ -318,7 +346,9 @@ mod tests {
         let folder =
             resolved_temp_dir().join(format!("devhq-backup-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&folder).unwrap();
-        folder.join("inventory.sqlite3")
+        let database = folder.join("inventory.sqlite3");
+        inventory::start(&database).unwrap();
+        database
     }
 
     fn remove(database: &Path) {
@@ -405,7 +435,7 @@ mod tests {
             .map(|table| dump(&open_meanwhile, table))
             .collect();
 
-        let backup = write(&database, TAKEN_AT, |_| Ok(())).unwrap();
+        let backup = write(&database, &Actor::Person, TAKEN_AT, |_| Ok(())).unwrap();
         let name = "inventory-20260101T093000.123Z.sqlite3";
         let file = folder_of(&database).join(name);
         assert_eq!(
@@ -509,7 +539,7 @@ mod tests {
         let name = "inventory-20260101T093000.123Z.sqlite3";
         // A finished backup with that name already, however it came to be.
         std::fs::write(folder.join(name), "an earlier backup").unwrap();
-        let error = write(&database, TAKEN_AT, |_| Ok(())).unwrap_err();
+        let error = write(&database, &Actor::Person, TAKEN_AT, |_| Ok(())).unwrap_err();
         assert_eq!(error.code, "backup_error");
         assert!(
             error
@@ -529,7 +559,7 @@ mod tests {
         // Another backup's `.partial`, which it may still be writing: left alone.
         let partial = format!("{name}.partial");
         std::fs::write(folder.join(&partial), "still being written").unwrap();
-        let error = write(&database, TAKEN_AT, |_| Ok(())).unwrap_err();
+        let error = write(&database, &Actor::Person, TAKEN_AT, |_| Ok(())).unwrap_err();
         assert!(
             error.message.contains("Nothing was written"),
             "{}",
@@ -548,7 +578,7 @@ mod tests {
         let database = inventory();
         seed(&database);
         // Overwrites the start of the second page, where a table's b-tree begins.
-        let error = write(&database, TAKEN_AT, |partial| {
+        let error = write(&database, &Actor::Person, TAKEN_AT, |partial| {
             use std::io::{Seek, SeekFrom, Write};
             let mut file = File::options().write(true).open(partial)?;
             file.seek(SeekFrom::Start(4096))?;
@@ -565,7 +595,7 @@ mod tests {
         assert!(names(&database).is_empty());
 
         // Sound, but not the schema this DevHQ wrote.
-        let error = write(&database, TAKEN_AT, |partial| {
+        let error = write(&database, &Actor::Person, TAKEN_AT, |partial| {
             Connection::open(partial)
                 .and_then(|copy| copy.pragma_update(None, "user_version", SCHEMA_VERSION - 1))
                 .map_err(std::io::Error::other)
@@ -617,7 +647,7 @@ mod tests {
                 files: vec![],
             }
         );
-        let older = write(&database, TAKEN_AT, |_| Ok(())).unwrap();
+        let older = write(&database, &Actor::Person, TAKEN_AT, |_| Ok(())).unwrap();
         // Written later, so newer to the file system.
         std::thread::sleep(std::time::Duration::from_millis(20));
         let folder = folder_of(&database);
@@ -636,7 +666,7 @@ mod tests {
         )
         .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(20));
-        let newer = write(&database, TAKEN_AT + 60_000, |_| Ok(())).unwrap();
+        let newer = write(&database, &Actor::Person, TAKEN_AT + 60_000, |_| Ok(())).unwrap();
         let listed = list(&database).unwrap();
         let summary: Vec<_> = listed
             .files
@@ -662,7 +692,7 @@ mod tests {
         let (real, link) = linked_folder();
         let database = link.join("inventory.sqlite3");
         seed(&database);
-        let backup = write(&database, TAKEN_AT, |_| Ok(())).unwrap();
+        let backup = write(&database, &Actor::Person, TAKEN_AT, |_| Ok(())).unwrap();
         let kept = real.join("backups").join(&backup.name);
         assert_eq!(
             backup.path,

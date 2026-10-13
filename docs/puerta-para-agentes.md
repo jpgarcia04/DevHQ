@@ -23,22 +23,30 @@ abierta. Lo que solo se ve en la laptop:
 
 ## Lo que queda para la actualización explícita
 
-Las consultas y los cambios de configuración de la puerta abren el inventario tal como lo encuentran
-y solo sirven el esquema actual. Lo demás espera a la actualización explícita de inventarios, que hará
-que ninguna apertura actualice sola:
+Ninguna apertura actualiza un inventario: ni la ventana, ni la supervisión, ni un respaldo, ni una
+herramienta de la puerta (README, «Arquitectura»). Cada escritura de un agente comprueba el esquema y
+el acceso dentro de su propia transacción. Lo que falta es la actualización misma, un paso explícito
+en la ventana:
 
-- Los registros (`record_observation`, `open_incident`, `update_incident`, `record_event`),
-  `run_check`, `backup` y `read_copies` comprueban el archivo antes de empezar, pero luego pasan por
-  los casos de uso de la ventana, que lo abren con `inventory::open`: un inventario en rollback pasa a
-  WAL al escribir, y si entre la comprobación y la escritura otro proceso sustituye el archivo por un
-  inventario más antiguo o lo borra, esa apertura lo actualiza o crea uno vacío.
-- Esas mismas escrituras comprueban el acceso antes de abrir su propia transacción, no dentro de ella
-  como los cambios de configuración: si la persona cierra la puerta en Settings justo en ese
-  instante, la escritura ya admitida sigue.
-- Un inventario más antiguo no sirve a ningún agente hasta que la ventana lo abre, y la ventana lo
-  actualiza sin preguntar y sin respaldo previo; Back up now, sobre uno antiguo, también actualiza
-  antes de copiar. Lo mismo vale para uno que la puerta rechaza con `needs_recovery`: la ventana lo
-  recupera al abrirlo y, si además es antiguo, lo actualiza sin respaldo.
+- Un inventario anterior a la v12 no lo sirve ninguna parte de este DevHQ. La ventana dice que
+  necesita actualizarse, pero aún no ofrece hacerlo: hasta entonces solo lo abre un DevHQ anterior,
+  que lo actualiza al abrirlo y sin respaldo previo. Por eso esta versión no debe instalarse sobre un
+  inventario anterior a la v12.
+- El respaldo que debe preceder a la actualización (verificado, con la versión de origen, antes de
+  confirmar las migraciones), su manifiesto y la recuperación manual que lo acompañe.
+- Un inventario que la puerta rechaza con `needs_recovery` y que, recuperado, no es del esquema actual:
+  la ventana lo deja como está, con sus archivos sin recuperar, y la actualización explícita tendrá
+  que decidir cuándo recuperarlo.
+- `backup` comprueba esquema y acceso en la conexión que copia justo antes de `VACUUM INTO`, que no
+  admite una transacción: si en ese instante la persona cierra la puerta, la copia sigue. No escribe el
+  inventario, y su verificación rechaza una copia de otra versión.
+- Con la ventana abierta, una conexión de un caso de uso puede escribir: si otro programa deja a medias
+  el archivo o pone otro en su lugar, SQLite lo recupera al abrirlo antes de que DevHQ mire qué es.
+- SQLite empareja una base con su journal y su log solo por el nombre. Al arrancar, la ventana no crea
+  un inventario junto a los que quedaron sin su base y solo recupera los archivos cuyos bytes comparó
+  con la copia recuperada, ya abierta la conexión; pero un journal o un log que otro programa ponga en
+  el instante entre esa comprobación y la primera lectura de SQLite se aplicaría. Cerrarlo del todo
+  pediría que ningún otro programa pudiera escribir en la carpeta mientras tanto.
 
 ## Lo que la lectura sin cambios no cubre
 

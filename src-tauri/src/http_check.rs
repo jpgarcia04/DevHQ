@@ -5,7 +5,7 @@
 //! or missing configuration, SQLite) is an error and is never recorded.
 
 use crate::change_log::{self, Change};
-use crate::inventory::{open, ApiError};
+use crate::inventory::{self, open_current, ApiError};
 use crate::records::{
     self, Actor, HttpEvidence, Lifeline, NewObservation, Observation, Redirect, Subject,
 };
@@ -178,13 +178,9 @@ fn validate(input: &HttpCheckInput) -> Result<Url, ApiError> {
 /// produced keep the URL and expected status they were checked with. Everything is validated
 /// before the database is opened, so a rejected change writes nothing.
 pub fn save_http_check(path: &Path, input: HttpCheckInput) -> Result<HttpCheck, ApiError> {
-    let mut db = open(path)?;
-    let tx = db
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(ApiError::database)?;
-    let (check, _) = save_http_check_in(&tx, input, &Actor::Person)?;
-    tx.commit().map_err(ApiError::database)?;
-    Ok(check)
+    inventory::write(path, &Actor::Person, |tx| {
+        save_http_check_in(tx, input, &Actor::Person).map(|(check, _)| check)
+    })
 }
 
 /// Saves the subject's check inside the caller's write transaction, which the caller commits,
@@ -236,13 +232,9 @@ pub fn set_http_check_paused(
     subject: &Subject,
     paused: bool,
 ) -> Result<HttpCheck, ApiError> {
-    let mut db = open(path)?;
-    let tx = db
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(ApiError::database)?;
-    let (check, _) = set_http_check_paused_in(&tx, subject, paused, &Actor::Person)?;
-    tx.commit().map_err(ApiError::database)?;
-    Ok(check)
+    inventory::write(path, &Actor::Person, |tx| {
+        set_http_check_paused_in(tx, subject, paused, &Actor::Person).map(|(check, _)| check)
+    })
 }
 
 /// Pauses or resumes inside the caller's write transaction, which the caller commits, and logs
@@ -279,8 +271,8 @@ pub(crate) fn set_http_check_paused_in(
 pub(crate) fn supervision(
     path: &Path,
 ) -> Result<(Vec<HttpCheck>, HashMap<Subject, i64>), ApiError> {
-    let mut db = open(path)?;
-    let tx = db.transaction().map_err(ApiError::database)?;
+    let mut db = open_current(path)?;
+    let tx = inventory::begin(&mut db, TransactionBehavior::Deferred)?;
     let checks = load(&tx)?;
     let mut last_runs = HashMap::new();
     {
@@ -308,12 +300,9 @@ pub(crate) fn supervision(
 
 /// Removes the subject's HTTP check. The observations it produced are evidence and stay.
 pub fn remove_http_check(path: &Path, subject: Subject) -> Result<(), ApiError> {
-    let mut db = open(path)?;
-    let tx = db
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(ApiError::database)?;
-    remove_http_check_in(&tx, &subject, &Actor::Person)?;
-    tx.commit().map_err(ApiError::database)
+    inventory::write(path, &Actor::Person, |tx| {
+        remove_http_check_in(tx, &subject, &Actor::Person).map(|_| ())
+    })
 }
 
 /// Removes the subject's check inside the caller's write transaction, which the caller commits,
@@ -344,10 +333,24 @@ pub async fn run_http_check(
     subject: Subject,
     lifeline: &Lifeline,
 ) -> Result<Observation, ApiError> {
+    run_http_check_by(path, subject, lifeline, None)
+        .await
+        .map(|(observation, _)| observation)
+}
+
+/// `run_http_check` for an agent that asked for it through the gate (`asked_by`), or for the
+/// window (None): an agent's run is kept only while the person lets agents write, together with
+/// the log entry that says who asked, which it returns.
+pub(crate) async fn run_http_check_by(
+    path: &Path,
+    subject: Subject,
+    lifeline: &Lifeline,
+    asked_by: Option<&Actor>,
+) -> Result<(Observation, Option<Change>), ApiError> {
     // The database is closed again before any network traffic starts.
     let check = {
-        let mut db = open(path)?;
-        let tx = db.transaction().map_err(ApiError::database)?;
+        let mut db = open_current(path)?;
+        let tx = inventory::begin(&mut db, TransactionBehavior::Deferred)?;
         records::ensure_subject(&tx, &subject)?;
         find(&tx, &subject)?.ok_or_else(|| not_configured(&subject))?
     };
@@ -368,6 +371,7 @@ pub async fn run_http_check(
             recorded_at: observed_at,
             http: Some(&evidence),
             reporter: None,
+            asked_by,
             lifeline: Some(lifeline),
         },
     )
@@ -600,6 +604,7 @@ impl Resolve for Resolver {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::inventory::open;
     use crate::inventory::{
         list, save_application, save_resource, ApplicationInput, ResourceInput,
     };
@@ -616,8 +621,11 @@ pub(crate) mod tests {
     const LOOP: &str =
         "HTTP/1.1 302 Found\r\nLocation: /loop\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
 
+    /// A new inventory, as the window creates one.
     fn path() -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("devhq-http-test-{}.sqlite3", Uuid::new_v4()))
+        let path = std::env::temp_dir().join(format!("devhq-http-test-{}.sqlite3", Uuid::new_v4()));
+        crate::inventory::start(&path).unwrap();
+        path
     }
 
     /// A local test server that answers by request path; `None` accepts and never answers.
@@ -1138,6 +1146,7 @@ pub(crate) mod tests {
                     redirects: vec![],
                 }),
                 reporter: None,
+                asked_by: None,
                 lifeline: None,
             },
         )
@@ -1174,6 +1183,7 @@ pub(crate) mod tests {
                     recorded_at: records::now_ms(),
                     http: Some(&evidence),
                     reporter: None,
+                    asked_by: None,
                     lifeline: Some(lifeline),
                 },
             )

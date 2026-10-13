@@ -211,11 +211,7 @@ export function previewBackend(database: PreviewDatabase) {
     subjectsOf(database).some((item) => sameSubject(item, subject))
   const automated = (item: Observation | RecordedEvent) => item.source === 'http'
   const unavailable = () => {
-    if (database.unavailable)
-      throw {
-        code: 'database_error',
-        message: 'Inventory database error: unable to open database file',
-      }
+    if (database.unavailable) throw database.unavailable
   }
 
   function list(): InventorySnapshot {

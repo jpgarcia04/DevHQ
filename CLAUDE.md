@@ -73,7 +73,8 @@ lockfile only gained the new entries; then confirm with `npm ci`.
 `preview.html` (development only) runs Mi inventario over a simulated native process
 (`@tauri-apps/api/mocks`) and sample data in `src/preview/`. Its read commands follow the
 Rust windowing and paging rules (`src/preview/backend.test.ts`); every write is refused.
-`?scenario=empty` and `?scenario=unavailable` show an empty and an unreadable inventory.
+`?scenario=empty`, `?scenario=unavailable` and `?scenario=outdated` show an empty, an unreadable and
+an older-schema inventory.
 To look at the UI: `npx vite --host 127.0.0.1 --port 1420`, then open
 `http://127.0.0.1:1420/preview.html#/...` with the global Playwright (`npm root -g`).
 
@@ -148,17 +149,35 @@ holds, `immutable` (checked again after the read) for a logged file without a lo
 if the last connection closes between the look and the opening, the `readonly_shm` connection creates
 an empty `-wal`; so the README promises unchanged content, not untouched files. SQLite recovers,
 folds, deletes and creates files on opening whatever `query_only` says, so never give a gate read
-another kind of connection. A configuration change asks for access through that read, then writes
-through `inventory::open_to_write`; never through `inventory::open`, which creates, upgrades and
-converts. On Unix `log_held` must never run while the process holds a connection to the same
-database. Records, `run_check`, `backup` and `read_copies` still reach `inventory::open` through the
-window's use cases after that check: closing that gap belongs to the explicit upgrade
-(`docs/puerta-para-agentes.md`). While a window is open, its process notices what other connections
+another kind of connection. Every write asks for the inventory and access through that read first,
+then opens the file with `inventory::open_current` (configuration through `open_to_write`) and decides
+in its transaction (`begin_write`): the schema and, for an agent, the access are checked again there,
+under SQLite's write lock. On Unix `log_held` must never run while the process holds a connection to
+the same database. While a window is open, its process notices what other connections
 commit (`Monitor::notice_changes`, `PRAGMA data_version` every 2 s) and holds the lock that tells
 `status` a window is open (`window_lock.rs`). The native walk drives the gate as a child process.
 What remains to check or decide: `docs/puerta-para-agentes.md`. To try it
 with a real client: `claude -p "..." --mcp-config <json> --strict-mcp-config --allowedTools
 "mcp__devhq__*"` with the server's `--database` pointing at a test inventory.
+
+## Opening the inventory
+
+No opening changes the inventory's schema (`src-tauri/src/inventory.rs`, README «Arquitectura»).
+`inventory::create` makes a new inventory only where no file is, built under its own name and linked
+into place, never over an existing file, even an empty one, and never beside a `-journal`, `-wal` or
+`-shm` left without its database (`leftover_files`): SQLite pairs those files with a database by name
+alone and would apply them to the new one. `inventory::start` is the window's start
+and the only caller of `create`, the only place that sets WAL and the only place that lets SQLite
+recover a file, and only once a recovered copy in a temporary folder proved it current and, with the
+connection that recovers it open and before its first read, the file, journal and log still hold the
+bytes that were copied (`RecoveredFrom`); anything else is refused until DevHQ starts again
+(`InventoryPath::current`), and supervision does not run.
+`open_current` never creates, upgrades or converts. Every use case reads or writes inside `begin` or
+`begin_write`, which classify the file inside the transaction; never start a transaction on an
+inventory connection another way, and never add a path that upgrades: the migrations only build a new
+inventory (and, in tests, `upgrade` proves each of them on synthetic files). Upgrading is the explicit
+upgrade's to add, with a verified backup first. `inventory::open` exists only in tests. A test
+inventory is made with `start`, as the window makes it.
 
 ## Local copies
 
