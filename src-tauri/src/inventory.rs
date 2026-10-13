@@ -12,7 +12,7 @@ use std::fmt::Write as _;
 use std::fs::File;
 #[cfg(windows)]
 use std::fs::TryLockError;
-use std::io::{ErrorKind, Read};
+use std::io::{ErrorKind, Read, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime};
@@ -455,13 +455,29 @@ fn left_without_a_database(path: &Path, left: &[PathBuf]) -> ApiError {
 ///   DevHQ sets a journal mode.
 /// - A file left needing recovery (a write that did not finish, or a log no connection holds):
 ///   it lets SQLite recover it only once a copy of its files, recovered apart in a temporary
-///   folder, proved to be an inventory in this build's schema (`recovered_copy`). Anything else,
-///   older, newer or not an inventory, keeps its files as they are.
+///   folder, proved to be an inventory in this build's schema (`recovered_copy`), and only if,
+///   with the connection that recovers it open, its files still hold the bytes that were copied.
+///   Anything else, older, newer or not an inventory, keeps its files as they are.
 /// - Anything else is left as it is, and refused.
 ///
 /// It looks with `examine`, which on Unix must never run while this process holds a connection
 /// to the inventory: the window calls it before anything opens one.
 pub(crate) fn start(path: &Path) -> Result<(), ApiError> {
+    start_with(path, &mut |_| {})
+}
+
+/// The moments at which `start_with` lets a test change the files under it, as another program
+/// could.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Moment {
+    /// A copy of the files was recovered and found current; nothing has opened them.
+    Copied,
+    /// The connection that would recover them is open and has read nothing.
+    Opened,
+}
+
+/// `start`, calling `meanwhile` at each `Moment`.
+fn start_with(path: &Path, meanwhile: &mut dyn FnMut(Moment)) -> Result<(), ApiError> {
     let mut unreadable = "its files kept changing while DevHQ opened them".to_owned();
     for _ in 0..2 * LOOKS {
         match examine(path, |_| Ok(())).0 {
@@ -471,12 +487,27 @@ pub(crate) fn start(path: &Path) -> Result<(), ApiError> {
                 create(path)?;
             }
             Found::NeedsRecovery(recovery) => match recovered_copy(path) {
-                // Recovered by the connection's first read, inside the look in `begin`.
-                Found::Current => {
+                (Found::Current, Some(copied)) => {
+                    meanwhile(Moment::Copied);
                     let mut db = open_current(path)?;
+                    meanwhile(Moment::Opened);
+                    // SQLite recovers at the connection's first read, inside the look in `begin`,
+                    // from whatever files then have these names: only from the ones the copy was
+                    // made of, looked at again once the connection holds the database file, which
+                    // on Windows nothing can then rename or delete. A journal or a log is opened
+                    // by name at that read, so one put in place between this look and it is the
+                    // only kind of change this does not see. Files that changed are not
+                    // recovered: the connection goes without reading, before `examine` looks at
+                    // them again (which on Unix it must never do beside a connection of its own).
+                    if RecoveredFrom::of(path).ok() != Some(copied) {
+                        drop(db);
+                        unreadable = "its files changed between the copy DevHQ recovered apart and their own recovery".to_owned();
+                        std::thread::sleep(Duration::from_millis(100));
+                        continue;
+                    }
                     begin(&mut db, TransactionBehavior::Deferred)?;
                 }
-                found => return Err(left_needing_recovery(path, &found, recovery)),
+                (found, _) => return Err(left_needing_recovery(path, &found, recovery)),
             },
             Found::Current => {
                 let db = open_current(path)?;
@@ -523,37 +554,85 @@ fn log_ahead(db: &Connection) -> Result<(), ApiError> {
 
 /// What the file at `path`, which needs recovering, is once recovered, found on a copy of its
 /// files that SQLite recovers in a temporary folder of its own, which is then removed: the files
-/// at `path` are only read. The copy counts only if they did not change while they were copied.
-fn recovered_copy(path: &Path) -> Found {
+/// at `path` are only read. With it, what the copy was made of, when it could be made.
+fn recovered_copy(path: &Path) -> (Found, Option<RecoveredFrom>) {
     let folder = std::env::temp_dir().join(format!("devhq-recovering-{}", Uuid::new_v4()));
     let found = (|| {
         let unreadable = |error: std::io::Error| Found::Unreadable(error.to_string());
+        let changed = || Found::Unreadable("its files changed while DevHQ copied them".to_owned());
         let before = OnDisk::look(path)?;
         std::fs::create_dir(&folder).map_err(unreadable)?;
         let copy = folder.join("inventory.sqlite3");
-        std::fs::copy(path, &copy).map_err(unreadable)?;
         // The log's index is rebuilt from the log; a journal is copied whatever it holds.
-        for suffix in ["-wal", "-journal"] {
-            match std::fs::copy(beside(path, suffix), beside(&copy, suffix)) {
-                Err(error) if error.kind() != ErrorKind::NotFound => return Err(unreadable(error)),
-                _ => {}
-            }
-        }
+        let copy_beside = |suffix: &str| copy_of(&beside(path, suffix), &beside(&copy, suffix));
+        let copied = RecoveredFrom {
+            database: copy_beside("").map_err(unreadable)?.ok_or_else(changed)?,
+            journal: copy_beside("-journal").map_err(unreadable)?,
+            log: copy_beside("-wal").map_err(unreadable)?,
+        };
         if OnDisk::look(path).as_ref() != Ok(&before) {
-            return Err(Found::Unreadable(
-                "its files changed while DevHQ copied them".to_owned(),
-            ));
+            return Err(changed());
         }
         let db = Connection::open_with_flags(
             &copy,
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )
         .map_err(|error| Found::Unreadable(error.to_string()))?;
-        classify(&db).map_err(|error| Found::Unreadable(error.to_string()))
+        let found = classify(&db).map_err(|error| Found::Unreadable(error.to_string()))?;
+        Ok((found, Some(copied)))
     })()
-    .unwrap_or_else(|found| found);
+    .unwrap_or_else(|found| (found, None));
     let _ = std::fs::remove_dir_all(&folder);
     found
+}
+
+/// The bytes of the files SQLite recovers a database from: the database file, and the rollback
+/// journal and the write-ahead log beside it, each None when it is not there. Not the log's index
+/// (`-shm`), which SQLite rebuilds from the log when no connection holds it. Two sets of files with
+/// the same bytes recover into the same database, wherever and whenever SQLite recovers them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RecoveredFrom {
+    database: [u8; 32],
+    journal: Option<[u8; 32]>,
+    log: Option<[u8; 32]>,
+}
+
+impl RecoveredFrom {
+    /// What the files at `path` hold now.
+    fn of(path: &Path) -> std::io::Result<Self> {
+        let digest = |suffix: &str| match content(&beside(path, suffix)) {
+            Ok(digest) => Ok(Some(digest)),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        };
+        Ok(Self {
+            database: digest("")?.ok_or_else(|| std::io::Error::from(ErrorKind::NotFound))?,
+            journal: digest("-journal")?,
+            log: digest("-wal")?,
+        })
+    }
+}
+
+/// Copies the file at `from` to `to`, which must not exist, and gives the digest of the bytes it
+/// copied, read once: what the copy holds is what was digested. None when there is no file.
+fn copy_of(from: &Path, to: &Path) -> std::io::Result<Option<[u8; 32]>> {
+    let mut source = match File::open(from) {
+        Ok(source) => source,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let mut copy = File::create_new(to)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0; 64 * 1024];
+    loop {
+        let read = source.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+        copy.write_all(&buffer[..read])?;
+    }
+    Ok(Some(hasher.finalize().into()))
 }
 
 /// Why the window serves nothing from a file left needing recovery whose recovered copy was
@@ -4884,5 +4963,133 @@ pub(crate) mod tests {
         assert!(!path.exists());
         assert_eq!(std::fs::read(beside(&path, "-shm")).unwrap(), b"");
         std::fs::remove_file(beside(&path, "-shm")).unwrap();
+    }
+
+    /// The window recovers only the files it found out about on a copy: files put in their place
+    /// meanwhile, before the connection that recovers them opens or after (a log, which SQLite
+    /// opens only at the first read), are looked at again from the start, and a newer inventory
+    /// among them is refused with every file as it was put there.
+    #[test]
+    fn recovers_only_the_files_it_found_out_about() {
+        let root = std::env::temp_dir().join(format!("devhq-swapped-{}", Uuid::new_v4()));
+        let folder = root.join("inventory");
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.join("inventory.sqlite3");
+        let files = |folder: &Path| {
+            let mut found: Vec<_> = std::fs::read_dir(folder)
+                .unwrap()
+                .map(|entry| {
+                    let entry = entry.unwrap();
+                    (entry.file_name(), std::fs::read(entry.path()).unwrap())
+                })
+                .collect();
+            found.sort();
+            found
+        };
+        // What they are, readable when an assertion fails: names, sizes and digests.
+        let seen = |files: &[(std::ffi::OsString, Vec<u8>)]| {
+            files
+                .iter()
+                .map(|(name, bytes)| {
+                    let digest: [u8; 32] = Sha256::digest(bytes).into();
+                    (name.clone(), bytes.len(), digest)
+                })
+                .collect::<Vec<_>>()
+        };
+        // An inventory in this build's schema that needs recovering, made again for each case.
+        let needing_recovery = || {
+            for entry in std::fs::read_dir(&folder).unwrap() {
+                std::fs::remove_file(entry.unwrap().path()).unwrap();
+            }
+            start(&path).unwrap();
+            resource(&path, "Host");
+            crashed(&path, "UPDATE resources SET name = 'Renamed'");
+            assert_eq!(
+                examine(&path, |_| Ok(())).0,
+                Found::NeedsRecovery(Recovery::LogWithoutIndex)
+            );
+        };
+
+        // Every file replaced by a newer inventory with a write that did not finish, once the copy
+        // was found current: the audit's case.
+        let newer = root.join("newer");
+        std::fs::create_dir(&newer).unwrap();
+        let other = newer.join("inventory.sqlite3");
+        drop(database_at(&other, SCHEMA_VERSION));
+        filled(&other);
+        Connection::open(&other)
+            .unwrap()
+            .pragma_update(None, "user_version", SCHEMA_VERSION + 1)
+            .unwrap();
+        crashed(&other, "UPDATE resources SET name = 'Renamed ' || name");
+        let put = files(&newer);
+        needing_recovery();
+        let mut moments = Vec::new();
+        let refused = start_with(&path, &mut |moment| {
+            if moments.is_empty() {
+                for entry in std::fs::read_dir(&folder).unwrap() {
+                    std::fs::remove_file(entry.unwrap().path()).unwrap();
+                }
+                for (name, bytes) in &put {
+                    std::fs::write(folder.join(name), bytes).unwrap();
+                }
+            }
+            moments.push(moment);
+        })
+        .unwrap_err();
+        assert_eq!(moments, [Moment::Copied, Moment::Opened]);
+        assert_eq!(refused.code, "schema_newer", "{}", refused.message);
+        assert!(refused.message.contains("also need recovering"));
+        assert_eq!(
+            seen(&files(&folder)),
+            seen(&put),
+            "the newer inventory was changed"
+        );
+
+        // Only the log replaced, by one that makes it a newer inventory, once the connection that
+        // would recover it is open: the database file itself is held by that connection.
+        let newer_log = root.join("newer-log");
+        std::fs::create_dir(&newer_log).unwrap();
+        let other = newer_log.join("inventory.sqlite3");
+        start(&other).unwrap();
+        resource(&other, "Elsewhere");
+        crashed(
+            &other,
+            &format!("PRAGMA user_version = {};", SCHEMA_VERSION + 1),
+        );
+        let log = std::fs::read(beside(&other, "-wal")).unwrap();
+        needing_recovery();
+        let crashed_files = files(&folder);
+        let mut moments = Vec::new();
+        let refused = start_with(&path, &mut |moment| {
+            if moment == Moment::Opened && !moments.contains(&Moment::Opened) {
+                // Opening it changed nothing: SQLite recovers at the first read.
+                assert_eq!(seen(&files(&folder)), seen(&crashed_files));
+                std::fs::write(beside(&path, "-wal"), &log).unwrap();
+            }
+            moments.push(moment);
+        })
+        .unwrap_err();
+        assert_eq!(moments, [Moment::Copied, Moment::Opened]);
+        assert_eq!(refused.code, "schema_newer", "{}", refused.message);
+        let mut put = crashed_files;
+        put.iter_mut()
+            .find(|(name, _)| name.to_str().unwrap().ends_with("-wal"))
+            .unwrap()
+            .1 = log;
+        assert_eq!(
+            seen(&files(&folder)),
+            seen(&put),
+            "the log put in place was recovered"
+        );
+
+        // Left alone, it is recovered with what was committed.
+        needing_recovery();
+        let mut moments = Vec::new();
+        start_with(&path, &mut |moment| moments.push(moment)).unwrap();
+        assert_eq!(moments, [Moment::Copied, Moment::Opened]);
+        assert_eq!(resource_names(&path), ["Renamed"]);
+        assert_eq!(integrity(&path), "ok");
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

@@ -168,8 +168,10 @@ into place, never over an existing file, even an empty one, and never beside a `
 `-shm` left without its database (`leftover_files`): SQLite pairs those files with a database by name
 alone and would apply them to the new one. `inventory::start` is the window's start
 and the only caller of `create`, the only place that sets WAL and the only place that lets SQLite
-recover a file, and only once a recovered copy in a temporary folder proved it current; anything else
-is refused until DevHQ starts again (`InventoryPath::current`), and supervision does not run.
+recover a file, and only once a recovered copy in a temporary folder proved it current and, with the
+connection that recovers it open and before its first read, the file, journal and log still hold the
+bytes that were copied (`RecoveredFrom`); anything else is refused until DevHQ starts again
+(`InventoryPath::current`), and supervision does not run.
 `open_current` never creates, upgrades or converts. Every use case reads or writes inside `begin` or
 `begin_write`, which classify the file inside the transaction; never start a transaction on an
 inventory connection another way, and never add a path that upgrades: the migrations only build a new

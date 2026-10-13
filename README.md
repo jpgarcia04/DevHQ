@@ -1058,7 +1058,12 @@ pánico que en Linux abortaba el proceso al abrir Mi inventario (lo comprueba `n
   donde DevHQ fija un modo de journal. Si una escritura que no terminó lo dejó necesitando
   recuperación, primero copia sus archivos a una carpeta temporal, deja que SQLite recupere la copia,
   mira qué es y borra la copia; solo si la copia es un inventario del esquema actual deja que SQLite
-  recupere el archivo de verdad, conservando todo lo confirmado. Cualquier otra cosa (más antigua, más
+  recupere el archivo de verdad, conservando todo lo confirmado, y solo si esos archivos siguen siendo
+  los que copió: con la conexión que los va a recuperar ya abierta, y antes de que lea nada, vuelve a
+  leer el archivo, su journal y su log (`-wal`) y compara sus bytes con los de la copia. Si algo cambió
+  entretanto (otro programa los sustituyó, u otra conexión los recuperó antes), esa conexión se cierra
+  sin leer, y por tanto sin recuperar nada, y la ventana vuelve a mirar desde el principio lo que haya
+  ahora. Cualquier otra cosa (más antigua, más
   nueva o que no es un inventario) se queda con sus archivos como estaban y se rechaza, y así hasta que
   DevHQ vuelva a arrancar: la ventana no vuelve a abrir el archivo, ningún comando lo lee y la
   supervisión no corre.
@@ -1091,13 +1096,18 @@ rollback de una escritura interrumpida, o vuelca en el archivo un log que ningun
 y conserva todo lo confirmado. La ventana solo la deja hacerse al arrancar, y sobre un inventario del
 esquema actual. No es una garantía absoluta. SQLite empareja una base con su journal y su log solo por
 el nombre de los archivos, y nada en ellos dice a qué base pertenecen, así que lo que un programa
-ponga junto al inventario, SQLite lo aplica, y DevHQ solo puede mirar antes de que SQLite lo haga. Uno
-que otro programa escriba en el instante entre que la ventana comprueba que no quedan archivos
-sueltos y da el nombre al inventario nuevo se aplicaría. Ningún proceso de DevHQ crea esos archivos
-sin la base (la ventana construye el inventario nuevo con otro nombre, y la puerta nunca crea uno),
-así que hace falta otro programa que los escriba justo entonces. Y la conexión de un caso de uso
-puede escribir, así que si con la ventana abierta otro programa deja a medias el archivo, o pone otro
-en su lugar, SQLite lo recupera al abrirlo antes de que DevHQ mire qué es.
+ponga junto al inventario, SQLite lo aplica, y DevHQ solo puede mirar antes de que SQLite lo haga. Al
+arrancar, la comparación de bytes se hace cuando la conexión ya tiene abierto el archivo de la base,
+que en Windows nadie puede renombrar ni borrar mientras tanto (en Unix sí, pero lo que se compara
+son los bytes que se van a recuperar); el journal y el log, en cambio, SQLite los abre por su nombre
+en la primera lectura, de modo que uno que otro programa ponga en su lugar en el instante entre la
+comparación y esa lectura, de microsegundos, se aplicaría. Lo mismo vale para el instante entre que la
+ventana comprueba que no quedan archivos sueltos y da el nombre al inventario nuevo. Ningún proceso
+de DevHQ crea esos archivos sin la base (la ventana construye el inventario nuevo con otro nombre, y
+la puerta nunca crea uno), así que hace falta otro programa que los escriba justo entonces. Y la
+conexión de un caso de uso puede escribir, así que si con la ventana abierta otro programa deja a
+medias el archivo, o pone otro en su lugar, SQLite lo recupera al abrirlo antes de que DevHQ mire qué
+es.
 
 La base usa write-ahead logging (WAL): un lector trabaja sobre el último estado
 confirmado sin esperar a nadie y un escritor no espera a los lectores; solo los escritores se
@@ -1339,12 +1349,16 @@ rechaza leer y escribir sin actualizarlo; con un agente al que se le cierra la p
 su conexión; con un inventario que desaparece con la ventana abierta y que nadie vuelve a crear; con un
 archivo vacío que nunca se inicializa, tampoco con un journal al lado; con la ventana que arranca donde
 no hay nada y crea un inventario en WAL; con arranques sobre escritores a los que se mata a medias: un
-v12 se recupera con lo confirmado, y un v6 y un v13 se rechazan sin cambiar ningún archivo; y con el
+v12 se recupera con lo confirmado, y un v6 y un v13 se rechazan sin cambiar ningún archivo; con el
 journal de una escritura que reescribía doscientos recursos, y con el log de otra ya confirmada, que
 quedan sin su inventario: la ventana no crea ninguno (sin la protección, el journal dañaba el
 inventario nuevo, como dice `PRAGMA integrity_check`, y el log le metía los recursos del anterior),
 no cambia ningún byte de lo que quedó y, devuelto el inventario, lo recupera íntegro y con lo
-confirmado. La concurrencia de SQLite se
+confirmado; y con archivos que se sustituyen mientras la ventana recupera un v12: todos, por un v13
+con una escritura sin terminar, después de que la copia resultara actual (el v13 se rechaza y queda
+byte a byte como se puso; sin la protección SQLite reproducía su journal), y solo el log, por uno que
+lo hace v13, con la conexión que lo va a recuperar ya abierta (se rechaza igual; si se compara antes
+de abrirla, SQLite volcaba ese log en el archivo). La concurrencia de SQLite se
 prueba sin esperas medidas: una lectura no espera a una escritura en curso, una escritura no espera a
 una lectura abierta (que conserva su estado), cuatro arranques simultáneos crean un único inventario
 sin dejar nombres provisionales, un inventario actual en rollback no lo convierte ninguna consulta ni
