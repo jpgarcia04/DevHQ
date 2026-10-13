@@ -1,5 +1,7 @@
+use crate::change_log::{self, Change};
 use crate::inventory::{
-    allowed, bounded_text, open, required_text, ApiError, MAX_DESCRIPTION, MAX_SUMMARY, MAX_TITLE,
+    self, allowed, bounded_text, open_current, required_text, ApiError, MAX_DESCRIPTION,
+    MAX_SUMMARY, MAX_TITLE,
 };
 use rusqlite::types::Type;
 use rusqlite::{
@@ -610,6 +612,10 @@ pub(crate) struct NewObservation<'a> {
     pub http: Option<&'a HttpEvidence>,
     /// Who reported it, for anything but an HTTP check's evidence, which DevHQ produces itself.
     pub reporter: Option<&'a Actor>,
+    /// The agent that asked for an HTTP check's run, when one did through the gate: the run is
+    /// kept only while the person lets agents write, and logged as that agent's in the same
+    /// transaction (`change_log::check_run`), since its evidence cannot say who asked.
+    pub asked_by: Option<&'a Actor>,
     /// For a run of supervision: it commits only while supervision is alive.
     pub lifeline: Option<&'a Lifeline>,
 }
@@ -635,7 +641,12 @@ impl Lifeline {
     }
 }
 
-pub(crate) fn store_observation(path: &Path, new: NewObservation) -> Result<Observation, ApiError> {
+/// Stores the observation and its event, and, for a run an agent asked for, the log entry that
+/// says so, which it returns.
+pub(crate) fn store_observation(
+    path: &Path,
+    new: NewObservation,
+) -> Result<(Observation, Option<Change>), ApiError> {
     let valid_until = new.observed_at + new.valid_for_minutes * 60_000;
     let (source, agent, title) = match (new.http, new.reporter) {
         (Some(_), None) => (HTTP, None, "HTTP check"),
@@ -654,10 +665,11 @@ pub(crate) fn store_observation(path: &Path, new: NewObservation) -> Result<Obse
     // Declared before the connection, so that a hold taken below is let go only after the
     // connection has closed and folded its log back into the file.
     let _alive;
-    let mut db = open(path)?;
-    let tx = db
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(ApiError::database)?;
+    let mut db = open_current(path)?;
+    // The window's own runs and records are the person's; what an agent reports or asks for is
+    // kept only while the person lets agents write.
+    let writer = new.reporter.or(new.asked_by).unwrap_or(&Actor::Person);
+    let tx = inventory::begin_write(&mut db, writer)?;
     ensure_subject(&tx, new.subject)?;
     let (application_id, resource_id) = new.subject.columns();
     // Removing a check cancels its run in flight. If the removal commits first, this write is
@@ -719,6 +731,12 @@ pub(crate) fn store_observation(path: &Path, new: NewObservation) -> Result<Obse
     )?;
     let observation = query_one(&tx, OBSERVATION_SELECT, &id, observation_from_row)?
         .ok_or_else(|| ApiError::database("Observation was not saved."))?;
+    let change = match (new.http, new.asked_by) {
+        (Some(_), Some(agent @ Actor::Agent(_))) => {
+            Some(change_log::check_run(&tx, agent, new.subject, new.summary)?)
+        }
+        _ => None,
+    };
     // Checked after SQLite's write lock is taken, so closing DevHQ never waits for another
     // writer, only for this commit: either it closes first and this write is rolled back, or it
     // waits until the commit is on disk.
@@ -729,7 +747,7 @@ pub(crate) fn store_observation(path: &Path, new: NewObservation) -> Result<Obse
         None => None,
     };
     tx.commit().map_err(ApiError::database)?;
-    Ok(observation)
+    Ok((observation, change))
 }
 
 // A subject's automated observations older than a cursor, newest first. The plain bound on
@@ -760,7 +778,7 @@ pub fn older_observations(
     subject: &Subject,
     before: &str,
 ) -> Result<ObservationPage, ApiError> {
-    older_observations_in(&mut open(path)?, subject, before)
+    older_observations_in(&mut open_current(path)?, subject, before)
 }
 
 /// `older_observations` on a connection the caller opened: the agent gate's, which opens the
@@ -770,7 +788,7 @@ pub(crate) fn older_observations_in(
     subject: &Subject,
     before: &str,
 ) -> Result<ObservationPage, ApiError> {
-    let tx = db.transaction().map_err(ApiError::database)?;
+    let tx = inventory::begin(db, TransactionBehavior::Deferred)?;
     ensure_subject(&tx, subject)?;
     let (application_id, resource_id) = subject.columns();
     let cursor: Option<(i64, i64, i64)> = tx
@@ -898,7 +916,7 @@ pub fn older_events(
     if subjects.is_empty() {
         return Err(no_subjects());
     }
-    older_events_in(&mut open(path)?, subjects, before)
+    older_events_in(&mut open_current(path)?, subjects, before)
 }
 
 fn no_subjects() -> ApiError {
@@ -918,7 +936,7 @@ pub(crate) fn older_events_in(
     if subjects.is_empty() {
         return Err(no_subjects());
     }
-    let tx = db.transaction().map_err(ApiError::database)?;
+    let tx = inventory::begin(db, TransactionBehavior::Deferred)?;
     for subject in &subjects {
         ensure_subject(&tx, subject)?;
     }
@@ -1022,9 +1040,11 @@ pub fn record_observation_by(
             recorded_at,
             http: None,
             reporter: Some(actor),
+            asked_by: None,
             lifeline: None,
         },
     )
+    .map(|(observation, _)| observation)
 }
 
 /// Opens an incident for the person and records the opening in the timeline atomically.
@@ -1042,10 +1062,8 @@ pub fn open_incident_by(
     allowed(&input.severity, SEVERITIES, "incident severity")?;
     let description = bounded_text(&input.description, MAX_DESCRIPTION, "Incident description")?;
     let now = now_ms();
-    let mut db = open(path)?;
-    let tx = db
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(ApiError::database)?;
+    let mut db = open_current(path)?;
+    let tx = inventory::begin_write(&mut db, actor)?;
     ensure_subject(&tx, &input.subject)?;
     let id = Uuid::new_v4().to_string();
     let (application_id, resource_id) = input.subject.columns();
@@ -1095,10 +1113,8 @@ pub fn update_incident_status_by(
     allowed(&input.status, INCIDENT_STATUSES, "incident status")?;
     let note = bounded_text(&input.note, MAX_SUMMARY, "Status note")?;
     let now = now_ms();
-    let mut db = open(path)?;
-    let tx = db
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(ApiError::database)?;
+    let mut db = open_current(path)?;
+    let tx = inventory::begin_write(&mut db, actor)?;
     let current = query_one(&tx, INCIDENT_SELECT, &input.id, incident_from_row)?
         .ok_or_else(|| ApiError::invalid(format!("Incident {} does not exist.", input.id)))?;
     if current.status == input.status {
@@ -1153,10 +1169,8 @@ pub fn record_event_by(path: &Path, input: EventInput, actor: &Actor) -> Result<
     let detail = bounded_text(&input.detail, MAX_DESCRIPTION, "Event details")?;
     let recorded_at = now_ms();
     let occurred_at = reported_time(&input.occurred_at, recorded_at, "Event time")?;
-    let mut db = open(path)?;
-    let tx = db
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(ApiError::database)?;
+    let mut db = open_current(path)?;
+    let tx = inventory::begin_write(&mut db, actor)?;
     ensure_subject(&tx, &input.subject)?;
     let id = insert_event(
         &tx,
@@ -1183,12 +1197,17 @@ pub fn record_event_by(path: &Path, input: EventInput, actor: &Actor) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inventory::open;
     use crate::inventory::{
         list, save_application, save_resource, ApplicationInput, ComponentInput, ResourceInput,
     };
 
+    /// A new inventory, as the window creates one.
     fn path() -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("devhq-records-test-{}.sqlite3", Uuid::new_v4()))
+        let path =
+            std::env::temp_dir().join(format!("devhq-records-test-{}.sqlite3", Uuid::new_v4()));
+        crate::inventory::start(&path).unwrap();
+        path
     }
 
     /// An application whose API component runs on a resource. Returns (application, resource) IDs.
@@ -1540,6 +1559,20 @@ mod tests {
         let shop = Subject::Application { id: application_id };
         let agent = Actor::agent("  claude-code ").unwrap();
         assert_eq!(agent, Actor::Agent("claude-code".into()));
+        // An agent records only while the person lets agents write, asked inside the write
+        // transaction: until then each of its records is refused and nothing is kept.
+        let refused = [
+            record_observation_by(&path, observation(shop.clone()), &agent).map(|_| ()),
+            open_incident_by(&path, incident(shop.clone()), &agent).map(|_| ()),
+            record_event_by(&path, event(shop.clone()), &agent).map(|_| ()),
+        ];
+        for refusal in refused {
+            assert_eq!(refusal.unwrap_err().code, "access_denied");
+        }
+        let nothing = list(&path).unwrap();
+        assert!(nothing.observations.is_empty() && nothing.incidents.is_empty());
+        assert!(nothing.events.is_empty());
+        crate::access::set_agent_access(&path, "write").unwrap();
         let observed = record_observation_by(&path, observation(shop.clone()), &agent).unwrap();
         assert_eq!(
             (observed.source.as_str(), observed.agent.as_deref()),
@@ -1760,6 +1793,7 @@ mod tests {
         .unwrap();
         let opened = open_incident(&path, incident(host.clone())).unwrap();
         // What an agent reports is loaded in full too, however old.
+        crate::access::set_agent_access(&path, "write").unwrap();
         let by_agent = record_observation_by(
             &path,
             ObservationInput {

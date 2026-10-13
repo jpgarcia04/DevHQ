@@ -282,5 +282,8 @@ describe('the preview’s simulated native process', () => {
     expect(() => previewBackend(sampleDatabase('unavailable', now))('list_inventory')).toThrow(
       expect.objectContaining({ code: 'database_error' }),
     )
+    expect(() => previewBackend(sampleDatabase('outdated', now))('list_inventory')).toThrow(
+      expect.objectContaining({ code: 'schema_outdated' }),
+    )
   })
 })

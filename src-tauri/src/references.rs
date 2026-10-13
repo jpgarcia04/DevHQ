@@ -438,8 +438,12 @@ mod tests {
     use serde_json::{json, Value};
     use std::path::{Path, PathBuf};
 
+    /// A new inventory, as the window creates one.
     fn path() -> PathBuf {
-        std::env::temp_dir().join(format!("devhq-references-test-{}.sqlite3", Uuid::new_v4()))
+        let path =
+            std::env::temp_dir().join(format!("devhq-references-test-{}.sqlite3", Uuid::new_v4()));
+        crate::inventory::start(&path).unwrap();
+        path
     }
 
     fn at(kind: &str, target: &str, machine: Option<&str>) -> ReferenceInput {

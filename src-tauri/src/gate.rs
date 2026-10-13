@@ -280,7 +280,7 @@ impl Session {
     /// Whether the person lets agents `read` or `write` through the gate, checked on every call
     /// so that a change in Settings applies at once.
     fn allow(&self, need: &str) -> Result<(), ApiError> {
-        permitted(&self.read(|db| access::mode(db))?, need)
+        access::permitted(&self.read(|db| access::mode(db))?, need)
     }
 
     fn inventory(&self) -> Result<Inventory, ApiError> {
@@ -544,23 +544,6 @@ impl Session {
                 )),
             }
         })
-    }
-}
-
-/// Whether the access mode in force allows what a tool needs: `read` or `write`.
-fn permitted(mode: &str, need: &str) -> Result<(), ApiError> {
-    let enough = match need {
-        "read" => mode != "off",
-        _ => mode == "write",
-    };
-    match (enough, mode) {
-        (true, _) => Ok(()),
-        (false, "off") => Err(ApiError::denied(
-            "The person has not opened the agent gate. They can choose Read only or Read and write in DevHQ, under Settings → Agent gate.",
-        )),
-        (false, _) => Err(ApiError::denied(
-            "The person opened the agent gate for reading only. To let agents change the inventory, they can choose Read and write in DevHQ, under Settings → Agent gate.",
-        )),
     }
 }
 
@@ -928,7 +911,7 @@ fn read_tools() -> Vec<Value> {
         read_only(
             "status",
             "DevHQ status",
-"Which inventory file the gate opened, where the system really keeps it, what the file is (`schema`: the version it declares, the one this DevHQ supports, its state: current, mismatch, outdated, newer, not_an_inventory, needs_recovery, unreadable or missing; whether it has the structure of this DevHQ's schema, compared table by table and column by column: matches, differs or not_checked for another version; its integrity, never checked by the gate: not_checked; `schemaVersion` is the declared one, null when unknown), whether the person lets agents read or write through the gate (`access`: off, read or write), whether a DevHQ window is open on it (`windowOpen`; null when the system cannot say), how many systems it holds, which of its workstations this computer is (`thisWorkstation`, or why DevHQ does not know: only the window chooses it), and what the gate cannot know. Access, counts and workstation are null unless the inventory is current, which is the only kind the gate serves. An inventory left needing recovery (a write that did not finish, or a log no connection holds) is reported, never recovered: DevHQ's window recovers it when it opens. Always answered, even with the gate off, and never writes to the inventory or changes what it holds; the one file it can create is an empty log (`-wal`), if the last connection to the inventory closes just as the gate opens it.",
+"Which inventory file the gate opened, where the system really keeps it, what the file is (`schema`: the version it declares, the one this DevHQ supports, its state: current, mismatch, outdated, newer, not_an_inventory, needs_recovery, unreadable or missing; whether it has the structure of this DevHQ's schema, compared table by table and column by column: matches, differs or not_checked for another version; its integrity, never checked by the gate: not_checked; `schemaVersion` is the declared one, null when unknown), whether the person lets agents read or write through the gate (`access`: off, read or write), whether a DevHQ window is open on it (`windowOpen`; null when the system cannot say), how many systems it holds, which of its workstations this computer is (`thisWorkstation`, or why DevHQ does not know: only the window chooses it), and what the gate cannot know. Access, counts and workstation are null unless the inventory is current, which is the only kind the gate serves. An inventory left needing recovery (a write that did not finish, or a log no connection holds) is reported, never recovered: DevHQ's window recovers it when it starts, only if it is in this DevHQ's schema. Always answered, even with the gate off, and never writes to the inventory or changes what it holds; the one file it can create is an empty log (`-wal`), if the last connection to the inventory closes just as the gate opens it.",
             json!({}),
             &[],
         ),
@@ -983,7 +966,16 @@ mod tests {
         let folder = crate::inventory::tests::resolved_temp_dir()
             .join(format!("devhq-gate-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&folder).unwrap();
-        folder.join("inventory.sqlite3")
+        let path = folder.join("inventory.sqlite3");
+        inventory::start(&path).unwrap();
+        path
+    }
+
+    /// Where a test inventory would be, in a folder of its own that holds nothing yet.
+    fn nothing() -> PathBuf {
+        let path = path();
+        std::fs::remove_file(&path).unwrap();
+        path
     }
 
     fn remove(path: &Path) {
@@ -1002,6 +994,10 @@ mod tests {
     /// Shop runs its API on Web host; Spare box runs nothing and was never observed. Web host
     /// is unhealthy and supervised, Shop has a critical incident and healthy evidence.
     fn seed(path: &Path) -> (String, String) {
+        // As the window creates it, when there is none yet.
+        if !path.exists() {
+            inventory::start(path).unwrap();
+        }
         let host = save_resource(
             path,
             ResourceInput {
@@ -1261,7 +1257,7 @@ mod tests {
 
     #[test]
     fn never_creates_an_inventory_where_devhq_would_not_find_it() {
-        let path = path();
+        let path = nothing();
         let status = answer(&path, "status", json!({}));
         assert_eq!(status["exists"], false);
         assert_eq!(status["counts"], Value::Null);
@@ -3143,18 +3139,58 @@ mod tests {
                 json!({ "type": "resource", "name": "Web host", "records": "readings" }),
             ),
         ];
-        // None of these may write: the gate is at most open for reading in every case.
+        // None of these may write, the 14 tools that can: the gate is at most open for reading in
+        // every case, and no file that is not a current inventory is ever opened to write.
         let writes = [
+            (
+                "save_application",
+                json!({ "name": "New", "lifecycle": "development" }),
+            ),
             ("save_resource", json!({ "name": "New", "kind": "server" })),
+            ("delete_application", json!({ "name": "Shop" })),
             ("delete_resource", json!({ "name": "Spare box" })),
+            (
+                "save_check",
+                json!({ "type": "resource", "name": "Spare box", "url": "https://spare.example/" }),
+            ),
+            (
+                "set_check_paused",
+                json!({ "type": "resource", "name": "Web host", "paused": true }),
+            ),
+            (
+                "remove_check",
+                json!({ "type": "resource", "name": "Web host" }),
+            ),
+            (
+                "run_check",
+                json!({ "type": "resource", "name": "Web host" }),
+            ),
             (
                 "record_observation",
                 json!({ "type": "resource", "name": "Web host", "result": "healthy", "summary": "Fine", "validForMinutes": 60 }),
             ),
+            (
+                "open_incident",
+                json!({ "type": "resource", "name": "Web host", "title": "Down", "severity": "critical" }),
+            ),
+            (
+                "update_incident",
+                json!({ "incidentId": "any", "status": "resolved" }),
+            ),
+            (
+                "record_event",
+                json!({ "type": "resource", "name": "Web host", "kind": "note", "outcome": "info", "title": "Noted" }),
+            ),
             ("backup", json!({})),
+            ("read_copies", json!({})),
         ];
+        assert_eq!(
+            1 + reads.len() + writes.len(),
+            tools().len(),
+            "every tool is tried"
+        );
         for (case, make, exists, stored, state, access, counted, refused) in cases {
-            let path = path();
+            let path = nothing();
             let folder = path.parent().unwrap().to_owned();
             make(&path);
             let before = files(&folder);
@@ -3332,10 +3368,103 @@ mod tests {
             "the gate recovered what the holder left"
         );
 
-        // DevHQ's window recovers it when it opens, and nothing committed was lost.
-        drop(inventory::open(&path).unwrap());
+        // DevHQ's window recovers it when it starts, and nothing committed was lost.
+        inventory::start(&path).unwrap();
         let systems = use_tool(&mut agent, "list_systems", json!({})).unwrap();
         assert!(live_box(&systems), "{systems:#}");
         remove(&path);
+    }
+
+    /// A write is decided in its own transaction, not by the look before it: while `run_check`
+    /// waits on the network (when the gate holds no connection), an inventory replaced by an older
+    /// one is refused as it is, never upgraded or written; one that went is never created again;
+    /// and a gate the person closed keeps neither the observation nor the entry saying who asked.
+    #[test]
+    fn a_write_never_lands_on_an_inventory_replaced_after_the_look() {
+        use crate::inventory::tests::database_at;
+        use std::io::{Read, Write as _};
+        use std::net::TcpListener;
+        for replacement in ["v11", "nothing", "closed"] {
+            let path = path();
+            seed(&path);
+            crate::access::set_agent_access(&path, "write").unwrap();
+            let old = path.with_file_name("older.sqlite3");
+            drop(database_at(&old, 11));
+            let older = std::fs::read(&old).unwrap();
+            // The checked system answers only once the inventory was replaced.
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}/health", listener.local_addr().unwrap());
+            crate::http_check::save_http_check(
+                &path,
+                crate::http_check::HttpCheckInput {
+                    subject: Subject::Resource {
+                        id: inventory::list(&path)
+                            .unwrap()
+                            .resources
+                            .into_iter()
+                            .find(|resource| resource.name == "Web host")
+                            .unwrap()
+                            .id,
+                    },
+                    url,
+                    expected_status: 200,
+                    timeout_seconds: 10,
+                    valid_for_minutes: 60,
+                    monitor_interval_minutes: None,
+                },
+            )
+            .unwrap();
+            let inventory = path.clone();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0; 4096];
+                let _ = stream.read(&mut request).unwrap();
+                match replacement {
+                    "closed" => drop(crate::access::set_agent_access(&inventory, "read").unwrap()),
+                    _ => std::fs::remove_file(&inventory).unwrap(),
+                }
+                if replacement == "v11" {
+                    std::fs::rename(&old, &inventory).unwrap();
+                }
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .unwrap();
+            });
+            let mut agent = session(&path, "claude-code");
+            let refused = use_tool(
+                &mut agent,
+                "run_check",
+                json!({ "type": "resource", "name": "Web host" }),
+            )
+            .unwrap_err();
+            server.join().unwrap();
+            match replacement {
+                "v11" => {
+                    assert!(refused.ends_with("(schema_outdated)"), "{refused}");
+                    assert_eq!(
+                        std::fs::read(&path).unwrap(),
+                        older,
+                        "the older file changed"
+                    );
+                }
+                "nothing" => {
+                    assert!(
+                        refused.contains("There is no DevHQ inventory at"),
+                        "{refused}"
+                    );
+                    assert!(!path.exists(), "an inventory was created");
+                }
+                _ => {
+                    assert!(refused.ends_with("(access_denied)"), "{refused}");
+                    let kept = inventory::list(&path).unwrap();
+                    assert!(
+                        kept.observations.iter().all(|item| item.source != "http"),
+                        "an observation was kept"
+                    );
+                    assert!(changes(&path).is_empty(), "the run was logged");
+                }
+            }
+            remove(&path);
+        }
     }
 }

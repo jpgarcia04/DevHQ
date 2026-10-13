@@ -81,6 +81,35 @@ describe('real inventory UI', () => {
     list.mockRestore()
   })
 
+  it('says that an inventory in an older schema needs upgrading, and never asks again', async () => {
+    const user = userEvent.setup()
+    const list = vi.spyOn(inventoryApi, 'list').mockRejectedValue({
+      code: 'schema_outdated',
+      message:
+        '/home/you/.local/share/com.devhq.desktop/inventory.sqlite3: A DevHQ inventory that declares schema version 6, older than this DevHQ’s (12).',
+    })
+    render(
+      <MemoryRouter>
+        <InventoryProvider>
+          <SelectRealInventory />
+          <RealOverviewPage />
+        </InventoryProvider>
+      </MemoryRouter>,
+    )
+    await user.click(screen.getByRole('button', { name: 'Select real inventory' }))
+    expect(
+      await screen.findByRole('heading', { name: 'Inventory needs a schema upgrade' }),
+    ).toBeInTheDocument()
+    expect(screen.getByText(/declares schema version 6/)).toHaveTextContent(
+      /Settings shows where the file and its backups folder are/,
+    )
+    // Not presented as empty, and nothing to retry: DevHQ decided it when it started.
+    expect(screen.queryByText(/Nothing is registered yet/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument()
+    expect(list).toHaveBeenCalledTimes(1)
+    list.mockRestore()
+  })
+
   it('titles an application’s page while the inventory loads and when it cannot be read', () => {
     const view = (value: InventoryContextValue) => (
       <MemoryRouter initialEntries={['/applications/shop']}>

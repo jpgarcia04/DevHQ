@@ -5,6 +5,7 @@ import type { EntityRef, Observation } from '@/domain/models'
 import {
   inventoryApi,
   inventoryError,
+  inventoryErrorCode,
   type InventorySnapshot,
   type MonitorStatus,
   type ReadOutcome,
@@ -23,6 +24,7 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
   const [snapshot, setSnapshot] = useState<InventorySnapshot | null>(null)
   const [loadState, setLoadState] = useState<LoadState>('idle')
   const [error, setError] = useState<string | null>(null)
+  const [errorCode, setErrorCode] = useState<string | null>(null)
   const [now, setNow] = useState(() => Date.now())
   const [checking, setChecking] = useState<string[]>([])
   const [monitor, setMonitor] = useState<MonitorStatus | null>(null)
@@ -66,6 +68,7 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
         setSnapshot(next)
         setNow(Date.now())
         setError(null)
+        setErrorCode(null)
         setLoadState('ready')
         void askWorkstation()
       }
@@ -75,6 +78,7 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
         applied.current = ticket
         setSnapshot(null)
         setError(inventoryError(cause))
+        setErrorCode(inventoryErrorCode(cause))
         setLoadState('error')
       }
       return false
@@ -209,6 +213,7 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
         snapshot,
         loadState,
         error,
+        errorCode,
         now,
         reload,
         dataLocation: inventoryApi.dataLocation,

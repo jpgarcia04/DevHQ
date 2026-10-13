@@ -293,6 +293,176 @@ fn every_command_reads_and_accepts_exactly_what_the_window_sends() {
     }
 }
 
+/// Every file in `folder` and below, by path, with what it holds.
+fn files(folder: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+    let mut found = BTreeMap::new();
+    for entry in std::fs::read_dir(folder).unwrap() {
+        let entry = entry.unwrap().path();
+        if entry.is_dir() {
+            found.extend(files(&entry));
+        } else {
+            found.insert(entry.clone(), std::fs::read(&entry).unwrap());
+        }
+    }
+    found
+}
+
+/// Commands that never open the inventory: they say where it is, list its backups folder, or
+/// stream supervision's status.
+const OPEN_NOTHING: [&str; 3] = ["data_location", "list_backups", "watch_http_monitor"];
+
+/// The window serves nothing from a file that is not an inventory in this build's schema: started
+/// on it, every command that would open it refuses with what was found, and no file in its folder
+/// changes, appears or goes, whatever was asked (backups and supervision included).
+#[test]
+fn no_command_changes_an_inventory_the_window_does_not_serve() {
+    use crate::inventory::tests::{database_at, kill, writer};
+    const ROWS: &str = "INSERT INTO resources (id, name, kind, description, operating_system)
+                          VALUES ('host', 'Host', 'server', '', 'Linux');";
+    type Case = (&'static str, fn(&Path), &'static str);
+    let cases: [Case; 9] = [
+        (
+            "v6, rollback journal",
+            |path| database_at(path, 6).execute_batch(ROWS).unwrap(),
+            "schema_outdated",
+        ),
+        (
+            "v6, write-ahead log",
+            |path| {
+                let db = database_at(path, 6);
+                db.execute_batch(ROWS).unwrap();
+                db.pragma_update(None, "journal_mode", "WAL").unwrap();
+            },
+            "schema_outdated",
+        ),
+        (
+            "v6, with a write that did not finish",
+            |path| {
+                database_at(path, 6).execute_batch(ROWS).unwrap();
+                kill(writer(path, "journal"), path);
+            },
+            "schema_outdated",
+        ),
+        (
+            "v11, Read and write",
+            |path| {
+                database_at(path, 11)
+                    .execute_batch("INSERT INTO agent_access VALUES (1, 'write', 0);")
+                    .unwrap()
+            },
+            "schema_outdated",
+        ),
+        (
+            "v13, rollback journal",
+            |path| {
+                let db = database_at(path, 12);
+                db.execute_batch(ROWS).unwrap();
+                db.pragma_update(None, "user_version", 13).unwrap();
+            },
+            "schema_newer",
+        ),
+        (
+            "v13, write-ahead log",
+            |path| {
+                let db = database_at(path, 12);
+                db.pragma_update(None, "user_version", 13).unwrap();
+                db.pragma_update(None, "journal_mode", "WAL").unwrap();
+            },
+            "schema_newer",
+        ),
+        (
+            "an empty file",
+            |path| std::fs::write(path, b"").unwrap(),
+            "not_an_inventory",
+        ),
+        (
+            "another program's SQLite database",
+            |path| {
+                rusqlite::Connection::open(path)
+                    .unwrap()
+                    .execute_batch("CREATE TABLE notes (body TEXT);")
+                    .unwrap()
+            },
+            "not_an_inventory",
+        ),
+        (
+            "stamped 12 without the schema's structure",
+            |path| {
+                database_at(path, 12)
+                    .execute_batch("DROP TABLE agent_access;")
+                    .unwrap()
+            },
+            "schema_mismatch",
+        ),
+    ];
+    let fixtures = fixtures("commands");
+    for (case, make, code) in cases {
+        let path = path();
+        make(&path);
+        let folder = path.parent().unwrap().to_owned();
+        let before = files(&folder);
+        let (app, window) = devhq(&path);
+        for (command, args) in &fixtures {
+            let answer = invoke(&window, command, args.clone());
+            if OPEN_NOTHING.contains(&command.as_str()) {
+                assert!(answer.is_ok(), "{case}: {command}: {answer:?}");
+            } else {
+                let refusal = answer.expect_err(&format!("{case}: {command} was served"));
+                assert_eq!(refusal["code"], code, "{case}: {command}: {refusal}");
+            }
+        }
+        drop((window, app));
+        assert_eq!(
+            files(&folder),
+            before,
+            "{case}: the files changed, appeared or went"
+        );
+        remove(&path);
+    }
+}
+
+/// A window started where there is no inventory creates a new one in this build's schema, and
+/// writes ahead; one whose inventory goes while it is open never creates another in its place.
+#[test]
+fn creates_an_inventory_only_where_none_is_when_it_starts() {
+    let path = path();
+    assert!(!path.exists());
+    let (app, window) = devhq(&path);
+    let listed = invoke(&window, "list_inventory", json!({})).unwrap();
+    assert_eq!(listed["applications"], json!([]));
+    let header = std::fs::read(&path).unwrap();
+    assert_eq!(header[18..20], [2, 2], "the new inventory writes ahead");
+    // Only the inventory itself was made: what it was built as is gone.
+    let names: BTreeSet<String> = std::fs::read_dir(path.parent().unwrap())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| !name.ends_with("-wal") && !name.ends_with("-shm"))
+        .collect();
+    assert_eq!(names, BTreeSet::from(["inventory.sqlite3".to_owned()]));
+
+    std::fs::remove_file(&path).unwrap();
+    for (command, args) in [
+        ("list_inventory", json!({})),
+        ("agent_access", json!({})),
+        (
+            "save_resource",
+            fixtures("commands")["save_resource"].clone(),
+        ),
+        ("backup_inventory", json!({})),
+    ] {
+        let refusal = invoke(&window, command, args).unwrap_err();
+        let message = refusal["message"].as_str().unwrap();
+        assert!(
+            message.contains("There is no DevHQ inventory at")
+                && message.contains("never while it is open"),
+            "{command}: {refusal}"
+        );
+        assert!(!path.exists(), "{command} created an inventory");
+    }
+    drop((window, app));
+    remove(&path);
+}
+
 fn value(answer: impl Serialize) -> Value {
     serde_json::to_value(answer).unwrap()
 }

@@ -8,6 +8,7 @@ const pages: { name: string; path: string; open?: string }[] = [
   { name: 'overview', path: '/preview.html#/' },
   { name: 'overview, nothing registered', path: '/preview.html?scenario=empty#/' },
   { name: 'overview, inventory unavailable', path: '/preview.html?scenario=unavailable#/' },
+  { name: 'overview, inventory outdated', path: '/preview.html?scenario=outdated#/' },
   { name: 'applications', path: '/preview.html#/applications' },
   { name: 'new application form', path: '/preview.html#/applications', open: 'New application' },
   // With its references: kind, URL or path, machine and label for each.

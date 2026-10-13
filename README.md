@@ -492,6 +492,11 @@ mientras se hace un respaldo, la ventana desactiva el botón y Rust rechaza otro
 plugins ni permisos, no cambia el esquema y no se registra en la línea de tiempo: no es evidencia
 de ningún sistema.
 
+- Solo respalda un inventario del esquema actual, tal como está: nunca lo actualiza para poder
+  copiarlo. Uno más antiguo, más nuevo o que no es un inventario lo rechaza antes de escribir nada,
+  sin crear siquiera la carpeta `backups/`. El respaldo que debe preceder a una actualización será
+  parte de la actualización explícita.
+
 - SQLite copia con `VACUUM INTO`, que lee el último estado confirmado como cualquier lector en
   WAL: no espera a ningún escritor (la supervisión sigue registrando) y no incluye nada sin
   confirmar. La copia es un único archivo en modo journal de rollback, completo por sí solo.
@@ -583,16 +588,17 @@ ni cambiar nada, y `status` dice qué encontró. Puede ser un journal de rollbac
 que no terminó: mientras no se deshace, el archivo puede tener esa escritura a medias. Puede
 ser un log con cambios que ninguna conexión mantiene abierto: quien los escribió terminó sin volcarlos,
 porque se colgó, lo mataron o se cerró mientras otra conexión leía. O puede ser un log sin su índice.
-La puerta no los recupera ni lee esos cambios en memoria: la ventana de DevHQ lo recupera al abrir el
-inventario, y desde entonces la puerta lo lee como cualquier otro. Para saber si una conexión mantiene
+La puerta no los recupera ni lee esos cambios en memoria: la ventana de DevHQ lo recupera al arrancar,
+si es un inventario del esquema actual (lo averigua antes en una copia), y desde entonces la puerta lo
+lee como cualquier otro. Para saber si una conexión mantiene
 abierto un log, la puerta pregunta lo mismo que SQLite y de la misma manera: si alguien tiene el
 bloqueo del byte 128 del índice, que cada conexión conserva mientras vive y que el sistema suelta
 cuando su proceso termina, termine como termine.
 
 La puerta solo sirve un inventario en el esquema de este DevHQ (v12) y con su estructura. Lo demás lo
 rechaza sin leer ni cambiar nada, también con la puerta cerrada: un inventario más antiguo con
-`schema_outdated` (solo la ventana actualiza un inventario, al abrirlo, y hoy lo hace sin respaldo
-previo), uno más nuevo con `schema_newer`, un archivo SQLite sin las tablas de DevHQ (vacío o de otro
+`schema_outdated` (este DevHQ nunca actualiza un inventario al abrirlo; actualizar será un paso
+explícito en la ventana, que esta versión aún no ofrece), uno más nuevo con `schema_newer`, un archivo SQLite sin las tablas de DevHQ (vacío o de otro
 programa) con `not_an_inventory`, uno que habría que recuperar con `needs_recovery`, y lo que no se puede
 leer como SQLite (otro tipo de archivo, una carpeta, un archivo dañado o bloqueado) con
 `database_error`. Que un archivo declare la versión 12 no basta. La puerta compara sus tablas, columna
@@ -601,19 +607,21 @@ falta o difiere lo rechaza con `schema_mismatch` y dice qué. Las tablas e índi
 no los juzga. Esa comparación no es una comprobación de integridad: la puerta nunca lee cada página y
 cada fila, y `status` dice que la integridad no se comprobó.
 
-Un cambio de configuración que pide un agente pregunta primero por el acceso con esa misma lectura.
-Así, uno que el acceso rechaza no abre nada que pueda escribir. Después se escribe dentro de su
-transacción, donde se vuelve a comprobar el acceso, con una conexión que no crea el archivo, no pide WAL
-y solo se abre si esa lectura encontró un inventario actual que no hay que recuperar. Así que tampoco
-crea, actualiza, recupera ni convierte el archivo, salvo si en el instante entre esa lectura y la
-escritura otro proceso lo deja a medias, que entonces SQLite lo recupera como en cualquier escritura.
-Las demás escrituras (registros, ejecutar una comprobación, `backup` y `read_copies`) también comprueban
-el inventario y el acceso con esa lectura antes de empezar, pero luego pasan por los casos de uso de la
-ventana, que abren el archivo a su manera y en su propia transacción. Pueden pasarlo a WAL. Si entre la
-comprobación y la escritura otro proceso lo sustituye por un inventario más antiguo o lo borra, pueden
-actualizarlo o crear uno vacío. Y si en ese instante cierras la puerta en Settings, la escritura ya
-admitida sigue adelante. Cerrar esos resquicios es parte de la actualización explícita de inventarios,
-que aún no existe. Lo que la lectura sin cambios no cubre está en
+Cada escritura de un agente pregunta primero por el inventario y el acceso con esa misma lectura. Así,
+una que el acceso rechaza, o sobre un archivo que no es un inventario actual, no abre nada que pueda
+escribir. Después abre el archivo sin crearlo, actualizarlo ni cambiar su modo de journal, y dentro de
+su transacción, con el lock de escritura de SQLite, vuelve a comprobar que es un inventario del
+esquema actual y que la persona sigue dejando escribir a los agentes: eso decide, en los cambios de
+configuración, los registros, `run_check` y cada lectura que guarda `read_copies`. Si entre la lectura
+y la escritura otro proceso sustituye el archivo por un inventario más antiguo, la escritura se
+rechaza con `schema_outdated` y el archivo queda como estaba; si lo borra, no se vuelve a crear; y si
+cierras la puerta en Settings en ese instante, se rechaza con `access_denied`. `run_check` guarda la
+observación y la entrada que dice qué agente la pidió en la misma transacción: las dos o ninguna.
+`backup` no puede copiar dentro de una transacción (`VACUUM INTO` no lo admite), así que comprueba el
+esquema y el acceso en la conexión que copia justo antes de copiar, y la verificación de la copia
+rechaza otra versión. Lo que no cierra es la recuperación: si en el instante entre la lectura y la
+escritura otro proceso deja el archivo a medias, SQLite lo recupera al abrirlo, como en cualquier
+escritura, antes de que DevHQ vea qué es. Lo que la lectura sin cambios no cubre está en
 [docs/puerta-para-agentes.md](docs/puerta-para-agentes.md).
 
 Hasta dónde llega un agente lo decides tú en Settings → **Agent gate**: **Off** (por defecto, también
@@ -794,8 +802,8 @@ publicar, otra leída en otra estación con HEAD suelto, un rebase a medias, má
 publicar, el working tree desconocido y un remoto que no es el repositorio declarado, una nunca leída,
 una movida desde su última lectura que entonces no se encontró, con 205 lecturas (más de una página),
 una lectura `not_a_copy` en el historial y la copia de una aplicación archivada; Read y Read all se
-rechazan como toda escritura. `?scenario=empty` y `?scenario=unavailable` muestran un inventario
-vacío o ilegible. El bundle de producción se construye desde `index.html` y no contiene nada de
+rechazan como toda escritura. `?scenario=empty`, `?scenario=unavailable` y `?scenario=outdated`
+muestran un inventario vacío, uno ilegible y uno de un esquema anterior. El bundle de producción se construye desde `index.html` y no contiene nada de
 esto. `npm run e2e` usa el Chrome instalado (en CI, el del runner) o el ejecutable que indique
 `DEVHQ_CHROMIUM`; nunca descarga navegadores, y reutiliza un `npm run dev` en marcha. Antes de
 la primera prueba carga la preview una vez (`e2e/warm-up.ts`): Vite transforma cada módulo la
@@ -819,7 +827,9 @@ en `127.0.0.1` con una configuración que se fusiona al compilarla; el recorrido
 sin ella. El cliente WebDriver es un archivo propio sobre `fetch` (`e2e/native/webdriver.ts`): el
 protocolo es JSON sobre HTTP, así que no hace falta ninguna dependencia, y cada petición que hace
 está a la vista. El recorrido parte de una base v6 en modo journal de rollback, como las anteriores
-a WAL. Abre Mi inventario, comprueba la ruta que muestra Settings y «Copy path», crea un recurso y
+a WAL. Mi inventario debe decir que necesita actualizarse, y Back up now debe rechazarla, sin que la
+carpeta de datos gane ningún archivo ni el v6 cambie un byte, tampoco al cerrar la ventana. Después
+aparta el v6, vuelve a arrancar DevHQ, que debe crear un inventario nuevo en WAL, y abre Mi inventario, comprueba la ruta que muestra Settings y «Copy path», crea un recurso y
 una aplicación con su repositorio como referencia, registra una observación, supervisa una comprobación HTTP contra un servidor propio
 en `127.0.0.1` (esa ejecución y la recarga de su evidencia solo llegan a la ventana por el
 `Channel` de supervisión), la ejecuta a petición, lee el panel Supervision y pulsa Back up now: el
@@ -832,7 +842,7 @@ que se llama `native-walk`, comprueba que `status` ve la ventana abierta y da de
 con un componente sobre el recurso. Sin tocar la ventana, Applications debe mostrarla sola, y Activity
 su Change con la etiqueta «Agent · native-walk». En la copia del respaldo, el registro de cambios
 debe tener, como tuyos, el alta del recurso, la de la aplicación y la comprobación, y ninguna marca de
-inicio, porque la base v6 de la que parte estaba vacía. Con la app sin el vigilante de `data_version`, ese
+inicio, porque el inventario es nuevo. Con la app sin el vigilante de `data_version`, ese
 paso no ve la aplicación en 15 s y falla. Después crea una estación de trabajo, la elige en
 Settings › This computer (la puerta debe ver la misma elección) y declara como copia local de la
 aplicación una copia hostil que construye con el `git` instalado (`e2e/native/hostile-copy.ts`):
@@ -847,10 +857,12 @@ desaparecido (contenido, tamaño y fecha de modificación, `.git` incluido). Al 
 sobre la misma copia sí ejecuta el fsmonitor: la copia es hostil de verdad. Por último cierra la ventana como
 lo hace su botón, nunca por WebDriver: con `WM_DELETE_WINDOW` en X11 (un script de Python que llama
 a libX11, porque bajo Xvfb no hay gestor de ventanas que lo envíe) o con `WM_CLOSE` en Windows. El
-proceso debe terminar, sin dejar `inventory.sqlite3-wal`, y el archivo debe haber pasado a WAL; la
+proceso debe terminar, sin dejar `inventory.sqlite3-wal`, y el archivo debe seguir en WAL; la
 puerta, que sigue abierta, debe ver la ventana cerrada en menos de 10 s (el recorrido anota cuánto
 tardó) y terminar al cerrarse su entrada. En la base deben quedar las tres lecturas, en la estación elegida y
-con la ruta declarada, y solo la última con el agente.
+con la ruta declarada, y solo la última con el agente, y el v6 apartado debe seguir idéntico byte a
+byte. El recorrido de una actualización completa volverá con la actualización explícita; hasta
+entonces las migraciones se prueban en Rust, sobre inventarios sintéticos.
 Antes de hacer clic espera a que el elemento deje de moverse, porque el contenido que llega tarde
 empuja la página, y guarda una captura por paso en `test-results/native/`. `DEVHQ_APP` lo apunta a
 otro ejecutable.
@@ -1015,22 +1027,73 @@ no duplicar una ejecución en vuelo y `watch_http_monitor` abre el `Channel` de 
 asíncrono porque lanza la tarea que alimenta el `Channel`: Tauri ejecuta un comando síncrono en el hilo
 que recibe la petición (el principal), que no tiene runtime de Tokio, y lanzarla desde ahí provocaba un
 pánico que en Linux abortaba el proceso al abrir Mi inventario (lo comprueba `npm run e2e:native`). Abre
-`inventory.sqlite3` en el directorio de datos de la aplicación que proporciona Tauri; las
-migraciones transaccionales v1→v12 usan `PRAGMA user_version` y una versión más nueva se
-rechaza en vez de adivinarse. La puerta para agentes no usa esta apertura para leer ni para cambiar
-la configuración: abre el archivo tal como lo encuentra (ver
-[Puerta para agentes](#puerta-para-agentes)). Cada apertura solo lee esa versión: únicamente una base antigua
-toma el lock de escritura para migrar, y dentro vuelve a leerla por si otra conexión ya lo
-hizo. La base usa write-ahead logging (WAL): un lector trabaja sobre el último estado
+`inventory.sqlite3` en el directorio de datos de la aplicación que proporciona Tauri.
+
+**Ninguna apertura cambia el esquema del inventario.** DevHQ separa cinco cosas (`inventory.rs`):
+
+- **Crear** un inventario nuevo lo hace solo la ventana, al arrancar, y solo donde no hay ningún
+  archivo. Lo construye entero, con todas las migraciones en una transacción, bajo un nombre propio
+  junto al definitivo (`inventory.sqlite3.new-<uuid>`), lo fuerza a disco y le da el nombre
+  `inventory.sqlite3` con un enlace que el sistema de archivos rechaza si ese nombre ya existe; el
+  nombre provisional se borra pase lo que pase. Así `inventory.sqlite3` nunca contiene medio
+  inventario, y un archivo que aparezca ahí entretanto (el inventario nuevo de otra ventana que arranca
+  a la vez, o cualquier otro) nunca se reemplaza ni se escribe. Un archivo que ya existe, aunque esté
+  vacío, nunca se inicializa: DevHQ no lo dejó así, porque nunca nombra medio inventario, y se rechaza
+  con `not_an_inventory`. Como los respaldos, crear necesita un sistema de archivos que admita enlaces.
+  Si el inventario desaparece con la ventana abierta, ningún comando crea otro: cada uno responde que
+  no hay inventario y que la ventana solo crea uno al arrancar. Al volver a abrir DevHQ, como la
+  primera vez, crea uno nuevo y vacío.
+- **Arrancar** (`start`) es lo que hace la ventana antes de que sus comandos o la supervisión abran
+  nada. Crea el inventario si falta. Si es del esquema de este DevHQ, lo pasa a WAL: es el único sitio
+  donde DevHQ fija un modo de journal. Si una escritura que no terminó lo dejó necesitando
+  recuperación, primero copia sus archivos a una carpeta temporal, deja que SQLite recupere la copia,
+  mira qué es y borra la copia; solo si la copia es un inventario del esquema actual deja que SQLite
+  recupere el archivo de verdad, conservando todo lo confirmado. Cualquier otra cosa (más antigua, más
+  nueva o que no es un inventario) se queda con sus archivos como estaban y se rechaza, y así hasta que
+  DevHQ vuelva a arrancar: la ventana no vuelve a abrir el archivo, ningún comando lo lee y la
+  supervisión no corre.
+- **Abrir** para un caso de uso (`open_current`) solo abre un archivo que existe, sin crearlo,
+  actualizarlo ni cambiar su modo de journal.
+- **Leer o escribir**: cada caso de uso de la ventana, y cada escritura de la puerta, empieza su
+  transacción (`begin`, o `begin_write` con el lock de escritura de SQLite) y dentro de ella comprueba
+  que el archivo es un inventario del esquema actual, con su estructura, y, si escribe un agente, que
+  la persona sigue dejando escribir a los agentes. Lo que lee o escribe es siempre ese esquema aunque
+  el archivo haya cambiado desde que se abrió; si no lo es, se rechaza dentro de la transacción, antes
+  de leer o escribir nada más, con los códigos de la [puerta](#puerta-para-agentes) (`schema_outdated`,
+  `schema_newer`, `schema_mismatch`, `not_an_inventory`).
+- **Actualizar** un inventario de un esquema anterior: ningún camino de DevHQ lo hace. Las migraciones
+  transaccionales v1→v12 (`PRAGMA user_version`) siguen en el código porque crean el esquema de un
+  inventario nuevo, y sus pruebas actualizan inventarios sintéticos de cada versión anterior, pero
+  ninguna apertura, consulta, respaldo, supervisión ni herramienta MCP las aplica a un inventario que
+  ya existe. Actualizar será un paso explícito en la ventana, con un respaldo verificado antes, que
+  esta versión aún no ofrece. Una versión más nueva se rechaza en vez de adivinarse.
+
+Un inventario más antiguo se queda tal cual: Mi inventario dice **Inventory needs a schema upgrade**,
+con la ruta del archivo y la versión que declara, sin botón de reintentar porque la respuesta no
+cambiaría hasta volver a arrancar; Settings sigue mostrando dónde están el archivo y su carpeta de
+respaldos, y Back up now lo rechaza sin crear nada. Uno más nuevo dice **Inventory from a newer
+DevHQ**. Así que **esta versión no sirve a quien todavía tenga un inventario anterior a la v12**:
+hasta que exista la actualización explícita, ese inventario solo lo abre un DevHQ anterior, que lo
+actualiza al abrirlo y sin respaldo previo, como siempre hizo.
+
+La recuperación de SQLite no es una migración, pero también cambia archivos: deshace el journal de
+rollback de una escritura interrumpida, o vuelca en el archivo un log que ninguna conexión mantiene,
+y conserva todo lo confirmado. La ventana solo la deja hacerse al arrancar, y sobre un inventario del
+esquema actual. No es una garantía absoluta: la conexión de un caso de uso puede escribir, así que si
+con la ventana abierta otro programa deja a medias el archivo, o pone otro en su lugar, SQLite lo
+recupera al abrirlo antes de que DevHQ mire qué es.
+
+La base usa write-ahead logging (WAL): un lector trabaja sobre el último estado
 confirmado sin esperar a nadie y un escritor no espera a los lectores; solo los escritores se
 turnan. Importa porque la supervisión escribe desde el runtime asíncrono mientras la ventana
 lee, y los comandos síncronos corren en el hilo principal: con el journal de rollback, una
 lectura podía congelar la ventana detrás de un commit en curso. El modo queda guardado en el
 archivo y `synchronous` sigue en FULL, así que cada evidencia llega al disco antes de que el
 comando responda. Al cerrarse la última conexión SQLite vuelca el log en `inventory.sqlite3`,
-que queda completo por sí solo. Una base anterior se convierte en la primera apertura que la
-tiene para sí; si otra conexión la está usando en ese momento (SQLite no espera para esto),
-sigue con su journal de rollback, igual de correcta, hasta la siguiente. Settings muestra la
+que queda completo por sí solo. Un inventario actual en journal de rollback, como un respaldo
+restaurado, pasa a WAL al arrancar la ventana; si otra conexión lo está usando en ese momento
+(SQLite no espera para esto), sigue con su journal de rollback, igual de correcto, hasta el siguiente
+arranque. Ninguna consulta ni escritura lo convierte. Settings muestra la
 ruta exacta del archivo (`data_location` no abre la base, así que responde aunque no se pueda
 leer): con DevHQ abierto se respalda con Back up now (ver [Respaldo](#respaldo)); con DevHQ
 cerrado también basta copiarlo. Para restaurar un respaldo o una copia, con DevHQ cerrado se pone
@@ -1180,7 +1243,7 @@ no una especificación ni un backlog: nada de lo que describe existe hasta que e
 Las pruebas cubren navegación, tabs/teclado, filtros, rutas desconocidas, relaciones
 compartidas, cronología de la demo, salud desconocida, persistencia tras reapertura,
 rechazo de referencias inválidas sin escrituras parciales, restricciones del esquema,
-migraciones v1/v2→v3, v3→v4, v4→v5, v5→v6, v6→v7, v7→v8, v8→v9, v9→v10, v10→v11 y v11→v12 (incluida la negativa a confirmar relaciones rotas),
+migraciones v1/v2→v3, v3→v4, v4→v5, v5→v6, v6→v7, v7→v8, v8→v9, v9→v10, v10→v11 y v11→v12 (incluida la negativa a confirmar relaciones rotas), que se aplican de forma explícita en la prueba porque ningún camino de DevHQ las aplica a un inventario existente,
 vigencia y sustitución de observaciones de ambos orígenes, orden de atención, errores de
 carga visibles y recuperables, comprobaciones contra un servidor local (estado esperado,
 500, redirect, bucle de redirects, tiempo agotado, conexión rechazada, dominio `.invalid`
@@ -1229,8 +1292,11 @@ con solo `applications` y `resources`, un v12 sin `agent_access`, un v12 con Off
 cambios un escritor al que se mata (como lo deja un cierre brusco), ese mismo log sin su índice, un v6
 y la copia de un respaldo con el journal de rollback que deja una escritura a la que se mata a medias,
 un archivo de texto, una carpeta y nada: `status` dice qué es cada uno sin presentar como sabido lo que
-no pudo leer, cada lectura y cada escritura responde o se rechaza con su código, y la carpeta queda
-igual byte a byte y con las mismas fechas de modificación. Con otro proceso que mantiene abierto el
+no pudo leer, cada una de las 19 herramientas responde o se rechaza con su código, y la carpeta queda
+igual byte a byte y con las mismas fechas de modificación. Por MCP también se prueba la carrera de una
+escritura: mientras `run_check` espera a un sistema que aún no responde, el inventario se sustituye por
+un v11, se borra o la persona cierra la puerta, y la escritura se rechaza, el v11 queda igual, no se
+crea nada y no se guarda ni la observación ni su entrada en el registro. Con otro proceso que mantiene abierto el
 inventario, como la ventana, y tiene en su log un cambio que aún no está en el archivo, la puerta lee
 ese cambio, rechaza por acceso una escritura y no cambia ningún archivo, ni el índice. Cuando a ese
 proceso se le mata, `status` y cada herramienta dicen `needs_recovery` sin cambiar nada, y después de
@@ -1246,9 +1312,21 @@ sistemas a la vez (sin huecos ni duplicados, con empates al mismo milisegundo, r
 nuevos entre páginas y doce sistemas de historiales desiguales), que la mezcla toma de cada
 sistema solo lo que devuelve de él y una fila más, y los planes de consulta, que nunca recorren el historial automático
 completo ni buscan un evento automático por su observación, tampoco con estadísticas que otra
-herramienta haya calculado sobre el archivo. La concurrencia de SQLite se prueba sin esperas medidas: una lectura no espera a una
-escritura en curso, una escritura no espera a una lectura abierta (que conserva su estado), dos
-primeras aperturas simultáneas migran una sola vez, una base antigua ocupada se abre sin
-convertirse y se convierte en la siguiente apertura, y al cerrar queda un único archivo
-completo. Por encima de todo eso, el recorrido nativo de `npm run e2e:native` prueba la app real,
+herramienta haya calculado sobre el archivo. Que ninguna apertura cambia el esquema se prueba con
+cada comando de la ventana, por el manejador real de comandos, sobre un v6 en rollback y en WAL, un
+v11, un v13 en rollback y en WAL, un archivo vacío, una base de otro programa y una marcada con la
+versión 12 sin su estructura: cada comando que abriría el inventario se rechaza con su código y ningún
+archivo de la carpeta cambia, aparece ni desaparece. También con casos de uso que abren de verdad un
+v6, un v11 en WAL y un v13 en rollback y en WAL y los rechazan sin cambiar un byte ni su modo de
+journal y sin crear `backups/`; con una conexión cuyo archivo pasa a la v11 después de abrirse, que
+rechaza leer y escribir sin actualizarlo; con un agente al que se le cierra la puerta después de abrir
+su conexión; con un inventario que desaparece con la ventana abierta y que nadie vuelve a crear; con un
+archivo vacío que nunca se inicializa; con la ventana que arranca donde no hay nada y crea un inventario
+en WAL; y con arranques sobre escritores a los que se mata a medias: un v12 se recupera con lo
+confirmado, y un v6 y un v13 se rechazan sin cambiar ningún archivo. La concurrencia de SQLite se
+prueba sin esperas medidas: una lectura no espera a una escritura en curso, una escritura no espera a
+una lectura abierta (que conserva su estado), cuatro arranques simultáneos crean un único inventario
+sin dejar nombres provisionales, un inventario actual en rollback no lo convierte ninguna consulta ni
+escritura y, ocupado, la ventana arranca sin convertirlo y lo convierte en el siguiente arranque, y al
+cerrar queda un único archivo completo. Por encima de todo eso, el recorrido nativo de `npm run e2e:native` prueba la app real,
 con su ventana, de punta a punta (ver [Ejecutar](#ejecutar)).

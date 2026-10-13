@@ -427,7 +427,8 @@ impl Monitor {
                 }
             }
         }
-        let Ok(db) = crate::inventory::open(&self.inner.path) else {
+        // Only ever opened, never created, upgraded or converted: it reads no table.
+        let Ok(db) = crate::inventory::open_current(&self.inner.path) else {
             return false;
         };
         let Ok(version) = data_version(&db) else {
@@ -627,8 +628,12 @@ mod tests {
     const SECOND: Duration = Duration::from_secs(1);
     const MINUTE: Duration = Duration::from_secs(60);
 
+    /// A new inventory, as the window creates one.
     fn path() -> PathBuf {
-        std::env::temp_dir().join(format!("devhq-monitor-test-{}.sqlite3", Uuid::new_v4()))
+        let path =
+            std::env::temp_dir().join(format!("devhq-monitor-test-{}.sqlite3", Uuid::new_v4()));
+        crate::inventory::start(&path).unwrap();
+        path
     }
 
     fn supervise(path: &Path, subject: &Subject, url: &str, interval: Option<i64>, valid: i64) {
@@ -970,6 +975,7 @@ mod tests {
                         redirects: vec![],
                     }),
                     reporter: None,
+                    asked_by: None,
                     lifeline: None,
                 },
             )
@@ -1188,6 +1194,7 @@ mod tests {
         assert!(status.checks.is_empty());
         // Reading is tried again on the next pass; nothing ran meanwhile.
         std::fs::remove_dir(&directory).unwrap();
+        crate::inventory::start(&directory).unwrap();
         let subject = resource(&directory);
         supervise(&directory, &subject, "http://x.invalid/", Some(5), 15);
         sleep(31 * SECOND).await;
@@ -1275,6 +1282,7 @@ mod tests {
                     redirects: vec![],
                 }),
                 reporter: None,
+                asked_by: None,
                 lifeline: None,
             },
         )
@@ -1525,9 +1533,11 @@ mod tests {
                                 recorded_at: now,
                                 http: Some(&evidence),
                                 reporter: None,
+                                asked_by: None,
                                 lifeline: Some(&lifeline),
                             },
                         )
+                        .map(|(observation, _)| observation)
                     })
                 }),
             )

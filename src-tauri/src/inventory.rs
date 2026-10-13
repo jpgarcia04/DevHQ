@@ -1,7 +1,7 @@
 use crate::local_copies::readings::{self, LocalCopy};
 use crate::records::{Actor, Subject};
 use crate::references::{self, Reference, ReferenceInput, SharedRepository};
-use crate::{change_log, http_check, records};
+use crate::{access, change_log, http_check, records};
 use rusqlite::{
     params, Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
 };
@@ -251,42 +251,308 @@ const MIGRATIONS: [(i64, &str); 12] = [
     (12, include_str!("../migrations/012_copy_readings.sql")),
 ];
 
-/// Opens the inventory, upgrading its schema first if it is older than this build's.
-///
-/// The database uses write-ahead logging: a reader works on the last committed state and
-/// never waits for a writer, and a writer never waits for readers. Supervision writes from
-/// the async runtime while the window reads, and some commands run on the main thread, so
-/// with a rollback journal a reader could stall the window behind a commit in progress.
-/// Writers still take turns. The mode is stored in the file, so setting it again is a no-op;
-/// when the last connection closes SQLite folds the log back into `inventory.sqlite3`.
-pub(crate) fn open(path: &Path) -> Result<Connection, ApiError> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(ApiError::database)?;
-    }
-    let mut db = Connection::open(path).map_err(ApiError::database)?;
+// How DevHQ reaches its inventory. No opening changes its schema: an inventory in an older schema
+// is refused, never upgraded, until upgrading is an explicit step of its own.
+//
+// - `create` makes a new inventory, only where there is no file at all, and is called only by the
+//   window when it starts (`start`), never while it is open and never by the gate.
+// - `start` is what the window does before anything else opens the inventory: create one where
+//   none is, recover one in this build's schema that a crash left needing it, and switch it to
+//   write-ahead logging. It leaves anything else as it found it.
+// - `open_current` opens an existing file for a use case, and `begin` and `begin_write` start the
+//   use case's transaction only once they found, inside it, an inventory in this build's schema
+//   (and, for an agent's write, the person's leave): what a use case reads or writes is always
+//   the current schema, whatever happened to the file since anyone last looked.
+// - `examine` and `read_as_found` are the agent gate's reads, which change no file.
+
+/// What a use case's connection does on top of SQLite's defaults: waits up to five seconds for
+/// another writer, and enforces relationships.
+fn prepared(db: Connection) -> Result<Connection, ApiError> {
     db.busy_timeout(Duration::from_secs(5))
         .map_err(ApiError::database)?;
-    // Switching an older file needs it to itself, and SQLite does not wait for that: when
-    // another connection holds a lock (two requests at first launch), a later open switches
-    // it. Until then, and where the file system cannot share memory between connections, the
-    // rollback journal stays: just as correct, only readers and writers wait for each other.
-    match db.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get::<_, String>(0)) {
-        Err(rusqlite::Error::SqliteFailure(error, _))
-            if error.code == rusqlite::ErrorCode::DatabaseBusy => {}
-        result => {
-            result.map_err(ApiError::database)?;
-        }
-    }
-    // Only an upgrade takes the write lock; an up-to-date database is just read.
-    if schema_version(&db)? < SCHEMA_VERSION {
-        // Upgrades rebuild tables, which SQLite only allows safely with enforcement off.
-        // migrate() verifies every relationship before committing; from then on it is on.
-        db.pragma_update(None, "foreign_keys", "OFF")
-            .map_err(ApiError::database)?;
-        migrate(&mut db)?;
-    }
     db.pragma_update(None, "foreign_keys", "ON")
         .map_err(ApiError::database)?;
+    Ok(db)
+}
+
+/// A connection to the inventory at `path`, for one of the window's use cases or one of the gate's
+/// writes: only if a file is there, which it never creates, upgrades or converts to another journal
+/// mode. It does not say what the file is: every use goes through `begin` or `begin_write`, which
+/// refuse anything but an inventory in this build's schema inside the transaction.
+///
+/// It can write, as every use case may, so SQLite recovers what a crash left in the file the first
+/// time the connection reads it, as any program that writes to a SQLite file does: it plays back a
+/// rollback journal or folds a log that no connection holds. The window recovers at `start` only
+/// an inventory in this build's schema; one that a crash leaves while the window is open, or that
+/// another program puts in its place, is recovered here before it is classified.
+pub(crate) fn open_current(path: &Path) -> Result<Connection, ApiError> {
+    let opened = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    );
+    match opened {
+        Ok(db) => prepared(db),
+        // Without SQLITE_OPEN_CREATE a missing file cannot be opened: say what is missing.
+        Err(_) if !path.exists() => Err(Found::Missing.refusal(path)),
+        Err(error) => Err(ApiError::database(error)),
+    }
+}
+
+/// A transaction on `db` (`behavior`: Deferred to read, Immediate to write), started only once a
+/// look inside it found an inventory in this build's schema, with its structure: what the
+/// transaction reads is that inventory, whatever replaced, upgraded or emptied the file before.
+/// Anything else is refused with what was found, and the transaction is rolled back before it read
+/// or wrote anything else. A read transaction sees one state from its first read, the look, on.
+pub(crate) fn begin(
+    db: &mut Connection,
+    behavior: TransactionBehavior,
+) -> Result<Transaction<'_>, ApiError> {
+    let path = PathBuf::from(db.path().unwrap_or_default());
+    let tx = db
+        .transaction_with_behavior(behavior)
+        .map_err(ApiError::database)?;
+    match classify(&tx).map_err(ApiError::database)? {
+        Found::Current => Ok(tx),
+        found => Err(found.refusal(&path)),
+    }
+}
+
+/// A write transaction on `db` for `by`, with SQLite's write lock held, started only once it found
+/// inside it an inventory in this build's schema and, for an agent, that the person lets agents
+/// write (see `access`): that decides, so that closing the agent gate in Settings, or replacing,
+/// upgrading or emptying the file, can never race a write that was asked for before.
+pub(crate) fn begin_write<'a>(
+    db: &'a mut Connection,
+    by: &Actor,
+) -> Result<Transaction<'a>, ApiError> {
+    let tx = begin(db, TransactionBehavior::Immediate)?;
+    if let Actor::Agent(_) = by {
+        access::permitted(&access::mode(&tx)?, "write")?;
+    }
+    Ok(tx)
+}
+
+/// Runs `work` in a write transaction for `by` on the inventory at `path` (see `begin_write`), and
+/// commits what it did unless it failed.
+pub(crate) fn write<T>(
+    path: &Path,
+    by: &Actor,
+    work: impl FnOnce(&Transaction) -> Result<T, ApiError>,
+) -> Result<T, ApiError> {
+    let mut db = open_current(path)?;
+    let tx = begin_write(&mut db, by)?;
+    let value = work(&tx)?;
+    tx.commit().map_err(ApiError::database)?;
+    Ok(value)
+}
+
+/// Creates a new, empty inventory in this build's schema at `path`, only where there is no file:
+/// false when a file was there, which it leaves as it is. It builds the inventory under a name of
+/// its own beside `path`, in one transaction, and then gives it `path` with a second name, which
+/// the file system refuses if anything has that name: `path` never holds half an inventory, and a
+/// file that appears there meanwhile, another DevHQ's new inventory or anything else, is never
+/// replaced or written to. A folder that cannot hold a second name for a file (a hard link) cannot
+/// hold a new inventory either; DevHQ's backups need the same.
+///
+/// The new file uses a rollback journal: `start` switches it to write-ahead logging once it is in
+/// place, as it does for any current inventory.
+pub(crate) fn create(path: &Path) -> Result<bool, ApiError> {
+    let failed = |error: &dyn std::fmt::Display| {
+        ApiError::database(format!(
+            "DevHQ could not create a new inventory at {}: {error}",
+            path.display()
+        ))
+    };
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| failed(&error))?;
+    }
+    let building = beside(path, &format!(".new-{}", Uuid::new_v4()));
+    let built = (|| {
+        let mut db = Connection::open_with_flags(
+            &building,
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+                | OpenFlags::SQLITE_OPEN_CREATE
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(|error| failed(&error))?;
+        // Rebuilding tables needs enforcement off; migrate() checks every relationship.
+        db.pragma_update(None, "foreign_keys", "OFF")
+            .map_err(|error| failed(&error))?;
+        migrate(&mut db)?;
+        drop(db);
+        // On disk before it is named, so that `path` never names data still in a cache. Windows
+        // flushes only through a handle that can write.
+        File::options()
+            .write(true)
+            .open(&building)
+            .and_then(|file| file.sync_all())
+            .map_err(|error| failed(&error))?;
+        match std::fs::hard_link(&building, path) {
+            Ok(()) => Ok(true),
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => Ok(false),
+            Err(error) => Err(failed(&error)),
+        }
+    })();
+    // Named or not, the building name goes: the inventory keeps `path`.
+    let _ = std::fs::remove_file(&building);
+    built
+}
+
+/// What the window does with the inventory at `path` when it starts, before its commands or its
+/// supervision open it: Ok when it is an inventory in this build's schema, ready to use; otherwise
+/// why the window serves nothing from it, which every command answers until DevHQ starts again.
+///
+/// - No file there: it creates a new inventory (`create`). A file that is there, even an empty
+///   one, is never initialized.
+/// - An inventory in this build's schema: it switches it to write-ahead logging, the only place
+///   DevHQ sets a journal mode.
+/// - A file left needing recovery (a write that did not finish, or a log no connection holds):
+///   it lets SQLite recover it only once a copy of its files, recovered apart in a temporary
+///   folder, proved to be an inventory in this build's schema (`recovered_copy`). Anything else,
+///   older, newer or not an inventory, keeps its files as they are.
+/// - Anything else is left as it is, and refused.
+///
+/// It looks with `examine`, which on Unix must never run while this process holds a connection
+/// to the inventory: the window calls it before anything opens one.
+pub(crate) fn start(path: &Path) -> Result<(), ApiError> {
+    let mut unreadable = "its files kept changing while DevHQ opened them".to_owned();
+    for _ in 0..2 * LOOKS {
+        match examine(path, |_| Ok(())).0 {
+            Found::Missing => {
+                // Whoever names it first, this window or another starting at the same moment,
+                // made a current inventory: look again either way.
+                create(path)?;
+            }
+            Found::NeedsRecovery(recovery) => match recovered_copy(path) {
+                // Recovered by the connection's first read, inside the look in `begin`.
+                Found::Current => {
+                    let mut db = open_current(path)?;
+                    begin(&mut db, TransactionBehavior::Deferred)?;
+                }
+                found => return Err(left_needing_recovery(path, &found, recovery)),
+            },
+            Found::Current => {
+                let db = open_current(path)?;
+                // Classified again on this connection, which is bound to the file it opened.
+                match classify(&db).map_err(ApiError::database)? {
+                    Found::Current => {}
+                    found => return Err(found.refusal(path)),
+                }
+                return log_ahead(&db);
+            }
+            // Its files changed under every look: another window starting at the same moment
+            // creates, recovers or switches it, and opens and closes its log as it goes. Looked at
+            // again once it has had a moment; a file that is unreadable for good stays so.
+            Found::Unreadable(why) => {
+                unreadable = why;
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            found => return Err(found.refusal(path)),
+        }
+    }
+    Err(Found::Unreadable(unreadable).refusal(path))
+}
+
+/// Switches the inventory on `db` to write-ahead logging: a reader works on the last committed
+/// state and never waits for a writer, and a writer never waits for readers. Supervision writes
+/// from the async runtime while the window reads, and some commands run on the main thread, so with
+/// a rollback journal a reader could stall the window behind a commit in progress. Writers still
+/// take turns. The mode is stored in the file, so setting it again is a no-op; when the last
+/// connection closes SQLite folds the log back into `inventory.sqlite3`.
+fn log_ahead(db: &Connection) -> Result<(), ApiError> {
+    // Switching needs the file to itself, and SQLite does not wait for that: while another
+    // connection holds a lock (the agent gate writing), the next start switches it. Until then,
+    // and where the file system cannot share memory between connections, the rollback journal
+    // stays: just as correct, only readers and writers wait for each other.
+    match db.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get::<_, String>(0)) {
+        Err(rusqlite::Error::SqliteFailure(error, _))
+            if error.code == rusqlite::ErrorCode::DatabaseBusy =>
+        {
+            Ok(())
+        }
+        result => result.map(|_| ()).map_err(ApiError::database),
+    }
+}
+
+/// What the file at `path`, which needs recovering, is once recovered, found on a copy of its
+/// files that SQLite recovers in a temporary folder of its own, which is then removed: the files
+/// at `path` are only read. The copy counts only if they did not change while they were copied.
+fn recovered_copy(path: &Path) -> Found {
+    let folder = std::env::temp_dir().join(format!("devhq-recovering-{}", Uuid::new_v4()));
+    let found = (|| {
+        let unreadable = |error: std::io::Error| Found::Unreadable(error.to_string());
+        let before = OnDisk::look(path)?;
+        std::fs::create_dir(&folder).map_err(unreadable)?;
+        let copy = folder.join("inventory.sqlite3");
+        std::fs::copy(path, &copy).map_err(unreadable)?;
+        // The log's index is rebuilt from the log; a journal is copied whatever it holds.
+        for suffix in ["-wal", "-journal"] {
+            match std::fs::copy(beside(path, suffix), beside(&copy, suffix)) {
+                Err(error) if error.kind() != ErrorKind::NotFound => return Err(unreadable(error)),
+                _ => {}
+            }
+        }
+        if OnDisk::look(path).as_ref() != Ok(&before) {
+            return Err(Found::Unreadable(
+                "its files changed while DevHQ copied them".to_owned(),
+            ));
+        }
+        let db = Connection::open_with_flags(
+            &copy,
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(|error| Found::Unreadable(error.to_string()))?;
+        classify(&db).map_err(|error| Found::Unreadable(error.to_string()))
+    })()
+    .unwrap_or_else(|found| found);
+    let _ = std::fs::remove_dir_all(&folder);
+    found
+}
+
+/// Why the window serves nothing from a file left needing recovery whose recovered copy was
+/// `found`, not an inventory in this build's schema: its files are left as they are.
+fn left_needing_recovery(path: &Path, found: &Found, recovery: Recovery) -> ApiError {
+    let refused = found.refusal(path);
+    let unfinished = Found::NeedsRecovery(recovery).meaning();
+    ApiError {
+        code: refused.code,
+        message: format!(
+            "{} Its files also need recovering ({unfinished}) DevHQ found that out on a copy, which it recovered apart and removed, and left the files themselves as they are.",
+            refused.message
+        ),
+    }
+}
+
+/// Upgrades the inventory at `path` from an older schema to this build's. Only tests call it, to
+/// prove what each migration keeps: no DevHQ path upgrades an inventory until upgrading is an
+/// explicit step, with a verified backup first.
+#[cfg(test)]
+pub(crate) fn upgrade(path: &Path) -> Result<(), ApiError> {
+    let mut db = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(ApiError::database)?;
+    db.busy_timeout(Duration::from_secs(5))
+        .map_err(ApiError::database)?;
+    db.pragma_update(None, "foreign_keys", "OFF")
+        .map_err(ApiError::database)?;
+    migrate(&mut db)
+}
+
+/// A connection for a test to the inventory at `path`, which it makes as DevHQ would have had it:
+/// a new one where there is no file, and one in an older schema upgraded (see `upgrade`). It has
+/// read the inventory once, so that it holds a write-ahead log open as the window's connections do.
+/// Only tests have it: anything that opens the inventory for DevHQ itself goes through
+/// `open_current`.
+#[cfg(test)]
+pub(crate) fn open(path: &Path) -> Result<Connection, ApiError> {
+    if !path.exists() {
+        start(path)?;
+    }
+    upgrade(path)?;
+    let mut db = open_current(path)?;
+    begin(&mut db, TransactionBehavior::Deferred)?;
     Ok(db)
 }
 
@@ -304,9 +570,11 @@ fn schema_version(db: &Connection) -> Result<i64, ApiError> {
     Ok(version)
 }
 
+/// Brings the schema on `db` up to this build's in one transaction: from nothing for `create`,
+/// and, in tests only, from an older one (`upgrade`). Every relationship is checked before the
+/// commit; anything that fails rolls the whole of it back.
 fn migrate(db: &mut Connection) -> Result<(), ApiError> {
-    // Serialize first launch: two WebView requests may reach this path together. Whoever
-    // gets the lock second finds the schema already upgraded.
+    // Whoever gets the lock second finds the schema already there.
     let tx = db
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(ApiError::database)?;
@@ -351,7 +619,7 @@ pub(crate) enum Found {
     Current,
     /// A file that declares this build's schema without having its structure: what differs.
     Mismatch(Vec<String>),
-    /// A DevHQ inventory that declares an older schema, which only the window upgrades.
+    /// A DevHQ inventory that declares an older schema, which nothing in this build upgrades.
     Outdated(i64),
     /// A DevHQ inventory that declares a schema newer than this build knows.
     Newer(i64),
@@ -419,16 +687,16 @@ impl Found {
     /// What it means for the person and for an agent, in a sentence or two.
     pub(crate) fn meaning(&self) -> String {
         match self {
-            Self::Missing => "There is no file there. The gate never creates one: DevHQ's window creates the inventory the first time it opens.".to_owned(),
+            Self::Missing => "There is no file there. The gate never creates one, and DevHQ's window creates a new, empty inventory only when it starts and finds no file, never while it is open.".to_owned(),
             Self::Current => format!("A DevHQ inventory that declares schema version {SCHEMA_VERSION}, the one this DevHQ reads, and has every table, column and index of that schema. Its integrity (each page and row) was not checked."),
             Self::Mismatch(differences) => format!("A file that declares schema version {SCHEMA_VERSION}, the one this DevHQ reads, without that schema's structure: {}. The gate serves nothing from it, so what it holds is unknown.", differences.join("; ")),
-            Self::Outdated(version) => format!("A DevHQ inventory that declares schema version {version}, older than this DevHQ's ({SCHEMA_VERSION}). The gate never upgrades an inventory and serves nothing from this one. DevHQ's window upgrades it when it opens it, without making a backup first."),
+            Self::Outdated(version) => format!("A DevHQ inventory that declares schema version {version}, older than this DevHQ's ({SCHEMA_VERSION}). This DevHQ never upgrades an inventory when it opens it: neither its window nor the gate serves anything from this one, and both leave it as it is. Upgrading it is an explicit step, which this DevHQ does not offer yet."),
             Self::Newer(version) => format!("A DevHQ inventory that declares schema version {version}, written by a DevHQ newer than this one (schema {SCHEMA_VERSION}). This DevHQ cannot read it, and the gate serves nothing from it."),
-            Self::Foreign { empty: true } => "An empty file or a SQLite database without tables: not a DevHQ inventory. The gate never turns a file into one.".to_owned(),
-            Self::Foreign { empty: false } => "A SQLite database without DevHQ's tables: not a DevHQ inventory. The gate never turns a file into one.".to_owned(),
-            Self::NeedsRecovery(Recovery::Journal) => "A rollback journal (-journal) beside the file, left by a write that did not finish: until SQLite plays it back, the file may hold half of that write. Playing it back changes the file, and the gate never does; SQLite does it the next time a program that writes opens the file, as DevHQ's window does. Until then what the file holds, its schema version included, is unknown.".to_owned(),
-            Self::NeedsRecovery(Recovery::Log) => "A write-ahead log (-wal) with changes that no connection holds open: whoever wrote them, DevHQ's window or another program, ended without folding them into the file (it crashed, was killed, or closed while another connection was reading). Reading them needs SQLite to recover the log, which changes the files, and the gate never does; DevHQ's window recovers and folds it when it opens. Until then what the inventory holds, its schema version included, is unknown.".to_owned(),
-            Self::NeedsRecovery(Recovery::LogWithoutIndex) => "A write-ahead log (-wal) without its index (-shm): SQLite would have to rebuild the index from the log, creating a file, before reading anything, and the gate never does; DevHQ's window does it when it opens. Until then what the inventory holds, its schema version included, is unknown.".to_owned(),
+            Self::Foreign { empty: true } => "An empty file or a SQLite database without tables: not a DevHQ inventory. DevHQ never turns a file into one: it creates a new inventory only where there is no file at all.".to_owned(),
+            Self::Foreign { empty: false } => "A SQLite database without DevHQ's tables: not a DevHQ inventory. DevHQ never turns a file into one.".to_owned(),
+            Self::NeedsRecovery(Recovery::Journal) => "A rollback journal (-journal) beside the file, left by a write that did not finish: until SQLite plays it back, the file may hold half of that write. Playing it back changes the file, and the gate never does; SQLite does it the next time a program that writes opens the file; DevHQ's window does it when it starts only for an inventory in this DevHQ's schema, which it finds out first on a copy. Until then what the file holds, its schema version included, is unknown.".to_owned(),
+            Self::NeedsRecovery(Recovery::Log) => "A write-ahead log (-wal) with changes that no connection holds open: whoever wrote them, DevHQ's window or another program, ended without folding them into the file (it crashed, was killed, or closed while another connection was reading). Reading them needs SQLite to recover the log, which changes the files, and the gate never does; DevHQ's window recovers and folds it when it starts, only for an inventory in this DevHQ's schema, which it finds out first on a copy. Until then what the inventory holds, its schema version included, is unknown.".to_owned(),
+            Self::NeedsRecovery(Recovery::LogWithoutIndex) => "A write-ahead log (-wal) without its index (-shm): SQLite would have to rebuild the index from the log, creating a file, before reading anything, and the gate never does; DevHQ's window does it when it starts, only for an inventory in this DevHQ's schema, which it finds out first on a copy. Until then what the inventory holds, its schema version included, is unknown.".to_owned(),
             Self::Unreadable(why) => format!("DevHQ could not read the file as a SQLite database ({why}), so what it holds, its schema included, is unknown."),
         }
     }
@@ -439,7 +707,7 @@ impl Found {
         let (code, message) = match self {
             Self::Missing => {
                 return ApiError::invalid(format!(
-                    "There is no DevHQ inventory at {at}. Open DevHQ once to create it, or start the gate with --database <path>."
+                    "There is no DevHQ inventory at {at}. DevHQ's window creates a new one only when it starts and finds no file there, never while it is open; the gate never creates one (start it with --database <path> for another inventory)."
                 ))
             }
             Self::Current => {
@@ -555,24 +823,12 @@ pub(crate) fn read_as_found<T>(
 /// A connection for the gate to change the inventory at `path` in its own transaction, opened
 /// only once a look that changes nothing (see `examine`) found it in this build's schema and
 /// needing no recovery: the gate never creates, upgrades or converts an inventory to another
-/// journal mode. The file is classified again on this connection, so that one replaced meanwhile
-/// is not written; one left needing recovery in that moment is recovered by SQLite, as any write
-/// does.
+/// journal mode. Its transaction (`begin_write`) classifies the file again, so that one replaced
+/// meanwhile is not written; one left needing recovery in that moment is recovered by SQLite, as
+/// any write does (see `open_current`).
 pub(crate) fn open_to_write(path: &Path) -> Result<Connection, ApiError> {
     read_as_found(path, |_| Ok(()))?;
-    let db = Connection::open_with_flags(
-        path,
-        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .map_err(ApiError::database)?;
-    db.busy_timeout(Duration::from_secs(5))
-        .map_err(ApiError::database)?;
-    db.pragma_update(None, "foreign_keys", "ON")
-        .map_err(ApiError::database)?;
-    match classify(&db).map_err(ApiError::database)? {
-        Found::Current => Ok(db),
-        found => Err(found.refusal(path)),
-    }
+    open_current(path)
 }
 
 /// The bytes every SQLite database file starts with.
@@ -1007,13 +1263,13 @@ pub(crate) fn allowed(value: &str, choices: &[&str], label: &str) -> Result<(), 
 }
 
 pub fn list(path: &Path) -> Result<Inventory, ApiError> {
-    list_from(&mut open(path)?)
+    list_from(&mut open_current(path)?)
 }
 
 /// One consistent read of the inventory on `db`, in one read transaction: `list` on a connection
 /// the caller opened, such as the agent gate's, which opens the inventory as it finds it.
 pub(crate) fn list_from(db: &mut Connection) -> Result<Inventory, ApiError> {
-    let tx = db.transaction().map_err(ApiError::database)?;
+    let tx = begin(db, TransactionBehavior::Deferred)?;
     let mut resources = {
         let mut statement = tx.prepare("SELECT id, name, kind, description, operating_system FROM resources ORDER BY name COLLATE NOCASE, id").map_err(ApiError::database)?;
         let result = statement
@@ -1112,13 +1368,9 @@ pub(crate) fn list_from(db: &mut Connection) -> Result<Inventory, ApiError> {
 }
 
 pub fn save_resource(path: &Path, input: ResourceInput) -> Result<Resource, ApiError> {
-    let mut db = open(path)?;
-    let tx = db
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(ApiError::database)?;
-    let (resource, _) = save_resource_in(&tx, input, &Actor::Person)?;
-    tx.commit().map_err(ApiError::database)?;
-    Ok(resource)
+    write(path, &Actor::Person, |tx| {
+        save_resource_in(tx, input, &Actor::Person).map(|(resource, _)| resource)
+    })
 }
 
 /// Saves a resource and its complete reference list inside the caller's write transaction, which
@@ -1198,13 +1450,9 @@ pub(crate) fn save_resource_in(
 }
 
 pub fn save_application(path: &Path, input: ApplicationInput) -> Result<Application, ApiError> {
-    let mut db = open(path)?;
-    let tx = db
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(ApiError::database)?;
-    let (application, _) = save_application_in(&tx, input, &Actor::Person)?;
-    tx.commit().map_err(ApiError::database)?;
-    Ok(application)
+    write(path, &Actor::Person, |tx| {
+        save_application_in(tx, input, &Actor::Person).map(|(application, _)| application)
+    })
 }
 
 /// Saves an application and its complete component list inside the caller's write
@@ -1452,12 +1700,9 @@ fn listed(items: &[String]) -> String {
 /// One with observations, incidents or events is kept: DevHQ never erases history. Archive it
 /// instead.
 pub fn delete_application(path: &Path, id: &str) -> Result<(), ApiError> {
-    let mut db = open(path)?;
-    let tx = db
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(ApiError::database)?;
-    delete_application_in(&tx, id, &Actor::Person)?;
-    tx.commit().map_err(ApiError::database)
+    write(path, &Actor::Person, |tx| {
+        delete_application_in(tx, id, &Actor::Person).map(|_| ())
+    })
 }
 
 /// Deletes the application inside the caller's write transaction, and logs it there as `by`'s
@@ -1487,12 +1732,9 @@ pub(crate) fn delete_application_in(
 /// Deletes a resource that no component runs on, that holds no other system's paths and that has
 /// no records, with its references and its HTTP check.
 pub fn delete_resource(path: &Path, id: &str) -> Result<(), ApiError> {
-    let mut db = open(path)?;
-    let tx = db
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(ApiError::database)?;
-    delete_resource_in(&tx, id, &Actor::Person)?;
-    tx.commit().map_err(ApiError::database)
+    write(path, &Actor::Person, |tx| {
+        delete_resource_in(tx, id, &Actor::Person).map(|_| ())
+    })
 }
 
 /// Deletes the resource inside the caller's write transaction, and logs it there as `by`'s with
@@ -1557,8 +1799,16 @@ pub(crate) mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    fn path() -> std::path::PathBuf {
+    /// Where no file is yet.
+    fn nothing() -> std::path::PathBuf {
         std::env::temp_dir().join(format!("devhq-test-{}.sqlite3", Uuid::new_v4()))
+    }
+
+    /// A new inventory, as the window creates one when it starts.
+    fn path() -> std::path::PathBuf {
+        let path = nothing();
+        start(&path).unwrap();
+        path
     }
 
     fn app(resource_id: Option<String>) -> ApplicationInput {
@@ -2170,6 +2420,7 @@ pub(crate) mod tests {
                     redirects: vec![],
                 }),
                 reporter: None,
+                asked_by: None,
                 lifeline: None,
             },
         )
@@ -2336,7 +2587,7 @@ pub(crate) mod tests {
     fn says_where_the_file_system_really_keeps_the_database_file() {
         let (real, link) = linked_folder();
         let asked = link.join("inventory.sqlite3");
-        list(&asked).unwrap();
+        start(&asked).unwrap();
         let kept = real.join("inventory.sqlite3");
         assert_eq!(
             DataLocation::of(&asked),
@@ -2351,21 +2602,184 @@ pub(crate) mod tests {
         remove_linked((real, link));
     }
 
+    /// Two windows starting at once on no inventory: one creates it, the other finds it, and
+    /// nothing either built under its own name is left behind.
     #[test]
-    fn concurrent_first_open_migrates_once() {
-        let path = path();
-        let first = path.clone();
-        let second = path.clone();
-        let one = std::thread::spawn(move || list(&first));
-        let two = std::thread::spawn(move || list(&second));
-        let (one, two) = (one.join().unwrap(), two.join().unwrap());
-        assert!(
-            one.is_ok() && two.is_ok(),
-            "{:?} {:?}",
-            one.err(),
-            two.err()
-        );
+    fn concurrent_starts_create_one_inventory() {
+        let folder = std::env::temp_dir().join(format!("devhq-starts-{}", Uuid::new_v4()));
+        let path = folder.join("inventory.sqlite3");
+        let starts: Vec<_> = (0..4)
+            .map(|_| {
+                let path = path.clone();
+                std::thread::spawn(move || start(&path))
+            })
+            .collect();
+        for started in starts {
+            started.join().unwrap().unwrap();
+        }
+        let names: Vec<_> = std::fs::read_dir(&folder)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(names, ["inventory.sqlite3"]);
+        assert_eq!(examine(&path, |_| Ok(())).0, Found::Current);
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    fn host() -> ResourceInput {
+        ResourceInput {
+            id: None,
+            name: "Host".into(),
+            kind: "server".into(),
+            description: String::new(),
+            operating_system: String::new(),
+            references: vec![],
+        }
+    }
+
+    /// A new inventory is made only where there is no file: an empty file, which DevHQ did not
+    /// make (it never names half an inventory), is never initialized, by the window or anything.
+    #[test]
+    fn never_turns_an_existing_file_into_an_inventory() {
+        let path = nothing();
+        std::fs::write(&path, b"").unwrap();
+        assert!(!create(&path).unwrap(), "a file is there");
+        let refused = start(&path).unwrap_err();
+        assert_eq!(refused.code, "not_an_inventory");
+        assert!(list(&path).is_err());
+        assert!(save_resource(&path, host()).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"");
         std::fs::remove_file(path).unwrap();
+    }
+
+    /// Every file beside the inventory at `path` (its log, its index, its journal), with what it
+    /// holds.
+    fn files_of(path: &Path) -> Vec<(String, Vec<u8>)> {
+        let name = path.file_name().unwrap().to_str().unwrap().to_owned();
+        let mut found: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap())
+            .filter(|entry| entry.file_name().to_str().unwrap().starts_with(&name))
+            .map(|entry| {
+                (
+                    entry.file_name().into_string().unwrap(),
+                    std::fs::read(entry.path()).unwrap(),
+                )
+            })
+            .collect();
+        found.sort();
+        found
+    }
+
+    /// A use case that opens a file in another schema, older or newer, refuses it inside its
+    /// transaction and leaves it as it was, journal mode included: nothing upgrades or converts it.
+    #[test]
+    fn a_use_case_refuses_another_schema_and_leaves_it_as_it_is() {
+        for (version, logged, code) in [
+            (6, false, "schema_outdated"),
+            (11, true, "schema_outdated"),
+            (SCHEMA_VERSION + 1, false, "schema_newer"),
+            (SCHEMA_VERSION + 1, true, "schema_newer"),
+        ] {
+            let case = format!("v{version}, logged: {logged}");
+            let folder = std::env::temp_dir().join(format!("devhq-other-{}", Uuid::new_v4()));
+            std::fs::create_dir(&folder).unwrap();
+            let path = folder.join("inventory.sqlite3");
+            let db = database_at(&path, version.min(SCHEMA_VERSION));
+            db.pragma_update(None, "user_version", version).unwrap();
+            if logged {
+                db.pragma_update(None, "journal_mode", "WAL").unwrap();
+            }
+            drop(db);
+            let before = files_of(&path);
+            let refusals = [
+                list(&path).map(|_| ()),
+                save_resource(&path, host()).map(|_| ()),
+                access::agent_access(&path).map(|_| ()),
+                access::set_agent_access(&path, "write").map(|_| ()),
+                http_check::supervision(&path).map(|_| ()),
+                crate::backup::back_up(&path).map(|_| ()),
+            ];
+            for refusal in refusals {
+                assert_eq!(refusal.unwrap_err().code, code, "{case}");
+            }
+            assert_eq!(files_of(&path), before, "{case}");
+            assert!(!folder.join("backups").exists(), "{case}: a backups folder");
+            std::fs::remove_dir_all(folder).unwrap();
+        }
+    }
+
+    /// What a use case reads or writes is decided inside its transaction: a file whose schema
+    /// changed after it was opened (another DevHQ, another program) is refused there, as it is,
+    /// and never written; one in this build's schema is written.
+    #[test]
+    fn checks_the_schema_inside_the_transaction() {
+        let path = path();
+        let version = || -> i64 {
+            Connection::open(&path)
+                .unwrap()
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .unwrap()
+        };
+        let mut db = open_current(&path).unwrap();
+        // Another connection makes it an older inventory after this one opened it.
+        Connection::open(&path)
+            .unwrap()
+            .pragma_update(None, "user_version", 11)
+            .unwrap();
+        let refused = begin_write(&mut db, &Actor::Person).unwrap_err();
+        assert_eq!(refused.code, "schema_outdated");
+        let refused = begin(&mut db, TransactionBehavior::Deferred).unwrap_err();
+        assert_eq!(refused.code, "schema_outdated");
+        assert_eq!(version(), 11, "never upgraded");
+        // Back in this build's schema, the same connection writes.
+        Connection::open(&path)
+            .unwrap()
+            .pragma_update(None, "user_version", SCHEMA_VERSION)
+            .unwrap();
+        let tx = begin_write(&mut db, &Actor::Person).unwrap();
+        tx.execute("DELETE FROM agent_access", []).unwrap();
+        tx.commit().unwrap();
+        drop(db);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    /// An agent writes only while the person lets agents write, asked inside the write
+    /// transaction with SQLite's write lock held: the gate closed after the agent's connection
+    /// opened refuses the write. The person's writes never ask.
+    #[test]
+    fn asks_for_the_persons_leave_inside_an_agents_write() {
+        let path = path();
+        access::set_agent_access(&path, "write").unwrap();
+        let agent = Actor::agent("claude-code").unwrap();
+        let mut db = open_current(&path).unwrap();
+        // Closed in Settings after the agent's connection opened.
+        access::set_agent_access(&path, "read").unwrap();
+        assert_eq!(
+            begin_write(&mut db, &agent).unwrap_err().code,
+            "access_denied"
+        );
+        drop(begin_write(&mut db, &Actor::Person).unwrap());
+        access::set_agent_access(&path, "write").unwrap();
+        drop(begin_write(&mut db, &agent).unwrap());
+        drop(db);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    /// An inventory that goes while the window is open is not made again by any use case, which
+    /// says so.
+    #[test]
+    fn never_creates_an_inventory_that_went_while_open() {
+        let path = path();
+        resource(&path, "Host");
+        std::fs::remove_file(&path).unwrap();
+        let refused = list(&path).unwrap_err();
+        assert_eq!(refused.code, "invalid_input");
+        assert!(refused.message.contains("There is no DevHQ inventory at"));
+        assert!(save_resource(&path, host()).is_err());
+        assert!(access::agent_access(&path).is_err());
+        assert!(http_check::supervision(&path).is_err());
+        assert!(!path.exists());
     }
 
     /// Runs `work` on its own connection in another thread and waits until it holds what it
@@ -2452,8 +2866,8 @@ pub(crate) mod tests {
 
     #[test]
     fn writes_ahead_and_leaves_one_complete_file_once_closed() {
-        let path = path();
-        // As earlier releases left it: a rollback journal.
+        let path = nothing();
+        // As earlier releases left it, and as every backup is: a rollback journal.
         let db = Connection::open(&path).unwrap();
         db.pragma_update(None, "foreign_keys", "OFF").unwrap();
         for (_, sql) in &MIGRATIONS {
@@ -2467,8 +2881,12 @@ pub(crate) mod tests {
         };
         assert_eq!(mode(&db), "delete");
         drop(db);
+        // Reading and writing never convert it: only the window does, when it starts.
+        resource(&path, "Host");
+        assert_eq!(list(&path).unwrap().resources.len(), 1);
+        assert_eq!(mode(&Connection::open(&path).unwrap()), "delete");
         // Switching needs the file to itself and SQLite does not wait for it: while another
-        // connection writes, DevHQ still opens it, in the mode it has.
+        // connection writes, the window still starts on it, in the mode it has.
         let (release, writer) = holding(&path, |path, hold| {
             let mut db = Connection::open(path).unwrap();
             let tx = db
@@ -2477,15 +2895,14 @@ pub(crate) mod tests {
             hold();
             tx.commit().unwrap();
         });
-        let contended = list(&path);
+        let contended = start(&path);
         release.send(()).unwrap();
         writer.join().unwrap();
         assert!(contended.is_ok(), "{:?}", contended.err());
         assert_eq!(mode(&Connection::open(&path).unwrap()), "delete");
-        // The next open has it to itself and switches it.
-        resource(&path, "Host");
+        // The next start has it to itself and switches it, for every later connection.
+        start(&path).unwrap();
         resource(&path, "Spare");
-        // The mode is stored in the file, for every later connection.
         let db = Connection::open(&path).unwrap();
         assert_eq!(mode(&db), "wal");
         drop(db);
@@ -2501,13 +2918,14 @@ pub(crate) mod tests {
 
     #[test]
     fn upgrades_v1_schema_without_losing_inventory() {
-        let path = path();
+        let path = nothing();
         let db = Connection::open(&path).unwrap();
         db.execute_batch(include_str!("../migrations/001_inventory.sql"))
             .unwrap();
         db.pragma_update(None, "user_version", 1).unwrap();
         db.execute("INSERT INTO applications (id, name, lifecycle) VALUES ('legacy', 'Old app', 'testing')", []).unwrap();
         drop(db);
+        upgrade(&path).unwrap();
         let upgraded = list(&path).unwrap();
         assert_eq!(upgraded.applications[0].id, "legacy");
         assert_eq!(upgraded.applications[0].description, "");
@@ -2522,7 +2940,7 @@ pub(crate) mod tests {
 
     #[test]
     fn upgrades_v2_inventory_to_operational_records() {
-        let path = path();
+        let path = nothing();
         let db = Connection::open(&path).unwrap();
         db.execute_batch(include_str!("../migrations/001_inventory.sql"))
             .unwrap();
@@ -2536,6 +2954,7 @@ pub(crate) mod tests {
         )
         .unwrap();
         drop(db);
+        upgrade(&path).unwrap();
         let upgraded = list(&path).unwrap();
         assert_eq!(upgraded.resources[0].operating_system, "Linux");
         assert_eq!(upgraded.applications[0].version.as_deref(), Some("2.0"));
@@ -2600,7 +3019,7 @@ pub(crate) mod tests {
 
     #[test]
     fn upgrades_v3_records_for_http_checks_without_losing_anything() {
-        let path = path();
+        let path = nothing();
         let db = v3_database(&path);
         db.execute_batch(
             "INSERT INTO resources (id, name, kind, description, operating_system) VALUES ('host', 'Host', 'server', '', 'Linux');
@@ -2627,6 +3046,7 @@ pub(crate) mod tests {
         let events_before = strings(&db, events_sql);
         drop(db);
 
+        upgrade(&path).unwrap();
         let upgraded = list(&path).unwrap();
         assert_eq!(
             upgraded
@@ -2730,7 +3150,7 @@ pub(crate) mod tests {
 
     #[test]
     fn refuses_an_upgrade_that_would_keep_broken_relationships() {
-        let path = path();
+        let path = nothing();
         let db = v3_database(&path);
         // Written with enforcement off, as another tool could have done.
         db.execute_batch(
@@ -2740,7 +3160,7 @@ pub(crate) mod tests {
         )
         .unwrap();
         drop(db);
-        let error = list(&path).unwrap_err();
+        let error = upgrade(&path).unwrap_err();
         assert_eq!(error.code, "database_error");
         assert!(
             error.message.contains("1 broken relationships"),
@@ -2815,7 +3235,7 @@ pub(crate) mod tests {
 
     #[test]
     fn upgrades_v4_http_checks_for_supervision_without_losing_anything() {
-        let path = path();
+        let path = nothing();
         let db = v4_database(&path);
         db.execute_batch(
             "INSERT INTO resources (id, name, kind, description, operating_system) VALUES ('host', 'Host', 'server', '', 'Linux'), ('db', 'DB', 'server', '', '');
@@ -2847,6 +3267,7 @@ pub(crate) mod tests {
         let checks_before = dump(&db, "http_checks");
         drop(db);
 
+        upgrade(&path).unwrap();
         let upgraded = list(&path).unwrap();
         assert_eq!(upgraded.http_checks.len(), 2);
         assert_eq!(
@@ -2941,7 +3362,7 @@ pub(crate) mod tests {
 
     #[test]
     fn refuses_a_v5_upgrade_that_would_keep_broken_relationships() {
-        let path = path();
+        let path = nothing();
         let db = v4_database(&path);
         // A check for a resource that no longer exists, written with enforcement off.
         db.execute(
@@ -2951,7 +3372,7 @@ pub(crate) mod tests {
         )
         .unwrap();
         drop(db);
-        let error = list(&path).unwrap_err();
+        let error = upgrade(&path).unwrap_err();
         assert_eq!(error.code, "database_error");
         assert!(
             error.message.contains("1 broken relationships"),
@@ -2975,7 +3396,7 @@ pub(crate) mod tests {
 
     #[test]
     fn upgrades_v5_with_history_indexes_without_changing_any_row() {
-        let path = path();
+        let path = nothing();
         let db = Connection::open(&path).unwrap();
         db.pragma_update(None, "foreign_keys", "OFF").unwrap();
         for (_, sql) in &MIGRATIONS[..5] {
@@ -3008,6 +3429,7 @@ pub(crate) mod tests {
         let records_before: Vec<_> = RECORDS.iter().map(|table| dump(&db, table)).collect();
         drop(db);
 
+        upgrade(&path).unwrap();
         let upgraded = list(&path).unwrap();
         assert_eq!(upgraded.observations.len(), 2);
         assert_eq!(upgraded.events.len(), 3);
@@ -3032,7 +3454,7 @@ pub(crate) mod tests {
 
     #[test]
     fn upgrades_v6_records_for_agents_without_losing_anything() {
-        let path = path();
+        let path = nothing();
         let db = database_at(&path, 6);
         db.execute_batch(
             "INSERT INTO resources (id, name, kind, description, operating_system) VALUES ('host', 'Host', 'server', '', 'Linux');
@@ -3065,6 +3487,7 @@ pub(crate) mod tests {
         let records_before: Vec<_> = RECORDS.iter().map(|table| dump(&db, table)).collect();
         drop(db);
 
+        upgrade(&path).unwrap();
         let upgraded = list(&path).unwrap();
         assert_eq!(
             upgraded
@@ -3173,7 +3596,7 @@ pub(crate) mod tests {
 
     #[test]
     fn refuses_a_v7_upgrade_that_would_keep_broken_relationships() {
-        let path = path();
+        let path = nothing();
         let db = database_at(&path, 6);
         // An event of an incident that no longer exists, written with enforcement off.
         db.execute_batch(
@@ -3183,7 +3606,7 @@ pub(crate) mod tests {
         )
         .unwrap();
         drop(db);
-        let error = list(&path).unwrap_err();
+        let error = upgrade(&path).unwrap_err();
         assert_eq!(error.code, "database_error");
         assert!(
             error.message.contains("1 broken relationships"),
@@ -3208,7 +3631,7 @@ pub(crate) mod tests {
 
     #[test]
     fn upgrades_v7_closed_to_agents_without_changing_any_row() {
-        let path = path();
+        let path = nothing();
         let db = database_at(&path, 7);
         db.execute_batch(
             "INSERT INTO resources (id, name, kind, description, operating_system) VALUES ('host', 'Host', 'server', '', 'Linux');
@@ -3237,6 +3660,7 @@ pub(crate) mod tests {
         drop(db);
 
         // Upgraded, the inventory is closed to agents until the person opens it.
+        upgrade(&path).unwrap();
         assert_eq!(crate::access::agent_access(&path).unwrap().mode, "off");
         let db = Connection::open(&path).unwrap();
         let version: i64 = db
@@ -3261,7 +3685,7 @@ pub(crate) mod tests {
 
     #[test]
     fn upgrades_v8_with_an_empty_agent_log_without_changing_any_row() {
-        let path = path();
+        let path = nothing();
         let db = database_at(&path, 8);
         db.execute_batch(
             "INSERT INTO resources (id, name, kind, description, operating_system) VALUES ('host', 'Host', 'server', '', 'Linux');
@@ -3289,6 +3713,7 @@ pub(crate) mod tests {
         let before: Vec<_> = tables.iter().map(|table| dump(&db, table)).collect();
         drop(db);
 
+        upgrade(&path).unwrap();
         list(&path).unwrap();
         let db = Connection::open(&path).unwrap();
         let version: i64 = db
@@ -3331,7 +3756,7 @@ pub(crate) mod tests {
 
     #[test]
     fn upgrades_v9_agent_log_into_the_change_log_keeping_every_row() {
-        let path = path();
+        let path = nothing();
         let db = v9_with_agent_log(&path, true);
         let tables = [
             "resources",
@@ -3348,6 +3773,7 @@ pub(crate) mod tests {
         drop(db);
 
         let started = records::now_ms();
+        upgrade(&path).unwrap();
         let upgraded = list(&path).unwrap();
         let finished = records::now_ms();
         let db = Connection::open(&path).unwrap();
@@ -3492,8 +3918,9 @@ pub(crate) mod tests {
     fn a_change_log_with_nothing_earlier_to_miss_is_complete() {
         // An inventory with no systems when v10 arrives: whatever changes it had concerned
         // systems that are gone, and agents' were logged, so nothing is missing from now on.
-        let path = path();
+        let path = nothing();
         drop(v9_with_agent_log(&path, false));
+        upgrade(&path).unwrap();
         let upgraded = list(&path).unwrap();
         assert_eq!(upgraded.changes_since, None);
         assert_eq!(upgraded.changes.len(), 2);
@@ -3502,6 +3929,7 @@ pub(crate) mod tests {
         drop(db);
         std::fs::remove_file(&path).unwrap();
         // A new inventory starts with every migration at once, and its log is complete.
+        start(&path).unwrap();
         let fresh = list(&path).unwrap();
         assert_eq!(fresh.changes_since, None);
         assert!(fresh.changes.is_empty());
@@ -3510,7 +3938,7 @@ pub(crate) mod tests {
 
     #[test]
     fn upgrades_v10_with_references_without_changing_any_row() {
-        let path = path();
+        let path = nothing();
         let db = database_at(&path, 10);
         db.execute_batch(
             "INSERT INTO resources (id, name, kind, description, operating_system)
@@ -3548,6 +3976,7 @@ pub(crate) mod tests {
         let before: Vec<_> = tables.iter().map(|table| dump(&db, table)).collect();
         drop(db);
 
+        upgrade(&path).unwrap();
         let upgraded = list(&path).unwrap();
         assert!(upgraded
             .applications
@@ -3729,7 +4158,7 @@ pub(crate) mod tests {
 
     #[test]
     fn upgrades_v11_with_copy_readings_without_changing_any_row() {
-        let path = path();
+        let path = nothing();
         let db = database_at(&path, 11);
         db.execute_batch(
             "INSERT INTO resources (id, name, kind, description, operating_system)
@@ -3771,6 +4200,7 @@ pub(crate) mod tests {
         let before: Vec<_> = tables.iter().map(|table| dump(&db, table)).collect();
         drop(db);
 
+        upgrade(&path).unwrap();
         let upgraded = list(&path).unwrap();
         // The declared copy is there, never read.
         assert_eq!(upgraded.local_copies.len(), 1);
@@ -3822,27 +4252,11 @@ pub(crate) mod tests {
         std::fs::remove_file(path).unwrap();
     }
 
-    #[test]
-    fn refuses_a_newer_schema_instead_of_guessing() {
-        let path = path();
-        let db = Connection::open(&path).unwrap();
-        db.pragma_update(None, "user_version", SCHEMA_VERSION + 1)
-            .unwrap();
-        drop(db);
-        let error = list(&path).unwrap_err();
-        assert_eq!(error.code, "database_error");
-        assert!(error.message.contains(&format!(
-            "unsupported inventory schema version {}",
-            SCHEMA_VERSION + 1
-        )));
-        std::fs::remove_file(path).unwrap();
-    }
-
     /// The agent gate's reading connections never create a file and cannot write; its writing one
     /// writes only an inventory a reading look found current, and never converts it.
     #[test]
     fn opens_an_inventory_as_it_finds_it() {
-        let path = path();
+        let path = nothing();
         // Nothing there: no file, also when a connection itself is asked.
         assert_eq!(examine(&path, |_| Ok(())).0, Found::Missing);
         for way in [Way::Shared, Way::Snapshot] {
@@ -3853,6 +4267,7 @@ pub(crate) mod tests {
         assert!(refused.message.contains("There is no DevHQ inventory at"));
         assert!(open_to_write(&path).is_err());
         assert!(!path.exists());
+        start(&path).unwrap();
         resource(&path, "Host");
         let refused = read_as_found(&path, |db| {
             db.execute("DELETE FROM resources", [])
@@ -3891,7 +4306,7 @@ pub(crate) mod tests {
     #[test]
     fn tells_a_current_schema_from_one_that_only_declares_it() {
         let found_after = |sql: &str| {
-            let path = path();
+            let path = nothing();
             let db = database_at(&path, SCHEMA_VERSION);
             db.execute_batch(sql).unwrap();
             drop(db);
@@ -3919,7 +4334,7 @@ pub(crate) mod tests {
             Found::Mismatch(vec!["no index events_reported".to_owned()])
         );
         // Stamped 12 with only the two tables that tell a DevHQ inventory apart.
-        let stamped = path();
+        let stamped = nothing();
         let db = Connection::open(&stamped).unwrap();
         db.execute_batch(
             "CREATE TABLE applications (id TEXT PRIMARY KEY);
@@ -3941,7 +4356,7 @@ pub(crate) mod tests {
         assert_eq!(found.refusal(&stamped).code, "schema_mismatch");
         std::fs::remove_file(stamped).unwrap();
         // Upgraded by the window from an older schema, it has the same structure as a new one.
-        let upgraded = path();
+        let upgraded = nothing();
         drop(database_at(&upgraded, 6));
         drop(open(&upgraded).unwrap());
         assert_eq!(examine(&upgraded, |_| Ok(())).0, Found::Current);
@@ -3997,6 +4412,7 @@ pub(crate) mod tests {
         let folder = std::env::temp_dir().join(format!("devhq-{name}-{}", Uuid::new_v4()));
         std::fs::create_dir(&folder).unwrap();
         let path = folder.join("inventory.sqlite3");
+        start(&path).unwrap();
         resource(&path, "Host");
         let count = |path: &Path| {
             read_as_found(path, |db| {
@@ -4193,6 +4609,7 @@ pub(crate) mod tests {
                 .collect::<Vec<_>>()
         };
 
+        start(&path).unwrap();
         resource(&path, "Host");
         kill(writer(&path, "log"), &path);
         let before = files();
@@ -4237,5 +4654,64 @@ pub(crate) mod tests {
         );
         assert_eq!(files(), before);
         std::fs::remove_dir_all(&folder).unwrap();
+    }
+
+    /// What a writer killed in the middle left, as the window finds it when it starts: an
+    /// inventory in this build's schema is recovered, keeping what was committed; any other is
+    /// found out on a recovered copy and refused, its files left exactly as they were.
+    #[test]
+    fn the_window_recovers_only_an_inventory_in_this_schema() {
+        let folder = std::env::temp_dir().join(format!("devhq-starting-{}", Uuid::new_v4()));
+        let path = folder.join("inventory.sqlite3");
+        let files = || {
+            let mut found: Vec<_> = std::fs::read_dir(&folder)
+                .unwrap()
+                .map(|entry| {
+                    let entry = entry.unwrap();
+                    (entry.file_name(), std::fs::read(entry.path()).unwrap())
+                })
+                .collect();
+            found.sort();
+            found
+        };
+
+        // Current, with a committed change still in a log no connection holds.
+        std::fs::create_dir(&folder).unwrap();
+        start(&path).unwrap();
+        resource(&path, "Host");
+        kill(writer(&path, "log"), &path);
+        assert_eq!(
+            examine(&path, |_| Ok(())).0,
+            Found::NeedsRecovery(Recovery::Log)
+        );
+        start(&path).unwrap();
+        let names: Vec<_> = list(&path)
+            .unwrap()
+            .resources
+            .into_iter()
+            .map(|resource| resource.name)
+            .collect();
+        assert_eq!(names, ["Host", "Live box"], "what was committed is kept");
+        assert_eq!(examine(&path, |_| Ok(())).0, Found::Current);
+        std::fs::remove_dir_all(&folder).unwrap();
+
+        // Older and newer, each with a write that did not finish.
+        for (version, code) in [(6, "schema_outdated"), (SCHEMA_VERSION + 1, "schema_newer")] {
+            std::fs::create_dir(&folder).unwrap();
+            database_at(&path, version.min(SCHEMA_VERSION))
+                .pragma_update(None, "user_version", version)
+                .unwrap();
+            kill(writer(&path, "journal"), &path);
+            let before = files();
+            let refused = start(&path).unwrap_err();
+            assert_eq!(refused.code, code, "v{version}: {}", refused.message);
+            assert!(
+                refused.message.contains("also need recovering"),
+                "{}",
+                refused.message
+            );
+            assert_eq!(files(), before, "v{version}: its files were changed");
+            std::fs::remove_dir_all(&folder).unwrap();
+        }
     }
 }
