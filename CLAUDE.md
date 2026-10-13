@@ -183,12 +183,14 @@ and the inspection run only while the window holds no connection: the `Upgrades`
 `ready` check), opens `open_to_upgrade`, takes `BEGIN IMMEDIATE`, checks consent, structure
 (`schema_differences`, stricter than `classify`), integrity and relationships inside it, backs up with
 `VACUUM INTO` from a second read-only connection, verifies the copy against the inventory under the
-lock, names it and its manifest (`backup::copy_verified`, `backup::write_new`), and only then migrates
-in the same transaction and checks every row (`check_upgraded`) before committing. It never recovers an
-outdated inventory: one left needing recovery is refused, and the way back is the backup (README
-«Actualizar un inventario antiguo»). In tests, `inventory::upgrade` applies the migrations with no backup
-or check, to prove each of them on synthetic files. `inventory::open` exists only in tests. A test
-inventory is made with `start`, as the window makes it.
+lock, names it and its manifest (`backup::copy_verified`, `backup::write_new`), forces both names to
+disk (`backup::names_on_disk`, which on Unix syncs the folders and on Windows has nothing to ask), and
+only then migrates in the same transaction and checks every row (`check_upgraded`) before committing.
+Any error the system reports in that publication stops the upgrade and keeps what was named; never
+drop one. It never recovers an outdated inventory: one left needing recovery is refused, and the way
+back is the backup (README «Actualizar un inventario antiguo»). In tests, `inventory::upgrade` applies
+the migrations with no backup or check, to prove each of them on synthetic files. `inventory::open`
+exists only in tests. A test inventory is made with `start`, as the window makes it.
 
 ## Local copies
 

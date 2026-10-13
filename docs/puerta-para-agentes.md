@@ -36,6 +36,10 @@ comprueba el esquema y el acceso dentro de su propia transacción. Lo que queda 
   La alternativa sería que Back up and upgrade, con el consentimiento de la persona, guardara primero
   una copia de los archivos sin recuperar, dejara que SQLite los recuperara y siguiera como siempre;
   cambia archivos de un inventario antiguo, así que no se hizo sin decidirlo.
+- En Windows no hay forma documentada de forzar a disco los nombres de una carpeta: DevHQ confirma el
+  contenido del respaldo y de su manifiesto antes de migrar, no sus nombres, que NTFS anota en su
+  diario. Que sobrevivan a un corte de luz justo después no está probado; en Linux se confirman con la
+  carpeta y un error detiene la actualización. En macOS no se ha probado.
 - La actualización mira los archivos sin cambiarlos antes de abrir su conexión, que puede escribir: un
   journal o un log que otro programa ponga en el instante entre las dos, de microsegundos, SQLite lo
   recuperaría en su primera lectura, como en cualquier escritura. Dentro del lock vuelve a comprobar la

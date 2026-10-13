@@ -252,7 +252,7 @@ describe('Back up now', () => {
     renderSettings(inventoryContext({ dataLocation: located(), backupInventory, listBackups }))
     await user.click(screen.getByRole('button', { name: 'Back up now' }))
     expect(await screen.findByRole('alert')).toHaveTextContent(
-      'No backup was made. Copying the inventory failed: database or disk is full. The incomplete copy was removed, so no backup was added.',
+      'The backup failed. Copying the inventory failed: database or disk is full. The incomplete copy was removed, so no backup was added.',
     )
     expect(screen.getByRole('status', { name: 'Backup' })).toBeEmptyDOMElement()
     expect(listBackups).toHaveBeenCalledTimes(2)

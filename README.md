@@ -518,9 +518,22 @@ de ningún sistema.
   copia, con un error recuperable y sin dejar archivos. En Windows, el workflow hace el respaldo con
   la protección en tiempo real de Defender activa (ver [Ejecutar](#ejecutar)); otros antivirus siguen
   sin probarse.
-- Si algo falla, borra el `.partial` y la ventana muestra un error recuperable; el inventario no
-  cambia. Al terminar, muestra la hora, el tamaño, la verificación y cuántas filas de cada tabla
-  tiene la copia.
+- **Hasta dónde llega «a disco».** El contenido de la copia se fuerza a disco antes de nombrarla
+  (`fsync` en Linux, `FlushFileBuffers` en Windows) y, si el sistema responde con un error, el
+  respaldo falla y el `.partial` se borra. El nombre se confirma aparte: en Linux, ya nombrada la
+  copia, DevHQ fuerza a disco también la carpeta `backups/` y la carpeta de datos que la contiene, y
+  si el sistema responde con un error el respaldo falla con `backup_error`, aunque la copia, completa
+  y verificada, se queda con su nombre, porque no consta que ese nombre sobreviva a una caída del
+  sistema o a un corte de luz. Windows no documenta ninguna forma de forzar a disco los nombres de una
+  carpeta: NTFS anota cada nombre en su diario al darlo y escribe el diario a disco por su cuenta, así
+  que allí DevHQ confirma el contenido, no el nombre. En macOS no se ha probado. Y todo vale lo que
+  valga lo que confirman el sistema y el disco: uno que da por escrito lo que aún tiene en su caché, o
+  que falla, puede perder lo confirmado; la verificación lee la copia tal como la devuelve el sistema,
+  no la relee del disco.
+- Si algo falla antes de nombrar la copia, borra el `.partial`; si lo único que falla es confirmar el
+  nombre, la copia ya nombrada se queda y el mensaje lo dice. En los dos casos la ventana muestra un
+  error recuperable, **The backup failed.** con el motivo, y el inventario no cambia. Al terminar,
+  muestra la hora, el tamaño, la verificación y cuántas filas de cada tabla tiene la copia.
 - Debajo, `list_backups` lista los archivos de la carpeta tal como están, con su fecha de
   modificación y su tamaño, sin presentarlos como sanos: DevHQ verificó cada respaldo una vez, al
   hacerlo, y no ha vuelto a mirarlos. Un `.partial` se marca como incompleto, no como respaldo.
@@ -572,8 +585,10 @@ que no tiene ninguna herramienta para ello. Lo implementa `src-tauri/src/upgrade
      filas, con el mismo `rowid` y los mismos valores, que el inventario bajo el lock. La fuerza a disco
      y le da su nombre final con un enlace que nunca reemplaza un archivo, como Back up now. Después
      escribe su manifiesto, `inventory-<UTC>-v<N>.sqlite3.json`, también a través de un `.partial`,
-     forzado a disco y nombrado sin reemplazar nada. Sin un respaldo verificado y su manifiesto, no se
-     migra nada.
+     forzado a disco y nombrado sin reemplazar nada, y por último, en Linux, fuerza a disco los dos
+     nombres (ver hasta dónde llega «a disco» en [Respaldo](#respaldo)). Sin un respaldo verificado
+     y su manifiesto no se migra nada, ni cuando el sistema responde que no pudo hacer alguno de esos
+     pasos.
   4. Aplica las migraciones en la misma transacción.
   5. Antes de confirmar, comprueba el resultado: la versión 12 y su estructura, `integrity_check`,
      `foreign_key_check`, y que cada fila de cada tabla sigue ahí con su `rowid` y los mismos valores
@@ -602,9 +617,11 @@ que no tiene ninguna herramienta para ello. Lo implementa `src-tauri/src/upgrade
 - **Si algo falla**, lo dice y la ventana vuelve a mirar el inventario: si sigue pudiendo, ofrece
   intentarlo otra vez.
   - Si no se puede crear la carpeta o el `.partial` (permisos, un nombre ocupado), si `VACUUM INTO`
-    falla (disco lleno), si la copia no pasa su verificación o si no se puede escribir el manifiesto, la
-    respuesta es `backup_error`: el `.partial` se borra, el inventario no cambia y no se migra nada. Si
-    lo que falla es el manifiesto, la copia, ya verificada y nombrada, se queda, y el mensaje lo dice.
+    falla (disco lleno), si la copia no pasa su verificación, si no se puede escribir el manifiesto o
+    si, en Linux, el sistema no confirma que los nombres llegaron al disco, la respuesta es
+    `backup_error`: el `.partial` se borra, el inventario no cambia y no se migra nada. Si lo que falla
+    es el manifiesto, la copia, ya verificada y nombrada, se queda; si es la confirmación de los
+    nombres, se quedan la copia y su manifiesto; el mensaje lo dice.
   - Si una migración falla, si el resultado no pasa sus comprobaciones o si el commit falla, la
     respuesta es `upgrade_failed`: SQLite deshace la transacción, el inventario sigue en su versión con
     lo que tenía y el respaldo verificado se queda; el mensaje dice dónde está.
@@ -1402,7 +1419,8 @@ rechazar otra versión, otro contenido o un archivo cambiado después de mirarlo
 la estructura exacta de su versión, con un índice que falta, una tabla o un trigger de más, una
 relación rota, páginas dañadas o una columna declarada de otra forma, ni siendo v13 o de otro
 programa; ninguna migración se confirma sin un respaldo verificado, con una copia dañada, cambiada o con
-una fila de más, un nombre de respaldo o de manifiesto ocupado o una carpeta imposible; una migración
+una fila de más, un nombre de respaldo o de manifiesto ocupado, unos nombres que el sistema no confirma
+en disco (el respaldo y su manifiesto se quedan) o una carpeta imposible; una migración
 que falla, pierde una fila, cambia un valor o su tipo, abre la puerta a los agentes o supervisa una
 comprobación no confirma nada y deja el respaldo; un proceso al que se mata antes del commit deja el
 inventario rechazado sin tocarlo y un respaldo que, puesto en su lugar, se actualiza; uno al que se mata
@@ -1414,8 +1432,9 @@ carga visibles y recuperables, comprobaciones contra un servidor local (estado e
 y fallo TLS), configuraciones inválidas sin escrituras parciales, errores de DevHQ que
 no producen observación, la distinción de origen en cada vista real, el contrato IPC de cada comando, el contrato de atención, el respaldo
 (las mismas filas que el origen comparadas una a una, sin lo no confirmado y sin esperar a un escritor,
-sin reemplazar ni borrar un archivo ajeno, uno a la vez, y una copia dañada que se descarta sin nombre
-final), el borrado (qué lo
+sin reemplazar ni borrar un archivo ajeno, uno a la vez, una copia dañada que se descarta sin nombre
+final, y una cuyo nombre el sistema no confirma en disco, que falla y se queda; en Linux, un error al
+forzar los nombres a disco se transmite), el borrado (qué lo
 impide, la confirmación y que un resultado tardío de un sujeto borrado no se registra) y las
 referencias: cada destino que se rechaza y por qué, las máquinas, los duplicados, los ID que se
 conservan, el registro de cambios con el campo `references`, el repositorio compartido por igualdad

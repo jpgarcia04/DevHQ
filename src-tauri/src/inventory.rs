@@ -59,7 +59,8 @@ impl ApiError {
             message: message.into(),
         }
     }
-    /// No backup was made, or one is already being made. The inventory itself is untouched.
+    /// A backup did not succeed: none was made, one is already being made, or the one made is kept
+    /// without DevHQ vouching for it, as the message says. The inventory itself is untouched.
     pub(crate) fn backup(message: impl Into<String>) -> Self {
         Self {
             code: "backup_error",

@@ -397,7 +397,7 @@ try {
     await ui.go('Settings')
     await ui.see(database, "//section[@aria-labelledby='database-file-heading']")
     await ui.click(button('Back up now'))
-    await ui.see('No backup was made.')
+    await ui.see('The backup failed.')
     await ui.see('declares schema version 6')
     assert.deepEqual(await dataFiles(), ['inventory.sqlite3'], 'no file was added')
     assert.ok(readFileSync(database).equals(older), 'the v6 file changed')

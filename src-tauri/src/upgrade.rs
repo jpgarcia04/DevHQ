@@ -16,7 +16,8 @@
 //! 3. backs it up from a second, read-only connection with `VACUUM INTO`, which reads the last
 //!    committed state, the one the lock keeps; verifies the copy on its own against what the lock
 //!    keeps (version, structure, integrity, and every row of every table, value by value); forces it
-//!    to disk and names it (`backup::copy_verified`), and only then writes its manifest beside it;
+//!    to disk and names it (`backup::copy_verified`), writes its manifest beside it the same way, and
+//!    forces both names to disk where the system can confirm them (`backup::names_on_disk`);
 //! 4. applies the migrations in the same transaction;
 //! 5. checks the result before committing: integrity, relationships, this build's structure, and
 //!    every row still there with every value it had (`check_upgraded`);
@@ -24,7 +25,9 @@
 //!
 //! SQLite's transaction makes 4 to 6 all or nothing: any failure, and the process ending for any
 //! reason before the commit, leaves the inventory holding what it held, with the verified backup
-//! beside it. Nothing is migrated before the backup and its manifest are on disk under their names.
+//! beside it. Nothing is migrated before the backup and its manifest are forced to disk under their
+//! names, nor once the system reported that any of that failed. Windows documents no way to force
+//! a name to disk, only a file's content (see `backup::names_on_disk`).
 
 use crate::backup;
 use crate::inventory::{self, stored_at, ApiError, Found, SCHEMA_VERSION};
@@ -237,20 +240,20 @@ pub fn upgrade(
         &inventory::MIGRATIONS,
         &crate::records::now_ms,
         progress,
-        &mut |_| Ok(()),
+        (&mut |_| Ok(()), backup::names_on_disk),
         &mut |_| Ok(()),
     )
 }
 
 /// `upgrade`, applying `migrations`, naming the backup by `clock`, letting a test `damage` the
-/// backup's copy and act `meanwhile` (see `Moment`).
+/// backup's copy, force its `names` to disk its own way and act `meanwhile` (see `Moment`).
 pub(crate) fn upgrade_with(
     path: &Path,
     (from, fingerprint): (i64, &str),
     migrations: &[(i64, &str)],
     clock: &dyn Fn() -> i64,
     progress: &mut dyn FnMut(Step),
-    damage: Damage,
+    (damage, names): (Damage, backup::Names),
     meanwhile: &mut dyn FnMut(Moment) -> std::io::Result<()>,
 ) -> Result<Upgraded, ApiError> {
     progress(Step::Checking);
@@ -295,7 +298,7 @@ pub(crate) fn upgrade_with(
     }
 
     progress(Step::BackingUp);
-    let backup = back_up(path, &before, clock(), damage)?;
+    let backup = back_up(path, &before, clock(), damage, names)?;
     progress(Step::BackedUp {
         backup: Box::new(backup.clone()),
     });
@@ -341,12 +344,14 @@ fn refused(why: &str) -> ApiError {
 
 /// Makes the copy of the inventory at `path` that precedes its upgrade, while the upgrade's
 /// transaction holds the write lock: the last committed state, `before`. The copy is verified
-/// against `before` and named (see `backup::copy_verified`), then its manifest is written beside it.
+/// against `before` and named (see `backup::copy_verified`), then its manifest is written beside it,
+/// and then `names` forces both names to disk.
 fn back_up(
     path: &Path,
     before: &Snapshot,
     taken_at: i64,
     damage: Damage,
+    names: backup::Names,
 ) -> Result<BeforeUpgrade, ApiError> {
     let nothing = |error: ApiError| ApiError {
         code: error.code,
@@ -404,6 +409,14 @@ fn back_up(
                 backup.path
             )))
         })?;
+    // Both names are in the backups folder: one trip to disk for the two. DevHQ does not upgrade
+    // what it may not be able to put back.
+    names(&backup::folder_of(path)).map_err(|error| {
+        nothing(ApiError::backup(format!(
+            "The backup {} and its manifest are complete and verified, but the system did not confirm that their names reached the disk ({error}), so a crash of the system or a power cut could still lose them, and DevHQ upgrades nothing it might not be able to put back. They were kept.",
+            backup.path
+        )))
+    })?;
     Ok(BeforeUpgrade {
         manifest: written.display().to_string(),
         ..backup
@@ -1079,7 +1092,7 @@ line break', 'manual', 800, 800);",
             migrations,
             &|| TAKEN_AT,
             &mut |step| steps.push(step),
-            damage,
+            (damage, backup::names_on_disk),
             &mut |_| Ok(()),
         );
         (outcome, steps)
@@ -1109,7 +1122,7 @@ line break', 'manual', 800, 800);",
             &MIGRATIONS,
             &|| taken_at,
             &mut |_| {},
-            &mut |_| Ok(()),
+            (&mut |_| Ok(()), backup::names_on_disk),
             &mut |_| Ok(()),
         )
     }
@@ -1532,9 +1545,10 @@ line break', 'manual', 800, 800);",
     }
 
     /// No migration is committed without a verified backup on disk under its name, with its
-    /// manifest: a copy that fails its verification, a backup name or a manifest name already taken
-    /// and a backups folder that cannot be made each stop the upgrade before it changes anything,
-    /// remove what they half wrote and never touch another file.
+    /// manifest: a copy that fails its verification, a backup name or a manifest name already taken,
+    /// names the system does not confirm on disk and a backups folder that cannot be made each stop
+    /// the upgrade before it changes anything, remove what they half wrote, keep what they finished
+    /// and never touch another file.
     #[test]
     fn no_migration_commits_without_a_verified_backup() {
         let path = path();
@@ -1653,6 +1667,48 @@ line break', 'manual', 800, 800);",
             b"an earlier file"
         );
         std::fs::remove_dir_all(&backups).unwrap();
+
+        // Both are named, and the system does not confirm that the names reached the disk: they
+        // are kept, complete and verified, and nothing is migrated.
+        let shown = inspect(&path).fingerprint.unwrap();
+        let mut steps = Vec::new();
+        let refused = upgrade_with(
+            &path,
+            (6, &shown),
+            &MIGRATIONS,
+            &|| TAKEN_AT,
+            &mut |step| steps.push(step),
+            (&mut |_| Ok(()), |_| {
+                Err(std::io::Error::other("the disk said no"))
+            }),
+            &mut |_| Ok(()),
+        )
+        .unwrap_err();
+        assert_eq!(refused.code, "backup_error", "{}", refused.message);
+        for said in [
+            "did not confirm that their names reached the disk (the disk said no)",
+            "They were kept",
+            "Nothing was upgraded",
+        ] {
+            assert!(refused.message.contains(said), "{}", refused.message);
+        }
+        assert_eq!(steps, [Step::Checking, Step::BackingUp]);
+        assert_eq!(names(&backups), [BACKUP_V6.to_owned(), manifest.clone()]);
+        // The backup is the inventory as it is, and the manifest says what it is.
+        assert_eq!(
+            whole(&readonly(&backups.join(BACKUP_V6))),
+            whole(&readonly(&path))
+        );
+        let said: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(backups.join(&manifest)).unwrap()).unwrap();
+        assert_eq!(
+            said["sha256"],
+            hex(&Sha256::digest(
+                std::fs::read(backups.join(BACKUP_V6)).unwrap()
+            ))
+        );
+        std::fs::remove_dir_all(&backups).unwrap();
+        assert_eq!(files(&folder), on_disk);
 
         // No backups folder can be made: a file has its name.
         std::fs::write(&backups, "not a folder").unwrap();
@@ -1835,7 +1891,7 @@ line break', 'manual', 800, 800);",
                     &small,
                     &|| TAKEN_AT,
                     &mut |_| {},
-                    &mut |_| Ok(()),
+                    (&mut |_| Ok(()), backup::names_on_disk),
                     &mut stop(at),
                 )
                 .unwrap();
