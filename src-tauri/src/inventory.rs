@@ -475,6 +475,11 @@ const LOOKS: usize = 3;
 /// (`readonly_shm`), or, for a logged file without a log, an `immutable` one, whose read counts only
 /// if the files are still as they were afterwards. A file that needs recovering is refused with
 /// what was found, and so is one SQLite reports so when opening it.
+///
+/// One race remains: if the last connection to the database closes between the look and the
+/// opening, it folds the log into the file and deletes it, and a `readonly_shm` connection then
+/// creates an empty log. Nothing the database holds changes, but "without changing any of its
+/// files" holds for everything except that empty `-wal`.
 pub(crate) fn examine<T>(
     path: &Path,
     mut read: impl FnMut(&mut Connection) -> Result<T, ApiError>,

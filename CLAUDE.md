@@ -144,7 +144,9 @@ tool's description. It never creates an inventory that does not exist. It reads 
 `inventory::examine` (`read_as_found`), which looks at the files before SQLite opens them, refuses one
 that would need recovering (`needs_recovery`), serves only the current schema with its structure, and
 opens only read-only connections SQLite cannot make write: `readonly_shm` for a log a connection
-holds, `immutable` (checked again after the read) for a logged file without a log. SQLite recovers,
+holds, `immutable` (checked again after the read) for a logged file without a log. One race remains:
+if the last connection closes between the look and the opening, the `readonly_shm` connection creates
+an empty `-wal`; so the README promises unchanged content, not untouched files. SQLite recovers,
 folds, deletes and creates files on opening whatever `query_only` says, so never give a gate read
 another kind of connection. A configuration change asks for access through that read, then writes
 through `inventory::open_to_write`; never through `inventory::open`, which creates, upgrades and

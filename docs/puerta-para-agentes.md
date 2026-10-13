@@ -42,8 +42,8 @@ que ninguna apertura actualice sola:
 
 ## Lo que la lectura sin cambios no cubre
 
-La puerta lee sin cambiar ningún archivo del inventario y rechaza con `needs_recovery` lo que habría
-que recuperar (README, «Puerta para agentes»). Lo que eso no evita:
+La puerta lee sin escribir en el inventario ni cambiar lo que contiene, y rechaza con `needs_recovery`
+lo que habría que recuperar (README, «Puerta para agentes»). Lo que eso no evita:
 
 - Mientras una consulta lee, unos milisegundos, la última conexión que se cierra, como la ventana al
   cerrarla, no puede volcar su log en el archivo: SQLite solo lo hace si nadie más tiene abierta la
@@ -54,7 +54,9 @@ que recuperar (README, «Puerta para agentes»). Lo que eso no evita:
 - Si la última conexión se cierra entre que la puerta mira los archivos y SQLite abre el log, un
   instante de microsegundos, SQLite crea un `-wal` vacío junto al inventario: abrir un archivo en WAL sin
   log lo crea, y solo `immutable` lo evita, que no sirve para una base que alguien tiene abierta. No
-  cambia el contenido, y la siguiente apertura lo usa.
+  cambia el contenido, y la siguiente apertura lo usa. Es el único archivo que una lectura de la puerta
+  puede crear: por eso el README promete que la lectura no cambia el contenido, no que deje intactos
+  todos los archivos.
 - Si quien mantiene el log termina justo después de que la puerta lo vea abierto, SQLite lee sus cambios
   en memoria, sin cambiar ningún archivo, en vez de que la puerta lo rechace. Windows suelta los
   bloqueos de un proceso muerto «cuando los recursos lo permiten»: durante ese momento la puerta lo ve

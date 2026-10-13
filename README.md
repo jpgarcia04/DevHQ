@@ -549,10 +549,11 @@ con `--database <ruta>`. Registrada con un ejecutable que no empaquetó el insta
 sus notas. Si ahí no hay inventario, lo
 dice y no crea uno vacío donde tu DevHQ no lo encontraría.
 
-**La puerta abre el inventario tal como lo encuentra, y al leerlo no cambia ninguno de sus
-archivos.** Ninguna consulta crea el archivo ni su carpeta, lo actualiza a otro esquema, cambia su modo
+**La puerta abre el inventario tal como lo encuentra, y al leerlo no escribe en él ni cambia lo que
+contiene.** Ninguna consulta crea el archivo ni su carpeta, lo actualiza a otro esquema, cambia su modo
 de journal, lo recupera ni escribe en él ni en los archivos que SQLite guarda a su lado (`-wal`,
-`-shm`, `-journal`). No basta con una conexión que no pueda escribir: SQLite cambia esos archivos con
+`-shm`, `-journal`), y solo crea uno de ellos, un `-wal` vacío, en la carrera que se describe al final
+de esta explicación. No basta con una conexión que no pueda escribir: SQLite cambia esos archivos con
 solo abrir la base en algunos estados, sea cual sea el permiso de la conexión. La primera conexión a
 un log (`-wal`) que dejó un proceso que ya terminó reconstruye su índice (`-shm`); la última en
 cerrarse vuelca el log en el archivo y lo borra; la que encuentra un journal de rollback de una
@@ -566,6 +567,16 @@ otra conexión crearía el log y su índice. Como nada impide que un escritor lo
 lectura solo cuenta si después el archivo tiene los mismos bytes y no apareció ni desapareció un log,
 un índice o un journal; si no, la puerta vuelve a mirar. Un archivo con journal de rollback y sin log,
 como cada respaldo de DevHQ, se lee con los bloqueos de siempre.
+
+Queda una carrera que este mecanismo no cierra. Si la última conexión al inventario (la ventana al
+cerrarse, por ejemplo) se cierra en el instante entre que la puerta mira los archivos y SQLite abre la
+base, esa conexión vuelca el log en el archivo y lo borra, y la conexión de la puerta, que entonces no
+es `immutable`, crea un `-wal` vacío al encontrar un archivo en WAL sin log. Ese `-wal` no tiene
+nada: el archivo del inventario y sus filas quedan como estaban, la siguiente conexión lo usa como
+cualquier log vacío y una consulta posterior lo encuentra vacío y lee el archivo entero. Puede pasar en
+cualquier apertura de la puerta, también en `status` y en los rechazos que se describen abajo, que
+tampoco cambian nada más. Es la única excepción y no autoriza ninguna otra: ninguna consulta MCP
+actualiza el inventario a otro esquema, cambia su modo de journal ni añade, cambia o borra una fila.
 
 Un inventario que habría que recuperar antes de poder leerlo se rechaza con `needs_recovery`, sin leer
 ni cambiar nada, y `status` dice qué encontró. Puede ser un journal de rollback que dejó una escritura
