@@ -49,8 +49,9 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Threading",
 ] }
 
-# A seccomp filter on Linux.
-[target.'cfg(target_os = "linux")'.dependencies]
+# A seccomp filter on Linux; on every Unix, whether a connection holds an inventory's write-ahead
+# log (F_GETLK), which the agent gate asks before reading one.
+[target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [dev-dependencies]

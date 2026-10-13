@@ -267,42 +267,44 @@ impl Session {
         }
     }
 
-    /// The inventory, opened as it is for reading: never created, upgraded or converted, and
-    /// refused unless it is in this build's schema (see `inventory::open_as_found`).
-    fn read(&self) -> Result<rusqlite::Connection, ApiError> {
-        inventory::open_as_found(&self.database, inventory::Use::Read)
+    /// What `read` makes of the inventory, read as it is on a connection that cannot change any of
+    /// its files: never created, upgraded, converted or recovered, and refused unless it is in this
+    /// build's schema (see `inventory::examine`).
+    fn read<T>(
+        &self,
+        read: impl FnMut(&mut rusqlite::Connection) -> Result<T, ApiError>,
+    ) -> Result<T, ApiError> {
+        inventory::read_as_found(&self.database, read)
     }
 
     /// Whether the person lets agents `read` or `write` through the gate, checked on every call
     /// so that a change in Settings applies at once.
     fn allow(&self, need: &str) -> Result<(), ApiError> {
-        permitted(&access::mode(&self.read()?)?, need)
+        permitted(&self.read(|db| access::mode(db))?, need)
     }
 
     fn inventory(&self) -> Result<Inventory, ApiError> {
-        inventory::list_from(&mut self.read()?)
+        self.read(inventory::list_from)
     }
 
-    /// Always answered, whatever the file is, and without changing it: what the gate found there,
-    /// and, only for an inventory it serves, the access mode and, if the person lets agents in,
-    /// what it holds. Nothing it could not read is presented as known.
+    /// Always answered, whatever the file is, and without changing any of its files: what the gate
+    /// found there, and, only for an inventory it serves, the access mode and, if the person lets
+    /// agents in, what it holds. Nothing it could not read is presented as known.
     fn status(&self) -> Result<Value, ApiError> {
         let location = inventory::DataLocation::of(&self.database);
         let exists = self.database.is_file();
-        let (db, found) = inventory::examine(&self.database);
+        let (found, served) = inventory::examine(&self.database, |db| self.served(db));
         let mut notes = Vec::new();
-        let (access, counts, this_workstation) = match (db, &found) {
-            (Some(mut db), inventory::Found::Current) => match self.served(&mut db) {
-                Ok(served) => served,
-                Err(error) => {
-                    notes.push(format!(
-                        "DevHQ could not read the inventory: {} ({}). What it holds and its access mode are unknown.",
-                        error.message, error.code
-                    ));
-                    (None, Value::Null, Value::Null)
-                }
-            },
-            _ => (None, Value::Null, Value::Null),
+        let (access, counts, this_workstation) = match served {
+            Some(Ok(served)) => served,
+            Some(Err(error)) => {
+                notes.push(format!(
+                    "DevHQ could not read the inventory: {} ({}). What it holds and its access mode are unknown.",
+                    error.message, error.code
+                ));
+                (None, Value::Null, Value::Null)
+            }
+            None => (None, Value::Null, Value::Null),
         };
         let window_open = crate::window_lock::window_open(&self.database);
         notes.extend([
@@ -509,34 +511,35 @@ impl Session {
     }
 
     fn history(&self, arguments: &Map<String, Value>) -> Result<Value, ApiError> {
-        let mut db = self.read()?;
-        let inventory = inventory::list_from(&mut db)?;
-        let subject = find_system(&inventory, arguments)?;
-        match arguments.get("records").and_then(Value::as_str) {
-            Some("observations") => {
-                let before = text(arguments, "before")?;
-                let page = records::older_observations_in(&mut db, &subject, before)?;
-                Ok(json!({ "observations": page.observations, "more": page.more }))
+        self.read(|db| {
+            let inventory = inventory::list_from(db)?;
+            let subject = find_system(&inventory, arguments)?;
+            match arguments.get("records").and_then(Value::as_str) {
+                Some("observations") => {
+                    let before = text(arguments, "before")?;
+                    let page = records::older_observations_in(db, &subject, before)?;
+                    Ok(json!({ "observations": page.observations, "more": page.more }))
+                }
+                Some("events") => {
+                    let before = text(arguments, "before")?;
+                    let page =
+                        records::older_events_in(db, std::slice::from_ref(&subject), before)?;
+                    Ok(json!({ "events": page.events, "more": page.more }))
+                }
+                // Readings start from the newest when no reading is named.
+                Some("readings") => {
+                    let before = match arguments.get("before") {
+                        None | Some(Value::Null) => None,
+                        Some(_) => Some(text(arguments, "before")?),
+                    };
+                    let page = readings::older_readings_in(db, &subject, before)?;
+                    Ok(json!({ "readings": page.readings, "more": page.more }))
+                }
+                _ => Err(ApiError::invalid(
+                    "records must be \"observations\", \"events\" or \"readings\".",
+                )),
             }
-            Some("events") => {
-                let before = text(arguments, "before")?;
-                let page =
-                    records::older_events_in(&mut db, std::slice::from_ref(&subject), before)?;
-                Ok(json!({ "events": page.events, "more": page.more }))
-            }
-            // Readings start from the newest when no reading is named.
-            Some("readings") => {
-                let before = match arguments.get("before") {
-                    None | Some(Value::Null) => None,
-                    Some(_) => Some(text(arguments, "before")?),
-                };
-                let page = readings::older_readings_in(&mut db, &subject, before)?;
-                Ok(json!({ "readings": page.readings, "more": page.more }))
-            }
-            _ => Err(ApiError::invalid(
-                "records must be \"observations\", \"events\" or \"readings\".",
-            )),
-        }
+        })
     }
 }
 
@@ -921,7 +924,7 @@ fn read_tools() -> Vec<Value> {
         read_only(
             "status",
             "DevHQ status",
-"Which inventory file the gate opened, where the system really keeps it, what the file is (`schema`: the version it stores, the one this DevHQ supports, and its state: current, outdated, newer, not_an_inventory, unreadable or missing; `schemaVersion` is the stored one, null when unknown), whether the person lets agents read or write through the gate (`access`: off, read or write), whether a DevHQ window is open on it (`windowOpen`; null when the system cannot say), how many systems it holds, which of its workstations this computer is (`thisWorkstation`, or why DevHQ does not know: only the window chooses it), and what the gate cannot know. Access, counts and workstation are null unless the inventory is current, which is the only kind the gate serves. Always answered, even with the gate off, and never changes the file.",
+"Which inventory file the gate opened, where the system really keeps it, what the file is (`schema`: the version it stores, the one this DevHQ supports, and its state: current, outdated, newer, not_an_inventory, needs_recovery, unreadable or missing; `schemaVersion` is the stored one, null when unknown), whether the person lets agents read or write through the gate (`access`: off, read or write), whether a DevHQ window is open on it (`windowOpen`; null when the system cannot say), how many systems it holds, which of its workstations this computer is (`thisWorkstation`, or why DevHQ does not know: only the window chooses it), and what the gate cannot know. Access, counts and workstation are null unless the inventory is current, which is the only kind the gate serves. An inventory left needing recovery (a write that did not finish, or a log no connection holds) is reported, never recovered: DevHQ's window recovers it when it opens. Always answered, even with the gate off, and never changes the file or the files SQLite keeps beside it.",
             json!({}),
             &[],
         ),
@@ -2876,7 +2879,8 @@ mod tests {
     fn reads_leave_every_file_as_they_found_it_and_status_says_what_it_is() {
         use crate::inventory::tests::database_at;
         let counts = json!({ "applications": 1, "resources": 2 });
-        let cases: [Case; 13] = [
+        use crate::inventory::tests::{kill, writer};
+        let cases: [Case; 17] = [
             (
                 "v6, rollback journal",
                 |path| drop(database_at(path, 6)),
@@ -3008,6 +3012,62 @@ mod tests {
                 Some("not_an_inventory"),
             ),
             (
+                "v12, Off, its write-ahead log left by a writer that was killed",
+                |path| {
+                    seed(path);
+                    crate::access::set_agent_access(path, "off").unwrap();
+                    kill(writer(path, "log"), path);
+                },
+                true,
+                Value::Null,
+                "needs_recovery",
+                Value::Null,
+                Value::Null,
+                Some("needs_recovery"),
+            ),
+            (
+                "v12, Read only, its write-ahead log left without its index",
+                |path| {
+                    seed(path);
+                    kill(writer(path, "log"), path);
+                    let mut index = path.as_os_str().to_owned();
+                    index.push("-shm");
+                    std::fs::remove_file(index).unwrap();
+                },
+                true,
+                Value::Null,
+                "needs_recovery",
+                Value::Null,
+                Value::Null,
+                Some("needs_recovery"),
+            ),
+            (
+                "v6, rollback journal left by a write that was killed",
+                |path| {
+                    drop(database_at(path, 6));
+                    kill(writer(path, "journal"), path);
+                },
+                true,
+                Value::Null,
+                "needs_recovery",
+                Value::Null,
+                Value::Null,
+                Some("needs_recovery"),
+            ),
+            (
+                "v12 backup, Read only, rollback journal left by a write that was killed",
+                |path| {
+                    backup_copy(path);
+                    kill(writer(path, "journal"), path);
+                },
+                true,
+                Value::Null,
+                "needs_recovery",
+                Value::Null,
+                Value::Null,
+                Some("needs_recovery"),
+            ),
+            (
                 "a text file",
                 |path| std::fs::write(path, "hello\n").unwrap(),
                 true,
@@ -3135,5 +3195,91 @@ mod tests {
         assert_eq!(status["schema"]["state"], "missing");
         assert!(!nowhere.parent().unwrap().exists());
         remove(&base);
+    }
+
+    /// An inventory that a connection holds open, as a window does, is read beside it without
+    /// touching any of its files, what that connection left in its log included. Once that
+    /// connection ends without folding the log, the gate says the inventory needs recovering and
+    /// goes on changing nothing, also for a call that access alone would refuse.
+    #[test]
+    fn reads_beside_an_open_connection_and_never_recovers_what_it_left() {
+        use crate::inventory::tests::{kill, writer};
+        let path = path();
+        let folder = path.parent().unwrap().to_owned();
+        seed(&path);
+        let live_box = |systems: &Value| {
+            systems["resources"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|resource| resource["system"]["name"] == "Live box")
+        };
+        let mut agent = session(&path, "claude-code");
+        let write = json!({ "name": "New", "kind": "server" });
+
+        let holder = writer(&path, "log");
+        let before = files(&folder);
+        let names: Vec<_> = before.iter().map(|(name, _, _)| name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "inventory.sqlite3",
+                "inventory.sqlite3-shm",
+                "inventory.sqlite3-wal"
+            ]
+        );
+        let status = use_tool(&mut agent, "status", json!({})).unwrap();
+        assert_eq!(
+            (
+                status["schema"]["state"].as_str(),
+                status["access"].as_str()
+            ),
+            (Some("current"), Some("read")),
+            "{status:#}"
+        );
+        // «Live box» is only in the holder's log.
+        let systems = use_tool(&mut agent, "list_systems", json!({})).unwrap();
+        assert!(live_box(&systems), "{systems:#}");
+        use_tool(&mut agent, "attention", json!({})).unwrap();
+        let refused = use_tool(&mut agent, "save_resource", write.clone()).unwrap_err();
+        assert!(refused.ends_with("(access_denied)"), "{refused}");
+        assert_eq!(
+            files(&folder),
+            before,
+            "reading beside the holder changed a file"
+        );
+
+        kill(holder, &path);
+        let before = files(&folder);
+        let status = use_tool(&mut agent, "status", json!({})).unwrap();
+        assert_eq!(status["schema"]["state"], "needs_recovery", "{status:#}");
+        assert_eq!(
+            (
+                &status["schemaVersion"],
+                &status["access"],
+                &status["counts"]
+            ),
+            (&Value::Null, &Value::Null, &Value::Null),
+            "{status:#}"
+        );
+        for (tool, arguments) in [
+            ("attention", json!({})),
+            ("list_systems", json!({})),
+            ("save_resource", write),
+        ] {
+            let refused = use_tool(&mut agent, tool, arguments).unwrap_err();
+            assert!(refused.ends_with("(needs_recovery)"), "{tool}: {refused}");
+        }
+        assert_eq!(
+            files(&folder),
+            before,
+            "the gate recovered what the holder left"
+        );
+
+        // DevHQ's window recovers it when it opens, and nothing committed was lost.
+        drop(inventory::open(&path).unwrap());
+        let systems = use_tool(&mut agent, "list_systems", json!({})).unwrap();
+        assert!(live_box(&systems), "{systems:#}");
+        remove(&path);
     }
 }

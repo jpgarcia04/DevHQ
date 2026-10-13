@@ -140,11 +140,18 @@ as the window's commands; never give it a shortcut around their validation. Befo
 anything opens, its arguments are checked against the `inputSchema` it publishes and the rules its
 description states (`gate/arguments.rs`): a schema keyword the check does not enforce fails a test,
 so never publish a rule the gate does not apply, and state every rule between arguments in the
-tool's description. It never creates an inventory that does not exist. It reads, and changes the
-configuration, through `inventory::open_as_found`, which never creates, upgrades or converts the file
-and serves only the current schema; never through `inventory::open`, which does all three. Records,
-`run_check`, `backup` and `read_copies` still reach `inventory::open` through the window's use cases
-after that check: closing that gap belongs to the explicit upgrade (`docs/puerta-para-agentes.md`). While a window is open, its process notices what other connections
+tool's description. It never creates an inventory that does not exist. It reads through
+`inventory::examine` (`read_as_found`), which looks at the files before SQLite opens them, refuses one
+that would need recovering (`needs_recovery`), serves only the current schema, and
+opens only read-only connections SQLite cannot make write: `readonly_shm` for a log a connection
+holds, `immutable` (checked again after the read) for a logged file without a log. SQLite recovers,
+folds, deletes and creates files on opening whatever `query_only` says, so never give a gate read
+another kind of connection. A configuration change asks for access through that read, then writes
+through `inventory::open_to_write`; never through `inventory::open`, which creates, upgrades and
+converts. On Unix `log_held` must never run while the process holds a connection to the same
+database. Records, `run_check`, `backup` and `read_copies` still reach `inventory::open` through the
+window's use cases after that check: closing that gap belongs to the explicit upgrade
+(`docs/puerta-para-agentes.md`). While a window is open, its process notices what other connections
 commit (`Monitor::notice_changes`, `PRAGMA data_version` every 2 s) and holds the lock that tells
 `status` a window is open (`window_lock.rs`). The native walk drives the gate as a child process.
 What remains to check or decide: `docs/puerta-para-agentes.md`. To try it

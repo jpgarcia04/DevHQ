@@ -180,16 +180,19 @@ impl Session {
     }
 
     /// Makes a configuration change and its log entry in one write transaction, only while the
-    /// person lets agents write: checked inside it, under SQLite's write lock, so that closing
-    /// the gate in Settings can never race a change. The inventory is opened as it is: never
-    /// created, upgraded or converted to another journal mode, and refused unless it is in this
-    /// build's schema.
+    /// person lets agents write: asked first through a look that cannot change any file, so that a
+    /// change refused for access opens nothing that can write, and asked again inside the
+    /// transaction, under SQLite's write lock, which decides, so that closing the gate in Settings
+    /// can never race a change. The inventory is opened as it is: never created, upgraded,
+    /// recovered or converted to another journal mode, and refused unless it is in this build's
+    /// schema.
     fn change(
         &self,
         apply: impl FnOnce(&Transaction, &Actor) -> Result<Value, ApiError>,
     ) -> Result<Value, ApiError> {
         let actor = self.actor()?;
-        let mut db = inventory::open_as_found(&self.database, inventory::Use::Write)?;
+        self.allow("write")?;
+        let mut db = inventory::open_to_write(&self.database)?;
         let tx = db
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(ApiError::database)?;

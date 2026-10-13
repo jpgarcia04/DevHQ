@@ -549,25 +549,57 @@ con `--database <ruta>`. Registrada con un ejecutable que no empaquetó el insta
 sus notas. Si ahí no hay inventario, lo
 dice y no crea uno vacío donde tu DevHQ no lo encontraría.
 
-**La puerta abre el inventario tal como lo encuentra.** Ninguna consulta crea el archivo ni su
-carpeta, lo actualiza a otro esquema, cambia su modo de journal ni escribe en él: la conexión se abre
-sin permiso para crear, con `query_only`, que hace que SQLite rechace cualquier sentencia que escriba,
-y sin pedir WAL. Se abre para leer y escribir, aunque sin crear, porque así no deja rastro: una conexión
-de solo lectura a una base en WAL crea sus `-wal` y `-shm` y no puede borrarlos al cerrarse, mientras
-que esta, si es la última en cerrarse, vuelca el log (vacío) y los borra; una base con journal de
-rollback, como cada respaldo de DevHQ, solo se lee. La puerta solo sirve un inventario en el esquema de
-este DevHQ (v12), y lo demás lo rechaza sin leer ni cambiar nada, también con la puerta cerrada: un
-inventario más antiguo con `schema_outdated` (solo la ventana actualiza un inventario, al abrirlo, y hoy
-lo hace sin respaldo previo), uno más nuevo con `schema_newer`, un archivo SQLite sin las tablas de
-DevHQ (vacío o de otro programa) con `not_an_inventory`, y lo que no se puede leer como SQLite (otro
-tipo de archivo, una carpeta, un archivo dañado o bloqueado) con `database_error`. Un cambio de
-configuración que pide un agente se escribe con una conexión abierta del mismo modo, sin `query_only`,
-dentro de su transacción, así que tampoco crea, actualiza ni convierte el archivo. Las demás escrituras
-(registros, ejecutar una comprobación, `backup` y `read_copies`) comprueban lo mismo antes de empezar,
-pero luego pasan por los casos de uso de la ventana, que abren el archivo a su manera: pueden pasarlo a
-WAL y, si entre la comprobación y la escritura otro proceso lo sustituye por un inventario más antiguo
-o lo borra, actualizarlo o crear uno vacío. Cerrar ese resquicio es parte de la actualización explícita
-de inventarios, que aún no existe ([docs/puerta-para-agentes.md](docs/puerta-para-agentes.md)).
+**La puerta abre el inventario tal como lo encuentra, y al leerlo no cambia ninguno de sus
+archivos.** Ninguna consulta crea el archivo ni su carpeta, lo actualiza a otro esquema, cambia su modo
+de journal, lo recupera ni escribe en él ni en los archivos que SQLite guarda a su lado (`-wal`,
+`-shm`, `-journal`). No basta con una conexión que no pueda escribir: SQLite cambia esos archivos con
+solo abrir la base en algunos estados, sea cual sea el permiso de la conexión. La primera conexión a
+un log (`-wal`) que dejó un proceso que ya terminó reconstruye su índice (`-shm`); la última en
+cerrarse vuelca el log en el archivo y lo borra; la que encuentra un journal de rollback de una
+escritura interrumpida lo deshace; y cualquiera, salvo una `immutable`, crea el log de un archivo en
+WAL que no lo tiene. Por eso la puerta mira primero los archivos sin SQLite y solo abre una conexión
+donde SQLite no va a escribir. La conexión es de solo lectura y, cuando una conexión mantiene abierto
+el log (la ventana, por ejemplo), la puerta lo lee a través de su índice sin escribir en ninguno de los
+dos (`readonly_shm`): ve lo que esa conexión confirmó aunque aún no esté en el archivo. Un archivo en
+WAL sin log lo contiene todo y se lee como un archivo que no cambia (`immutable`), porque cualquier
+otra conexión crearía el log y su índice. Como nada impide que un escritor lo abra mientras tanto, esa
+lectura solo cuenta si después el archivo tiene los mismos bytes y no apareció ni desapareció un log,
+un índice o un journal; si no, la puerta vuelve a mirar. Un archivo con journal de rollback y sin log,
+como cada respaldo de DevHQ, se lee con los bloqueos de siempre.
+
+Un inventario que habría que recuperar antes de poder leerlo se rechaza con `needs_recovery`, sin leer
+ni cambiar nada, y `status` dice qué encontró. Puede ser un journal de rollback que dejó una escritura
+que no terminó: mientras no se deshace, el archivo puede tener esa escritura a medias. Puede
+ser un log con cambios que ninguna conexión mantiene abierto: quien los escribió terminó sin volcarlos,
+porque se colgó, lo mataron o se cerró mientras otra conexión leía. O puede ser un log sin su índice.
+La puerta no los recupera ni lee esos cambios en memoria: la ventana de DevHQ lo recupera al abrir el
+inventario, y desde entonces la puerta lo lee como cualquier otro. Para saber si una conexión mantiene
+abierto un log, la puerta pregunta lo mismo que SQLite y de la misma manera: si alguien tiene el
+bloqueo del byte 128 del índice, que cada conexión conserva mientras vive y que el sistema suelta
+cuando su proceso termina, termine como termine.
+
+La puerta solo sirve un inventario en el esquema de este DevHQ (v12). Lo demás lo
+rechaza sin leer ni cambiar nada, también con la puerta cerrada: un inventario más antiguo con
+`schema_outdated` (solo la ventana actualiza un inventario, al abrirlo, y hoy lo hace sin respaldo
+previo), uno más nuevo con `schema_newer`, un archivo SQLite sin las tablas de DevHQ (vacío o de otro
+programa) con `not_an_inventory`, uno que habría que recuperar con `needs_recovery`, y lo que no se puede
+leer como SQLite (otro tipo de archivo, una carpeta, un archivo dañado o bloqueado) con
+`database_error`.
+
+Un cambio de configuración que pide un agente pregunta primero por el acceso con esa misma lectura.
+Así, uno que el acceso rechaza no abre nada que pueda escribir. Después se escribe dentro de su
+transacción, donde se vuelve a comprobar el acceso, con una conexión que no crea el archivo, no pide WAL
+y solo se abre si esa lectura encontró un inventario actual que no hay que recuperar. Así que tampoco
+crea, actualiza, recupera ni convierte el archivo, salvo si en el instante entre esa lectura y la
+escritura otro proceso lo deja a medias, que entonces SQLite lo recupera como en cualquier escritura.
+Las demás escrituras (registros, ejecutar una comprobación, `backup` y `read_copies`) también comprueban
+el inventario y el acceso con esa lectura antes de empezar, pero luego pasan por los casos de uso de la
+ventana, que abren el archivo a su manera y en su propia transacción. Pueden pasarlo a WAL. Si entre la
+comprobación y la escritura otro proceso lo sustituye por un inventario más antiguo o lo borra, pueden
+actualizarlo o crear uno vacío. Y si en ese instante cierras la puerta en Settings, la escritura ya
+admitida sigue adelante. Cerrar esos resquicios es parte de la actualización explícita de inventarios,
+que aún no existe. Lo que la lectura sin cambios no cubre está en
+[docs/puerta-para-agentes.md](docs/puerta-para-agentes.md).
 
 Hasta dónde llega un agente lo decides tú en Settings → **Agent gate**: **Off** (por defecto, también
 tras actualizar), **Read only** o **Read and write**. La elección se guarda en el inventario
@@ -580,13 +612,13 @@ para que el agente pueda explicarte dónde abrirla; las demás herramientas resp
 para copiarlo; DevHQ nunca lo ejecuta ni toca la configuración de Claude Code. Para leer basta Read
 only:
 
-| Herramienta    | Qué responde                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `status`       | Qué archivo abrió, dónde lo guarda de verdad el sistema (`storedAt`, como Settings), qué es ese archivo (`schema`: la versión de esquema que guarda, también en `schemaVersion`, o `null` si no es un inventario o no se pudo leer; la que soporta este DevHQ; y su estado: `current`, `outdated`, `newer`, `not_an_inventory`, `unreadable` o `missing`, con qué significa), si hay una ventana de DevHQ abierta sobre él (`windowOpen`), cuántos sistemas tiene, qué estación de trabajo es este equipo (`thisWorkstation`, o por qué no se sabe), qué no puede saber y, si su ejecutable no lo empaquetó el instalador, que sin `--database` abre datos de desarrollo. El acceso, los recuentos y la estación solo se dan de un inventario `current`: de cualquier otro son `null` |
-| `attention`    | «¿Qué necesita mi atención?» con el mismo orden que Overview, la cobertura, lo nunca observado y lo que nada supervisa; el estado solo es `covered` si todo tiene evidencia vigente. Aparte, sin ordenar y diciendo que no es salud, `localCopies`: las copias cuya última lectura tenía trabajo que solo existía allí, las que no se encontraron y las de esta estación nunca leídas                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `list_systems` | Cada aplicación y recurso con su estado de evidencia y última observación, incidencias activas, comprobación HTTP, relaciones y referencias, con la máquina de cada ruta y qué otros sistemas declaran el mismo repositorio (`sameRepositoryAs`): un agente encuentra así su sistema por su carpeta o su repositorio. Cada copia local dice si es de esta estación, su última lectura y lo derivado, y cada sistema el commit más nuevo que encontraron (`localActivity`)                                                                                                                                                                                                                                                                                                             |
-| `get_system`   | Una aplicación o recurso (por ID, por nombre exacto sin distinguir mayúsculas, o por ambos si son del mismo sistema) con sus referencias, sus observaciones, incidencias y eventos cargados, y desde cuándo su historial automático está completo                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `history`      | Los resultados automáticos anteriores de un sistema, o las lecturas de sus copias locales (`records: "readings"`), de 200 en 200, como la carga bajo demanda de la ventana                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Herramienta    | Qué responde                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `status`       | Qué archivo abrió, dónde lo guarda de verdad el sistema (`storedAt`, como Settings), qué es ese archivo (`schema`: la versión de esquema que guarda, también en `schemaVersion`, o `null` si no es un inventario o no se pudo leer; la que soporta este DevHQ; y su estado: `current`, `outdated`, `newer`, `not_an_inventory`, `needs_recovery`, `unreadable` o `missing`, con qué significa), si hay una ventana de DevHQ abierta sobre él (`windowOpen`), cuántos sistemas tiene, qué estación de trabajo es este equipo (`thisWorkstation`, o por qué no se sabe), qué no puede saber y, si su ejecutable no lo empaquetó el instalador, que sin `--database` abre datos de desarrollo. El acceso, los recuentos y la estación solo se dan de un inventario `current`: de cualquier otro son `null` |
+| `attention`    | «¿Qué necesita mi atención?» con el mismo orden que Overview, la cobertura, lo nunca observado y lo que nada supervisa; el estado solo es `covered` si todo tiene evidencia vigente. Aparte, sin ordenar y diciendo que no es salud, `localCopies`: las copias cuya última lectura tenía trabajo que solo existía allí, las que no se encontraron y las de esta estación nunca leídas                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `list_systems` | Cada aplicación y recurso con su estado de evidencia y última observación, incidencias activas, comprobación HTTP, relaciones y referencias, con la máquina de cada ruta y qué otros sistemas declaran el mismo repositorio (`sameRepositoryAs`): un agente encuentra así su sistema por su carpeta o su repositorio. Cada copia local dice si es de esta estación, su última lectura y lo derivado, y cada sistema el commit más nuevo que encontraron (`localActivity`)                                                                                                                                                                                                                                                                                                                               |
+| `get_system`   | Una aplicación o recurso (por ID, por nombre exacto sin distinguir mayúsculas, o por ambos si son del mismo sistema) con sus referencias, sus observaciones, incidencias y eventos cargados, y desde cuándo su historial automático está completo                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `history`      | Los resultados automáticos anteriores de un sistema, o las lecturas de sus copias locales (`records: "readings"`), de 200 en 200, como la carga bajo demanda de la ventana                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 
 Con Read and write, el agente también hace lo que tú haces en la ventana, pasando por los mismos
 casos de uso, con sus validaciones, límites y transacciones:
@@ -1177,11 +1209,20 @@ como entero) y con las que se aceptan (`30.0`, `id` y `name` del mismo sistema, 
 esquema lo admite, `_meta` y otros campos del protocolo en `params`). Su apertura del inventario se
 prueba con inventarios v6 con journal de rollback y en WAL, v11 con Read only, v12 en WAL con Read only
 y con Off, la copia de un respaldo (rollback) con Read only, v13, un archivo vacío, una base SQLite de
-otro programa, otra marcada con la versión 12 sin las tablas de DevHQ, un archivo de texto, una carpeta
-y nada: `status` dice qué es cada uno sin presentar como sabido lo que no pudo leer, cada lectura y cada
-escritura responde o se rechaza con su código, y la carpeta queda igual byte a byte y con las mismas
-fechas de modificación; y con la conexión misma, que rechaza escribir al leer, nunca crea el archivo y
-deja en rollback un journal de rollback también al escribir configuración. La ventana
+otro programa, otra marcada con la versión 12 sin las tablas de DevHQ, un v12 con Off cuyo log dejó con
+cambios un escritor al que se mata (como lo deja un cierre brusco), ese mismo log sin su índice, un v6
+y la copia de un respaldo con el journal de rollback que deja una escritura a la que se mata a medias,
+un archivo de texto, una carpeta y nada: `status` dice qué es cada uno sin presentar como sabido lo que
+no pudo leer, cada lectura y cada escritura responde o se rechaza con su código, y la carpeta queda
+igual byte a byte y con las mismas fechas de modificación. Con otro proceso que mantiene abierto el
+inventario, como la ventana, y tiene en su log un cambio que aún no está en el archivo, la puerta lee
+ese cambio, rechaza por acceso una escritura y no cambia ningún archivo, ni el índice. Cuando a ese
+proceso se le mata, `status` y cada herramienta dicen `needs_recovery` sin cambiar nada, y después de
+que la ventana lo recupera el cambio sigue ahí. También se prueban la conexión misma, que rechaza
+escribir al leer, nunca crea el archivo y deja en rollback un journal de rollback también al escribir
+configuración; la lectura de un archivo sin log, que se repite cuando un escritor cambió el archivo
+mientras tanto; y el URI con el que la
+puerta abre SQLite, con espacios, `#`, `%`, `?` y letras fuera de ASCII en el nombre de la carpeta. La ventana
 de historial se prueba por su límite exacto, los eventos que acompañan a cada resultado, el
 aviso de lo omitido en cada vista, la paginación de observaciones y de eventos de varios
 sistemas a la vez (sin huecos ni duplicados, con empates al mismo milisegundo, resultados
