@@ -46,6 +46,9 @@ sin ejecutar nada de lo que nombran. **No funciona en segundo plano ni opera sis
 - Previews de Automations (Trigger → Condition → Action → Verification) y Security
   informativos. En Mi inventario, Settings muestra la ruta del archivo SQLite, cómo
   respaldarlo y restaurarlo, y **Back up now**, que lo copia y verifica con DevHQ abierto.
+- Un inventario de un esquema anterior se actualiza solo cuando lo pides, con **Back up and
+  upgrade**, que antes lo respalda y verifica la copia (ver
+  [Actualizar un inventario antiguo](#actualizar-un-inventario-antiguo)).
 
 El modo **Demo** utiliza un escenario local fijo del **24/09/2026, 16:40 Europe/Madrid**.
 Los tiempos relativos se calculan frente a ese instante, no frente al reloj real.
@@ -494,8 +497,9 @@ de ningún sistema.
 
 - Solo respalda un inventario del esquema actual, tal como está: nunca lo actualiza para poder
   copiarlo. Uno más antiguo, más nuevo o que no es un inventario lo rechaza antes de escribir nada,
-  sin crear siquiera la carpeta `backups/`. El respaldo que debe preceder a una actualización será
-  parte de la actualización explícita.
+  sin crear siquiera la carpeta `backups/`. El respaldo que precede a una actualización lo hace la
+  propia actualización, con la versión de origen en su nombre y un manifiesto (ver
+  [Actualizar un inventario antiguo](#actualizar-un-inventario-antiguo)).
 
 - SQLite copia con `VACUUM INTO`, que lee el último estado confirmado como cualquier lector en
   WAL: no espera a ningún escritor (la supervisión sigue registrando) y no incluye nada sin
@@ -532,6 +536,116 @@ de ningún sistema.
   las dos carpetas.
 - Se restauran como cualquier copia (ver [Arquitectura](#arquitectura)). La preview rechaza el
   respaldo como toda escritura y muestra una carpeta de ejemplo.
+
+### Actualizar un inventario antiguo
+
+Ninguna apertura actualiza un inventario (ver [Arquitectura](#arquitectura)). Uno de un esquema
+anterior solo lo actualiza la persona, desde la ventana, con **Back up and upgrade**. Nada más lo
+hace: ni una consulta, ni la supervisión, ni un respaldo, ni la [puerta para agentes](#puerta-para-agentes),
+que no tiene ninguna herramienta para ello. Lo implementa `src-tauri/src/upgrade.rs`.
+
+- **Ver antes de decidir.** Una ventana que arranca sobre un inventario anterior a la v12 no lo sirve:
+  cada página de Mi inventario muestra **Inventory needs a schema upgrade** con lo que es, leído sin
+  cambiar ningún archivo y como lee la puerta, con una conexión que no puede escribir
+  (`inspect_upgrade`). Dice la ruta, la versión que declara y la de este DevHQ, y cuántas filas tiene
+  cada tabla. Solo ofrece actualizarlo si el archivo tiene exactamente la estructura que las
+  migraciones dan a su versión (cada tabla con sus columnas y declaraciones, cada índice, y ninguna
+  tabla, índice, vista o trigger más), si `PRAGMA integrity_check` responde `ok` y si
+  `PRAGMA foreign_key_check` no encuentra relaciones rotas. Si no, dice por qué, no ofrece nada y no
+  cambia nada: DevHQ no actualiza lo que no puede garantizar, sea un archivo dañado, uno con una
+  estructura que DevHQ no produjo o el de otro programa.
+- **Consentimiento.** Hay un solo botón, **Back up and upgrade**, y ninguna forma de actualizar sin
+  respaldo. Lo que la persona acepta es lo que vio: la versión y una huella del contenido (SHA-256 de
+  cada fila de cada tabla, con su `rowid` y cada valor con su tipo), que la ventana devuelve con
+  `upgrade_inventory`.
+- **Orden.** `upgrade_inventory` hace, por este orden:
+  1. Mira otra vez los archivos sin cambiarlos, y solo abre su conexión si ninguno necesita recuperación.
+  2. Toma el lock de escritura de SQLite (`BEGIN IMMEDIATE`): ninguna otra conexión, de DevHQ o de otro
+     programa, puede confirmar nada hasta que termine. Dentro comprueba que el inventario es el que la
+     persona vio (misma versión, misma huella) y, de nuevo, su estructura, su integridad y sus
+     relaciones. Si algo no coincide lo rechaza sin escribir nada, con `upgrade_changed` (ya no es lo
+     que se vio) o `upgrade_refused`.
+  3. Lo copia desde una segunda conexión, de solo lectura, con `VACUUM INTO`, que lee el último estado
+     confirmado, el que el lock mantiene, en `backups/inventory-<UTC>-v<N>.sqlite3.partial`, donde `N`
+     es su versión. Abre la copia aparte y comprueba que tiene la versión `N` y su estructura, que
+     `integrity_check` responde `ok`, que no tiene relaciones rotas y que cada tabla tiene las mismas
+     filas, con el mismo `rowid` y los mismos valores, que el inventario bajo el lock. La fuerza a disco
+     y le da su nombre final con un enlace que nunca reemplaza un archivo, como Back up now. Después
+     escribe su manifiesto, `inventory-<UTC>-v<N>.sqlite3.json`, también a través de un `.partial`,
+     forzado a disco y nombrado sin reemplazar nada. Sin un respaldo verificado y su manifiesto, no se
+     migra nada.
+  4. Aplica las migraciones en la misma transacción.
+  5. Antes de confirmar, comprueba el resultado: la versión 12 y su estructura, `integrity_check`,
+     `foreign_key_check`, y que cada fila de cada tabla sigue ahí con su `rowid` y los mismos valores
+     en las columnas que ya tenía, comparados valor a valor y tipo a tipo. En cada columna nueva, cada
+     fila debe tener el valor por defecto que declara la columna (`NULL` si no declara ninguno), que es
+     lo que dan las migraciones que añaden columnas o reconstruyen tablas: así, por ejemplo, ninguna
+     comprobación sale supervisada de una actualización. Las tablas nuevas deben estar vacías (la puerta
+     queda cerrada si el inventario no tenía `agent_access`), con dos excepciones, ambas de la v10:
+     `agent_log` pasa entera a `change_log`, cada fila como cambio de un agente sin campos
+     estructurados, y `change_log_start` guarda el momento de la actualización si el inventario ya tenía
+     aplicaciones o recursos. Contar filas no bastaría: un valor cambiado, o del mismo contenido pero
+     de otro tipo, con el mismo número de filas, también hace fallar la actualización.
+  6. Confirma. La ventana arranca entonces sobre el inventario como si DevHQ acabara de abrirse (lo
+     pasa a WAL) y empieza la supervisión, sin reiniciar.
+- **Lo que se ve.** Mientras tanto, la ventana muestra cada paso cuando Rust lo alcanza (comprobación
+  con el lock, respaldo, respaldo verificado con su ruta, actualización y verificación), por un
+  `Channel`. Al terminar, encima del inventario ya servido, **Inventory upgraded** dice las dos
+  versiones, cuántas filas y tablas se comprobaron, y la ruta del respaldo, la de su manifiesto y su
+  SHA-256, hasta que lo descartas.
+- **El manifiesto** es un JSON pequeño junto al respaldo: qué es (`format`), el nombre del respaldo
+  (`backup`), su `sha256` y su tamaño (`sizeBytes`), cuándo se tomó (`takenAt`), la ruta del inventario
+  del que es copia (`inventory`), su versión (`schemaVersion`), para qué se hizo (`madeBefore`), qué
+  DevHQ lo hizo (`devhq`), qué dijo `integrityCheck` y cuántas filas tiene cada tabla (`rows`). Se
+  escribe una vez y nunca se reescribe, y sirve para comprobar sin DevHQ que el respaldo sigue siendo
+  el archivo que se verificó.
+- **Si algo falla**, lo dice y la ventana vuelve a mirar el inventario: si sigue pudiendo, ofrece
+  intentarlo otra vez.
+  - Si no se puede crear la carpeta o el `.partial` (permisos, un nombre ocupado), si `VACUUM INTO`
+    falla (disco lleno), si la copia no pasa su verificación o si no se puede escribir el manifiesto, la
+    respuesta es `backup_error`: el `.partial` se borra, el inventario no cambia y no se migra nada. Si
+    lo que falla es el manifiesto, la copia, ya verificada y nombrada, se queda, y el mensaje lo dice.
+  - Si una migración falla, si el resultado no pasa sus comprobaciones o si el commit falla, la
+    respuesta es `upgrade_failed`: SQLite deshace la transacción, el inventario sigue en su versión con
+    lo que tenía y el respaldo verificado se queda; el mensaje dice dónde está.
+  - Si DevHQ termina antes de publicar el respaldo, el inventario no se tocó (nada lo escribe antes) y
+    puede quedar un `.partial`, que Settings lista como incompleto.
+  - Si termina después de publicarlo y antes del commit (lo matan, se va la luz), lo confirmado sigue
+    siendo el estado anterior, pero el archivo queda con un journal o un log que hay que recuperar.
+    DevHQ no recupera por su cuenta un inventario de un esquema anterior (ver
+    [Arquitectura](#arquitectura)), así que al arrancar lo rechaza sin tocar sus archivos y dice qué
+    hacer: el respaldo publicado tiene exactamente lo que el inventario tenía, porque con el lock nadie
+    pudo confirmar nada después; se restaura como dice abajo y se vuelve a actualizar.
+  - Si termina después del commit, el inventario ya es v12: al arrancar, la ventana lo recupera como
+    cualquier inventario actual y lo sirve.
+  - Dos actualizaciones a la vez, desde dos ventanas, las ordena el lock. La segunda, al obtenerlo,
+    encuentra el inventario ya en la v12, no hace otro respaldo y la ventana lo sirve (**Inventory
+    already upgraded**); si espera más de 5 s se rechaza con `upgrade_refused` y basta con reintentar.
+- **Los respaldos** van a la misma carpeta `backups/` que los de Back up now, en el mismo disco que el
+  inventario: un disco que falla se los lleva, y desinstalar DevHQ con «Delete the application data»
+  los borra. Copia el respaldo y su manifiesto a otro sitio. DevHQ no los borra ni los reescribe nunca.
+- **Restaurar un respaldo** se hace a mano; DevHQ no restaura desde la ventana.
+  1. Cierra DevHQ.
+  2. Comprueba el respaldo: su SHA-256 debe ser el del manifiesto (en PowerShell,
+     `Get-FileHash -Algorithm SHA256 <archivo>`; en Linux, `sha256sum <archivo>`) y, con la CLI de
+     SQLite, `PRAGMA integrity_check` debe responder `ok` y `PRAGMA user_version` la versión del
+     manifiesto.
+  3. Aparta a otra carpeta, sin borrarlos, `inventory.sqlite3` y, si están, `inventory.sqlite3-wal`,
+     `inventory.sqlite3-shm` e `inventory.sqlite3-journal`.
+  4. Copia el respaldo a la carpeta de datos con el nombre `inventory.sqlite3`, dejando el original en
+     `backups/`.
+  5. Abre DevHQ: verá un inventario de esa versión y lo describirá antes de ofrecer actualizarlo otra
+     vez.
+
+  Lo que se escribió después del respaldo no está en él.
+
+- **Volver a una versión anterior de DevHQ.** Un DevHQ anterior no lee la v12: volver es restaurar el
+  respaldo previo a la actualización, de su versión, como arriba, y lo escrito después se pierde. Los
+  DevHQ anteriores a que ninguna apertura actualizara un inventario actualizan sin respaldo lo que
+  abren, y convierten a WAL uno más nuevo antes de rechazarlo: no abras con ellos un inventario que
+  quieras conservar sin tener una copia.
+
+La preview muestra el panel con `?scenario=outdated` y rechaza la actualización como toda escritura.
 
 ### Puerta para agentes
 
@@ -597,8 +711,9 @@ cuando su proceso termina, termine como termine.
 
 La puerta solo sirve un inventario en el esquema de este DevHQ (v12) y con su estructura. Lo demás lo
 rechaza sin leer ni cambiar nada, también con la puerta cerrada: un inventario más antiguo con
-`schema_outdated` (este DevHQ nunca actualiza un inventario al abrirlo; actualizar será un paso
-explícito en la ventana, que esta versión aún no ofrece), uno más nuevo con `schema_newer`, un archivo SQLite sin las tablas de DevHQ (vacío o de otro
+`schema_outdated` (este DevHQ nunca actualiza un inventario al abrirlo; solo la persona lo actualiza,
+desde la ventana, con [Back up and upgrade](#actualizar-un-inventario-antiguo), y la puerta no tiene
+herramienta para ello), uno más nuevo con `schema_newer`, un archivo SQLite sin las tablas de DevHQ (vacío o de otro
 programa) con `not_an_inventory`, uno que habría que recuperar con `needs_recovery`, y lo que no se puede
 leer como SQLite (otro tipo de archivo, una carpeta, un archivo dañado o bloqueado) con
 `database_error`. Que un archivo declare la versión 12 no basta. La puerta compara sus tablas, columna
@@ -803,7 +918,9 @@ publicar, el working tree desconocido y un remoto que no es el repositorio decla
 una movida desde su última lectura que entonces no se encontró, con 205 lecturas (más de una página),
 una lectura `not_a_copy` en el historial y la copia de una aplicación archivada; Read y Read all se
 rechazan como toda escritura. `?scenario=empty`, `?scenario=unavailable` y `?scenario=outdated`
-muestran un inventario vacío, uno ilegible y uno de un esquema anterior. El bundle de producción se construye desde `index.html` y no contiene nada de
+muestran un inventario vacío, uno ilegible y uno de un esquema anterior, con el panel que ofrece
+respaldarlo y actualizarlo; la preview rechaza la actualización como toda escritura (lo prueba
+`e2e/upgrade.spec.ts`). El bundle de producción se construye desde `index.html` y no contiene nada de
 esto. `npm run e2e` usa el Chrome instalado (en CI, el del runner) o el ejecutable que indique
 `DEVHQ_CHROMIUM`; nunca descarga navegadores, y reutiliza un `npm run dev` en marcha. Antes de
 la primera prueba carga la preview una vez (`e2e/warm-up.ts`): Vite transforma cada módulo la
@@ -827,9 +944,15 @@ en `127.0.0.1` con una configuración que se fusiona al compilarla; el recorrido
 sin ella. El cliente WebDriver es un archivo propio sobre `fetch` (`e2e/native/webdriver.ts`): el
 protocolo es JSON sobre HTTP, así que no hace falta ninguna dependencia, y cada petición que hace
 está a la vista. El recorrido parte de una base v6 en modo journal de rollback, como las anteriores
-a WAL. Mi inventario debe decir que necesita actualizarse, y Back up now debe rechazarla, sin que la
-carpeta de datos gane ningún archivo ni el v6 cambie un byte, tampoco al cerrar la ventana. Después
-aparta el v6, vuelve a arrancar DevHQ, que debe crear un inventario nuevo en WAL, y abre Mi inventario, comprueba la ruta que muestra Settings y «Copy path», crea un recurso y
+a WAL, con un recurso, su observación y su evento y una aplicación con un componente en él. Mi
+inventario debe decir que necesita actualizarse, qué tiene (5 filas en 7 tablas) y ofrecer Back up and
+upgrade, y Back up now debe rechazarla, sin que la carpeta de datos gane ningún archivo ni el v6 cambie
+un byte. Después pulsa Back up and upgrade: la ventana debe mostrar **Inventory upgraded** de la v6 a la
+actual, `backups/` debe tener el respaldo `-v6` y su manifiesto, el respaldo debe tener, tabla a tabla y
+fila a fila, lo mismo que el v6 original, versión 6 e integridad correcta, el manifiesto debe nombrar
+su SHA-256 y el inventario, y la ventana, sin reiniciar, debe servir el inventario en WAL y mostrar el
+recurso, su observación y la aplicación. Cierra la ventana, aparta el inventario actualizado y sus
+respaldos, vuelve a arrancar DevHQ, que debe crear un inventario nuevo en WAL, y abre Mi inventario, comprueba la ruta que muestra Settings y «Copy path», crea un recurso y
 una aplicación con su repositorio como referencia, registra una observación, supervisa una comprobación HTTP contra un servidor propio
 en `127.0.0.1` (esa ejecución y la recarga de su evidencia solo llegan a la ventana por el
 `Channel` de supervisión), la ejecuta a petición, lee el panel Supervision y pulsa Back up now: el
@@ -860,9 +983,9 @@ a libX11, porque bajo Xvfb no hay gestor de ventanas que lo envíe) o con `WM_CL
 proceso debe terminar, sin dejar `inventory.sqlite3-wal`, y el archivo debe seguir en WAL; la
 puerta, que sigue abierta, debe ver la ventana cerrada en menos de 10 s (el recorrido anota cuánto
 tardó) y terminar al cerrarse su entrada. En la base deben quedar las tres lecturas, en la estación elegida y
-con la ruta declarada, y solo la última con el agente, y el v6 apartado debe seguir idéntico byte a
-byte. El recorrido de una actualización completa volverá con la actualización explícita; hasta
-entonces las migraciones se prueban en Rust, sobre inventarios sintéticos.
+con la ruta declarada, y solo la última con el agente. El inventario actualizado al principio debe
+estar en la versión actual, con integridad correcta y las filas del v6 original, y su respaldo debe
+seguir teniendo exactamente las del v6.
 Antes de hacer clic espera a que el elemento deje de moverse, porque el contenido que llega tarde
 empuja la página, y guarda una captura por paso en `test-results/native/`. `DEVHQ_APP` lo apunta a
 otro ejecutable.
@@ -1019,8 +1142,10 @@ Rust expone `list_inventory` (una lectura consistente de inventario con sus refe
 `delete_resource`, `record_observation`, `older_observations`, `older_events`, `open_incident`,
 `update_incident_status`, `record_event`, `save_http_check`, `set_http_check_paused`,
 `remove_http_check`, `run_http_check`, `watch_http_monitor`, `this_workstation`,
-`set_this_workstation`, `read_copies` y `older_readings`. `read_copies` es asíncrono y espera a sus
-lectores en un hilo aparte, porque cada copia puede tardar hasta su plazo. Los comandos de
+`set_this_workstation`, `read_copies`, `older_readings`, `inspect_upgrade` y `upgrade_inventory`.
+`read_copies` es asíncrono y espera a sus lectores en un hilo aparte, porque cada copia puede tardar
+hasta su plazo; `inspect_upgrade` y `upgrade_inventory` también, porque leen el archivo entero, y se
+turnan entre sí. Los comandos de
 comprobaciones y de borrado son asíncronos y avisan a la supervisión antes de responder, así
 que pausar, reanudar, quitar o borrar surten efecto de inmediato; `run_http_check` pasa por la supervisión para
 no duplicar una ejecución en vuelo y `watch_http_monitor` abre el `Channel` de estado. Ese último también es
@@ -1076,20 +1201,21 @@ pánico que en Linux abortaba el proceso al abrir Mi inventario (lo comprueba `n
   el archivo haya cambiado desde que se abrió; si no lo es, se rechaza dentro de la transacción, antes
   de leer o escribir nada más, con los códigos de la [puerta](#puerta-para-agentes) (`schema_outdated`,
   `schema_newer`, `schema_mismatch`, `not_an_inventory`).
-- **Actualizar** un inventario de un esquema anterior: ningún camino de DevHQ lo hace. Las migraciones
-  transaccionales v1→v12 (`PRAGMA user_version`) siguen en el código porque crean el esquema de un
-  inventario nuevo, y sus pruebas actualizan inventarios sintéticos de cada versión anterior, pero
-  ninguna apertura, consulta, respaldo, supervisión ni herramienta MCP las aplica a un inventario que
-  ya existe. Actualizar será un paso explícito en la ventana, con un respaldo verificado antes, que
-  esta versión aún no ofrece. Una versión más nueva se rechaza en vez de adivinarse.
+- **Actualizar** un inventario de un esquema anterior lo hace solo la actualización explícita
+  (`upgrade.rs`), cuando la persona pulsa Back up and upgrade en la ventana: con su propia conexión
+  (`open_to_upgrade`), bajo el lock de escritura, después de un respaldo verificado y comprobando el
+  resultado antes de confirmar (ver [Actualizar un inventario antiguo](#actualizar-un-inventario-antiguo)).
+  Las migraciones transaccionales v1→v12 (`PRAGMA user_version`) crean el esquema de un inventario
+  nuevo y actualizan uno anterior; ninguna apertura, consulta, respaldo, supervisión ni herramienta MCP
+  las aplica. Una versión más nueva se rechaza en vez de adivinarse.
 
-Un inventario más antiguo se queda tal cual: Mi inventario dice **Inventory needs a schema upgrade**,
-con la ruta del archivo y la versión que declara, sin botón de reintentar porque la respuesta no
-cambiaría hasta volver a arrancar; Settings sigue mostrando dónde están el archivo y su carpeta de
-respaldos, y Back up now lo rechaza sin crear nada. Uno más nuevo dice **Inventory from a newer
-DevHQ**. Así que **esta versión no sirve a quien todavía tenga un inventario anterior a la v12**:
-hasta que exista la actualización explícita, ese inventario solo lo abre un DevHQ anterior, que lo
-actualiza al abrirlo y sin respaldo previo, como siempre hizo.
+Un inventario más antiguo se queda tal cual hasta que la persona lo actualiza: Mi inventario dice
+**Inventory needs a schema upgrade**, lo describe y ofrece Back up and upgrade si puede garantizarlo;
+Settings sigue mostrando dónde están el archivo y su carpeta de respaldos, y Back up now lo rechaza sin
+crear nada. Uno más nuevo dice **Inventory from a newer DevHQ**, sin reintentar, porque la respuesta no
+cambiaría hasta volver a arrancar. Un inventario antiguo que además necesita recuperación (lo deja así,
+por ejemplo, una actualización interrumpida antes del commit) se rechaza sin recuperarlo ni actualizarlo:
+la ventana dice que se restaure el respaldo que la actualización publicó antes de migrar.
 
 La recuperación de SQLite no es una migración, pero también cambia archivos: deshace el journal de
 rollback de una escritura interrumpida, o vuelca en el archivo un log que ninguna conexión mantiene,
@@ -1269,7 +1395,19 @@ no una especificación ni un backlog: nada de lo que describe existe hasta que e
 Las pruebas cubren navegación, tabs/teclado, filtros, rutas desconocidas, relaciones
 compartidas, cronología de la demo, salud desconocida, persistencia tras reapertura,
 rechazo de referencias inválidas sin escrituras parciales, restricciones del esquema,
-migraciones v1/v2→v3, v3→v4, v4→v5, v5→v6, v6→v7, v7→v8, v8→v9, v9→v10, v10→v11 y v11→v12 (incluida la negativa a confirmar relaciones rotas), que se aplican de forma explícita en la prueba porque ningún camino de DevHQ las aplica a un inventario existente,
+migraciones v1/v2→v3, v3→v4, v4→v5, v5→v6, v6→v7, v7→v8, v8→v9, v9→v10, v10→v11 y v11→v12 (incluida la negativa a confirmar relaciones rotas), la actualización explícita (cada versión de la v1 a la v11, con journal de rollback y en WAL, actualizada con su consentimiento:
+cada fila conservada valor a valor, un respaldo idéntico al inventario anterior con su manifiesto, que
+restaurado vuelve a ser lo que se vio y se actualiza igual; ningún archivo cambia al mirarlo ni al
+rechazar otra versión, otro contenido o un archivo cambiado después de mirarlo; nada se actualiza sin
+la estructura exacta de su versión, con un índice que falta, una tabla o un trigger de más, una
+relación rota, páginas dañadas o una columna declarada de otra forma, ni siendo v13 o de otro
+programa; ninguna migración se confirma sin un respaldo verificado, con una copia dañada, cambiada o con
+una fila de más, un nombre de respaldo o de manifiesto ocupado o una carpeta imposible; una migración
+que falla, pierde una fila, cambia un valor o su tipo, abre la puerta a los agentes o supervisa una
+comprobación no confirma nada y deja el respaldo; un proceso al que se mata antes del commit deja el
+inventario rechazado sin tocarlo y un respaldo que, puesto en su lugar, se actualiza; uno al que se mata
+después lo deja servible; tres procesos a la vez hacen un solo respaldo y una sola actualización; y la
+ventana, por el manejador real de comandos, sirve el inventario en cuanto la persona lo actualiza),
 vigencia y sustitución de observaciones de ambos orígenes, orden de atención, errores de
 carga visibles y recuperables, comprobaciones contra un servidor local (estado esperado,
 500, redirect, bucle de redirects, tiempo agotado, conexión rechazada, dominio `.invalid`

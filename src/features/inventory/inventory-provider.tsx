@@ -10,6 +10,8 @@ import {
   type MonitorStatus,
   type ReadOutcome,
   type ThisWorkstation,
+  type UpgradeStep,
+  type Upgraded,
 } from './inventory-api'
 import { InventoryContext, type LoadState, type Mode } from './inventory-context'
 import { readAllTargets } from './local-copies'
@@ -32,6 +34,7 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
   const [thisWorkstation, setThisWorkstation] = useState<ThisWorkstation | null>(null)
   const [workstationError, setWorkstationError] = useState<string | null>(null)
   const [readingCopies, setReadingCopies] = useState<string[]>([])
+  const [upgraded, setUpgraded] = useState<Upgraded | null>(null)
   // What the last status said, to tell when the inventory may have changed since.
   const seen = useRef<{ recorded: number; changes: number } | null>(null)
   // Reads overlap: a quiet read can still be in flight when a write's reload starts, and answer
@@ -196,6 +199,19 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  // Once committed, the native process serves the inventory: reading it again shows it, with what
+  // the upgrade did above it, which supervision's first reloads must not take away.
+  const upgradeInventory = async (
+    from: number,
+    fingerprint: string,
+    onStep: (step: UpgradeStep) => void,
+  ) => {
+    const outcome = await inventoryApi.upgradeInventory(from, fingerprint, onStep)
+    setUpgraded(outcome)
+    await reload()
+    return outcome
+  }
+
   const chooseWorkstation = async (resourceId: string | null) => {
     const answer = await inventoryApi.setThisWorkstation(resourceId)
     asked.current++
@@ -248,6 +264,10 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
         readCopies,
         readingCopies,
         olderReadings: inventoryApi.olderReadings,
+        inspectUpgrade: inventoryApi.inspectUpgrade,
+        upgradeInventory,
+        upgraded,
+        dismissUpgraded: () => setUpgraded(null),
       }}
     >
       {children}

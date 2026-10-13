@@ -5,7 +5,8 @@
  * real window; this walk is the one test that crosses it.
  *
  * It starts from a schema v6 inventory in rollback-journal mode, as DevHQ files were before
- * write-ahead logging, in a data directory of its own (see `isolate`). It drives only an
+ * write-ahead logging, in a data directory of its own (see `isolate`): the window refuses it
+ * without changing a byte, and the person backs it up and upgrades it. It drives only an
  * executable DevHQ's installer did not pack, which keeps development data, never touches a real
  * inventory and talks to no server but its own, on 127.0.0.1.
  *
@@ -18,8 +19,9 @@
  */
 import assert from 'node:assert/strict'
 import { spawn, type ChildProcess } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
-import { copyFile, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, mkdtemp, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { createServer, type RequestListener } from 'node:http'
 import { createServer as createHttpsServer } from 'node:https'
 import { tmpdir } from 'node:os'
@@ -132,15 +134,59 @@ const schemaVersion = migrationFiles.length
 
 /**
  * A schema v6 inventory in rollback-journal mode, as every DevHQ file was before it used
- * write-ahead logging: the walk checks that the real app refuses it and changes none of its bytes,
- * since no DevHQ upgrades an inventory when it opens it.
+ * write-ahead logging, holding a resource with its observation and event and an application on
+ * it: the walk checks that the real app refuses it and changes none of its bytes, since no DevHQ
+ * upgrades an inventory when it opens it, and then that the person's upgrade keeps all of it.
  */
 function seedVersion6(database: string) {
   const db = new DatabaseSync(database)
   for (const file of migrationFiles.slice(0, 6))
     db.exec(readFileSync(join(migrations, file), 'utf8'))
   db.exec('PRAGMA user_version = 6')
+  // Observed a minute ago and valid for a day, so that the window shows it as current evidence.
+  const observed = Date.now() - 60_000
+  const until = observed + 24 * 60 * 60_000
+  db.exec(`
+    INSERT INTO resources (id, name, kind, description, operating_system)
+      VALUES ('rack', 'Old rack server', 'server', 'From before the upgrade', 'Debian 12');
+    INSERT INTO applications (id, name, lifecycle, description, version)
+      VALUES ('wiki', 'Team wiki', 'production', '', '3.1');
+    INSERT INTO components (id, application_id, name, kind, resource_id)
+      VALUES ('wiki-web', 'wiki', 'web', 'frontend', 'rack');
+    INSERT INTO observations (id, resource_id, result, summary, source, observed_at, valid_until, recorded_at)
+      VALUES ('fan', 'rack', 'degraded', 'Fan noise since Monday', 'manual', ${observed}, ${until}, ${observed});
+    INSERT INTO events (id, resource_id, kind, outcome, title, detail, source, observation_id, occurred_at, recorded_at)
+      VALUES ('fan-event', 'rack', 'observation', 'warning', 'Observation: Attention required', 'Fan noise since Monday', 'manual', 'fan', ${observed}, ${observed});`)
   db.close()
+}
+
+/** Every table of the SQLite file at `file`, each with its rows, rowid first: what it holds. */
+function rowsOf(file: string) {
+  const db = new DatabaseSync(file, { readOnly: true })
+  try {
+    const tables = db
+      .prepare("SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name")
+      .all()
+      .map((row) => String(row.name))
+    return Object.fromEntries(
+      tables.map((table) => [
+        table,
+        db.prepare(`SELECT rowid, * FROM "${table}" ORDER BY rowid`).all(),
+      ]),
+    )
+  } finally {
+    db.close()
+  }
+}
+
+/** A value of `PRAGMA name` or a query on the SQLite file at `file`, opened read-only. */
+function valueOf(file: string, sql: string) {
+  const db = new DatabaseSync(file, { readOnly: true })
+  try {
+    return Object.values(db.prepare(sql).get()!)[0]
+  } finally {
+    db.close()
+  }
 }
 
 /** Bytes 18 and 19 of an SQLite file say how it journals: 1 rollback, 2 write-ahead log. */
@@ -308,13 +354,16 @@ try {
   const binary = appBinary()
   const { env, dataDirectory } = isolated
   const database = join(dataDirectory, 'inventory.sqlite3')
-  // Where the v6 inventory goes once DevHQ has refused it: outside the data folder, in the walk's
-  // own temporary folder, which it removes at the end.
-  const aside = join(copies, 'inventory-v6.sqlite3')
+  // Where the upgraded inventory and its backups go once DevHQ closes: outside the data folder, in
+  // the walk's own temporary folder, which it removes at the end; and a copy of the v6 inventory as
+  // it was, to compare the backup with.
+  const aside = join(copies, 'upgraded')
+  const original = join(copies, 'inventory-v6.sqlite3')
   await mkdir(dataDirectory, { recursive: true })
   seedVersion6(database)
   assert.equal(journalOf(database), 'rollback')
   const older = readFileSync(database)
+  await copyFile(database, original)
   await display(env, helpers)
   console.log(`DevHQ: ${binary}\nData: ${dataDirectory}`)
   let launched = Date.now()
@@ -334,9 +383,14 @@ try {
       .filter((name) => !name.endsWith('.window-lock'))
       .sort()
 
-  await step('An older inventory is refused and left exactly as it was', async () => {
+  const upgradePanel = "//section[@aria-labelledby='inventory-upgrade-heading']"
+
+  await step('An older inventory is refused, looked at and left exactly as it was', async () => {
     await ui.see('Inventory needs a schema upgrade')
-    await ui.see('declares schema version 6')
+    // What it is, read without changing it, and the one way forward.
+    await ui.see('is a DevHQ inventory in schema version 6', upgradePanel)
+    await ui.see('It holds 5 rows in 7 tables', upgradePanel)
+    await ui.find(button('Back up and upgrade', upgradePanel))
     await ui.find("//button[@aria-pressed='true' and normalize-space()='My inventory']")
     assert.ok(alive(pid!), 'DevHQ is running')
     // Back up now never upgrades an inventory to copy it, and leaves no folder behind.
@@ -349,15 +403,54 @@ try {
     assert.ok(readFileSync(database).equals(older), 'the v6 file changed')
   })
 
+  await step('Back up and upgrade keeps every row and serves the inventory at once', async () => {
+    await ui.go('Overview')
+    await ui.click(button('Back up and upgrade', upgradePanel))
+    const done = "//section[@aria-labelledby='inventory-upgraded-heading']"
+    await ui.see('Inventory upgraded', done, 30_000)
+    await ui.see(`From schema version 6 to ${schemaVersion}. All 5 rows in 7 tables`, done)
+    // The backup and its manifest, named for the version they keep.
+    const folder = join(dataDirectory, 'backups')
+    const files = (await readdir(folder)).sort()
+    assert.equal(files.length, 2, `a backup and its manifest in backups/, not ${files.join(', ')}`)
+    const [backup, manifest] = files as [string, string]
+    assert.match(backup, /^inventory-\d{8}T\d{6}\.\d{3}Z-v6\.sqlite3$/)
+    assert.equal(manifest, `${backup}.json`)
+    await ui.see(join(folder, backup), done)
+    const copy = join(folder, backup)
+    assert.deepEqual(rowsOf(copy), rowsOf(original), 'the backup holds the v6 inventory as it was')
+    assert.equal(valueOf(copy, 'PRAGMA user_version'), 6)
+    assert.equal(valueOf(copy, 'PRAGMA integrity_check'), 'ok')
+    const described = JSON.parse(readFileSync(join(folder, manifest), 'utf8'))
+    assert.equal(described.backup, backup)
+    assert.equal(described.schemaVersion, 6)
+    assert.equal(described.inventory, database)
+    assert.equal(
+      described.sha256,
+      createHash('sha256').update(readFileSync(copy)).digest('hex'),
+      'the manifest names the bytes of the backup',
+    )
+    // Served without starting again: the window shows what the v6 inventory held, and writes
+    // ahead as a current inventory does.
+    assert.equal(journalOf(database), 'wal')
+    await ui.go('Infrastructure')
+    await ui.see('From before the upgrade · Debian 12', region('Old rack server'))
+    await ui.see('Fan noise since Monday', region('Old rack server'))
+    await ui.go('Applications')
+    await ui.see('1 component · 1 linked resource', "//main//a[@aria-label='Open Team wiki']")
+  })
+
   await step('Closed and started again where no inventory is, it creates a new one', async () => {
     closeWindow(pid!, env)
     await until('DevHQ to exit', () => !alive(pid!), 20_000)
     await session!.end()
     session = undefined
-    assert.ok(readFileSync(database).equals(older), 'the v6 file changed when DevHQ closed')
-    // Set aside, so that its bytes can be checked at the end; nothing reads it again.
-    await copyFile(database, aside)
-    await rm(database)
+    // The upgraded inventory, folded into one file, and its backups, set aside so that they can
+    // be checked at the end; nothing reads them meanwhile.
+    assert.equal(existsSync(`${database}-wal`), false, 'no write-ahead log is left behind')
+    await mkdir(aside)
+    await rename(database, join(aside, 'inventory.sqlite3'))
+    await rename(join(dataDirectory, 'backups'), join(aside, 'backups'))
     // On Windows the next DevHQ opens the same DevTools port: wait until the WebView2 of the one
     // that closed has let it go, so that the walk never attaches to a browser on its way out.
     if (process.platform === 'win32')
@@ -663,8 +756,21 @@ try {
     } finally {
       inventory.close()
     }
-    // The v6 inventory DevHQ refused at the start still holds exactly what it did.
-    assert.ok(readFileSync(aside).equals(older), 'the v6 file changed')
+    // The inventory upgraded at the start: this schema, every row of the v6 one, sound; and its
+    // backup, still the v6 inventory as it was.
+    const upgraded = join(aside, 'inventory.sqlite3')
+    assert.equal(valueOf(upgraded, 'PRAGMA user_version'), schemaVersion)
+    assert.equal(valueOf(upgraded, 'PRAGMA integrity_check'), 'ok')
+    const before = rowsOf(original)
+    const after = rowsOf(upgraded)
+    for (const table of ['resources', 'applications', 'components', 'incidents'])
+      assert.deepEqual(after[table], before[table], `${table} after the upgrade`)
+    assert.deepEqual(
+      (after.observations as Record<string, unknown>[]).map((row) => [row.id, row.summary]),
+      [['fan', 'Fan noise since Monday']],
+    )
+    const [backup] = (await readdir(join(aside, 'backups'))).sort()
+    assert.deepEqual(rowsOf(join(aside, 'backups', backup!)), before)
   })
 } catch (error) {
   failed = true

@@ -1,0 +1,21 @@
+{
+  "from": 6,
+  "to": 12,
+  "backup": {
+    "name": "inventory-20260101T100500.123Z-v6.sqlite3",
+    "path": "C:\\Users\\Juan Pablo\\AppData\\Roaming\\com.devhq.desktop\\backups\\inventory-20260101T100500.123Z-v6.sqlite3",
+    "storedAt": null,
+    "manifest": "C:\\Users\\Juan Pablo\\AppData\\Roaming\\com.devhq.desktop\\backups\\inventory-20260101T100500.123Z-v6.sqlite3.json",
+    "takenAt": "2026-01-01T10:05:00.123Z",
+    "sizeBytes": 98304,
+    "sha256": "9f2c55b5e2a3c3f0f0d8f1f0d7b3b0a1c2e4f6a8b0c2d4e6f8a0b2c4d6e8f0a2",
+    "schemaVersion": 6,
+    "integrityCheck": "ok",
+    "tables": [
+      { "table": "applications", "rows": 1 },
+      { "table": "resources", "rows": 1 }
+    ]
+  },
+  "tablesKept": 7,
+  "rowsKept": 10
+}

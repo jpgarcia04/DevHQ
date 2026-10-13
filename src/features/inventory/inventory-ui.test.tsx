@@ -10,7 +10,7 @@ import { RealApplicationsPage } from './real-applications-page'
 import { RealInfrastructurePage } from './real-infrastructure-page'
 import { RealOverviewPage } from './real-overview-page'
 import { InventoryProvider } from './inventory-provider'
-import { inventoryApi } from './inventory-api'
+import { inventoryApi, type BeforeUpgrade, type UpgradeInspection } from './inventory-api'
 import { inventoryContext as context } from './test-context'
 
 function renderWithInventory(ui: ReactNode, value: InventoryContextValue) {
@@ -109,13 +109,58 @@ describe('real inventory UI', () => {
     list.mockRestore()
   })
 
-  it('says that an inventory in an older schema needs upgrading, and never asks again', async () => {
-    const user = userEvent.setup()
-    const list = vi.spyOn(inventoryApi, 'list').mockRejectedValue({
-      code: 'schema_outdated',
-      message:
-        '/home/you/.local/share/com.devhq.desktop/inventory.sqlite3: A DevHQ inventory that declares schema version 6, older than this DevHQ’s (12).',
-    })
+  const outdatedRefusal = {
+    code: 'schema_outdated',
+    message:
+      '/home/you/.local/share/com.devhq.desktop/inventory.sqlite3: A DevHQ inventory that declares schema version 6, older than this DevHQ’s (12).',
+  }
+  const outdated: UpgradeInspection = {
+    database: '/home/you/.local/share/com.devhq.desktop/inventory.sqlite3',
+    storedAt: null,
+    state: 'outdated',
+    storedVersion: 6,
+    version: 12,
+    message: 'A DevHQ inventory in schema version 6, older than this DevHQ’s (12).',
+    upgradable: true,
+    problems: [],
+    tables: [
+      { table: 'applications', rows: 1 },
+      { table: 'resources', rows: 2 },
+    ],
+    fingerprint: 'f'.repeat(64),
+    backups: '/home/you/.local/share/com.devhq.desktop/backups',
+  }
+  const backupMade: BeforeUpgrade = {
+    name: 'inventory-20260930T120000.000Z-v6.sqlite3',
+    path: '/home/you/.local/share/com.devhq.desktop/backups/inventory-20260930T120000.000Z-v6.sqlite3',
+    storedAt: null,
+    manifest:
+      '/home/you/.local/share/com.devhq.desktop/backups/inventory-20260930T120000.000Z-v6.sqlite3.json',
+    takenAt: '2026-09-30T12:00:00.000Z',
+    sizeBytes: 65_536,
+    sha256: 'a'.repeat(64),
+    schemaVersion: 6,
+    integrityCheck: 'ok',
+    tables: outdated.tables,
+  }
+  const upgradedInventory = {
+    ...context().snapshot!,
+    resources: [
+      {
+        id: 'host-1',
+        name: 'Kept through the upgrade',
+        kind: 'server' as const,
+        description: '',
+        operatingSystem: 'Linux',
+        references: [],
+      },
+    ],
+  }
+
+  /** The real provider over a native process that refuses the inventory as outdated. */
+  function outdatedWindow() {
+    const list = vi.spyOn(inventoryApi, 'list').mockRejectedValue(outdatedRefusal)
+    const inspect = vi.spyOn(inventoryApi, 'inspectUpgrade').mockResolvedValue(outdated)
     render(
       <MemoryRouter>
         <InventoryProvider>
@@ -124,18 +169,114 @@ describe('real inventory UI', () => {
         </InventoryProvider>
       </MemoryRouter>,
     )
+    return { list, inspect }
+  }
+
+  it('offers to back up and upgrade an inventory in an older schema, and serves it once upgraded', async () => {
+    const user = userEvent.setup()
+    const { list, inspect } = outdatedWindow()
+    // The upgrade stops once the backup is verified, until the test lets it go on.
+    let goOn = () => {}
+    const upgrade = vi
+      .spyOn(inventoryApi, 'upgradeInventory')
+      .mockImplementation(async (_from, _fingerprint, onStep) => {
+        onStep({ step: 'checking' })
+        onStep({ step: 'backingUp' })
+        onStep({ step: 'backedUp', backup: backupMade })
+        await new Promise<void>((resolve) => (goOn = resolve))
+        onStep({ step: 'upgrading' })
+        onStep({ step: 'verifying' })
+        list.mockResolvedValue(upgradedInventory)
+        return { from: 6, to: 12, backup: backupMade, tablesKept: 2, rowsKept: 3 }
+      })
     await user.click(screen.getByRole('button', { name: 'Select real inventory' }))
     expect(
       await screen.findByRole('heading', { name: 'Inventory needs a schema upgrade' }),
     ).toBeInTheDocument()
-    expect(screen.getByText(/declares schema version 6/)).toHaveTextContent(
-      /Settings shows where the file and its backups folder are/,
+    // What it is, as the native process found it without changing it.
+    expect(await screen.findByText(/is a DevHQ inventory in schema version 6/)).toHaveTextContent(
+      'this DevHQ reads version 12',
     )
-    // Not presented as empty, and nothing to retry: DevHQ decided it when it started.
+    expect(screen.getByText(/It holds 3 rows in 2 tables/)).toBeInTheDocument()
+    expect(screen.getByText(/with a manifest beside it/)).toHaveTextContent(outdated.backups)
+    expect(screen.getByText(/same disk as the inventory/)).toBeInTheDocument()
+    // Not presented as empty, no Retry, and no way to upgrade without the backup.
     expect(screen.queryByText(/Nothing is registered yet/)).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument()
-    expect(list).toHaveBeenCalledTimes(1)
-    list.mockRestore()
+    expect(screen.getAllByRole('button').map((button) => button.textContent)).toStrictEqual([
+      'Select real inventory',
+      'Back up and upgrade',
+    ])
+    expect(upgrade).not.toHaveBeenCalled()
+
+    await user.click(screen.getByRole('button', { name: 'Back up and upgrade' }))
+    expect(upgrade).toHaveBeenCalledWith(6, outdated.fingerprint, expect.any(Function))
+    const progress = await screen.findByRole('status', { name: 'Upgrade' })
+    await waitFor(() =>
+      expect(progress).toHaveTextContent('✓ Backup verified and named, with its manifest'),
+    )
+    expect(progress).toHaveTextContent(backupMade.path)
+    expect(progress).toHaveTextContent('· Upgrading')
+    expect(screen.queryByRole('button', { name: 'Back up and upgrade' })).not.toBeInTheDocument()
+
+    await act(async () => goOn())
+    // Served: the inventory, with what the upgrade did above it.
+    expect((await screen.findAllByText('Kept through the upgrade')).length).toBeGreaterThan(0)
+    const done = screen.getByRole('region', { name: 'Inventory upgraded' })
+    expect(done).toHaveTextContent('From schema version 6 to 12. All 3 rows in 2 tables')
+    expect(done).toHaveTextContent(backupMade.path)
+    expect(done).toHaveTextContent(backupMade.manifest)
+    expect(done).toHaveTextContent(backupMade.sha256)
+    expect(inspect).toHaveBeenCalledTimes(1)
+    await user.click(within(done).getByRole('button', { name: 'Dismiss' }))
+    expect(screen.queryByRole('region', { name: 'Inventory upgraded' })).not.toBeInTheDocument()
+    vi.restoreAllMocks()
+  })
+
+  it('says why it does not upgrade an inventory it cannot vouch for, and offers nothing', async () => {
+    const user = userEvent.setup()
+    const { inspect } = outdatedWindow()
+    inspect.mockResolvedValue({
+      ...outdated,
+      upgradable: false,
+      fingerprint: null,
+      problems: ['SQLite’s integrity check found it damaged: row 3 missing from index'],
+    })
+    const upgrade = vi.spyOn(inventoryApi, 'upgradeInventory')
+    await user.click(screen.getByRole('button', { name: 'Select real inventory' }))
+    expect(
+      await screen.findByText(/DevHQ does not upgrade it: it never changes what it cannot vouch/),
+    ).toBeInTheDocument()
+    expect(screen.getByText(/row 3 missing from index/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Back up and upgrade' })).not.toBeInTheDocument()
+    expect(upgrade).not.toHaveBeenCalled()
+    vi.restoreAllMocks()
+  })
+
+  it('says what a failed upgrade did and where its backup is, and looks at the inventory again', async () => {
+    const user = userEvent.setup()
+    const { inspect } = outdatedWindow()
+    vi.spyOn(inventoryApi, 'upgradeInventory').mockImplementation(async (_f, _p, onStep) => {
+      onStep({ step: 'checking' })
+      onStep({ step: 'backingUp' })
+      onStep({ step: 'backedUp', backup: backupMade })
+      onStep({ step: 'upgrading' })
+      throw {
+        code: 'upgrade_failed',
+        message: `migration 012 failed: disk I/O error. Nothing of the upgrade was committed: the inventory holds what it held before, in schema version 6. The backup made before it is kept at ${backupMade.path}.`,
+      }
+    })
+    await user.click(screen.getByRole('button', { name: 'Select real inventory' }))
+    await user.click(await screen.findByRole('button', { name: 'Back up and upgrade' }))
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('The upgrade did not happen.')
+    expect(alert).toHaveTextContent('Nothing of the upgrade was committed')
+    expect(alert).toHaveTextContent(backupMade.manifest)
+    // Looked at again: still outdated, so the person can try again.
+    expect(await screen.findByRole('button', { name: 'Back up and upgrade' })).toBeInTheDocument()
+    expect(inspect).toHaveBeenCalledTimes(2)
+    expect(screen.queryByRole('region', { name: 'Inventory upgraded' })).not.toBeInTheDocument()
+    vi.restoreAllMocks()
   })
 
   it('titles an application’s page while the inventory loads and when it cannot be read', () => {

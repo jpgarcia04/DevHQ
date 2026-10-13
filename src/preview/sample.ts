@@ -14,6 +14,7 @@ import type {
   InventoryApplication,
   InventoryResource,
   ThisWorkstation,
+  UpgradeInspection,
 } from '@/features/inventory/inventory-api'
 
 /**
@@ -39,6 +40,8 @@ export interface PreviewDatabase {
   /** Why every read is refused, as the native process refuses a database it cannot or will not
    * read; null when it reads. */
   unavailable: { code: string; message: string } | null
+  /** What the window finds when it looks at an inventory it refused as outdated. */
+  upgrade: UpgradeInspection | null
 }
 
 /** Where the native process would keep this computer's association, on Windows. */
@@ -61,8 +64,8 @@ const notChosen: ThisWorkstation = {
  *   automated results go back further than a snapshot carries.
  * - `empty`: nothing registered yet.
  * - `unavailable`: the inventory cannot be read.
- * - `outdated`: the inventory is in an older schema, which DevHQ serves nothing from and never
- *   upgrades on its own.
+ * - `outdated`: the inventory is in an older schema, which DevHQ serves nothing from until the
+ *   person backs it up and upgrades it, which the preview, like every write, refuses.
  */
 export const scenarios = ['history', 'empty', 'unavailable', 'outdated'] as const
 export type Scenario = (typeof scenarios)[number]
@@ -95,6 +98,7 @@ function nothing(): PreviewDatabase {
     thisWorkstation: notChosen,
     backups: [],
     unavailable: null,
+    upgrade: null,
   }
 }
 
@@ -255,7 +259,28 @@ export function sampleDatabase(scenario: Scenario, now: number): PreviewDatabase
       backups: sampleBackups(now),
       unavailable: {
         code: 'schema_outdated',
-        message: `${previewDatabasePath}: A DevHQ inventory that declares schema version 6, older than this DevHQ's (12). This DevHQ never upgrades an inventory when it opens it: neither its window nor the gate serves anything from this one, and both leave it as it is. Upgrading it is an explicit step, which this DevHQ does not offer yet. Nothing was read or changed.`,
+        message: `${previewDatabasePath}: A DevHQ inventory that declares schema version 6, older than this DevHQ's (12). This DevHQ never upgrades an inventory when it opens it: neither its window nor the gate serves anything from this one, and both leave it as it is. Only the person upgrades it, from DevHQ's window (Back up and upgrade), which first makes and verifies a backup of it; the gate never does. Nothing was read or changed.`,
+      },
+      upgrade: {
+        database: previewDatabasePath,
+        storedAt: null,
+        state: 'outdated',
+        storedVersion: 6,
+        version: 12,
+        message: `A DevHQ inventory in schema version 6, older than this DevHQ's (12). DevHQ read it without changing it, and serves nothing from it until it is upgraded.`,
+        upgradable: true,
+        problems: [],
+        tables: [
+          { table: 'applications', rows: 2 },
+          { table: 'components', rows: 4 },
+          { table: 'events', rows: 31 },
+          { table: 'http_checks', rows: 1 },
+          { table: 'incidents', rows: 1 },
+          { table: 'observations', rows: 27 },
+          { table: 'resources', rows: 3 },
+        ],
+        fingerprint: '3a7bd3e2360a3d29eea436fcfb7e44c735d117c42d1c1835420b6b9942dd4f1b',
+        backups: previewDatabasePath.replace(/inventory\.sqlite3$/, 'backups'),
       },
     }
   const time = (minutesAgo: number) => at(now, minutesAgo)
@@ -685,5 +710,6 @@ export function sampleDatabase(scenario: Scenario, now: number): PreviewDatabase
     },
     backups: sampleBackups(now),
     unavailable: null,
+    upgrade: null,
   }
 }

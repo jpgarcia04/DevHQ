@@ -385,6 +385,75 @@ export interface BackupFolder {
   files: BackupFile[]
 }
 
+/** How many rows a table holds. */
+export interface TableRows {
+  table: string
+  rows: number
+}
+
+/**
+ * What the inventory the window does not serve is, read without changing any of its files, and
+ * whether DevHQ offers to upgrade it.
+ */
+export interface UpgradeInspection {
+  database: string
+  /** Where the file system really keeps it, when that is not `database`. */
+  storedAt: string | null
+  /** What was found (`outdated`, `current`, `needs_recovery`…): only `outdated` is upgraded. */
+  state: string
+  /** The schema version the file declares, when one could be read. */
+  storedVersion: number | null
+  /** This DevHQ's schema version, the one it upgrades to. */
+  version: number
+  message: string
+  /** Back up and upgrade is offered: an outdated inventory DevHQ can vouch for, read whole. */
+  upgradable: boolean
+  /** Why DevHQ will not upgrade it; empty when it will. */
+  problems: string[]
+  tables: TableRows[]
+  /** What the person consents to, sent back with the upgrade; only when `upgradable`. */
+  fingerprint: string | null
+  /** The folder the backup goes to. */
+  backups: string
+}
+
+/** The verified copy an upgrade made before changing anything, with a manifest beside it. */
+export interface BeforeUpgrade {
+  name: string
+  path: string
+  storedAt: string | null
+  manifest: string
+  /** When the copy was taken (UTC), as its name says. */
+  takenAt: string
+  sizeBytes: number
+  /** SHA-256 of the file's bytes, as the manifest records it. */
+  sha256: string
+  /** The inventory's schema version before the upgrade. */
+  schemaVersion: number
+  integrityCheck: string
+  /** Each table with its rows, every one compared value by value with the inventory. */
+  tables: TableRows[]
+}
+
+/** How an upgrade ended, once committed. */
+export interface Upgraded {
+  from: number
+  to: number
+  /** Null when the inventory was already in this DevHQ's schema and nothing was written. */
+  backup: BeforeUpgrade | null
+  /** Tables and rows carried over, each row checked value by value before the commit. */
+  tablesKept: number
+  rowsKept: number
+}
+
+/** Where an upgrade is: each step is sent once the native process reached it. */
+export type UpgradeStep =
+  | { step: 'checking' }
+  | { step: 'backingUp' }
+  | { step: 'backedUp'; backup: BeforeUpgrade }
+  | { step: 'upgrading' }
+  | { step: 'verifying' }
+
 /** A reference to keep (with its ID) or to add. */
 export type ReferenceInput = Omit<InventoryReference, 'id'> & { id?: string }
 /** `references` is the complete list: the save replaces the stored one. */
@@ -494,6 +563,20 @@ export const inventoryApi = {
   /** A system's readings older than `before`, one already shown, or its newest with null. */
   olderReadings: (subject: EntityRef, before: string | null) =>
     invoke<ReadingPage>('older_readings', { subject, before }),
+  /** Looks at the inventory the window does not serve, without changing any of its files. */
+  inspectUpgrade: () => invoke<UpgradeInspection>('inspect_upgrade'),
+  /**
+   * Backs up and upgrades the inventory if it is still exactly what the person was shown
+   * (`from` and `fingerprint`); each step reaches `onStep` as the native process reaches it.
+   */
+  upgradeInventory: async (
+    from: number,
+    fingerprint: string,
+    onStep: (step: UpgradeStep) => void,
+  ) => {
+    const progress = new Channel<UpgradeStep>(onStep)
+    return invoke<Upgraded>('upgrade_inventory', { from, fingerprint, progress })
+  },
 }
 
 /** What kind of refusal DevHQ answered (`schema_outdated`, `access_denied`…), if it said. */

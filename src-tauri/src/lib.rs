@@ -12,6 +12,7 @@ pub mod local_copies;
 mod monitor;
 mod records;
 mod references;
+mod upgrade;
 mod window_lock;
 mod workstation;
 
@@ -19,22 +20,40 @@ use local_copies::readings::{self, ReadOutcome, ReadingPage, Which};
 use local_copies::Reader;
 use monitor::{Monitor, MonitorStatus};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use tauri::ipc::Channel;
 use tauri::{Manager, RunEvent};
 use workstation::{Computer, ThisWorkstation};
 
-/// The inventory's path, and what the window found there when it started (`inventory::start`).
+/// The inventory's path, and what the window found there when it started (`inventory::start`), or
+/// once the person upgraded it (`upgrade_inventory`).
 struct InventoryPath {
     path: PathBuf,
-    ready: Result<(), inventory::ApiError>,
+    ready: Arc<RwLock<Result<(), inventory::ApiError>>>,
 }
 
 impl InventoryPath {
-    /// The path to open, when the window started on an inventory in this build's schema; otherwise
-    /// why it serves nothing from the file, which it does not open again until DevHQ starts again.
+    /// The path to open, when the window serves the inventory: one in this build's schema;
+    /// otherwise why it serves nothing from the file, which it does not open again until DevHQ
+    /// starts again or the person upgrades it.
     fn current(&self) -> Result<&Path, inventory::ApiError> {
-        self.ready.clone().map(|()| self.path.as_path())
+        self.ready().map(|()| self.path.as_path())
     }
+
+    fn ready(&self) -> Result<(), inventory::ApiError> {
+        self.ready
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+}
+
+/// Looking at an inventory the window does not serve, and upgrading it, one at a time: both look at
+/// its files with `inventory::examine`, which on Unix must never run while this process holds a
+/// connection to them, so neither runs beside the other, nor once the window serves the inventory.
+#[derive(Default)]
+struct Upgrades {
+    one: Arc<Mutex<()>>,
 }
 
 #[tauri::command]
@@ -296,6 +315,98 @@ fn older_readings(
     readings::older_readings(path.current()?, &subject, before.as_deref())
 }
 
+/// What the inventory the window does not serve is, read without changing any of its files, and
+/// whether DevHQ offers to upgrade it. Async, and on a thread of its own: it reads the whole file.
+#[tauri::command]
+async fn inspect_upgrade(
+    path: tauri::State<'_, InventoryPath>,
+    upgrades: tauri::State<'_, Upgrades>,
+) -> Result<upgrade::Inspection, inventory::ApiError> {
+    let (inventory, ready, one) = (
+        path.path.clone(),
+        Arc::clone(&path.ready),
+        Arc::clone(&upgrades.one),
+    );
+    tauri::async_runtime::spawn_blocking(move || {
+        let _one = one.lock().unwrap_or_else(PoisonError::into_inner);
+        // Served, it may have connections open, and is never looked at this way again.
+        match ready.read().unwrap_or_else(PoisonError::into_inner).clone() {
+            Ok(()) => Ok(upgrade::serving(&inventory)),
+            Err(refused) if refused.code == "schema_outdated" => Ok(upgrade::inspect(&inventory)),
+            Err(refused) => Err(refused),
+        }
+    })
+    .await
+    .map_err(|error| inventory::ApiError::database(format!("The inspection stopped: {error}")))?
+}
+
+/// Backs up and upgrades the inventory the window refused as outdated, if it is still exactly what
+/// the person was shown (`from` and `fingerprint`, from `inspect_upgrade`), sending each step to
+/// `progress`. Once committed, the window serves it as if it had started on it: `inventory::start`
+/// switches it to write-ahead logging, and supervision starts. Async, and on a thread of its own.
+#[tauri::command]
+async fn upgrade_inventory(
+    path: tauri::State<'_, InventoryPath>,
+    upgrades: tauri::State<'_, Upgrades>,
+    monitor: tauri::State<'_, Monitor>,
+    from: i64,
+    fingerprint: String,
+    progress: Channel<upgrade::Step>,
+) -> Result<upgrade::Upgraded, inventory::ApiError> {
+    let (inventory, ready, one) = (
+        path.path.clone(),
+        Arc::clone(&path.ready),
+        Arc::clone(&upgrades.one),
+    );
+    let upgraded = tauri::async_runtime::spawn_blocking(move || {
+        let _one = one.lock().unwrap_or_else(PoisonError::into_inner);
+        let refused = match ready.read().unwrap_or_else(PoisonError::into_inner).clone() {
+            // Already served: nothing to upgrade, and supervision is running.
+            Ok(()) => return Ok(None),
+            Err(refused) => refused,
+        };
+        if refused.code != "schema_outdated" {
+            return Err(refused);
+        }
+        let upgraded = upgrade::upgrade(&inventory, from, &fingerprint, &mut |step| {
+            // A window that went away does not stop the upgrade.
+            let _ = progress.send(step);
+        })?;
+        // Every connection of the upgrade is closed: the window starts on the file as when DevHQ
+        // starts, and serves it only if that finds it current.
+        let started = inventory::start(&inventory);
+        *ready.write().unwrap_or_else(PoisonError::into_inner) = started.clone();
+        started
+            .map(|()| Some(upgraded.clone()))
+            .map_err(|refused| inventory::ApiError {
+                code: refused.code,
+                message: match &upgraded.backup {
+                    Some(backup) => format!(
+                        "The upgrade from schema version {} committed, with its backup at {}, but then the window could not open the inventory: {}",
+                        upgraded.from, backup.path, refused.message
+                    ),
+                    None => refused.message,
+                },
+            })
+    })
+    .await
+    .map_err(|error| inventory::ApiError::database(format!("The upgrade stopped: {error}")))??;
+    match upgraded {
+        Some(upgraded) => {
+            supervise(&monitor);
+            Ok(upgraded)
+        }
+        None => Ok(upgrade::Upgraded::already()),
+    }
+}
+
+/// Starts supervision, and noticing what other processes change, over an inventory the window
+/// serves, for as long as this process lives: no service, no system task.
+fn supervise(monitor: &Monitor) {
+    tauri::async_runtime::spawn(monitor.clone().run());
+    tauri::async_runtime::spawn(monitor.clone().notice_changes());
+}
+
 /// Every command the window can call. The app and the IPC contract tests register this list.
 fn commands<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static {
     tauri::generate_handler![
@@ -323,15 +434,18 @@ fn commands<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Sen
         this_workstation,
         set_this_workstation,
         read_copies,
-        older_readings
+        older_readings,
+        inspect_upgrade,
+        upgrade_inventory
     ]
 }
 
 /// The state the commands find, over the inventory at `path`, on `computer`, reading copies with
 /// `reader`, once the window has done what it does when it starts (`inventory::start`): creating a
-/// missing inventory, recovering a current one, and nothing to any other. The app and the IPC
-/// contract tests manage this same state. Returns supervision, whose loops are left to the caller,
-/// and whether the inventory is current, without which they must not run.
+/// missing inventory, recovering a current one, and nothing to any other, which only the person's
+/// explicit upgrade changes (`upgrade_inventory`). The app and the IPC contract tests manage this
+/// same state. Returns supervision, whose loops are left to the caller, and whether the inventory
+/// is current, without which they must not run.
 fn manage<R: tauri::Runtime>(
     app: &impl Manager<R>,
     path: PathBuf,
@@ -347,9 +461,13 @@ fn manage<R: tauri::Runtime>(
     }
     let current = ready.is_ok();
     let monitor = Monitor::new(path.clone());
-    app.manage(InventoryPath { path, ready });
+    app.manage(InventoryPath {
+        path,
+        ready: Arc::new(RwLock::new(ready)),
+    });
     app.manage(monitor.clone());
     app.manage(backup::Backups::default());
+    app.manage(Upgrades::default());
     app.manage(computer);
     app.manage(reader);
     (monitor, current)
@@ -380,8 +498,7 @@ pub fn run() {
             // it refused is never opened again until DevHQ starts again.
             let (monitor, current) = manage(app, path, computer, reader);
             if current {
-                tauri::async_runtime::spawn(monitor.clone().run());
-                tauri::async_runtime::spawn(monitor.notice_changes());
+                supervise(&monitor);
             }
             Ok(())
         })

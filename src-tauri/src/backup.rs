@@ -10,7 +10,10 @@
 //! A backup is not evidence about a system, so the timeline records nothing.
 //!
 //! Only an inventory in this build's schema is backed up, as it is: a backup never upgrades one
-//! to copy it, and refuses any other before it writes anything, the backups folder included.
+//! to copy it, and refuses any other before it writes anything, the backups folder included. The
+//! one exception is the copy the explicit upgrade makes of an older inventory before changing it
+//! (`upgrade.rs`): written, verified and named the same way (`copy_verified`), with its version in
+//! its name and a manifest beside it.
 
 use crate::access;
 use crate::inventory::{self, stored_at, ApiError, SCHEMA_VERSION};
@@ -86,11 +89,12 @@ pub fn folder_of(database: &Path) -> PathBuf {
 }
 
 /// `inventory-20261001T120320.450Z.sqlite3`: the UTC moment in ISO 8601's basic format, so that
-/// names sort by time and hold no ':', which Windows refuses in a file name.
-fn file_name(taken_at: i64) -> Option<String> {
+/// names sort by time and hold no ':', which Windows refuses in a file name. `qualifier` goes
+/// before the extension: `-v6` names the copy made before upgrading an inventory in schema 6.
+pub(crate) fn file_name(taken_at: i64, qualifier: &str) -> Option<String> {
     let time = OffsetDateTime::from_unix_timestamp_nanos(i128::from(taken_at) * 1_000_000).ok()?;
     Some(format!(
-        "inventory-{:04}{:02}{:02}T{:02}{:02}{:02}.{:03}Z.sqlite3",
+        "inventory-{:04}{:02}{:02}T{:02}{:02}{:02}.{:03}Z{qualifier}.sqlite3",
         time.year(),
         u8::from(time.month()),
         time.day(),
@@ -137,22 +141,51 @@ fn write(
 ) -> Result<Backup, ApiError> {
     // Before anything is written: an inventory that cannot be backed up leaves no folder behind.
     let db = source(database, by)?;
-    let folder = folder_of(database);
-    let name = file_name(taken_at).ok_or_else(|| {
+    let name = file_name(taken_at, "").ok_or_else(|| {
         ApiError::backup("The system clock is out of range. Nothing was written.")
     })?;
-    let partial = folder.join(format!("{name}.partial"));
-    let reserved = std::fs::create_dir_all(&folder).and_then(|()| {
-        // Created here and only here, so that a failure removes this backup's file and no other.
-        File::options().write(true).create_new(true).open(&partial)
-    });
-    if let Err(error) = reserved {
-        return Err(ApiError::backup(format!(
+    let copy = copy_verified(&db, database, &name, damage, verify)?;
+    let (quick_check, schema_version, counts) = copy.verified;
+    Ok(Backup {
+        stored_at: stored_at(&copy.path),
+        path: copy.path.display().to_string(),
+        name,
+        taken_at: format_time(taken_at).unwrap_or_default(),
+        size_bytes: copy.size_bytes,
+        quick_check,
+        schema_version,
+        counts,
+    })
+}
+
+/// A copy written, verified and named by `copy_verified`.
+pub(crate) struct Copy<V> {
+    pub path: PathBuf,
+    pub size_bytes: u64,
+    /// What its verification found.
+    pub verified: V,
+}
+
+/// Copies the database on `db` into the backups folder of the inventory at `database`, under
+/// `name`, as the module's documentation says: into a `.partial` it creates itself, with `VACUUM
+/// INTO`, which `damage` can break in tests; then `verify` reads it back on its own, it is forced to
+/// disk and only then given `name`, which never replaces a file. Any failure removes the `.partial`
+/// and is a `backup_error`: a name in the folder is always a copy that passed `verify`.
+pub(crate) fn copy_verified<V>(
+    db: &Connection,
+    database: &Path,
+    name: &str,
+    damage: impl FnOnce(&Path) -> std::io::Result<()>,
+    verify: impl FnOnce(&Path) -> Result<V, String>,
+) -> Result<Copy<V>, ApiError> {
+    let folder = folder_of(database);
+    let partial = reserve(&folder, name).map_err(|error| {
+        ApiError::backup(format!(
             "DevHQ could not start the backup in {}: {error}. Nothing was written.",
             folder.display()
-        )));
-    }
-    finish(&db, &folder, &name, &partial, taken_at, damage).map_err(|cause| {
+        ))
+    })?;
+    finish(db, &folder, name, &partial, damage, verify).map_err(|cause| {
         ApiError::backup(match std::fs::remove_file(&partial) {
             Ok(()) => format!("{cause} The incomplete copy was removed, so no backup was added."),
             Err(error) => format!(
@@ -163,33 +196,57 @@ fn write(
     })
 }
 
-fn finish(
+/// Creates `<name>.partial` in `folder`, and the folder if needed. Created here and only here, so
+/// that a failure removes this backup's file and no other; one that is there already, another
+/// backup's that may still be writing it, makes this fail without touching it.
+fn reserve(folder: &Path, name: &str) -> std::io::Result<PathBuf> {
+    let partial = folder.join(format!("{name}.partial"));
+    std::fs::create_dir_all(folder)?;
+    File::options()
+        .write(true)
+        .create_new(true)
+        .open(&partial)?;
+    Ok(partial)
+}
+
+fn finish<V>(
     db: &Connection,
     folder: &Path,
     name: &str,
     partial: &Path,
-    taken_at: i64,
     damage: impl FnOnce(&Path) -> std::io::Result<()>,
-) -> Result<Backup, String> {
+    verify: impl FnOnce(&Path) -> Result<V, String>,
+) -> Result<Copy<V>, String> {
     let target = partial
         .to_str()
         .ok_or("The backups folder's path is not valid Unicode, which SQLite needs.")?;
     db.execute("VACUUM INTO ?1", [target])
         .map_err(|error| format!("Copying the inventory failed: {error}."))?;
     damage(partial).map_err(|error| error.to_string())?;
-    let (quick_check, schema_version, counts) = verify(partial)?;
-    // On disk before it is named, so that a backup's name never points at data still in a cache.
+    let verified = verify(partial)?;
+    let size_bytes = std::fs::metadata(partial)
+        .map_err(|error| format!("The copy cannot be measured: {error}."))?
+        .len();
+    let path = publish(folder, name, partial)?;
+    Ok(Copy {
+        path,
+        size_bytes,
+        verified,
+    })
+}
+
+/// Gives the file `partial` in `folder` its final `name` there, once it is on disk, so that a
+/// name never points at data still in a cache: a second name for the same file, which the file
+/// system refuses if the name is taken, and then the first name goes, which completes the
+/// rename. A plain rename would replace a file. Named, the file is finished: a `.partial` that
+/// could not be removed is listed as incomplete.
+pub(crate) fn publish(folder: &Path, name: &str, partial: &Path) -> Result<PathBuf, String> {
     // Windows flushes only through a handle that can write.
     File::options()
         .write(true)
         .open(partial)
         .and_then(|file| file.sync_all())
-        .map_err(|error| format!("Writing the copy to disk failed: {error}."))?;
-    let size_bytes = std::fs::metadata(partial)
-        .map_err(|error| format!("The copy cannot be measured: {error}."))?
-        .len();
-    // A second name for the same file, which the file system refuses if the name is taken;
-    // removing the first name then completes the rename. A plain rename would replace a file.
+        .map_err(|error| format!("Writing {name} to disk failed: {error}."))?;
     let finished = folder.join(name);
     std::fs::hard_link(partial, &finished).map_err(|error| match error.kind() {
         ErrorKind::AlreadyExists => {
@@ -199,22 +256,27 @@ fn finish(
         }
         _ => format!("Naming the copy {name} failed: {error}."),
     })?;
-    // Named, the backup is finished: nothing below can fail it. A `.partial` that could not be
-    // removed is listed as incomplete.
     let _ = std::fs::remove_file(partial);
     // The names themselves reach the disk with the folder (Windows journals them as it goes).
     #[cfg(unix)]
     let _ = File::open(folder).and_then(|folder| folder.sync_all());
-    Ok(Backup {
-        name: name.to_owned(),
-        path: finished.display().to_string(),
-        stored_at: stored_at(&finished),
-        taken_at: format_time(taken_at).unwrap_or_default(),
-        size_bytes,
-        quick_check,
-        schema_version,
-        counts,
-    })
+    Ok(finished)
+}
+
+/// Writes `bytes` into the backups folder of the inventory at `database` as a new file `name`,
+/// through a `.partial` of its own, forced to disk before it is named (see `publish`): never over a
+/// file, and never half-written under its final name. A failure removes the `.partial`.
+pub(crate) fn write_new(database: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
+    let folder = folder_of(database);
+    let partial = reserve(&folder, name)
+        .map_err(|error| format!("DevHQ could not start writing {name}: {error}."))?;
+    let written = std::fs::write(&partial, bytes)
+        .map_err(|error| format!("Writing {name} failed: {error}."))
+        .and_then(|()| publish(&folder, name, &partial));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&partial);
+    }
+    written
 }
 
 /// Reads the copy back on its own: its integrity, its schema version and what it holds.
