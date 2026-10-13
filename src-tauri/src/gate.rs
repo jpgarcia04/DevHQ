@@ -335,6 +335,10 @@ impl Session {
                 "stored": found.stored(),
                 "supported": inventory::SCHEMA_VERSION,
                 "state": found.state(),
+                "structure": found.structure(),
+                // The gate never runs SQLite's integrity check: a schema it read is never
+                // presented as sound.
+                "integrity": found.stored().map(|_| "not_checked"),
                 "meaning": found.meaning(),
             },
             "access": access,
@@ -924,7 +928,7 @@ fn read_tools() -> Vec<Value> {
         read_only(
             "status",
             "DevHQ status",
-"Which inventory file the gate opened, where the system really keeps it, what the file is (`schema`: the version it stores, the one this DevHQ supports, and its state: current, outdated, newer, not_an_inventory, needs_recovery, unreadable or missing; `schemaVersion` is the stored one, null when unknown), whether the person lets agents read or write through the gate (`access`: off, read or write), whether a DevHQ window is open on it (`windowOpen`; null when the system cannot say), how many systems it holds, which of its workstations this computer is (`thisWorkstation`, or why DevHQ does not know: only the window chooses it), and what the gate cannot know. Access, counts and workstation are null unless the inventory is current, which is the only kind the gate serves. An inventory left needing recovery (a write that did not finish, or a log no connection holds) is reported, never recovered: DevHQ's window recovers it when it opens. Always answered, even with the gate off, and never changes the file or the files SQLite keeps beside it.",
+"Which inventory file the gate opened, where the system really keeps it, what the file is (`schema`: the version it declares, the one this DevHQ supports, its state: current, mismatch, outdated, newer, not_an_inventory, needs_recovery, unreadable or missing; whether it has the structure of this DevHQ's schema, compared table by table and column by column: matches, differs or not_checked for another version; its integrity, never checked by the gate: not_checked; `schemaVersion` is the declared one, null when unknown), whether the person lets agents read or write through the gate (`access`: off, read or write), whether a DevHQ window is open on it (`windowOpen`; null when the system cannot say), how many systems it holds, which of its workstations this computer is (`thisWorkstation`, or why DevHQ does not know: only the window chooses it), and what the gate cannot know. Access, counts and workstation are null unless the inventory is current, which is the only kind the gate serves. An inventory left needing recovery (a write that did not finish, or a log no connection holds) is reported, never recovered: DevHQ's window recovers it when it opens. Always answered, even with the gate off, and never changes the file or the files SQLite keeps beside it.",
             json!({}),
             &[],
         ),
@@ -2877,10 +2881,9 @@ mod tests {
     /// status says what it is, and nothing it could not read is presented as known.
     #[test]
     fn reads_leave_every_file_as_they_found_it_and_status_says_what_it_is() {
-        use crate::inventory::tests::database_at;
+        use crate::inventory::tests::{database_at, kill, writer};
         let counts = json!({ "applications": 1, "resources": 2 });
-        use crate::inventory::tests::{kill, writer};
-        let cases: [Case; 17] = [
+        let cases: [Case; 19] = [
             (
                 "v6, rollback journal",
                 |path| drop(database_at(path, 6)),
@@ -3010,6 +3013,36 @@ mod tests {
                 Value::Null,
                 Value::Null,
                 Some("not_an_inventory"),
+            ),
+            (
+                "v12 stamped, with only the tables that tell an inventory apart",
+                |path| {
+                    sqlite(
+                        path,
+                        "CREATE TABLE applications (id TEXT PRIMARY KEY);
+                         CREATE TABLE resources (id TEXT PRIMARY KEY);
+                         PRAGMA user_version = 12;",
+                    )
+                },
+                true,
+                json!(12),
+                "mismatch",
+                Value::Null,
+                Value::Null,
+                Some("schema_mismatch"),
+            ),
+            (
+                "v12 without agent_access",
+                |path| {
+                    seed(path);
+                    sqlite(path, "DROP TABLE agent_access");
+                },
+                true,
+                json!(12),
+                "mismatch",
+                Value::Null,
+                Value::Null,
+                Some("schema_mismatch"),
             ),
             (
                 "v12, Off, its write-ahead log left by a writer that was killed",
@@ -3144,6 +3177,29 @@ mod tests {
                 "{case}: {status:#}"
             );
             assert!(status["schema"]["meaning"].is_string(), "{case}");
+            // Whether it has this schema's structure only once it was compared, and its
+            // integrity never as checked.
+            let structure = match state {
+                "current" => json!("matches"),
+                "mismatch" => json!("differs"),
+                "outdated" | "newer" => json!("not_checked"),
+                _ => Value::Null,
+            };
+            assert_eq!(
+                (
+                    status["schema"]["structure"].clone(),
+                    status["schema"]["integrity"].clone()
+                ),
+                (
+                    structure,
+                    if stored.is_null() {
+                        Value::Null
+                    } else {
+                        json!("not_checked")
+                    }
+                ),
+                "{case}: {status:#}"
+            );
             assert_eq!(status["access"], access, "{case}: {status:#}");
             assert_eq!(status["counts"], counted, "{case}: {status:#}");
             assert_eq!(

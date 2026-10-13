@@ -142,7 +142,7 @@ description states (`gate/arguments.rs`): a schema keyword the check does not en
 so never publish a rule the gate does not apply, and state every rule between arguments in the
 tool's description. It never creates an inventory that does not exist. It reads through
 `inventory::examine` (`read_as_found`), which looks at the files before SQLite opens them, refuses one
-that would need recovering (`needs_recovery`), serves only the current schema, and
+that would need recovering (`needs_recovery`), serves only the current schema with its structure, and
 opens only read-only connections SQLite cannot make write: `readonly_shm` for a log a connection
 holds, `immutable` (checked again after the read) for a logged file without a log. SQLite recovers,
 folds, deletes and creates files on opening whatever `query_only` says, so never give a gate read

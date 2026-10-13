@@ -59,6 +59,9 @@ que recuperar (README, «Puerta para agentes»). Lo que eso no evita:
   en memoria, sin cambiar ningún archivo, en vez de que la puerta lo rechace. Windows suelta los
   bloqueos de un proceso muerto «cuando los recursos lo permiten»: durante ese momento la puerta lo ve
   aún abierto y lee igual, sin escribir.
+- La comparación de estructura mira tablas, columnas e índices por nombre y declaración, no las
+  restricciones (`CHECK`, claves foráneas) ni el contenido: un archivo que la pasa puede estar dañado,
+  y por eso `status` dice que la integridad no se comprobó.
 
 ## Por probar con otros clientes
 

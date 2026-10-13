@@ -7,12 +7,14 @@ use rusqlite::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs::File;
 #[cfg(windows)]
 use std::fs::TryLockError;
 use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::{Duration, SystemTime};
 use uuid::Uuid;
 
@@ -344,11 +346,14 @@ fn migrate(db: &mut Connection) -> Result<(), ApiError> {
 pub(crate) enum Found {
     /// No file there.
     Missing,
-    /// A DevHQ inventory in this build's schema: the only kind the gate serves.
+    /// A DevHQ inventory that declares this build's schema and has its tables, columns and
+    /// indexes: the only kind the gate serves.
     Current,
-    /// A DevHQ inventory in an older schema, which only the window upgrades.
+    /// A file that declares this build's schema without having its structure: what differs.
+    Mismatch(Vec<String>),
+    /// A DevHQ inventory that declares an older schema, which only the window upgrades.
     Outdated(i64),
-    /// A DevHQ inventory in a schema newer than this build knows.
+    /// A DevHQ inventory that declares a schema newer than this build knows.
     Newer(i64),
     /// A SQLite database without DevHQ's tables: `empty` when it has no table at all.
     Foreign { empty: bool },
@@ -372,11 +377,11 @@ pub(crate) enum Recovery {
 }
 
 impl Found {
-    /// The schema version the file holds, when it is a DevHQ inventory that could be read:
+    /// The schema version the file declares, when it is a DevHQ inventory that could be read:
     /// never a guess.
     pub(crate) fn stored(&self) -> Option<i64> {
         match self {
-            Self::Current => Some(SCHEMA_VERSION),
+            Self::Current | Self::Mismatch(_) => Some(SCHEMA_VERSION),
             Self::Outdated(version) | Self::Newer(version) => Some(*version),
             Self::Missing | Self::Foreign { .. } | Self::NeedsRecovery(_) | Self::Unreadable(_) => {
                 None
@@ -388,6 +393,7 @@ impl Found {
         match self {
             Self::Missing => "missing",
             Self::Current => "current",
+            Self::Mismatch(_) => "mismatch",
             Self::Outdated(_) => "outdated",
             Self::Newer(_) => "newer",
             Self::Foreign { .. } => "not_an_inventory",
@@ -396,13 +402,28 @@ impl Found {
         }
     }
 
+    /// Whether the file has the structure of the schema it declares: `matches` and `differs` only
+    /// for this build's schema, the one DevHQ can compare; `not_checked` for any other version;
+    /// None when no schema could be read.
+    pub(crate) fn structure(&self) -> Option<&'static str> {
+        match self {
+            Self::Current => Some("matches"),
+            Self::Mismatch(_) => Some("differs"),
+            Self::Outdated(_) | Self::Newer(_) => Some("not_checked"),
+            Self::Missing | Self::Foreign { .. } | Self::NeedsRecovery(_) | Self::Unreadable(_) => {
+                None
+            }
+        }
+    }
+
     /// What it means for the person and for an agent, in a sentence or two.
     pub(crate) fn meaning(&self) -> String {
         match self {
             Self::Missing => "There is no file there. The gate never creates one: DevHQ's window creates the inventory the first time it opens.".to_owned(),
-            Self::Current => format!("A DevHQ inventory in schema version {SCHEMA_VERSION}, the one this DevHQ reads."),
-            Self::Outdated(version) => format!("A DevHQ inventory in schema version {version}, older than this DevHQ's ({SCHEMA_VERSION}). The gate never upgrades an inventory and serves nothing from this one. DevHQ's window upgrades it when it opens it, without making a backup first."),
-            Self::Newer(version) => format!("A DevHQ inventory in schema version {version}, written by a DevHQ newer than this one (schema {SCHEMA_VERSION}). This DevHQ cannot read it, and the gate serves nothing from it."),
+            Self::Current => format!("A DevHQ inventory that declares schema version {SCHEMA_VERSION}, the one this DevHQ reads, and has every table, column and index of that schema. Its integrity (each page and row) was not checked."),
+            Self::Mismatch(differences) => format!("A file that declares schema version {SCHEMA_VERSION}, the one this DevHQ reads, without that schema's structure: {}. The gate serves nothing from it, so what it holds is unknown.", differences.join("; ")),
+            Self::Outdated(version) => format!("A DevHQ inventory that declares schema version {version}, older than this DevHQ's ({SCHEMA_VERSION}). The gate never upgrades an inventory and serves nothing from this one. DevHQ's window upgrades it when it opens it, without making a backup first."),
+            Self::Newer(version) => format!("A DevHQ inventory that declares schema version {version}, written by a DevHQ newer than this one (schema {SCHEMA_VERSION}). This DevHQ cannot read it, and the gate serves nothing from it."),
             Self::Foreign { empty: true } => "An empty file or a SQLite database without tables: not a DevHQ inventory. The gate never turns a file into one.".to_owned(),
             Self::Foreign { empty: false } => "A SQLite database without DevHQ's tables: not a DevHQ inventory. The gate never turns a file into one.".to_owned(),
             Self::NeedsRecovery(Recovery::Journal) => "A rollback journal (-journal) beside the file, left by a write that did not finish: until SQLite plays it back, the file may hold half of that write. Playing it back changes the file, and the gate never does; SQLite does it the next time a program that writes opens the file, as DevHQ's window does. Until then what the file holds, its schema version included, is unknown.".to_owned(),
@@ -424,6 +445,7 @@ impl Found {
             Self::Current => {
                 return ApiError::database(format!("{at} is a current inventory, served, not refused."))
             }
+            Self::Mismatch(_) => ("schema_mismatch", self.meaning()),
             Self::Outdated(_) => ("schema_outdated", self.meaning()),
             Self::Newer(_) => ("schema_newer", self.meaning()),
             Self::Foreign { .. } => ("not_an_inventory", self.meaning()),
@@ -792,7 +814,8 @@ fn found_by(error: &rusqlite::Error) -> Option<Found> {
 }
 
 /// Which file the connection reads. Only a DevHQ inventory has `applications` and `resources`
-/// (since its first schema) and a `user_version` from 1 on, which its upgrades set.
+/// (since its first schema) and a `user_version` from 1 on, which its upgrades set; one that
+/// declares this build's version is current only if it also has this schema's structure.
 fn classify(db: &Connection) -> rusqlite::Result<Found> {
     let version: i64 = db.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     let (tables, devhq): (i64, i64) = db.query_row(
@@ -808,8 +831,115 @@ fn classify(db: &Connection) -> rusqlite::Result<Found> {
     } else if version > SCHEMA_VERSION {
         Found::Newer(version)
     } else {
-        Found::Current
+        let differences = Structure::of(db)?.differences_from(Structure::expected());
+        if differences.is_empty() {
+            Found::Current
+        } else {
+            Found::Mismatch(differences)
+        }
     })
+}
+
+/// The tables of a schema, each with its columns, and its indexes, each with its table: what
+/// tells whether a file has the schema it declares. Names and declarations only, never contents:
+/// whether each page and row is sound is SQLite's integrity check, which the gate never runs.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Structure {
+    /// Each column as `PRAGMA table_xinfo` gives it: its name, then its declaration.
+    tables: BTreeMap<String, Vec<(String, String)>>,
+    indexes: BTreeMap<String, String>,
+}
+
+impl Structure {
+    fn of(db: &Connection) -> rusqlite::Result<Self> {
+        let mut structure = Self::default();
+        let mut objects = db.prepare(
+            "SELECT type, name, tbl_name FROM sqlite_schema
+             WHERE type IN ('table', 'index') AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'",
+        )?;
+        let mut columns = db.prepare(
+            "SELECT name, type, \"notnull\", dflt_value, pk, hidden FROM pragma_table_xinfo(?1)",
+        )?;
+        let objects = objects
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get(1)?, row.get(2)?))
+            })?
+            .collect::<rusqlite::Result<Vec<(String, String, String)>>>()?;
+        for (kind, name, table) in objects {
+            if kind == "index" {
+                structure.indexes.insert(name, table);
+                continue;
+            }
+            let declared = columns
+                .query_map([&name], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        format!(
+                            "{} notnull={} default={:?} pk={} hidden={}",
+                            row.get::<_, String>(1)?,
+                            row.get::<_, i64>(2)?,
+                            row.get::<_, Option<String>>(3)?,
+                            row.get::<_, i64>(4)?,
+                            row.get::<_, i64>(5)?,
+                        ),
+                    ))
+                })?
+                .collect::<rusqlite::Result<_>>()?;
+            structure.tables.insert(name, declared);
+        }
+        Ok(structure)
+    }
+
+    /// This build's schema as its migrations make it, built once, in memory.
+    fn expected() -> &'static Self {
+        static EXPECTED: OnceLock<Structure> = OnceLock::new();
+        EXPECTED.get_or_init(|| {
+            let db = Connection::open_in_memory().expect("an in-memory database opens");
+            for (_, sql) in MIGRATIONS {
+                db.execute_batch(sql)
+                    .expect("this build's migrations build its schema");
+            }
+            Self::of(&db).expect("this build's schema can be read back")
+        })
+    }
+
+    /// What this structure lacks, or has otherwise, of `expected`'s. Tables and indexes that
+    /// `expected` does not have are not DevHQ's to judge, and are left out.
+    fn differences_from(&self, expected: &Self) -> Vec<String> {
+        let mut differences = Vec::new();
+        for (table, columns) in &expected.tables {
+            let Some(found) = self.tables.get(table) else {
+                differences.push(format!("no table {table}"));
+                continue;
+            };
+            for (column, declaration) in columns {
+                match found.iter().find(|(name, _)| name == column) {
+                    None => differences.push(format!("no column {table}.{column}")),
+                    Some((_, other)) if other != declaration => differences.push(format!(
+                        "column {table}.{column} declared as {other}, not {declaration}"
+                    )),
+                    Some(_) => {}
+                }
+            }
+            for (column, _) in found {
+                if !columns.iter().any(|(name, _)| name == column) {
+                    differences.push(format!(
+                        "column {table}.{column}, which the schema does not have"
+                    ));
+                }
+            }
+        }
+        for (index, table) in &expected.indexes {
+            match self.indexes.get(index) {
+                None => differences.push(format!("no index {index}")),
+                Some(other) if other != table => {
+                    differences.push(format!("index {index} on {other}, not {table}"))
+                }
+                Some(_) => {}
+            }
+        }
+        differences
+    }
 }
 
 /// Longest texts DevHQ accepts. The window enforces the same limits as you type.
@@ -3744,6 +3874,69 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(mode, "delete");
         std::fs::remove_file(path).unwrap();
+    }
+
+    /// Only a file with this schema's tables, columns and indexes is current: declaring its version
+    /// is not enough, and what differs is named. Tables and indexes of its own are not DevHQ's to
+    /// judge.
+    #[test]
+    fn tells_a_current_schema_from_one_that_only_declares_it() {
+        let found_after = |sql: &str| {
+            let path = path();
+            let db = database_at(&path, SCHEMA_VERSION);
+            db.execute_batch(sql).unwrap();
+            drop(db);
+            let found = examine(&path, |_| Ok(())).0;
+            std::fs::remove_file(path).unwrap();
+            found
+        };
+        assert_eq!(found_after(""), Found::Current);
+        assert_eq!(
+            found_after("CREATE TABLE notes (body TEXT); CREATE INDEX notes_body ON notes (body);"),
+            Found::Current
+        );
+        assert_eq!(
+            found_after("DROP TABLE agent_access"),
+            Found::Mismatch(vec!["no table agent_access".to_owned()])
+        );
+        assert_eq!(
+            found_after("ALTER TABLE resources ADD COLUMN extra TEXT"),
+            Found::Mismatch(vec![
+                "column resources.extra, which the schema does not have".to_owned()
+            ])
+        );
+        assert_eq!(
+            found_after("DROP INDEX events_reported"),
+            Found::Mismatch(vec!["no index events_reported".to_owned()])
+        );
+        // Stamped 12 with only the two tables that tell a DevHQ inventory apart.
+        let stamped = path();
+        let db = Connection::open(&stamped).unwrap();
+        db.execute_batch(
+            "CREATE TABLE applications (id TEXT PRIMARY KEY);
+             CREATE TABLE resources (id TEXT PRIMARY KEY);
+             PRAGMA user_version = 12;",
+        )
+        .unwrap();
+        drop(db);
+        let found = examine(&stamped, |_| Ok(())).0;
+        let Found::Mismatch(differences) = &found else {
+            panic!("{found:?}")
+        };
+        assert!(differences.contains(&"no table agent_access".to_owned()));
+        assert!(differences.contains(&"no column resources.name".to_owned()));
+        assert_eq!(
+            (found.state(), found.stored(), found.structure()),
+            ("mismatch", Some(SCHEMA_VERSION), Some("differs"))
+        );
+        assert_eq!(found.refusal(&stamped).code, "schema_mismatch");
+        std::fs::remove_file(stamped).unwrap();
+        // Upgraded by the window from an older schema, it has the same structure as a new one.
+        let upgraded = path();
+        drop(database_at(&upgraded, 6));
+        drop(open(&upgraded).unwrap());
+        assert_eq!(examine(&upgraded, |_| Ok(())).0, Found::Current);
+        std::fs::remove_file(upgraded).unwrap();
     }
 
     /// The gate gives SQLite the path as a URI, the only way to ask it to read without writing:
