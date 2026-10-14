@@ -66,8 +66,10 @@ where it stays (a note beside it, the report that uses it): what it is, why it s
 - Never clean by a broad pattern (`devhq-*`, a whole `%TEMP%`), never remove what someone else
   made (another agent's folder, the person's data, a backup or an archive), and never remove what
   explains a failure before someone has looked at it.
-- A copy of the person's data made for a validation is temporary too: say where it is and remove
-  it once the person has seen the result, unless they decide to keep it.
+- A copy derived from the person's data (a validation's snapshot or work copy, the answers read
+  from it) is never a disposable any agent may remove: the person authorizes beforehand that it is
+  made, where it goes and how and when it is removed, and no agent removes it, moves it or keeps
+  it longer on its own.
 - Build caches are not temporary: Cargo's `target/` or build directory, `node_modules` and the
   downloaded browsers and drivers are reused from run to run and never removed after a test. They
   follow a retention policy of their own, preferably on a data drive rather than the system one
