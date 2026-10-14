@@ -562,8 +562,10 @@ pub(crate) mod tests {
 
     /// A folder of its own in the temporary folder, as the file system names it.
     pub(crate) fn folder(name: &str) -> PathBuf {
-        let folder = crate::inventory::tests::resolved_temp_dir()
-            .join(format!("devhq-{name}-{}", uuid::Uuid::new_v4()));
+        let folder = crate::inventory::tests::disposable(
+            crate::inventory::tests::resolved_temp_dir()
+                .join(format!("devhq-{name}-{}", uuid::Uuid::new_v4())),
+        );
         std::fs::create_dir_all(&folder).unwrap();
         folder
     }

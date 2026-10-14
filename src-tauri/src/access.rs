@@ -92,10 +92,10 @@ mod tests {
     use crate::inventory::open;
 
     fn path() -> std::path::PathBuf {
-        let path = std::env::temp_dir().join(format!(
+        let path = crate::inventory::tests::disposable(std::env::temp_dir().join(format!(
             "devhq-access-test-{}.sqlite3",
             uuid::Uuid::new_v4()
-        ));
+        )));
         inventory::start(&path).unwrap();
         path
     }

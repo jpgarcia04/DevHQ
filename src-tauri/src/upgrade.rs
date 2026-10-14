@@ -882,8 +882,9 @@ mod tests {
 
     /// An inventory path in a folder of its own, which also holds its backups folder.
     fn path() -> PathBuf {
-        let folder =
-            resolved_temp_dir().join(format!("devhq-upgrade-test-{}", uuid::Uuid::new_v4()));
+        let folder = crate::inventory::tests::disposable(
+            resolved_temp_dir().join(format!("devhq-upgrade-test-{}", uuid::Uuid::new_v4())),
+        );
         std::fs::create_dir_all(&folder).unwrap();
         folder.join("inventory.sqlite3")
     }

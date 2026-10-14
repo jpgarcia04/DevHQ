@@ -55,11 +55,12 @@ where it stays (a note beside it, the report that uses it): what it is, why it s
 - A test removes what it creates when it ends, whether it passes or fails an assertion, and kills
   and waits for every process it starts, on drop too (on Windows an orphan inherits the output
   pipe and keeps `cargo test` waiting). A failing test keeps its files only when asked to, and
-  then says where they are. Today most Rust tests remove their files only when they pass, so a
-  failing run (a temporary mutation included) leaves `devhq-<name>-<uuid>` entries in the
-  temporary folder; the Windows workflow checks only that a passing run leaves nothing.
+  then says where they are. A Rust test passes each temporary path through
+  `inventory::tests::disposable`, which removes it when the test's thread ends, failed or not
+  (`DEVHQ_KEEP_TEST_FILES` keeps it); the Windows workflow checks that a passing run leaves nothing.
 - What a forced stop leaves (a killed run, an abort, a crash) cannot be removed by the process
-  that made it. Remove it from outside only by the exact names its creator gives (prefix and
+  that made it: a killed `cargo test` leaves its `devhq-<name>-<uuid>` entries in the temporary
+  folder. Remove it from outside only by the exact names its creator gives (prefix and
   unique id), only once nothing uses it and no run that could own it is in progress, and list it
   before removing it; where that cannot be done safely, write the limitation down instead.
 - Never clean by a broad pattern (`devhq-*`, a whole `%TEMP%`), never remove what someone else

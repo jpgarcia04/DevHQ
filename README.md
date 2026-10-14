@@ -955,6 +955,11 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 npm run tauri build       # ejecutable e instalador NSIS para Windows
 ```
 
+Los tests de Rust crean sus inventarios y carpetas en la carpeta temporal del sistema, con nombres
+`devhq-<caso>-<uuid>`, y los borran cuando termina cada test, también si falla una aserción
+(`inventory::tests::disposable`); con `DEVHQ_KEEP_TEST_FILES` los conservan y dicen en stderr dónde
+están, para examinar un fallo. Solo una ejecución detenida desde fuera deja los suyos.
+
 Todo ejecutable que no empaquetó el instalador, empezando por `npm run tauri dev`, guarda datos de
 desarrollo en `com.devhq.desktop.dev`, aparte del inventario de la DevHQ instalada, y su ventana se
 titula «DevHQ (development data)» (ver [Arquitectura](#arquitectura)).

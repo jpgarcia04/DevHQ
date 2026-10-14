@@ -963,8 +963,10 @@ mod tests {
     /// a link the test makes, never a short 8.3 name in `TMP` (as on a Windows runner), can put
     /// the file somewhere else than asked.
     fn path() -> PathBuf {
-        let folder = crate::inventory::tests::resolved_temp_dir()
-            .join(format!("devhq-gate-test-{}", uuid::Uuid::new_v4()));
+        let folder = crate::inventory::tests::disposable(
+            crate::inventory::tests::resolved_temp_dir()
+                .join(format!("devhq-gate-test-{}", uuid::Uuid::new_v4())),
+        );
         std::fs::create_dir_all(&folder).unwrap();
         let path = folder.join("inventory.sqlite3");
         inventory::start(&path).unwrap();

@@ -623,7 +623,9 @@ pub(crate) mod tests {
 
     /// A new inventory, as the window creates one.
     fn path() -> std::path::PathBuf {
-        let path = std::env::temp_dir().join(format!("devhq-http-test-{}.sqlite3", Uuid::new_v4()));
+        let path = crate::inventory::tests::disposable(
+            std::env::temp_dir().join(format!("devhq-http-test-{}.sqlite3", Uuid::new_v4())),
+        );
         crate::inventory::start(&path).unwrap();
         path
     }

@@ -67,9 +67,10 @@ mod tests {
 
     /// An inventory path in a folder of its own.
     fn database() -> PathBuf {
-        std::env::temp_dir()
-            .join(format!("devhq-window-lock-test-{}", uuid::Uuid::new_v4()))
-            .join("inventory.sqlite3")
+        crate::inventory::tests::disposable(
+            std::env::temp_dir().join(format!("devhq-window-lock-test-{}", uuid::Uuid::new_v4())),
+        )
+        .join("inventory.sqlite3")
     }
 
     fn remove(database: &Path) {

@@ -442,8 +442,9 @@ mod tests {
 
     /// An inventory path in a folder of its own, so that its backups folder is its own too.
     fn inventory() -> PathBuf {
-        let folder =
-            resolved_temp_dir().join(format!("devhq-backup-test-{}", uuid::Uuid::new_v4()));
+        let folder = crate::inventory::tests::disposable(
+            resolved_temp_dir().join(format!("devhq-backup-test-{}", uuid::Uuid::new_v4())),
+        );
         std::fs::create_dir_all(&folder).unwrap();
         let database = folder.join("inventory.sqlite3");
         inventory::start(&database).unwrap();
@@ -790,7 +791,9 @@ mod tests {
     /// on Unix, a folder that cannot be opened is an error. Windows offers nothing to ask.
     #[test]
     fn forcing_names_to_disk_passes_on_what_the_system_says() {
-        let folder = resolved_temp_dir().join(format!("devhq-names-{}", uuid::Uuid::new_v4()));
+        let folder = crate::inventory::tests::disposable(
+            resolved_temp_dir().join(format!("devhq-names-{}", uuid::Uuid::new_v4())),
+        );
         assert_eq!(names_on_disk(&folder).is_err(), cfg!(unix));
         std::fs::create_dir(&folder).unwrap();
         names_on_disk(&folder).unwrap();
