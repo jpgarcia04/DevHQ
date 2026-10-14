@@ -16,6 +16,7 @@ import type {
   ReadingPage,
   SharedRepository,
   ThisWorkstation,
+  UpgradeInspection,
 } from '@/features/inventory/inventory-api'
 import type { PreviewDatabase } from './sample'
 
@@ -279,6 +280,30 @@ export function previewBackend(database: PreviewDatabase) {
     return { readings: older.slice(0, limit), more: older.length > limit }
   }
 
+  /**
+   * What the native process answers when the window looks at its inventory: what it found, for
+   * one it refused as outdated; the refusal itself, for one it refused otherwise; and that it
+   * serves it, for one it reads.
+   */
+  function inspectUpgrade(): UpgradeInspection {
+    if (database.upgrade) return database.upgrade
+    unavailable()
+    return {
+      database: `${folder}\\inventory.sqlite3`,
+      storedAt: null,
+      state: 'current',
+      storedVersion: 12,
+      version: 12,
+      message:
+        "DevHQ serves this inventory: it is in this DevHQ's schema, with nothing to upgrade.",
+      upgradable: false,
+      problems: [],
+      tables: [],
+      fingerprint: null,
+      backups: `${folder}\\backups`,
+    }
+  }
+
   /** What supervision would report: each active check due one interval after its last run. */
   function monitorStatus(): MonitorStatus {
     return {
@@ -339,6 +364,9 @@ export function previewBackend(database: PreviewDatabase) {
         return database.thisWorkstation satisfies ThisWorkstation
       case 'older_readings':
         return olderReadings(args.subject as EntityRef, (args.before as string | null) ?? null)
+      // Looking changes nothing; upgrading writes, so it is refused like every write.
+      case 'inspect_upgrade':
+        return inspectUpgrade()
       default:
         throw readOnly
     }

@@ -20,6 +20,9 @@ import type {
   ReadOutcome,
   ResourceInput,
   ThisWorkstation,
+  UpgradeInspection,
+  UpgradeStep,
+  Upgraded,
 } from './inventory-api'
 
 export type Mode = 'demo' | 'real'
@@ -87,6 +90,20 @@ export interface InventoryContextValue {
   readingCopies: string[]
   /** Reads a system's readings, a page at a time; it writes nothing. */
   olderReadings: (subject: EntityRef, before: string | null) => Promise<ReadingPage>
+  /** Looks at the inventory the window refused as outdated; it changes none of its files. */
+  inspectUpgrade: () => Promise<UpgradeInspection>
+  /**
+   * Backs up and upgrades that inventory if it is still exactly what the person was shown; the
+   * window serves it once this resolves, and shows it after `reload`.
+   */
+  upgradeInventory: (
+    from: number,
+    fingerprint: string,
+    onStep: (step: UpgradeStep) => void,
+  ) => Promise<Upgraded>
+  /** What the person's upgrade did, kept until dismissed; null when nothing was upgraded. */
+  upgraded: Upgraded | null
+  dismissUpgraded: () => void
 }
 
 export const InventoryContext = createContext<InventoryContextValue | null>(null)

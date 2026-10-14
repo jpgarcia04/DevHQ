@@ -32,6 +32,7 @@ use crate::records::{
     TruncatedHistory,
 };
 use crate::references::{Reference, SharedRepository};
+use crate::upgrade::{BeforeUpgrade, Inspection, Step, TableRows, Upgraded};
 use crate::workstation::{Computer, ThisWorkstation};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -183,7 +184,7 @@ fn arguments(command: &str) -> Vec<(&'static str, Reader)> {
     let text: Reader = read_completely::<String>;
     match command {
         "list_inventory" | "data_location" | "backup_inventory" | "list_backups"
-        | "agent_access" => vec![],
+        | "agent_access" | "inspect_upgrade" => vec![],
         "set_agent_access" => vec![("mode", text)],
         "save_resource" => vec![("input", read_completely::<ResourceInput>)],
         "save_application" => vec![("input", read_completely::<ApplicationInput>)],
@@ -208,6 +209,11 @@ fn arguments(command: &str) -> Vec<(&'static str, Reader)> {
         "older_readings" => vec![
             ("subject", subject),
             ("before", read_completely::<Option<String>>),
+        ],
+        "upgrade_inventory" => vec![
+            ("from", read_completely::<i64>),
+            ("fingerprint", text),
+            ("progress", text),
         ],
         _ => panic!("contract/commands/{command}.json names no command of DevHQ's"),
     }
@@ -313,12 +319,21 @@ const OPEN_NOTHING: [&str; 3] = ["data_location", "list_backups", "watch_http_mo
 
 /// The window serves nothing from a file that is not an inventory in this build's schema: started
 /// on it, every command that would open it refuses with what was found, and no file in its folder
-/// changes, appears or goes, whatever was asked (backups and supervision included).
+/// changes, appears or goes, whatever was asked (backups and supervision included). An outdated one
+/// is looked at, without changing it, for the person to decide on upgrading it; the upgrade the
+/// fixture asks for is not what is there (`UPGRADE`), so it is refused before it writes anything.
 #[test]
 fn no_command_changes_an_inventory_the_window_does_not_serve() {
     use crate::inventory::tests::{database_at, kill, writer};
     const ROWS: &str = "INSERT INTO resources (id, name, kind, description, operating_system)
                           VALUES ('host', 'Host', 'server', '', 'Linux');";
+    // What the upgrade the fixture asks for answers for each outdated inventory.
+    const UPGRADE: [(&str, &str); 4] = [
+        ("v6, rollback journal", "upgrade_changed"),
+        ("v6, write-ahead log", "upgrade_changed"),
+        ("v6, with a write that did not finish", "needs_recovery"),
+        ("v11, Read and write", "upgrade_changed"),
+    ];
     type Case = (&'static str, fn(&Path), &'static str);
     let cases: [Case; 9] = [
         (
@@ -402,10 +417,16 @@ fn no_command_changes_an_inventory_the_window_does_not_serve() {
         let folder = path.parent().unwrap().to_owned();
         let before = files(&folder);
         let (app, window) = devhq(&path);
+        let upgrade = UPGRADE.iter().find(|(outdated, _)| *outdated == case);
         for (command, args) in &fixtures {
             let answer = invoke(&window, command, args.clone());
-            if OPEN_NOTHING.contains(&command.as_str()) {
+            if OPEN_NOTHING.contains(&command.as_str())
+                || (command == "inspect_upgrade" && upgrade.is_some())
+            {
                 assert!(answer.is_ok(), "{case}: {command}: {answer:?}");
+            } else if let (Some((_, refused)), "upgrade_inventory") = (upgrade, command.as_str()) {
+                let answer = answer.expect_err(&format!("{case}: {command} was served"));
+                assert_eq!(answer["code"], *refused, "{case}: {command}: {answer}");
             } else {
                 let refusal = answer.expect_err(&format!("{case}: {command} was served"));
                 assert_eq!(refusal["code"], code, "{case}: {command}: {refusal}");
@@ -459,6 +480,76 @@ fn creates_an_inventory_only_where_none_is_when_it_starts() {
         );
         assert!(!path.exists(), "{command} created an inventory");
     }
+    drop((window, app));
+    remove(&path);
+}
+
+/// A window started on an outdated inventory serves nothing from it until the person upgrades it;
+/// then it serves it at once, without starting again: the inventory is current, written ahead, and
+/// every command and supervision use it. Asked again, the upgrade has nothing to do.
+#[test]
+fn serves_an_outdated_inventory_once_the_person_upgrades_it() {
+    use crate::inventory::tests::database_at;
+    use tauri::Manager;
+    let path = path();
+    database_at(&path, 6)
+        .execute_batch(
+            "INSERT INTO resources (id, name, kind, description, operating_system)
+               VALUES ('host', 'Host', 'server', 'Rack 2', 'Linux');
+             INSERT INTO applications (id, name, lifecycle, description, version)
+               VALUES ('shop', 'Shop', 'production', 'Store', '2.0');
+             INSERT INTO components (id, application_id, name, kind, resource_id)
+               VALUES ('api', 'shop', 'API', 'backend', 'host');",
+        )
+        .unwrap();
+    let (app, window) = devhq(&path);
+    let refused = invoke(&window, "list_inventory", json!({})).unwrap_err();
+    assert_eq!(refused["code"], "schema_outdated");
+
+    let inspection = invoke(&window, "inspect_upgrade", json!({})).unwrap();
+    assert_eq!(inspection["state"], "outdated");
+    assert_eq!(inspection["upgradable"], true);
+    let consent = json!({
+        "from": inspection["storedVersion"],
+        "fingerprint": inspection["fingerprint"],
+        "progress": "__CHANNEL__:1",
+    });
+    let upgraded = invoke(&window, "upgrade_inventory", consent.clone()).unwrap();
+    assert_eq!(
+        (&upgraded["from"], &upgraded["to"]),
+        (&json!(6), &json!(12))
+    );
+    let backup = PathBuf::from(upgraded["backup"]["path"].as_str().unwrap());
+    assert!(
+        backup.exists() && PathBuf::from(upgraded["backup"]["manifest"].as_str().unwrap()).exists()
+    );
+
+    // Served at once: as if the window had started on it.
+    let listed = invoke(&window, "list_inventory", json!({})).unwrap();
+    assert_eq!(
+        listed["applications"][0]["components"][0]["resourceId"],
+        "host"
+    );
+    assert_eq!(
+        std::fs::read(&path).unwrap()[18..20],
+        [2, 2],
+        "written ahead"
+    );
+    assert!(invoke(&window, "agent_access", json!({})).is_ok());
+    let inspection = invoke(&window, "inspect_upgrade", json!({})).unwrap();
+    assert_eq!(inspection["state"], "current");
+    // Nothing more to do: no second backup.
+    let again = invoke(&window, "upgrade_inventory", consent).unwrap();
+    assert_eq!(
+        (&again["from"], &again["backup"]),
+        (&json!(12), &Value::Null)
+    );
+    assert_eq!(
+        std::fs::read_dir(backup.parent().unwrap()).unwrap().count(),
+        2
+    );
+
+    app.state::<crate::monitor::Monitor>().shutdown();
     drop((window, app));
     remove(&path);
 }
@@ -957,6 +1048,73 @@ fn every_answer_has_the_shape_the_window_expects() {
                     },
                 ],
                 more: true,
+            }),
+        ),
+    ]);
+    let table = |table: &str, rows: i64| TableRows {
+        table: table.into(),
+        rows,
+    };
+    let before_upgrade = BeforeUpgrade {
+        name: "inventory-20260101T100500.123Z-v6.sqlite3".into(),
+        path: format!(r"{folder}\backups\inventory-20260101T100500.123Z-v6.sqlite3"),
+        stored_at: None,
+        manifest: format!(r"{folder}\backups\inventory-20260101T100500.123Z-v6.sqlite3.json"),
+        taken_at: "2026-01-01T10:05:00.123Z".into(),
+        size_bytes: 98_304,
+        sha256: "9f2c55b5e2a3c3f0f0d8f1f0d7b3b0a1c2e4f6a8b0c2d4e6f8a0b2c4d6e8f0a2".into(),
+        schema_version: 6,
+        integrity_check: "ok".into(),
+        tables: vec![table("applications", 1), table("resources", 1)],
+    };
+    let mut answers = answers;
+    answers.extend([
+        (
+            "inspect_upgrade".to_owned(),
+            value(&Inspection {
+                database: format!(r"{folder}\inventory.sqlite3"),
+                stored_at: None,
+                state: "outdated",
+                stored_version: Some(6),
+                version: 12,
+                message: "A DevHQ inventory in schema version 6, older than this DevHQ's (12). DevHQ read it without changing it, and serves nothing from it until it is upgraded.".into(),
+                upgradable: true,
+                problems: vec![],
+                tables: vec![
+                    table("applications", 1),
+                    table("components", 2),
+                    table("events", 3),
+                    table("http_checks", 1),
+                    table("incidents", 0),
+                    table("observations", 2),
+                    table("resources", 1),
+                ],
+                fingerprint: Some(
+                    "3a7bd3e2360a3d29eea436fcfb7e44c735d117c42d1c1835420b6b9942dd4f1b".into(),
+                ),
+                backups: format!(r"{folder}\backups"),
+            }),
+        ),
+        (
+            "upgrade_inventory".to_owned(),
+            value(&Upgraded {
+                from: 6,
+                to: 12,
+                backup: Some(before_upgrade.clone()),
+                tables_kept: 7,
+                rows_kept: 10,
+            }),
+        ),
+        // What the progress channel of `upgrade_inventory` delivers, once the backup is made.
+        (
+            "upgrade_step".to_owned(),
+            value(&Step::BackedUp {
+                backup: Box::new(BeforeUpgrade {
+                    stored_at: Some(format!(
+                        r"{packaged}\backups\inventory-20260101T100500.123Z-v6.sqlite3"
+                    )),
+                    ..before_upgrade
+                }),
             }),
         ),
     ]);

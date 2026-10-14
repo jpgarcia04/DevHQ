@@ -21,22 +21,35 @@ abierta. Lo que solo se ve en la laptop:
   `storedAt` y si `windowOpen` ve la ventana del DevHQ instalado. El lock está junto al inventario, y
   Windows también redirige ese archivo.
 
-## Lo que queda para la actualización explícita
+## Alrededor de la actualización explícita
 
 Ninguna apertura actualiza un inventario: ni la ventana, ni la supervisión, ni un respaldo, ni una
-herramienta de la puerta (README, «Arquitectura»). Cada escritura de un agente comprueba el esquema y
-el acceso dentro de su propia transacción. Lo que falta es la actualización misma, un paso explícito
-en la ventana:
+herramienta de la puerta. Solo lo hace la persona, en la ventana, con Back up and upgrade, después de un
+respaldo verificado (README, «Actualizar un inventario antiguo»); la puerta rechaza un inventario
+antiguo con `schema_outdated` y no tiene herramienta para actualizarlo. Cada escritura de un agente
+comprueba el esquema y el acceso dentro de su propia transacción. Lo que queda abierto:
 
-- Un inventario anterior a la v12 no lo sirve ninguna parte de este DevHQ. La ventana dice que
-  necesita actualizarse, pero aún no ofrece hacerlo: hasta entonces solo lo abre un DevHQ anterior,
-  que lo actualiza al abrirlo y sin respaldo previo. Por eso esta versión no debe instalarse sobre un
-  inventario anterior a la v12.
-- El respaldo que debe preceder a la actualización (verificado, con la versión de origen, antes de
-  confirmar las migraciones), su manifiesto y la recuperación manual que lo acompañe.
-- Un inventario que la puerta rechaza con `needs_recovery` y que, recuperado, no es del esquema actual:
-  la ventana lo deja como está, con sus archivos sin recuperar, y la actualización explícita tendrá
-  que decidir cuándo recuperarlo.
+- **Decidido, por ahora:** un inventario antiguo que necesita recuperación (`needs_recovery`, y
+  recuperado en una copia es de un esquema anterior) no se recupera, no se respalda y no se actualiza,
+  y la ventana no presume que algún respaldo tenga lo mismo (README, «Un inventario antiguo que
+  necesita recuperación»). Lo que queda abierto: si ningún respaldo tiene lo que tienen sus archivos,
+  o la persona no puede compararlos, DevHQ no ofrece ningún camino, y la comparación es a mano, con la
+  CLI de SQLite. La alternativa descartada por ahora: que Back up and upgrade, con el consentimiento de
+  la persona, guardara primero una copia de los archivos sin recuperar, dejara que SQLite los
+  recuperara y siguiera como siempre.
+- En Windows no hay forma documentada de forzar a disco los nombres de una carpeta: DevHQ confirma el
+  contenido del respaldo y de su manifiesto antes de migrar, no sus nombres, que NTFS anota en su
+  diario. Que sobrevivan a un corte de luz justo después no está probado; en Linux se confirman con la
+  carpeta y un error detiene la actualización. En macOS no se ha probado.
+- La actualización mira los archivos sin cambiarlos antes de abrir su conexión, que puede escribir: un
+  journal o un log que otro programa ponga en el instante entre las dos, de microsegundos, SQLite lo
+  recuperaría en su primera lectura, como en cualquier escritura. Dentro del lock vuelve a comprobar la
+  versión y la huella del contenido, así que si eso cambia lo que hay, no se actualiza.
+- La comparación de estructura de la actualización es estricta: un inventario histórico real con una
+  estructura distinta de la que dan las migraciones a su versión se rechaza. No se ha comprobado con
+  inventarios reales anteriores, solo con los que construyen las migraciones.
+- `integrity_check` lee el inventario entero cuatro veces (al mirarlo, bajo el lock, en la copia y
+  después de migrar): con un inventario grande, segundos.
 - `backup` comprueba esquema y acceso en la conexión que copia justo antes de `VACUUM INTO`, que no
   admite una transacción: si en ese instante la persona cierra la puerta, la copia sigue. No escribe el
   inventario, y su verificación rechaza una copia de otra versión.

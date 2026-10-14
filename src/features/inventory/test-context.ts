@@ -99,6 +99,14 @@ export function inventoryContext(
     }),
     readingCopies: [],
     olderReadings: vi.fn(async () => ({ readings: [], more: false })),
+    inspectUpgrade: vi.fn(async () => {
+      throw new Error('inspectUpgrade is not mocked in this test')
+    }),
+    upgradeInventory: vi.fn(async () => {
+      throw new Error('upgradeInventory is not mocked in this test')
+    }),
+    upgraded: null,
+    dismissUpgraded: vi.fn(),
     ...overrides,
   }
 }

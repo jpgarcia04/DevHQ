@@ -15,7 +15,7 @@ test('Back up now is refused in the preview, which lists a sample backups folder
 
   await page.getByRole('button', { name: 'Back up now' }).click()
   await expect(page.getByRole('alert')).toHaveText(
-    'No backup was made. This preview shows sample data and has no database: nothing was saved.',
+    'The backup failed. This preview shows sample data and has no database: nothing was saved.',
   )
   await expect(page.getByRole('status', { name: 'Backup' })).toBeEmpty()
   await expect(page.getByRole('button', { name: 'Back up now' })).toBeEnabled()

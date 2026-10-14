@@ -5,7 +5,13 @@
 import { clearMocks, mockIPC } from '@tauri-apps/api/mocks'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { EntityRef } from '@/domain/models'
-import { inventoryApi, inventoryError, type MonitorStatus } from './inventory-api'
+import {
+  inventoryApi,
+  inventoryError,
+  type BeforeUpgrade,
+  type MonitorStatus,
+  type UpgradeStep,
+} from './inventory-api'
 
 /** The fixtures in contract/<kind>/, by file name without `.json`. */
 function fixtures(files: Record<string, unknown>) {
@@ -123,6 +129,13 @@ const calls: Record<keyof typeof inventoryApi, () => Promise<unknown>> = {
   setThisWorkstation: () => inventoryApi.setThisWorkstation('spare'),
   readCopies: () => inventoryApi.readCopies(['shop-copy']),
   olderReadings: () => inventoryApi.olderReadings(shop, 'reading-1'),
+  inspectUpgrade: () => inventoryApi.inspectUpgrade(),
+  upgradeInventory: () =>
+    inventoryApi.upgradeInventory(
+      6,
+      '3a7bd3e2360a3d29eea436fcfb7e44c735d117c42d1c1835420b6b9942dd4f1b',
+      () => {},
+    ),
 }
 
 /** What a call sends to the native process: each command and its arguments, as JSON. */
@@ -588,6 +601,62 @@ const backups: Answer<'listBackups'> = {
   ],
 }
 
+const beforeUpgrade: BeforeUpgrade = {
+  name: 'inventory-20260101T100500.123Z-v6.sqlite3',
+  path: `${folder}\\backups\\inventory-20260101T100500.123Z-v6.sqlite3`,
+  storedAt: null,
+  manifest: `${folder}\\backups\\inventory-20260101T100500.123Z-v6.sqlite3.json`,
+  takenAt: '2026-01-01T10:05:00.123Z',
+  sizeBytes: 98_304,
+  sha256: '9f2c55b5e2a3c3f0f0d8f1f0d7b3b0a1c2e4f6a8b0c2d4e6f8a0b2c4d6e8f0a2',
+  schemaVersion: 6,
+  integrityCheck: 'ok',
+  tables: [
+    { table: 'applications', rows: 1 },
+    { table: 'resources', rows: 1 },
+  ],
+}
+
+const inspection: Answer<'inspectUpgrade'> = {
+  database: `${folder}\\inventory.sqlite3`,
+  storedAt: null,
+  state: 'outdated',
+  storedVersion: 6,
+  version: 12,
+  message:
+    "A DevHQ inventory in schema version 6, older than this DevHQ's (12). DevHQ read it without changing it, and serves nothing from it until it is upgraded.",
+  upgradable: true,
+  problems: [],
+  tables: [
+    { table: 'applications', rows: 1 },
+    { table: 'components', rows: 2 },
+    { table: 'events', rows: 3 },
+    { table: 'http_checks', rows: 1 },
+    { table: 'incidents', rows: 0 },
+    { table: 'observations', rows: 2 },
+    { table: 'resources', rows: 1 },
+  ],
+  fingerprint: '3a7bd3e2360a3d29eea436fcfb7e44c735d117c42d1c1835420b6b9942dd4f1b',
+  backups: `${folder}\\backups`,
+}
+
+const upgraded: Answer<'upgradeInventory'> = {
+  from: 6,
+  to: 12,
+  backup: beforeUpgrade,
+  tablesKept: 7,
+  rowsKept: 10,
+}
+
+/** What the progress channel of `upgrade_inventory` delivers once the backup is made. */
+const backedUp: UpgradeStep = {
+  step: 'backedUp',
+  backup: {
+    ...beforeUpgrade,
+    storedAt: `${packaged}\\backups\\inventory-20260101T100500.123Z-v6.sqlite3`,
+  },
+}
+
 /** What the supervision channel of `watch_http_monitor` delivers. */
 const supervision: MonitorStatus = {
   checks: [
@@ -616,6 +685,9 @@ const answers: Record<string, unknown> = {
   this_workstation: laptop,
   read_copies: readCopies,
   older_readings: olderReadings,
+  inspect_upgrade: inspection,
+  upgrade_inventory: upgraded,
+  upgrade_step: backedUp,
 }
 
 describe('what the native process answers', () => {

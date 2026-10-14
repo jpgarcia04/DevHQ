@@ -170,14 +170,29 @@ alone and would apply them to the new one. `inventory::start` is the window's st
 and the only caller of `create`, the only place that sets WAL and the only place that lets SQLite
 recover a file, and only once a recovered copy in a temporary folder proved it current and, with the
 connection that recovers it open and before its first read, the file, journal and log still hold the
-bytes that were copied (`RecoveredFrom`); anything else is refused until DevHQ starts again
-(`InventoryPath::current`), and supervision does not run.
+bytes that were copied (`RecoveredFrom`); anything else is refused until DevHQ starts again or, for an
+outdated inventory, until the person upgrades it (`InventoryPath::current`), and supervision does not
+run.
 `open_current` never creates, upgrades or converts. Every use case reads or writes inside `begin` or
 `begin_write`, which classify the file inside the transaction; never start a transaction on an
-inventory connection another way, and never add a path that upgrades: the migrations only build a new
-inventory (and, in tests, `upgrade` proves each of them on synthetic files). Upgrading is the explicit
-upgrade's to add, with a verified backup first. `inventory::open` exists only in tests. A test
-inventory is made with `start`, as the window makes it.
+inventory connection another way. The migrations build a new inventory and upgrade an older one only
+in `src-tauri/src/upgrade.rs`, through the window's `upgrade_inventory` and the person's consent to
+what `inspect_upgrade` showed (version and content fingerprint); never add another path that
+upgrades, and never give the agent gate one. The upgrade looks with `examine` first (so on Unix it
+and the inspection run only while the window holds no connection: the `Upgrades` mutex and the
+`ready` check), opens `open_to_upgrade`, takes `BEGIN IMMEDIATE`, checks consent, structure
+(`schema_differences`, stricter than `classify`), integrity and relationships inside it, backs up with
+`VACUUM INTO` from a second read-only connection, verifies the copy against the inventory under the
+lock, names it and its manifest (`backup::copy_verified`, `backup::write_new`), forces both names to
+disk (`backup::names_on_disk`, which on Unix syncs the folders and on Windows has nothing to ask), and
+only then migrates in the same transaction and checks every row (`check_upgraded`) before committing.
+Any error the system reports in that publication stops the upgrade and keeps what was named; never
+drop one. It never recovers an outdated inventory: one left needing recovery is refused with its files
+left as they are, and no message may presume that a backup exists or holds what they hold, nor choose
+one by its name (README «Un inventario antiguo que necesita recuperación»). In tests,
+`inventory::upgrade` applies the migrations with no backup or check, to prove each of them on synthetic
+files. `inventory::open` exists only in tests. A test inventory is made with `start`, as the window
+makes it.
 
 ## Local copies
 
@@ -198,7 +213,10 @@ compile the battery's marker with the toolchain's `rustc`.
 
 A schema change is a new migration (`src-tauri/migrations/00N_*.sql`, next `user_version`)
 with an upgrade test that compares dumps row by row, like the existing ones. Never edit a
-released migration. Queries over automated history follow an index; a new one gets a
+released migration. The explicit upgrade's `check_upgraded` must accept it: every row keeps its
+rowid and values, a new column holds its declared default and a new table starts empty, unless the
+migration says otherwise there (`MOVED`, `STARTED`) with a test of its own; and its upgrade test in
+`upgrade.rs` covers the new version. Queries over automated history follow an index; a new one gets a
 query plan test so its cost never grows with the history.
 
 ## Style

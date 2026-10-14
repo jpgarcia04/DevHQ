@@ -81,7 +81,7 @@ export function Backups() {
         </Button>
         {attempt.state === 'failed' && (
           <p role="alert" className="text-xs text-rose-300">
-            No backup was made. {attempt.error}
+            The backup failed. {attempt.error}
           </p>
         )}
       </div>

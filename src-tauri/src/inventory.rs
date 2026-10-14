@@ -7,7 +7,7 @@ use rusqlite::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs::File;
 #[cfg(windows)]
@@ -59,7 +59,8 @@ impl ApiError {
             message: message.into(),
         }
     }
-    /// No backup was made, or one is already being made. The inventory itself is untouched.
+    /// A backup did not succeed: none was made, one is already being made, or the one made is kept
+    /// without DevHQ vouching for it, as the message says. The inventory itself is untouched.
     pub(crate) fn backup(message: impl Into<String>) -> Self {
         Self {
             code: "backup_error",
@@ -236,7 +237,10 @@ pub(crate) fn plain(path: &Path) -> String {
 }
 
 pub(crate) const SCHEMA_VERSION: i64 = 12;
-const MIGRATIONS: [(i64, &str); 12] = [
+/// Each schema version with the migration that brings an inventory to it from the one before.
+/// They build a new inventory (`create`) and upgrade an older one (`upgrade.rs`), and are never
+/// edited once released: an inventory left at any version has the structure they give it there.
+pub(crate) const MIGRATIONS: [(i64, &str); 12] = [
     (1, include_str!("../migrations/001_inventory.sql")),
     (2, include_str!("../migrations/002_inventory_details.sql")),
     (3, include_str!("../migrations/003_operational_records.sql")),
@@ -252,7 +256,8 @@ const MIGRATIONS: [(i64, &str); 12] = [
 ];
 
 // How DevHQ reaches its inventory. No opening changes its schema: an inventory in an older schema
-// is refused, never upgraded, until upgrading is an explicit step of its own.
+// is refused, never upgraded, except by the explicit upgrade the person starts in the window
+// (`upgrade.rs`), which backs it up and verifies the copy first.
 //
 // - `create` makes a new inventory, only where there is no file at all, and is called only by the
 //   window when it starts (`start`), never while it is open and never by the gate.
@@ -263,7 +268,10 @@ const MIGRATIONS: [(i64, &str); 12] = [
 //   use case's transaction only once they found, inside it, an inventory in this build's schema
 //   (and, for an agent's write, the person's leave): what a use case reads or writes is always
 //   the current schema, whatever happened to the file since anyone last looked.
-// - `examine` and `read_as_found` are the agent gate's reads, which change no file.
+// - `examine` and `read_as_found` are the agent gate's reads, which change no file; the window
+//   looks at an outdated inventory the same way before offering to upgrade it.
+// - `open_to_upgrade` is the explicit upgrade's own connection, and the only one that applies a
+//   migration to an inventory that exists.
 
 /// What a use case's connection does on top of SQLite's defaults: waits up to five seconds for
 /// another writer, and enforces relationships.
@@ -649,21 +657,28 @@ fn left_needing_recovery(path: &Path, found: &Found, recovery: Recovery) -> ApiE
     }
 }
 
-/// Upgrades the inventory at `path` from an older schema to this build's. Only tests call it, to
-/// prove what each migration keeps: no DevHQ path upgrades an inventory until upgrading is an
-/// explicit step, with a verified backup first.
+/// Upgrades the inventory at `path` from an older schema to this build's, with no backup and no
+/// check of what it carries over. Only tests call it, to prove what each migration keeps; DevHQ
+/// upgrades an inventory only through `upgrade.rs`, which backs it up and checks both.
 #[cfg(test)]
 pub(crate) fn upgrade(path: &Path) -> Result<(), ApiError> {
-    let mut db = Connection::open_with_flags(
-        path,
-        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .map_err(ApiError::database)?;
-    db.busy_timeout(Duration::from_secs(5))
-        .map_err(ApiError::database)?;
+    let mut db = open_to_upgrade(path)?;
+    migrate(&mut db)
+}
+
+/// The connection through which the explicit upgrade changes the inventory at `path` (see
+/// `upgrade.rs`), the only one that applies a migration to an inventory that exists: only if a
+/// file is there, which it never creates or converts to another journal mode. It waits up to five
+/// seconds for another writer, and leaves relationships unenforced, since migrations rebuild
+/// tables that others refer to: they are checked once the migrations ran, before anything commits.
+/// Like `open_current`, it can write, so SQLite recovers what a crash left the first time it reads:
+/// the upgrade opens it only once a look that changes nothing found no file to recover.
+pub(crate) fn open_to_upgrade(path: &Path) -> Result<Connection, ApiError> {
+    let db = open_current(path)?;
+    // Only outside a transaction does SQLite let this change.
     db.pragma_update(None, "foreign_keys", "OFF")
         .map_err(ApiError::database)?;
-    migrate(&mut db)
+    Ok(db)
 }
 
 /// A connection for a test to the inventory at `path`, which it makes as DevHQ would have had it:
@@ -708,23 +723,8 @@ fn migrate(db: &mut Connection) -> Result<(), ApiError> {
     if version == SCHEMA_VERSION {
         return Ok(());
     }
-    for (number, sql) in MIGRATIONS {
-        if version < number {
-            tx.execute_batch(sql).map_err(ApiError::database)?;
-            tx.pragma_update(None, "user_version", number)
-                .map_err(ApiError::database)?;
-        }
-    }
-    let broken = {
-        let mut statement = tx
-            .prepare("PRAGMA foreign_key_check")
-            .map_err(ApiError::database)?;
-        let rows = statement
-            .query_map([], |_| Ok(()))
-            .map_err(ApiError::database)?
-            .count();
-        rows
-    };
+    apply_migrations(&tx, version, &MIGRATIONS)?;
+    let broken = broken_relationships(&tx).map_err(ApiError::database)?;
     if broken > 0 {
         // Dropping the transaction rolls the whole upgrade back.
         return Err(ApiError::database(format!(
@@ -733,6 +733,33 @@ fn migrate(db: &mut Connection) -> Result<(), ApiError> {
     }
     tx.commit().map_err(ApiError::database)?;
     Ok(())
+}
+
+/// Runs, in `tx`, each of `migrations` past schema `version`, in order, stamping the version each
+/// one brings: what `migrate` and the explicit upgrade (`upgrade.rs`) both apply. It commits
+/// nothing; a migration that fails leaves the rest to the transaction's rollback.
+pub(crate) fn apply_migrations(
+    tx: &Transaction,
+    version: i64,
+    migrations: &[(i64, &str)],
+) -> Result<(), ApiError> {
+    for (number, sql) in migrations {
+        if version < *number {
+            tx.execute_batch(sql).map_err(|error| {
+                ApiError::database(format!("migration {number:03} failed: {error}"))
+            })?;
+            tx.pragma_update(None, "user_version", number)
+                .map_err(ApiError::database)?;
+        }
+    }
+    Ok(())
+}
+
+/// How many rows refer to a row that is not there, as `PRAGMA foreign_key_check` finds them.
+pub(crate) fn broken_relationships(db: &Connection) -> rusqlite::Result<usize> {
+    let mut statement = db.prepare("PRAGMA foreign_key_check")?;
+    let rows = statement.query_map([], |_| Ok(()))?.count();
+    Ok(rows)
 }
 
 /// What the agent gate finds at an inventory's path, told without changing anything there.
@@ -816,7 +843,7 @@ impl Found {
             Self::Missing => "There is no file there. The gate never creates one, and DevHQ's window creates a new, empty inventory only when it starts and finds no file, never while it is open.".to_owned(),
             Self::Current => format!("A DevHQ inventory that declares schema version {SCHEMA_VERSION}, the one this DevHQ reads, and has every table, column and index of that schema. Its integrity (each page and row) was not checked."),
             Self::Mismatch(differences) => format!("A file that declares schema version {SCHEMA_VERSION}, the one this DevHQ reads, without that schema's structure: {}. The gate serves nothing from it, so what it holds is unknown.", differences.join("; ")),
-            Self::Outdated(version) => format!("A DevHQ inventory that declares schema version {version}, older than this DevHQ's ({SCHEMA_VERSION}). This DevHQ never upgrades an inventory when it opens it: neither its window nor the gate serves anything from this one, and both leave it as it is. Upgrading it is an explicit step, which this DevHQ does not offer yet."),
+            Self::Outdated(version) => format!("A DevHQ inventory that declares schema version {version}, older than this DevHQ's ({SCHEMA_VERSION}). This DevHQ never upgrades an inventory when it opens it: neither its window nor the gate serves anything from this one, and both leave it as it is. Only the person upgrades it, from DevHQ's window (Back up and upgrade), which first makes and verifies a backup of it; the gate never does."),
             Self::Newer(version) => format!("A DevHQ inventory that declares schema version {version}, written by a DevHQ newer than this one (schema {SCHEMA_VERSION}). This DevHQ cannot read it, and the gate serves nothing from it."),
             Self::Foreign { empty: true } => "An empty file or a SQLite database without tables: not a DevHQ inventory. DevHQ never turns a file into one: it creates a new inventory only where there is no file at all.".to_owned(),
             Self::Foreign { empty: false } => "A SQLite database without DevHQ's tables: not a DevHQ inventory. DevHQ never turns a file into one.".to_owned(),
@@ -876,6 +903,17 @@ const LOOKS: usize = 3;
 /// files" holds for everything except that empty `-wal`.
 pub(crate) fn examine<T>(
     path: &Path,
+    read: impl FnMut(&mut Connection) -> Result<T, ApiError>,
+) -> (Found, Option<Result<T, ApiError>>) {
+    examine_where(path, |found| *found == Found::Current, read)
+}
+
+/// `examine`, reading with `read` what `wanted` accepts of what it found instead of only an
+/// inventory in this build's schema: the window reads an outdated inventory this way before
+/// offering to upgrade it, on a connection that cannot change it.
+pub(crate) fn examine_where<T>(
+    path: &Path,
+    wanted: impl Fn(&Found) -> bool,
     mut read: impl FnMut(&mut Connection) -> Result<T, ApiError>,
 ) -> (Found, Option<Result<T, ApiError>>) {
     let mut changing = String::new();
@@ -918,7 +956,7 @@ pub(crate) fn examine<T>(
                 }
             },
         };
-        let outcome = (found == Found::Current).then(|| read(&mut db));
+        let outcome = wanted(&found).then(|| read(&mut db));
         drop(db);
         if changed() {
             changing = "another connection wrote to it while DevHQ read it".to_owned();
@@ -1080,14 +1118,14 @@ impl OnDisk {
 }
 
 /// A digest of the bytes of the file at `path`.
-fn content(path: &Path) -> std::io::Result<[u8; 32]> {
+pub(crate) fn content(path: &Path) -> std::io::Result<[u8; 32]> {
     let mut hasher = Sha256::new();
     std::io::copy(&mut File::open(path)?, &mut hasher)?;
     Ok(hasher.finalize().into())
 }
 
 /// The file SQLite keeps beside the database at `path`: `-wal`, `-shm` or `-journal`.
-fn beside(path: &Path, suffix: &str) -> PathBuf {
+pub(crate) fn beside(path: &Path, suffix: &str) -> PathBuf {
     let mut name = path.as_os_str().to_owned();
     name.push(suffix);
     PathBuf::from(name)
@@ -1207,7 +1245,7 @@ fn found_by(error: &rusqlite::Error) -> Option<Found> {
 /// Which file the connection reads. Only a DevHQ inventory has `applications` and `resources`
 /// (since its first schema) and a `user_version` from 1 on, which its upgrades set; one that
 /// declares this build's version is current only if it also has this schema's structure.
-fn classify(db: &Connection) -> rusqlite::Result<Found> {
+pub(crate) fn classify(db: &Connection) -> rusqlite::Result<Found> {
     let version: i64 = db.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     let (tables, devhq): (i64, i64) = db.query_row(
         "SELECT count(*), count(*) FILTER (WHERE name IN ('applications', 'resources'))
@@ -1331,6 +1369,40 @@ impl Structure {
         }
         differences
     }
+}
+
+/// What the structure of the database on `db` lacks, or has otherwise or besides, of the one this
+/// build's migrations give an inventory at schema `version`: each table with its columns, each
+/// index, and nothing of its own (no other table, index, view or trigger). Stricter than
+/// `classify`, which leaves out what DevHQ's schema does not name: the explicit upgrade changes only
+/// a file that is exactly what DevHQ made of it, so that nothing DevHQ does not know rides along,
+/// such as a trigger that would fire while the migrations copy rows.
+pub(crate) fn schema_differences(db: &Connection, version: i64) -> rusqlite::Result<Vec<String>> {
+    let expected = Connection::open_in_memory()?;
+    for (number, sql) in MIGRATIONS {
+        if number <= version {
+            expected.execute_batch(sql)?;
+        }
+    }
+    let mut differences = Structure::of(db)?.differences_from(&Structure::of(&expected)?);
+    let known = objects(&expected)?;
+    for (kind, name) in objects(db)?.difference(&known) {
+        differences.push(format!(
+            "{kind} {name}, which schema version {version} does not have"
+        ));
+    }
+    Ok(differences)
+}
+
+/// Each table, index, view and trigger of the database on `db`, by kind and name, but SQLite's own.
+fn objects(db: &Connection) -> rusqlite::Result<BTreeSet<(String, String)>> {
+    let mut statement = db.prepare(
+        "SELECT type, name FROM sqlite_schema WHERE name NOT LIKE 'sqlite\\_%' ESCAPE '\\'",
+    )?;
+    let objects = statement
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect();
+    objects
 }
 
 /// Longest texts DevHQ accepts. The window enforces the same limits as you type.
@@ -4653,19 +4725,22 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn writer(path: &Path, what: &str) -> Writer {
-        let ready = std::env::temp_dir().join(format!("devhq-writer-{}", Uuid::new_v4()));
+        helper(
+            "inventory::tests::writes_until_killed",
+            WRITER,
+            &format!("{what}\n{}", path.display()),
+        )
+    }
+
+    /// Runs the ignored test `test` of this executable as a process of its own, with the
+    /// environment variable `variable` set to `spec` and, on a last line, a file it creates once it
+    /// has done what it was started for; returns once the file is there.
+    pub(crate) fn helper(test: &str, variable: &str, spec: &str) -> Writer {
+        let ready = std::env::temp_dir().join(format!("devhq-helper-{}", Uuid::new_v4()));
         let mut child = Writer(
             std::process::Command::new(std::env::current_exe().unwrap())
-                .args([
-                    "--ignored",
-                    "--exact",
-                    "inventory::tests::writes_until_killed",
-                    "--nocapture",
-                ])
-                .env(
-                    WRITER,
-                    format!("{what}\n{}\n{}", path.display(), ready.display()),
-                )
+                .args(["--ignored", "--exact", test, "--nocapture"])
+                .env(variable, format!("{spec}\n{}", ready.display()))
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .spawn()
@@ -4674,16 +4749,33 @@ pub(crate) mod tests {
         let deadline = std::time::Instant::now() + Duration::from_secs(60);
         while !ready.exists() {
             if let Some(status) = child.0.try_wait().unwrap() {
-                panic!("the writer ended before writing: {status}");
+                panic!("{test} ended before it was ready: {status}");
             }
             assert!(
                 std::time::Instant::now() < deadline,
-                "the writer never wrote"
+                "{test} was never ready"
             );
             std::thread::sleep(Duration::from_millis(20));
         }
         std::fs::remove_file(ready).unwrap();
         child
+    }
+
+    impl Writer {
+        /// Waits until the process ends by itself, and says whether it succeeded.
+        pub(crate) fn finished(mut self) -> bool {
+            let deadline = std::time::Instant::now() + Duration::from_secs(120);
+            loop {
+                if let Some(status) = self.0.try_wait().unwrap() {
+                    return status.success();
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the helper never ended"
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
     }
 
     /// Kills `writer` as a crash ends a process, so that nothing in it gets to fold, roll back or
