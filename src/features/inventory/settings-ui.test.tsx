@@ -41,15 +41,35 @@ describe('the database file in Settings', () => {
     renderSettings(inventoryContext({ dataLocation: located() }))
     expect(screen.getByText('Locating the database file…')).toBeInTheDocument()
     expect(await screen.findByText(database)).toBeInTheDocument()
-    expect(
-      screen.getByText(
-        paragraph(/^With DevHQ closed, a copy of the database file is also a complete backup\./),
-      ),
-    ).toBeInTheDocument()
+    // A closed file is complete only without a log or journal left beside it.
     expect(
       screen.getByText(
         paragraph(
-          /under the name inventory\.sqlite3 and delete inventory\.sqlite3-wal and inventory\.sqlite3-shm/,
+          /^With DevHQ closed, a copy of the database file is a complete backup when neither inventory\.sqlite3-wal nor inventory\.sqlite3-journal is beside it\./,
+        ),
+      ),
+    ).toBeInTheDocument()
+  })
+
+  it('restores a backup by setting every file of the replaced one aside, never deleting one', async () => {
+    renderSettings(inventoryContext({ dataLocation: located() }))
+    const byHand = (await screen.findByRole('heading', { name: 'By hand' })).parentElement!
+    // SQLite applies a -journal or -wal it finds beside a file to it, and the latest committed
+    // changes may be only there: telling anyone to delete one, or to drop a backup beside one,
+    // either corrupts the restored file or loses what was committed.
+    expect(byHand.textContent).not.toMatch(/delet|remov|eras|discard|wipe/i)
+    expect(
+      within(byHand).getByText(
+        paragraph(
+          /^To restore a backup, close DevHQ, then move inventory\.sqlite3 and, if they are there, inventory\.sqlite3-wal, inventory\.sqlite3-shm and inventory\.sqlite3-journal together into a new, empty folder outside the database file’s folder, overwriting nothing\. Keep them: .* Then copy the backup in as inventory\.sqlite3, with nothing of the replaced file left beside it, /,
+        ),
+      ),
+    ).toBeInTheDocument()
+    // Files that still need recovering are another case: no backup is presumed to hold the same.
+    expect(
+      within(byHand).getByText(
+        paragraph(
+          /^Restoring is not recovering\. If inventory\.sqlite3-journal or inventory\.sqlite3-wal is still there with DevHQ closed, .*the file is not complete on its own, .*Copy them with the file and its inventory\.sqlite3-shm, together and under their names, and put no backup in their place on the guess that it holds the same\./,
         ),
       ),
     ).toBeInTheDocument()

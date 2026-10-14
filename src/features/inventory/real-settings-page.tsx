@@ -8,6 +8,10 @@ import { inventoryError, type DataLocation } from './inventory-api'
 import { useInventory } from './inventory-context'
 import { ThisComputer } from './this-computer'
 
+function FileName({ children }: { children: string }) {
+  return <span className="whitespace-nowrap font-mono">{children}</span>
+}
+
 /**
  * The inventory's file on this device and how to back it up. It asks the native process only
  * where the file is and what its backups folder holds, so it still answers when the inventory
@@ -79,20 +83,37 @@ function DatabaseFile() {
         </p>
       )}
       <Backups />
+      {/* SQLite pairs a database with the -journal, -wal and -shm beside it by name alone, and the
+          latest committed changes may be only in them: no step here ever loses one or leaves one
+          beside another file. */}
       <div className="mt-6 border-t pt-5">
         <h3 className="text-[13px] font-semibold">By hand</h3>
         <p className="mt-2 text-xs leading-6 text-muted-foreground">
-          With DevHQ closed, a copy of the database file is also a complete backup. While DevHQ is
-          open, its latest changes can still be in{' '}
-          <span className="whitespace-nowrap font-mono">inventory.sqlite3-wal</span> in the same
-          folder, which a plain copy would miss; DevHQ folds them into the file when it closes.
+          With DevHQ closed, a copy of the database file is a complete backup when neither{' '}
+          <FileName>inventory.sqlite3-wal</FileName> nor{' '}
+          <FileName>inventory.sqlite3-journal</FileName> is beside it. While DevHQ is open, its
+          latest changes can still be in <FileName>inventory.sqlite3-wal</FileName>, which a plain
+          copy would miss; DevHQ folds them into the file when it closes.
         </p>
         <p className="mt-3 text-xs leading-6 text-muted-foreground">
-          To restore a backup or a copy, close DevHQ, put it in place of the database file under the
-          name <span className="whitespace-nowrap font-mono">inventory.sqlite3</span> and delete{' '}
-          <span className="whitespace-nowrap font-mono">inventory.sqlite3-wal</span> and{' '}
-          <span className="whitespace-nowrap font-mono">inventory.sqlite3-shm</span> if they are
-          there, so that no log of the replaced file is applied to it.
+          To restore a backup, close DevHQ, then move <FileName>inventory.sqlite3</FileName> and, if
+          they are there, <FileName>inventory.sqlite3-wal</FileName>,{' '}
+          <FileName>inventory.sqlite3-shm</FileName> and{' '}
+          <FileName>inventory.sqlite3-journal</FileName> together into a new, empty folder outside
+          the database file’s folder, overwriting nothing. Keep them: they hold everything written
+          after the backup. Then copy the backup in as <FileName>inventory.sqlite3</FileName>, with
+          nothing of the replaced file left beside it, since SQLite would apply that file’s log or
+          journal to the backup.
+        </p>
+        <p className="mt-3 text-xs leading-6 text-muted-foreground">
+          Restoring is not recovering. If <FileName>inventory.sqlite3-journal</FileName> or{' '}
+          <FileName>inventory.sqlite3-wal</FileName> is still there with DevHQ closed, a write may
+          have been cut short: the file is not complete on its own, and the latest committed changes
+          may be only in them. Copy them with the file and its{' '}
+          <FileName>inventory.sqlite3-shm</FileName>, together and under their names, and put no
+          backup in their place on the guess that it holds the same. Opening DevHQ recovers an
+          inventory in its own schema once a recovered copy proves it current; one in an older
+          schema it leaves as it is, and says what to check first.
         </p>
       </div>
     </section>

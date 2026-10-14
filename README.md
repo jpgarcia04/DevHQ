@@ -646,7 +646,8 @@ que no tiene ninguna herramienta para ello. Lo implementa `src-tauri/src/upgrade
      ser el del manifiesto (en PowerShell, `Get-FileHash -Algorithm SHA256 <archivo>`; en Linux,
      `sha256sum <archivo>`) y, con la CLI de SQLite, `PRAGMA integrity_check` debe responder `ok` y
      `PRAGMA user_version` la versión del manifiesto. El nombre del archivo no basta.
-  3. Aparta a otra carpeta, sin borrarlos, `inventory.sqlite3` y, si están, `inventory.sqlite3-wal`,
+  3. Aparta juntos, a una carpeta nueva y vacía fuera de la carpeta de datos, sin borrar ni
+     reemplazar nada, `inventory.sqlite3` y, si están, `inventory.sqlite3-wal`,
      `inventory.sqlite3-shm` e `inventory.sqlite3-journal`.
   4. Copia el respaldo a la carpeta de datos con el nombre `inventory.sqlite3`, dejando el original en
      `backups/`.
@@ -680,10 +681,13 @@ que no tiene ninguna herramienta para ello. Lo implementa `src-tauri/src/upgrade
        paso 2 de «Restaurar un respaldo».
     4. Comprueba que tiene lo mismo que los archivos: pon otra copia de ellos, con sus nombres, en otra
        carpeta y ábrela con la CLI de SQLite, que recupera esa copia y no el original. En esa carpeta,
-       `sqlite3 inventory.sqlite3 .dump > recuperado.sql`, y para el respaldo,
-       `sqlite3 <respaldo> .dump > respaldo.sql`, deben dar el mismo texto
+       `sqlite3 inventory.sqlite3 ".output recuperado.sql" .dump`, y para el respaldo,
+       `sqlite3 <respaldo> ".output respaldo.sql" .dump`, deben dar los mismos bytes
        (`fc.exe /b recuperado.sql respaldo.sql` en Windows, `cmp recuperado.sql respaldo.sql` en Linux),
-       y `PRAGMA user_version`, que `.dump` no incluye, la misma versión en los dos.
+       y `PRAGMA user_version`, que `.dump` no incluye, la misma versión en los dos. El archivo lo
+       escribe la propia CLI, con `.output`, y no una redirección (`>`): Windows PowerShell 5.1
+       decodifica lo que escribe un programa y lo vuelve a codificar, y con la consola en UTF-8 (página
+       de códigos 65001) dos volcados que difieren en bytes que no son UTF-8 válido salen iguales.
     5. Solo si coinciden, restáuralo como dice «Restaurar un respaldo»: no se pierde nada confirmado.
        Si no coinciden, o no hay respaldo, no pongas ninguno en su lugar y conserva los archivos como
        están: esta versión de DevHQ no ofrece otro camino.
@@ -1299,11 +1303,19 @@ restaurado, pasa a WAL al arrancar la ventana; si otra conexión lo está usando
 arranque. Ninguna consulta ni escritura lo convierte. Settings muestra la
 ruta exacta del archivo (`data_location` no abre la base, así que responde aunque no se pueda
 leer): con DevHQ abierto se respalda con Back up now (ver [Respaldo](#respaldo)); con DevHQ
-cerrado también basta copiarlo. Para restaurar un respaldo o una copia, con DevHQ cerrado se pone
-en lugar del archivo, con el nombre `inventory.sqlite3`, y se apartan a otra carpeta, sin borrarlos,
-`-wal`, `-shm` y `-journal` si quedaron: así ni el log ni el journal del archivo anterior se aplican a
-la copia, y lo que tengan sigue ahí (ver «Restaurar un respaldo» en
-[Actualizar un inventario antiguo](#actualizar-un-inventario-antiguo)).
+cerrado basta copiarlo si a su lado no quedó un `-wal` ni un `-journal`. Si quedó alguno, una
+escritura pudo quedar a medias: el archivo no está completo por sí solo hasta recuperarlo y lo último
+confirmado puede estar solo en ellos, así que se copian juntos, con el `-shm` y con sus nombres, y no
+se pone un respaldo en su lugar dando por hecho que tiene lo mismo. Al arrancar, la ventana recupera
+un inventario del esquema actual como se describe arriba, y deja como está uno anterior y dice qué
+comprobar (ver «Un inventario antiguo que necesita recuperación» en
+[Actualizar un inventario antiguo](#actualizar-un-inventario-antiguo)). Restaurar un respaldo es
+otra cosa: con DevHQ cerrado se apartan juntos `inventory.sqlite3` y, si están, su `-wal`, su `-shm`
+y su `-journal`, a una carpeta nueva y vacía fuera de la carpeta de datos, sin borrar ni reemplazar
+nada, y solo después se copia el respaldo con el nombre `inventory.sqlite3`. Así ni el log ni el
+journal del archivo anterior se aplican a la copia, y lo que tienen, incluido lo escrito después del
+respaldo, sigue ahí (ver «Restaurar un respaldo» en el mismo apartado). Settings › By hand dice las
+dos cosas, sin proponer nunca borrar ninguno de esos archivos.
 
 Esa ruta es la que DevHQ pide, y el sistema puede guardar el archivo en otra. Un enlace simbólico o un
 junction llevan a otra carpeta, y Windows redirige `AppData` para un DevHQ lanzado desde una app
