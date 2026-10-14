@@ -45,6 +45,36 @@ npm run e2e:native
 Confirm that each new test fails without the fix (temporary mutation). Never restore a
 file that has uncommitted changes with `git checkout`.
 
+## Temporary resources
+
+Whatever a session, a test, a script or a validation creates for its own use (a synthetic
+inventory, a temporary folder, a helper process, a transient log, a disposable copy) is removed by
+what created it as soon as it is no longer needed. Keeping one needs an explicit reason, written
+where it stays (a note beside it, the report that uses it): what it is, why it stays, when it can go.
+
+- A test removes what it creates when it ends, whether it passes or fails an assertion, and kills
+  and waits for every process it starts, on drop too (on Windows an orphan inherits the output
+  pipe and keeps `cargo test` waiting). A failing test keeps its files only when asked to, and
+  then says where they are. Today most Rust tests remove their files only when they pass, so a
+  failing run (a temporary mutation included) leaves `devhq-<name>-<uuid>` entries in the
+  temporary folder; the Windows workflow checks only that a passing run leaves nothing.
+- What a forced stop leaves (a killed run, an abort, a crash) cannot be removed by the process
+  that made it. Remove it from outside only by the exact names its creator gives (prefix and
+  unique id), only once nothing uses it and no run that could own it is in progress, and list it
+  before removing it; where that cannot be done safely, write the limitation down instead.
+- Never clean by a broad pattern (`devhq-*`, a whole `%TEMP%`), never remove what someone else
+  made (another agent's folder, the person's data, a backup or an archive), and never remove what
+  explains a failure before someone has looked at it.
+- A copy of the person's data made for a validation is temporary too: say where it is and remove
+  it once the person has seen the result, unless they decide to keep it.
+- Build caches are not temporary: Cargo's `target/` or build directory, `node_modules` and the
+  downloaded browsers and drivers are reused from run to run and never removed after a test. They
+  follow a retention policy of their own, preferably on a data drive rather than the system one
+  (on the Windows laptop, D:), and are removed on purpose: a toolchain change, space running out.
+  A session never changes the person's global configuration (`~/.cargo/config.toml` and the like)
+  on its own, since every other build and agent shares it; a variable or `--config` for one
+  command does not.
+
 ## Cloud sessions
 
 - `.claude/hooks/session-start.sh` installs WebKitGTK, WebKitWebDriver, Xvfb and
