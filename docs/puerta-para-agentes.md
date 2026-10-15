@@ -17,9 +17,12 @@ abierta. Lo que solo se ve en la laptop:
 
 - Claude Code de verdad, registrado con `claude mcp add --scope user`, lanzando el `devhq.exe`
   instalado desde una terminal normal: una sesión que lee y escribe con la ventana abierta.
-- Que una escritura de agente vacíe el log también con los bloqueos de Windows: el test
-  `an_agents_write_leaves_no_changes_in_a_log_that_another_read_outlives` y dos sesiones de Claude Code
-  escribiendo a la vez con la ventana cerrada.
+- Que una escritura de agente vacíe el log también con los bloqueos de Windows (`LockFileEx`), sin
+  retener el de escritura mientras espera: los tests
+  `an_agents_write_leaves_no_changes_in_a_log_that_another_read_outlives`,
+  `an_agents_write_waits_for_a_read_in_progress_and_then_empties_the_log` y
+  `a_read_that_outlasts_the_fold_blocks_no_write_and_leaves_the_log_to_the_window`, y dos sesiones de
+  Claude Code escribiendo a la vez con la ventana cerrada.
 - Una puerta lanzada desde la app de escritorio de Claude (MSIX): qué inventario abre, qué dice
   `storedAt` y si `windowOpen` ve la ventana del DevHQ instalado. El lock está junto al inventario, y
   Windows también redirige ese archivo.
@@ -74,12 +77,22 @@ lo que habría que recuperar (README, «Puerta para agentes»). Lo que eso no ev
   base. El log se queda, sin conexión que lo mantenga, y la puerta rechaza el inventario con
   `needs_recovery` hasta que la ventana vuelve a abrirse y lo recupera. No se pierde nada confirmado.
   Cualquier lector que no vuelque el log tiene el mismo efecto; volcarlo es justo el cambio que la
-  puerta no hace. Las escrituras de un agente ya no lo provocan, porque vacían el log antes de cerrar
-  (README, «Puerta para agentes»); antes bastaban dos sesiones con la ventana cerrada, una escribiendo
-  mientras la otra leía. Con datos sintéticos en Linux, 19 de 24 ejecuciones de 2 a 8 sesiones
-  terminaban así y ninguna de 84 después; en todas, lo que la puerta dio por guardado estaba en el
-  archivo, una vez recuperado, exactamente una vez, y `integrity_check` lo daba por correcto. Queda la
-  ventana al cerrarse, y una escritura de agente cuyo volcado no terminó en 5 s.
+  puerta no hace. Las escrituras de un agente casi nunca lo provocan ya, porque intentan vaciar el log
+  antes de cerrar (README, «Puerta para agentes»); antes bastaban dos sesiones con la ventana cerrada,
+  una escribiendo mientras la otra leía. Con datos sintéticos en Linux, 19 de 24 ejecuciones de 2 a 8
+  sesiones terminaban así y ninguna de 84 después; en todas, lo que la puerta dio por guardado estaba
+  en el archivo, una vez recuperado, exactamente una vez, y `integrity_check` lo daba por correcto.
+  Queda la ventana al cerrarse, y una escritura de agente cuyo volcado no terminó porque una lectura
+  usó el log más de 5 s: si esa lectura es la última conexión en cerrarse, el log queda sin nadie que
+  lo mantenga y solo la ventana lo recupera; ninguna escritura posterior de un agente llega a volcarlo,
+  porque la puerta rechaza el inventario antes (test
+  `a_read_that_outlasts_the_fold_blocks_no_write_and_leaves_the_log_to_the_window`).
+- La primera versión del volcado esperaba a los lectores con el bloqueo de escritura tomado: con un
+  lector retenido 7 s, el volcado tardaba unos 5 s y otra escritura simultánea podía fallar con
+  «database is locked». Ahora cada intento suelta el bloqueo al momento y la otra escritura pasa entre
+  dos intentos; el mismo test lo comprueba con una escritura que solo espera 500 ms mientras el volcado
+  espera 1,5 s. Que una escritura se rechace porque otra la retiene más de 5 s sigue pudiendo ocurrir,
+  como en cualquier programa que use SQLite, pero ya no por el volcado.
 - Con varias sesiones escribiendo a la vez, la mirada de la puerta (también la que precede a cada
   escritura) puede encontrar los archivos cambiando en sus tres intentos y responder `database_error`
   («its files kept changing while DevHQ looked at them»). No lee ni cambia nada, y repetir la llamada
