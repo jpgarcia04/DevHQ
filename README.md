@@ -785,6 +785,16 @@ y la escritura otro proceso sustituye el archivo por un inventario más antiguo,
 rechaza con `schema_outdated` y el archivo queda como estaba; si lo borra, no se vuelve a crear; y si
 cierras la puerta en Settings en ese instante, se rechaza con `access_denied`. `run_check` guarda la
 observación y la entrada que dice qué agente la pidió en la misma transacción: las dos o ninguna.
+Al confirmar, cada escritura de un agente vuelca en el archivo lo que tiene el log y lo deja vacío
+antes de cerrar su conexión (`wal_checkpoint(TRUNCATE)`, que espera hasta 5 s a quien aún lo esté
+leyendo). SQLite solo vuelca el log cuando se cierra la última conexión, y la de una puerta que lee
+no puede hacerlo: sin ese paso, con la ventana cerrada, una escritura que terminaba mientras la puerta
+de otra sesión leía dejaba sus cambios en un log que nadie mantenía, y desde entonces toda puerta
+rechazaba el inventario con `needs_recovery` hasta que la ventana lo recuperaba al arrancar, sin
+perder nada confirmado. El volcado no decide nada, porque la escritura ya está confirmada: si no
+termina (alguien siguió leyendo el log más de 5 s), no es un error y el log queda como lo dejaría
+SQLite, para la siguiente escritura de un agente o para la ventana. Las escrituras de la ventana no
+lo hacen: mientras está abierta, su propia conexión mantiene el log, y lo vuelca al cerrarse.
 `backup` no puede copiar dentro de una transacción (`VACUUM INTO` no lo admite), así que comprueba el
 esquema y el acceso en la conexión que copia justo antes de copiar, y la verificación de la copia
 rechaza otra versión. Lo que no cierra es la recuperación: si en el instante entre la lectura y la

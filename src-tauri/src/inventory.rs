@@ -315,10 +315,15 @@ pub(crate) fn begin(
     db: &mut Connection,
     behavior: TransactionBehavior,
 ) -> Result<Transaction<'_>, ApiError> {
+    begin_on(db, behavior)
+}
+
+/// `begin` on a connection borrowed for as long as the transaction lives: `begin_write` needs the
+/// connection again once the transaction has committed. The borrow comes from `&mut`, so nothing
+/// else uses the connection meanwhile, as `Connection::transaction_with_behavior` ensures.
+fn begin_on(db: &Connection, behavior: TransactionBehavior) -> Result<Transaction<'_>, ApiError> {
     let path = PathBuf::from(db.path().unwrap_or_default());
-    let tx = db
-        .transaction_with_behavior(behavior)
-        .map_err(ApiError::database)?;
+    let tx = Transaction::new_unchecked(db, behavior).map_err(ApiError::database)?;
     match classify(&tx).map_err(ApiError::database)? {
         Found::Current => Ok(tx),
         found => Err(found.refusal(&path)),
@@ -329,15 +334,66 @@ pub(crate) fn begin(
 /// inside it an inventory in this build's schema and, for an agent, that the person lets agents
 /// write (see `access`): that decides, so that closing the agent gate in Settings, or replacing,
 /// upgrading or emptying the file, can never race a write that was asked for before.
-pub(crate) fn begin_write<'a>(
-    db: &'a mut Connection,
-    by: &Actor,
-) -> Result<Transaction<'a>, ApiError> {
-    let tx = begin(db, TransactionBehavior::Immediate)?;
-    if let Actor::Agent(_) = by {
+pub(crate) fn begin_write<'a>(db: &'a mut Connection, by: &Actor) -> Result<Writing<'a>, ApiError> {
+    let db: &'a Connection = db;
+    let tx = begin_on(db, TransactionBehavior::Immediate)?;
+    let agent = matches!(by, Actor::Agent(_));
+    if agent {
         access::permitted(&access::mode(&tx)?, "write")?;
     }
-    Ok(tx)
+    Ok(Writing { tx, db, agent })
+}
+
+/// A write transaction from `begin_write`, used as the `Transaction` it holds. Dropped without
+/// `commit`, it rolls back, as a `Transaction` does.
+#[derive(Debug)]
+pub(crate) struct Writing<'a> {
+    tx: Transaction<'a>,
+    db: &'a Connection,
+    agent: bool,
+}
+
+impl<'a> std::ops::Deref for Writing<'a> {
+    type Target = Transaction<'a>;
+
+    fn deref(&self) -> &Transaction<'a> {
+        &self.tx
+    }
+}
+
+impl Writing<'_> {
+    /// Commits the transaction and, for an agent, then empties the log (see `empty_log`).
+    pub(crate) fn commit(self) -> rusqlite::Result<()> {
+        self.tx.commit()?;
+        if self.agent {
+            empty_log(self.db);
+        }
+        Ok(())
+    }
+}
+
+/// Folds what the write-ahead log holds into the file and empties the log, on `db`, a connection
+/// that has just committed an agent's write, before it closes.
+///
+/// SQLite folds the log into the file and deletes it only when the last connection to the database
+/// closes, and only if that connection can: one that closes while another reads (a gate's read is
+/// read-only, and in WAL mode a reader holds the file shared) leaves its changes in the log, and the
+/// read-only connection that closes after it cannot fold them. With the window closed nothing holds
+/// that log, and every gate, which never recovers what it finds (see `examine`), refuses the
+/// inventory with `needs_recovery` until the window starts and recovers it: two agent sessions, one
+/// writing while the other reads, were enough. Folding here, before the connection closes, leaves
+/// that log empty instead, which the gate reads as it reads a file without a log.
+///
+/// `TRUNCATE` waits, with the connection's busy timeout, for readers still using the log, which a
+/// gate's read does for milliseconds, and empties it to zero bytes: a log that is only reset keeps
+/// its size, and the gate tells a log with changes by its size. Nothing it does is a decision: the
+/// write has committed, and what it folds are committed pages, so a fold that cannot finish (a
+/// reader kept the log past the timeout, or a later write added to it) is not an error, and leaves
+/// the log as SQLite would have: the next agent's write folds it, and the window recovers it.
+/// The window's own writes are left as they were: while it is open its own connection keeps the
+/// log, and it folds it when it closes.
+fn empty_log(db: &Connection) {
+    let _ = db.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
 }
 
 /// Runs `work` in a write transaction for `by` on the inventory at `path` (see `begin_write`), and
@@ -4662,6 +4718,94 @@ pub(crate) mod tests {
         assert_eq!(found, Found::Current);
         assert_eq!((reads, outcome.unwrap().unwrap()), (2, 2));
         std::fs::remove_file(path).unwrap();
+    }
+
+    /// Two agent sessions with the window closed: one's write ends while the other's gate reads.
+    /// The writer's connection is not the last to close, so SQLite does not fold its log, and the
+    /// reader's, read-only, cannot: without `empty_log` the change stayed in a log nothing held,
+    /// and every gate refused the inventory with `needs_recovery` until the window started. The
+    /// change is in the file and the log is empty; a write by the person still leaves it to SQLite.
+    #[test]
+    fn an_agents_write_leaves_no_changes_in_a_log_that_another_read_outlives() {
+        let folder = std::env::temp_dir().join(format!("devhq-outlived-{}", Uuid::new_v4()));
+        std::fs::create_dir(&folder).unwrap();
+        let path = folder.join("inventory.sqlite3");
+        start(&path).unwrap();
+        access::set_agent_access(&path, "write").unwrap();
+        let release = folder.join("release");
+        for (by, name) in [
+            (Actor::agent("Claude Code").unwrap(), "Agent's box"),
+            (Actor::Person, "Person's box"),
+        ] {
+            let mut db = open_current(&path).unwrap();
+            let tx = begin_write(&mut db, &by).unwrap();
+            // The other session's gate looks while this connection holds the log, so it reads
+            // beside it, and goes on holding its connection until it is released.
+            let reader = helper(
+                "inventory::tests::reads_until_released",
+                READER,
+                &format!("{}\n{}", path.display(), release.display()),
+            );
+            let input = ResourceInput {
+                name: name.into(),
+                ..host()
+            };
+            save_resource_in(&tx, input, &by).unwrap();
+            tx.commit().unwrap();
+            drop(db);
+            std::fs::write(&release, "").unwrap();
+            assert!(reader.finished(), "{name}");
+            std::fs::remove_file(&release).unwrap();
+            let log = std::fs::metadata(beside(&path, "-wal")).map_or(0, |log| log.len());
+            let (found, names) = examine(&path, |db| {
+                let mut statement = db.prepare("SELECT name FROM resources").unwrap();
+                let names = statement
+                    .query_map([], |row| row.get::<_, String>(0))
+                    .unwrap();
+                Ok(names.collect::<Result<Vec<_>, _>>().unwrap())
+            });
+            if let Actor::Agent(_) = by {
+                assert_eq!(log, 0);
+                assert_eq!(found, Found::Current);
+                assert_eq!(names.unwrap().unwrap(), [name]);
+            } else {
+                // As before: the window recovers it when it starts.
+                assert!(log > LOG_HEADER, "{log}");
+                assert_eq!(found, Found::NeedsRecovery(Recovery::Log));
+                start(&path).unwrap();
+                assert_eq!(list(&path).unwrap().resources.len(), 2);
+            }
+        }
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    /// The environment variable that makes `reads_until_released` read: the inventory's path, the
+    /// file whose appearance ends the read and the file to create once it reads, one per line.
+    const READER: &str = "DEVHQ_TEST_INVENTORY_READER";
+
+    /// Run by `helper` in a process of its own, as another agent's gate: reads the inventory as the
+    /// gate does (`examine`) and keeps its connection open until the release file appears; on its
+    /// own, it does nothing.
+    #[test]
+    #[ignore = "a helper that other tests run in a process of its own"]
+    fn reads_until_released() {
+        let Some(spec) = std::env::var_os(READER) else {
+            return;
+        };
+        let spec = spec.into_string().unwrap();
+        let [path, release, ready] = spec.split('\n').collect::<Vec<_>>()[..] else {
+            panic!("{spec}")
+        };
+        let (found, outcome) = examine(Path::new(path), |_| {
+            std::fs::write(ready, "").unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(30);
+            while !Path::new(release).exists() && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Ok(())
+        });
+        assert_eq!(found, Found::Current);
+        outcome.unwrap().unwrap();
     }
 
     /// The environment variable that makes `writes_until_killed` write: what to leave behind, the

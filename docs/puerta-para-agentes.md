@@ -17,6 +17,9 @@ abierta. Lo que solo se ve en la laptop:
 
 - Claude Code de verdad, registrado con `claude mcp add --scope user`, lanzando el `devhq.exe`
   instalado desde una terminal normal: una sesión que lee y escribe con la ventana abierta.
+- Que una escritura de agente vacíe el log también con los bloqueos de Windows: el test
+  `an_agents_write_leaves_no_changes_in_a_log_that_another_read_outlives` y dos sesiones de Claude Code
+  escribiendo a la vez con la ventana cerrada.
 - Una puerta lanzada desde la app de escritorio de Claude (MSIX): qué inventario abre, qué dice
   `storedAt` y si `windowOpen` ve la ventana del DevHQ instalado. El lock está junto al inventario, y
   Windows también redirige ese archivo.
@@ -71,7 +74,17 @@ lo que habría que recuperar (README, «Puerta para agentes»). Lo que eso no ev
   base. El log se queda, sin conexión que lo mantenga, y la puerta rechaza el inventario con
   `needs_recovery` hasta que la ventana vuelve a abrirse y lo recupera. No se pierde nada confirmado.
   Cualquier lector que no vuelque el log tiene el mismo efecto; volcarlo es justo el cambio que la
-  puerta no hace.
+  puerta no hace. Las escrituras de un agente ya no lo provocan, porque vacían el log antes de cerrar
+  (README, «Puerta para agentes»); antes bastaban dos sesiones con la ventana cerrada, una escribiendo
+  mientras la otra leía. Con datos sintéticos en Linux, 19 de 24 ejecuciones de 2 a 8 sesiones
+  terminaban así y ninguna de 84 después; en todas, lo que la puerta dio por guardado estaba en el
+  archivo, una vez recuperado, exactamente una vez, y `integrity_check` lo daba por correcto. Queda la
+  ventana al cerrarse, y una escritura de agente cuyo volcado no terminó en 5 s.
+- Con varias sesiones escribiendo a la vez, la mirada de la puerta (también la que precede a cada
+  escritura) puede encontrar los archivos cambiando en sus tres intentos y responder `database_error`
+  («its files kept changing while DevHQ looked at them»). No lee ni cambia nada, y repetir la llamada
+  basta. Con datos sintéticos en Linux salió en 1 de 13 ejecuciones de 8 sesiones simultáneas antes
+  del vaciado del log y en 2 de 32 después, y en ninguna de las 66 con 2 o 4 sesiones.
 - Si la última conexión se cierra entre que la puerta mira los archivos y SQLite abre el log, un
   instante de microsegundos, SQLite crea un `-wal` vacío junto al inventario: abrir un archivo en WAL sin
   log lo crea, y solo `immutable` lo evita, que no sirve para una base que alguien tiene abierta. No
