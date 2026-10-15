@@ -362,45 +362,76 @@ export function ReadingHistoryToggle({ subject, name }: { subject: EntityRef; na
   )
 }
 
+/** The readings a history holds, newest first, and whether older ones are kept beyond them. */
+type LoadedReadings = { readings: CopyReading[]; more: boolean }
+
+/**
+ * The newest page put in front of what the history already holds. History is never deleted, so
+ * when the page reaches a reading already held, the two together are every reading from the
+ * newest to the oldest held, and what is kept beyond them is what was before. When it reaches
+ * none, readings newer than every held one filled the whole page: holding both would hide a gap,
+ * so the history starts again from the newest page.
+ */
+function withNewest(held: LoadedReadings | null, page: LoadedReadings): LoadedReadings {
+  const fresh = new Set(page.readings.map((item) => item.id))
+  if (!held || !held.readings.some((item) => fresh.has(item.id))) return page
+  return {
+    readings: [...page.readings, ...held.readings.filter((item) => !fresh.has(item.id))],
+    more: held.more,
+  }
+}
+
 function ReadingHistory({ subject, name }: { subject: EntityRef; name: string }) {
   const { now, olderReadings, snapshot } = useInventory()
-  const [readings, setReadings] = useState<CopyReading[] | null>(null)
-  const [more, setMore] = useState(false)
+  const [loaded, setLoaded] = useState<LoadedReadings | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const readings = loaded?.readings ?? null
+  const more = loaded?.more ?? false
   const loadOlder = async (before: string) => {
     setLoading(true)
     setError(null)
     try {
       const page = await olderReadings(subject, before)
-      setReadings((current) => {
-        const seen = new Set((current ?? []).map((item) => item.id))
-        return [...(current ?? []), ...page.readings.filter((item) => !seen.has(item.id))]
+      setLoaded((current) => {
+        const seen = new Set((current?.readings ?? []).map((item) => item.id))
+        return {
+          readings: [
+            ...(current?.readings ?? []),
+            ...page.readings.filter((item) => !seen.has(item.id)),
+          ],
+          more: page.more,
+        }
       })
-      setMore(page.more)
     } catch (cause) {
       setError(inventoryError(cause))
     } finally {
       setLoading(false)
     }
   }
-  // The first page, once, when opened. Keyed by the system, not by the object naming it, which
-  // each render of the page makes anew.
+  // The first page when opened, and again whenever the inventory brings a newer reading of one
+  // of the system's copies (Read here, or an agent through the gate), so an open history never
+  // says less than the copies above it. Keyed by the system and those readings' ids, not by the
+  // objects naming them, which each render of the page makes anew.
   const { type, id } = subject
+  const newest = (snapshot?.localCopies ?? [])
+    .filter((copy) => copy.subject.type === type && copy.subject.id === id)
+    .map((copy) => copy.latest?.id ?? '')
+    .join(' ')
   useEffect(() => {
     let current = true
     olderReadings({ type, id } as EntityRef, null).then(
       (page) => {
         if (!current) return
-        setReadings(page.readings)
-        setMore(page.more)
+        setLoaded((held) => withNewest(held, page))
+        setError(null)
       },
       (cause) => current && setError(inventoryError(cause)),
     )
     return () => {
       current = false
     }
-  }, [olderReadings, type, id])
+  }, [olderReadings, type, id, newest])
   const declared = new Set(snapshot?.localCopies.map((copy) => copy.referenceId))
   return (
     <div className="space-y-3">
