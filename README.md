@@ -760,7 +760,11 @@ si es un inventario del esquema actual (lo averigua antes en una copia), y desde
 lee como cualquier otro. Para saber si una conexión mantiene
 abierto un log, la puerta pregunta lo mismo que SQLite y de la misma manera: si alguien tiene el
 bloqueo del byte 128 del índice, que cada conexión conserva mientras vive y que el sistema suelta
-cuando su proceso termina, termine como termine.
+cuando su proceso termina, termine como termine. Antes de responder `needs_recovery`, la puerta espera
+25 ms y otros 100 ms y vuelve a mirar los archivos: la última conexión que se cierra suelta ese
+bloqueo, borra el índice y solo después vuelca y borra el log, y una mirada en ese instante ve un log
+que nadie mantiene. Si los archivos cambiaron, mira otra vez desde el principio; solo responde
+`needs_recovery` si siguieron igual, lo que retrasa esa respuesta unos 125 ms.
 
 La puerta solo sirve un inventario en el esquema de este DevHQ (v12) y con su estructura. Lo demás lo
 rechaza sin leer ni cambiar nada, también con la puerta cerrada: un inventario más antiguo con

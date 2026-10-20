@@ -98,18 +98,17 @@ lo que habría que recuperar (README, «Puerta para agentes»). Lo que eso no ev
   («its files kept changing while DevHQ looked at them»). No lee ni cambia nada, y repetir la llamada
   basta. Con datos sintéticos en Linux salió en 1 de 13 ejecuciones de 8 sesiones simultáneas antes
   del vaciado del log y en 2 de 32 después, y en ninguna de las 66 con 2 o 4 sesiones.
-- Con la ventana cerrada y varias sesiones a la vez, la puerta también puede responder `needs_recovery`
-  de forma pasajera a un inventario que no necesita recuperación, con el mensaje de un log que alguien
-  dejó sin volcar. En la laptop con Windows, con datos sintéticos, salió en el 15 % de las llamadas de
-  2 a 4 sesiones sin pausas, en 2 de 270 al ritmo de un agente (de 0,2 a 1 s entre llamadas) y en
-  ninguna de 450 con la ventana abierta; las llamadas siguientes leían y escribían, y al terminar el
-  inventario estaba al día en todas las ejecuciones. La llamada rechazada no lee ni cambia nada: una
-  escritura rechazada así no se guarda, y basta con repetirla. No es el defecto que corrige el vaciado
-  del log, que dejaba el inventario rechazado hasta que la ventana lo recuperaba, y ya ocurría antes de
-  él. La causa probable, sin confirmar: `OnDisk::way` decide con el tamaño del `-wal` que vio al mirar,
-  pero pregunta un momento después si alguien mantiene el log, y si la última conexión se cierra entre
-  las dos cosas ve un log con cambios que nadie mantiene. Mirar los archivos otra vez antes de responder
-  `needs_recovery` lo distinguiría.
+- Con la ventana cerrada y varias sesiones a la vez, la puerta respondía a veces `needs_recovery` de
+  forma pasajera a un inventario que no necesitaba recuperación: miraba los archivos en el instante en
+  que la última conexión se cerraba, que suelta el bloqueo del log y borra el índice antes de borrar el
+  log. Ahora espera 25 ms y 100 ms y solo lo responde si los archivos siguen igual (README, «Puerta para
+  agentes»). En la laptop con Windows, con copias de un inventario sintético y el arnés del 15 oct: sin
+  pausas, de 2 a 4 sesiones, 84 `needs_recovery` en 1920 llamadas antes y ninguno después; al ritmo de
+  un agente, 4 de 270 antes y ninguno después; con la ventana abierta, ninguno ni antes ni después. Lo
+  que queda sin pausas: una parte de esos casos pasa a `database_error` («its files kept changing while
+  DevHQ looked at them», de 66 a 103 en 1920), que tampoco lee ni cambia nada y basta con repetir. En
+  todas las ejecuciones lo que la puerta dio por guardado estaba una sola vez y `integrity_check` lo
+  daba por correcto.
 - Si la última conexión se cierra entre que la puerta mira los archivos y SQLite abre el log, un
   instante de microsegundos, SQLite crea un `-wal` vacío junto al inventario: abrir un archivo en WAL sin
   log lo crea, y solo `immutable` lo evita, que no sirve para una base que alguien tiene abierta. No
