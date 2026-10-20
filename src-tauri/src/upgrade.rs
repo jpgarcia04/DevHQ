@@ -1008,6 +1008,14 @@ line break', 'manual', 800, 800);",
                           ('shop-copy', 'shop', 'local_copy', 'C:\\src\\shop', 'Laptop clone', 'spare');",
             );
         }
+        if version >= 12 {
+            sql.push_str(
+                "INSERT INTO copy_readings (id, application_id, reference_id, machine_id, path, source, reader, agent,
+                                           observed_at, recorded_at, outcome, detail)
+                   VALUES ('reading-1', 'shop', 'shop-copy', 'spare', 'C:\\src\\shop', 'read', 'libgit2 1.9.1',
+                           'claude-code', 1300, 1300, 'missing', 'Nothing at C:\\src\\shop');",
+            );
+        }
         db.execute_batch(&sql).unwrap();
     }
 
@@ -1533,6 +1541,54 @@ line break', 'manual', 800, 800);",
 
     /// An inventory already in this build's schema, upgraded meanwhile by another DevHQ or new, is
     /// left as it is: nothing is backed up or written, and it serves as before.
+    /// The upgrade to v13 keeps the access the person chose, none included, and only an inventory
+    /// in v13 takes the fourth mode, Read and maintain: a v12 one refuses it.
+    #[test]
+    fn the_upgrade_to_v13_keeps_the_access_the_person_chose() {
+        use rusqlite::OptionalExtension;
+        for mode in [None, Some("off"), Some("read"), Some("write")] {
+            let path = path();
+            let db = database_at(&path, 12);
+            if let Some(mode) = mode {
+                db.execute(
+                    "INSERT INTO agent_access (id, mode, changed_at) VALUES (1, ?1, 1200)",
+                    [mode],
+                )
+                .unwrap();
+            }
+            assert!(
+                db.execute(
+                    "INSERT OR REPLACE INTO agent_access (id, mode, changed_at) VALUES (1, 'maintain', 1300)",
+                    [],
+                )
+                .is_err(),
+                "{mode:?}: v12 took maintain"
+            );
+            drop(db);
+            let shown = fingerprint_of(&path);
+            let upgraded = upgrade_to(&path, 12, &shown).unwrap();
+            assert_eq!((upgraded.from, upgraded.to), (12, 13));
+            let kept: Option<(String, i64)> = readonly(&path)
+                .query_row("SELECT mode, changed_at FROM agent_access", [], |row| {
+                    Ok((row.get(0)?, row.get(1)?))
+                })
+                .optional()
+                .unwrap();
+            assert_eq!(kept, mode.map(|mode| (mode.to_owned(), 1200)), "{mode:?}");
+            assert_eq!(
+                crate::access::agent_access(&path).unwrap().mode,
+                mode.unwrap_or("off")
+            );
+            assert_eq!(
+                crate::access::set_agent_access(&path, "maintain")
+                    .unwrap()
+                    .mode,
+                "maintain"
+            );
+            remove(&path);
+        }
+    }
+
     #[test]
     fn an_inventory_in_this_schema_is_left_as_it_is() {
         let path = path();

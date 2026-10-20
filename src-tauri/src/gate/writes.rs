@@ -1,17 +1,27 @@
-//! What an agent changes through the gate, when the person lets agents write. Every tool goes
-//! through the window's own use cases, with their validation, limits and transactions:
+//! What an agent changes through the gate, as far as the person lets agents: adding and editing
+//! applications and resources needs Read and maintain (`maintain`), anything else Read and write
+//! (`write`). Every tool goes through the window's own use cases, with their validation, limits and
+//! transactions:
 //! - Records (observations, incidents, events) carry the agent as their source and name.
 //! - Configuration (applications, resources, components, HTTP checks) has no source, so the use
 //!   case logs each change in the change log, as the agent's, in the same transaction, after the
-//!   gate checks there, with SQLite's write lock held, that the person still lets agents write.
-//! - Edits are partial: what an agent leaves out is kept, so that changing one field can never
-//!   erase another by omission. A component or reference list, when given, is the complete list,
-//!   as in the window's form.
+//!   gate checks there, with SQLite's write lock held, that the person still lets agents do it.
+//! - An agent never adds an application or resource with a name one already has, so that two
+//!   sessions asked the same, or a call repeated after its answer was lost, add one.
+//! - An edit says which state of the system it was made on (`basedOn`, the last entry of its change
+//!   log): if anyone changed the system after that, the transaction refuses it, so that no edit
+//!   overwrites what its agent never saw.
+//! - Edits are partial: what an agent leaves out is kept, components and references included. A
+//!   list it gives adds the items without id and changes the ones it names by id; nothing is ever
+//!   removed by leaving it out, only by naming it (`removeComponents`, `removeReferences`).
 
 use super::{pick, system_type, text, Session};
 use crate::backup;
+use crate::change_log;
 use crate::http_check::{self, HttpCheckInput};
-use crate::inventory::{self, ApiError, ApplicationInput, ComponentInput, ResourceInput};
+use crate::inventory::{
+    self, ApiError, ApplicationInput, Component, ComponentInput, ResourceInput,
+};
 use crate::local_copies::readings::{self, Which};
 use crate::local_copies::Reader;
 use crate::records::{
@@ -132,38 +142,248 @@ fn resource_named(
     }
 }
 
-/// The `references` an agent gives, read inside the transaction: the complete list when given,
-/// with each `machine` named by ID or exact name, and the stored list (`kept`) when left out.
-/// `saving` is the resource being saved, which can be the machine of its own paths.
-fn references_argument(
-    tx: &Transaction,
-    arguments: &Map<String, Value>,
-    kept: Option<&[Reference]>,
-    saving: Option<(&str, &str)>,
-) -> Result<Vec<ReferenceInput>, ApiError> {
-    match arguments.get("references") {
-        None => Ok(kept
-            .map(|references| references.iter().map(ReferenceInput::from).collect())
-            .unwrap_or_default()),
+/// The objects of the list `key`, none when it is left out.
+fn items<'a>(
+    arguments: &'a Map<String, Value>,
+    key: &str,
+) -> Result<Vec<&'a Map<String, Value>>, ApiError> {
+    match arguments.get(key) {
+        None => Ok(Vec::new()),
         Some(Value::Array(items)) => items
             .iter()
             .map(|item| {
-                let item = item.as_object().ok_or_else(|| {
-                    ApiError::invalid("Each reference must be an object with kind and target.")
-                })?;
-                Ok(ReferenceInput {
-                    id: optional_text(item, "id")?.map(str::to_owned),
-                    kind: text(item, "kind")?.to_owned(),
-                    target: text(item, "target")?.to_owned(),
-                    label: optional_text(item, "label")?.map(str::to_owned),
-                    machine_id: optional_text(item, "machine")?
-                        .map(|named| resource_named(tx, named, saving))
-                        .transpose()?,
+                item.as_object().ok_or_else(|| {
+                    ApiError::invalid(format!("Each item of {key} must be an object."))
                 })
             })
             .collect(),
-        Some(_) => Err(ApiError::invalid("references must be a list.")),
+        Some(_) => Err(ApiError::invalid(format!("{key} must be a list."))),
     }
+}
+
+/// The ids the list `key` names, none when it is left out.
+fn ids(arguments: &Map<String, Value>, key: &str) -> Vec<String> {
+    arguments
+        .get(key)
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The complete reference list after an agent's call, read inside the transaction: the stored
+/// references (`kept`; none for an addition), each changed where an item of `references` names it
+/// by `id`, keeping the fields the item leaves out (`label: null` and `machine: null` clear theirs),
+/// without the ones `removeReferences` names, and then the new ones, the items without `id`, in
+/// their order. A reference the call does not name stays as it is: leaving it out never removes
+/// it. Each `machine` is a resource named by ID or exact name; `saving` is the resource being
+/// saved, which can be the machine of its own paths. `owner` names the system in a refusal.
+fn references_argument(
+    tx: &Transaction,
+    arguments: &Map<String, Value>,
+    kept: &[Reference],
+    owner: &str,
+    saving: Option<(&str, &str)>,
+) -> Result<Vec<ReferenceInput>, ApiError> {
+    let removed = ids(arguments, "removeReferences");
+    if let Some(unknown) = removed
+        .iter()
+        .find(|id| !kept.iter().any(|reference| &reference.id == *id))
+    {
+        return Err(ApiError::invalid(format!(
+            "{owner} has no reference with the id {unknown}; get_system lists them. Nothing was done."
+        )));
+    }
+    let mut list: Vec<ReferenceInput> = kept
+        .iter()
+        .filter(|reference| !removed.contains(&reference.id))
+        .map(ReferenceInput::from)
+        .collect();
+    for item in items(arguments, "references")? {
+        let machine = |named: &str| resource_named(tx, named, saving);
+        match optional_text(item, "id")? {
+            Some(id) => {
+                let reference = list
+                    .iter_mut()
+                    .find(|reference| reference.id.as_deref() == Some(id))
+                    .ok_or_else(|| {
+                        ApiError::invalid(format!(
+                            "{owner} has no reference with the id {id}; get_system lists them, and a new reference takes no id. Nothing was done."
+                        ))
+                    })?;
+                if let Some(kind) = optional_text(item, "kind")? {
+                    kind.clone_into(&mut reference.kind);
+                }
+                if let Some(target) = optional_text(item, "target")? {
+                    target.clone_into(&mut reference.target);
+                }
+                match field(item, "label")? {
+                    Field::Keep => {}
+                    Field::Clear => reference.label = None,
+                    Field::Set(label) => reference.label = Some(label.to_owned()),
+                }
+                match field(item, "machine")? {
+                    Field::Keep => {}
+                    Field::Clear => reference.machine_id = None,
+                    Field::Set(named) => reference.machine_id = Some(machine(named)?),
+                }
+            }
+            None => list.push(ReferenceInput {
+                id: None,
+                kind: text(item, "kind")?.to_owned(),
+                target: text(item, "target")?.to_owned(),
+                label: optional_text(item, "label")?.map(str::to_owned),
+                machine_id: optional_text(item, "machine")?.map(machine).transpose()?,
+            }),
+        }
+    }
+    Ok(list)
+}
+
+/// The complete component list after an agent's call, built as `references_argument` builds the
+/// reference list: the stored components (`kept`), each changed where an item names it by `id`
+/// (`runsOn: null` unlinks it), without the ones `removeComponents` names, then the new ones. A new
+/// component with the name of one the application has is refused, since naming that one by its id
+/// changes it: a call repeated after its answer was lost adds nothing twice.
+fn components_argument(
+    tx: &Transaction,
+    arguments: &Map<String, Value>,
+    kept: &[Component],
+    owner: &str,
+) -> Result<Vec<ComponentInput>, ApiError> {
+    let removed = ids(arguments, "removeComponents");
+    if let Some(unknown) = removed
+        .iter()
+        .find(|id| !kept.iter().any(|component| &component.id == *id))
+    {
+        return Err(ApiError::invalid(format!(
+            "{owner} has no component with the id {unknown}; get_system lists them. Nothing was done."
+        )));
+    }
+    let mut list: Vec<ComponentInput> = kept
+        .iter()
+        .filter(|component| !removed.contains(&component.id))
+        .map(|component| ComponentInput {
+            id: Some(component.id.clone()),
+            name: component.name.clone(),
+            kind: component.kind.clone(),
+            resource_id: component.resource_id.clone(),
+        })
+        .collect();
+    for item in items(arguments, "components")? {
+        match optional_text(item, "id")? {
+            Some(id) => {
+                let component = list
+                    .iter_mut()
+                    .find(|component| component.id.as_deref() == Some(id))
+                    .ok_or_else(|| {
+                        ApiError::invalid(format!(
+                            "{owner} has no component with the id {id}; get_system lists them, and a new component takes no id. Nothing was done."
+                        ))
+                    })?;
+                if let Some(name) = optional_text(item, "name")? {
+                    name.clone_into(&mut component.name);
+                }
+                if let Some(kind) = optional_text(item, "kind")? {
+                    kind.clone_into(&mut component.kind);
+                }
+                match field(item, "runsOn")? {
+                    Field::Keep => {}
+                    Field::Clear => component.resource_id = None,
+                    Field::Set(named) => component.resource_id = Some(resource_id(tx, named)?),
+                }
+            }
+            None => {
+                let name = text(item, "name")?;
+                if let Some(same) = list
+                    .iter()
+                    .find(|component| same_name(&component.name, name))
+                {
+                    let known = same
+                        .id
+                        .as_ref()
+                        .map(|id| format!(" (id {id})"))
+                        .unwrap_or_default();
+                    return Err(ApiError::exists(format!(
+                        "{owner} already has a component named «{}»{known}. Nothing was done: to change it, name it by its id.",
+                        same.name
+                    )));
+                }
+                list.push(ComponentInput {
+                    id: None,
+                    name: name.to_owned(),
+                    kind: text(item, "kind")?.to_owned(),
+                    resource_id: optional_text(item, "runsOn")?
+                        .map(|named| resource_id(tx, named))
+                        .transpose()?,
+                });
+            }
+        }
+    }
+    Ok(list)
+}
+
+/// Whether two names are the same name, as the gate finds a system by its name: ignoring case and
+/// the spaces around it.
+fn same_name(one: &str, other: &str) -> bool {
+    one.trim().to_lowercase() == other.trim().to_lowercase()
+}
+
+/// That no other application (or resource, by `kind`) has `name`: an agent never adds a second
+/// one, nor renames one to another's name, so that two sessions asked the same, or a call repeated
+/// after its answer was lost, never leave two. Read inside the transaction, with SQLite's write lock
+/// held, so that two calls at once are told apart. `current` is the system being edited, with the
+/// name it has: keeping a name it already shares with another, which the window allows, is fine.
+fn unique_name(
+    tx: &Transaction,
+    kind: &str,
+    current: Option<(&str, &str)>,
+    name: &str,
+) -> Result<(), ApiError> {
+    if current.is_some_and(|(_, stored)| same_name(stored, name)) {
+        return Ok(());
+    }
+    let others = candidates(tx, kind)?;
+    let taken = others.iter().find(|(id, other)| {
+        current.is_none_or(|(current, _)| current != id) && same_name(other, name)
+    });
+    match taken {
+        Some((id, other)) => Err(ApiError::exists(format!(
+            "{} named «{other}» is already in the inventory (id {id}). Nothing was {}: to change that one, edit it by its id. For agents, DevHQ keeps one {kind} per name.",
+            if kind == "application" { "An application" } else { "A resource" },
+            if current.is_none() { "added" } else { "renamed" },
+        ))),
+        None => Ok(()),
+    }
+}
+
+/// That the system an edit names is as the agent read it: inside the transaction, with SQLite's
+/// write lock held, the last entry of its change log (see `change_log::latest_of`) is the one the
+/// edit is based on (`basedOn`; null when the log had none). Otherwise someone changed it after the
+/// agent read it, the person or another session, and the edit, made without seeing that change,
+/// is refused before anything is written.
+fn as_read(
+    tx: &Transaction,
+    subject: &Subject,
+    name: &str,
+    arguments: &Map<String, Value>,
+) -> Result<(), ApiError> {
+    let based_on = arguments.get("basedOn").and_then(Value::as_str);
+    let latest = change_log::latest_of(tx, subject)?;
+    if latest.as_deref() == based_on {
+        return Ok(());
+    }
+    let shown = |id: Option<&str>| id.map_or_else(|| "null".to_owned(), str::to_owned);
+    Err(ApiError::changed(format!(
+        "«{name}» changed after the state this edit is based on (basedOn {}; its latestChange is now {}). Nothing was done: read it again with get_system, and base the edit on what it holds now.",
+        shown(based_on),
+        shown(latest.as_deref())
+    )))
 }
 
 impl Session {
@@ -178,20 +398,22 @@ impl Session {
     }
 
     /// Makes a configuration change and its log entry in one write transaction, only while the
-    /// person lets agents write: asked first through a look that cannot change any file, so that a
-    /// change refused for access opens nothing that can write, and asked again inside the
-    /// transaction, under SQLite's write lock, which decides, so that closing the gate in Settings
-    /// can never race a change. The inventory is opened as it is: never created, upgraded or
-    /// converted to another journal mode, and refused unless it is in this build's schema, which is
-    /// checked again in that transaction, so that a file replaced after the look is not written.
+    /// person lets agents do what it `need`s (`maintain` or `write`, see `access`): asked first
+    /// through a look that cannot change any file, so that a change refused for access opens nothing
+    /// that can write, and asked again inside the transaction, under SQLite's write lock, which
+    /// decides, so that changing the access in Settings can never race a change. The inventory is
+    /// opened as it is: never created, upgraded or converted to another journal mode, and refused
+    /// unless it is in this build's schema, which is checked again in that transaction, so that a
+    /// file replaced after the look is not written.
     fn change(
         &self,
+        need: &str,
         apply: impl FnOnce(&Transaction, &Actor) -> Result<Value, ApiError>,
     ) -> Result<Value, ApiError> {
         let actor = self.actor()?;
-        self.allow("write")?;
+        self.allow(need)?;
         let mut db = inventory::open_to_write(&self.database)?;
-        let tx = inventory::begin_write(&mut db, &actor)?;
+        let tx = inventory::begin_write_for(&mut db, &actor, need)?;
         let value = apply(&tx, &actor)?;
         tx.commit().map_err(ApiError::database)?;
         Ok(value)
@@ -201,7 +423,7 @@ impl Session {
         &self,
         arguments: &Map<String, Value>,
     ) -> Result<Value, ApiError> {
-        self.change(|tx, agent| {
+        self.change("maintain", |tx, agent| {
             let existing = match optional_text(arguments, "id")? {
                 Some(id) => Some(inventory::application_in(tx, id)?.ok_or_else(|| {
                     ApiError::invalid(format!(
@@ -210,6 +432,12 @@ impl Session {
                 })?),
                 None => None,
             };
+            if let Some(item) = &existing {
+                let subject = Subject::Application {
+                    id: item.id.clone(),
+                };
+                as_read(tx, &subject, &item.name, arguments)?;
+            }
             let name = match optional_text(arguments, "name")? {
                 Some(name) => name.to_owned(),
                 None => existing
@@ -217,6 +445,17 @@ impl Session {
                     .map(|item| item.name.clone())
                     .ok_or_else(|| ApiError::invalid("name is required to add an application."))?,
             };
+            unique_name(
+                tx,
+                "application",
+                existing
+                    .as_ref()
+                    .map(|item| (item.id.as_str(), item.name.as_str())),
+                &name,
+            )?;
+            let owner = existing
+                .as_ref()
+                .map_or_else(|| format!("«{}»", name.trim()), |item| format!("«{}»", item.name));
             let lifecycle = match optional_text(arguments, "lifecycle")? {
                 Some(lifecycle) => lifecycle.to_owned(),
                 None => existing.as_ref().map(|item| item.lifecycle.clone()).ok_or_else(|| {
@@ -234,43 +473,17 @@ impl Session {
                 Field::Clear => None,
                 Field::Set(version) => Some(version.to_owned()),
             };
-            let components = match arguments.get("components") {
-                None => existing
-                    .as_ref()
-                    .map(|item| {
-                        item.components
-                            .iter()
-                            .map(|component| ComponentInput {
-                                id: Some(component.id.clone()),
-                                name: component.name.clone(),
-                                kind: component.kind.clone(),
-                                resource_id: component.resource_id.clone(),
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-                Some(Value::Array(items)) => items
-                    .iter()
-                    .map(|item| {
-                        let item = item.as_object().ok_or_else(|| {
-                            ApiError::invalid("Each component must be an object with name and kind.")
-                        })?;
-                        Ok(ComponentInput {
-                            id: optional_text(item, "id")?.map(str::to_owned),
-                            name: text(item, "name")?.to_owned(),
-                            kind: text(item, "kind")?.to_owned(),
-                            resource_id: optional_text(item, "runsOn")?
-                                .map(|named| resource_id(tx, named))
-                                .transpose()?,
-                        })
-                    })
-                    .collect::<Result<Vec<_>, ApiError>>()?,
-                Some(_) => return Err(ApiError::invalid("components must be a list.")),
-            };
+            let components = components_argument(
+                tx,
+                arguments,
+                existing.as_ref().map_or(&[][..], |item| &item.components),
+                &owner,
+            )?;
             let references = references_argument(
                 tx,
                 arguments,
-                existing.as_ref().map(|item| item.references.as_slice()),
+                existing.as_ref().map_or(&[][..], |item| &item.references),
+                &owner,
                 None,
             )?;
             let (saved, change) = inventory::save_application_in(
@@ -291,7 +504,7 @@ impl Session {
     }
 
     pub(super) fn save_resource(&self, arguments: &Map<String, Value>) -> Result<Value, ApiError> {
-        self.change(|tx, agent| {
+        self.change("maintain", |tx, agent| {
             let existing = match optional_text(arguments, "id")? {
                 Some(id) => Some(inventory::resource_in(tx, id)?.ok_or_else(|| {
                     ApiError::invalid(format!(
@@ -300,6 +513,12 @@ impl Session {
                 })?),
                 None => None,
             };
+            if let Some(item) = &existing {
+                let subject = Subject::Resource {
+                    id: item.id.clone(),
+                };
+                as_read(tx, &subject, &item.name, arguments)?;
+            }
             let keep = |key: &str, kept: Option<String>, required: Option<&str>| -> Result<String, ApiError> {
                 match optional_text(arguments, key)? {
                     Some(value) => Ok(value.to_owned()),
@@ -319,10 +538,22 @@ impl Session {
                 existing.as_ref().map(|item| item.name.clone()),
                 Some("name is required to add a resource."),
             )?;
+            unique_name(
+                tx,
+                "resource",
+                existing
+                    .as_ref()
+                    .map(|item| (item.id.as_str(), item.name.as_str())),
+                &name,
+            )?;
+            let owner = existing
+                .as_ref()
+                .map_or_else(|| format!("«{}»", name.trim()), |item| format!("«{}»", item.name));
             let references = references_argument(
                 tx,
                 arguments,
-                existing.as_ref().map(|item| item.references.as_slice()),
+                existing.as_ref().map_or(&[][..], |item| &item.references),
+                &owner,
                 Some((&id, &name)),
             )?;
             let (saved, change) = inventory::save_resource_in(
@@ -354,7 +585,7 @@ impl Session {
         kind: &'static str,
         arguments: &Map<String, Value>,
     ) -> Result<Value, ApiError> {
-        self.change(|tx, agent| {
+        self.change("write", |tx, agent| {
             let (subject, _) = subject_in(tx, Some(kind), arguments)?;
             let id = match &subject {
                 Subject::Application { id } | Subject::Resource { id } => id.clone(),
@@ -369,7 +600,7 @@ impl Session {
     }
 
     pub(super) fn save_check(&self, arguments: &Map<String, Value>) -> Result<Value, ApiError> {
-        self.change(|tx, agent| {
+        self.change("write", |tx, agent| {
             let (subject, _) = subject_in(tx, None, arguments)?;
             let existing = http_check::find(tx, &subject)?;
             let url = match optional_text(arguments, "url")? {
@@ -445,7 +676,7 @@ impl Session {
             .get("paused")
             .and_then(Value::as_bool)
             .ok_or_else(|| ApiError::invalid("The argument paused is required: true or false."))?;
-        self.change(|tx, agent| {
+        self.change("write", |tx, agent| {
             let (subject, _) = subject_in(tx, None, arguments)?;
             let (saved, change) =
                 http_check::set_http_check_paused_in(tx, &subject, paused, agent)?;
@@ -454,7 +685,7 @@ impl Session {
     }
 
     pub(super) fn remove_check(&self, arguments: &Map<String, Value>) -> Result<Value, ApiError> {
-        self.change(|tx, agent| {
+        self.change("write", |tx, agent| {
             let (subject, _) = subject_in(tx, None, arguments)?;
             let change = http_check::remove_http_check_in(tx, &subject, agent)?;
             Ok(json!({ "removed": true, "change": change }))
@@ -624,14 +855,31 @@ fn with_system(extra: Value) -> Value {
 fn references_schema() -> Value {
     json!({
         "type": "array",
-        "description": "Where the system is: inventory the agent declares, which DevHQ never opens or checks. Include the existing references with their ids (from get_system) to keep them; the same kind, target and machine cannot appear twice.",
+        "description": "Where the system is: inventory the agent declares, which DevHQ never opens or checks. An item without id adds a reference (kind and target required); an item with an existing reference's id changes it, keeping the fields the item leaves out. In an edit, references not named are kept: leaving one out never removes it (removeReferences does). The same kind, target and machine cannot appear twice.",
         "items": { "type": "object", "properties": {
-            "id": { "type": "string", "description": "An existing reference's id, to keep it." },
-            "kind": { "type": "string", "enum": ["repository", "local_copy", "documentation", "logs", "dashboard"], "description": "repository and dashboard take an http(s) URL; local_copy an absolute path on a workstation; documentation and logs either." },
-            "target": { "type": "string", "description": "An http(s) URL without user name or password, or an absolute path (C:\\…, \\\\server\\share\\… or /…), as it should be shown and copied. A repository is the code's canonical web address, never a local remote or an SSH URL." },
-            "label": { "type": ["string", "null"], "description": "An optional name for people that tells two references of one kind apart. Never a locator." },
-            "machine": { "type": ["string", "null"], "description": "For a path, required: the resource it is on, by id or exact name. For a URL, leave it out." },
-        }, "required": ["kind", "target"], "additionalProperties": false },
+            "id": { "type": "string", "description": "An existing reference's id (from get_system), to change it. Leave it out for a new reference." },
+            "kind": { "type": "string", "enum": ["repository", "local_copy", "documentation", "logs", "dashboard"], "description": "Required for a new reference. repository and dashboard take an http(s) URL; local_copy an absolute path on a workstation; documentation and logs either." },
+            "target": { "type": "string", "description": "Required for a new reference. An http(s) URL without user name or password, or an absolute path (C:\\…, \\\\server\\share\\… or /…), as it should be shown and copied. A repository is the code's canonical web address, never a local remote or an SSH URL." },
+            "label": { "type": ["string", "null"], "description": "An optional name for people that tells two references of one kind apart. Never a locator. null clears it." },
+            "machine": { "type": ["string", "null"], "description": "For a path, required: the resource it is on, by id or exact name. For a URL, leave it out, or null to clear it." },
+        }, "required": [], "additionalProperties": false },
+    })
+}
+
+/// What an edit is based on, as save_application and save_resource take it.
+fn based_on_schema() -> Value {
+    json!({
+        "type": ["string", "null"],
+        "description": "Required to edit, with id: the system's latestChange as list_systems or get_system gave it (null when they gave null). If the system changed after that, by the person or another session, nothing is done (changed_since_read): read it again and edit what is there now.",
+    })
+}
+
+/// The ids an edit removes from one of the system's lists.
+fn removals_schema(what: &str) -> Value {
+    json!({
+        "type": "array",
+        "items": { "type": "string" },
+        "description": format!("Only in an edit: the ids of the {what} to remove. Nothing is removed by leaving it out."),
     })
 }
 
@@ -642,29 +890,54 @@ fn named(kind: &str) -> Value {
     })
 }
 
-/// The tools that change something. Saving and deleting overwrite or remove configuration, so
-/// they are marked destructive; adding a record never changes another.
+/// The tools that add and edit applications and resources, which Read and maintain allows. Every
+/// other tool that changes something needs Read and write.
+pub(super) const MAINTAIN: [&str; 2] = ["save_application", "save_resource"];
+
+/// The tools that change something, each description starting with the access it needs. Saving
+/// and deleting overwrite or remove configuration, so they are marked destructive; adding a record
+/// never changes another.
 pub(super) fn tools() -> Vec<Value> {
+    let mut tools = changing_tools();
+    for tool in &mut tools {
+        let need = if MAINTAIN.contains(&tool["name"].as_str().unwrap_or_default()) {
+            "Read and maintain"
+        } else {
+            "Read and write"
+        };
+        let described = format!(
+            "Needs {need}. {}",
+            tool["description"].as_str().unwrap_or_default()
+        );
+        tool["description"] = json!(described);
+    }
+    tools
+}
+
+fn changing_tools() -> Vec<Value> {
     let additive = json!({ "destructiveHint": false, "idempotentHint": false });
     let overwriting = json!({ "destructiveHint": true, "idempotentHint": false });
     vec![
         tool(
             "save_application",
             "Add or edit an application",
-            "Adds an application (name and lifecycle required), or edits the one with the given id. An edit keeps what it leaves out. `components`, when given, is the complete list: include the existing ones with their ids (from get_system) to keep them; `runsOn` names a resource by id or exact name, or null. `references`, when given, is likewise the complete list of where the application is (see the item's description). `version: null` clears the version. Logged as the agent's change.",
+            "Adds an application (name and lifecycle required), or edits the one with the given id. Adding is refused when an application already has that name, ignoring case, so that a repeated call never adds two; a new application's components and references take no id. An edit needs `basedOn` (its latestChange from list_systems or get_system) and is refused if the application changed since. An edit keeps everything it leaves out: `components` adds the items without id (name and kind required; one with the name of a kept component is refused) and changes the ones it names by id, keeping the fields an item leaves out; `runsOn` names a resource by id or exact name, and null unlinks it. Components it does not name are kept; `removeComponents` removes the ones it names. `references` and `removeReferences` work the same way (see the item's description). `version: null` clears the version. No text may hold control characters or invisible formatting ones (line breaks only in description). What it saves is declared inventory, never evidence, logged as the agent's change with each field before and after.",
             json!({
                 "id": { "type": "string", "description": "The application to edit; leave out to add one." },
+                "basedOn": based_on_schema(),
                 "name": { "type": "string" },
                 "lifecycle": { "type": "string", "enum": ["development", "testing", "production", "archived"] },
                 "description": { "type": "string" },
                 "version": { "type": ["string", "null"] },
                 "components": { "type": "array", "items": { "type": "object", "properties": {
-                    "id": { "type": "string", "description": "An existing component's id, to keep it." },
-                    "name": { "type": "string" },
-                    "kind": { "type": "string", "enum": ["backend", "database", "docker", "frontend"] },
-                    "runsOn": { "type": ["string", "null"], "description": "A resource's id or exact name." },
-                }, "required": ["name", "kind"], "additionalProperties": false } },
+                    "id": { "type": "string", "description": "An existing component's id (from get_system), to change it. Leave it out for a new component." },
+                    "name": { "type": "string", "description": "Required for a new component." },
+                    "kind": { "type": "string", "enum": ["backend", "database", "docker", "frontend"], "description": "Required for a new component." },
+                    "runsOn": { "type": ["string", "null"], "description": "A resource's id or exact name; null unlinks the component." },
+                }, "required": [], "additionalProperties": false } },
+                "removeComponents": removals_schema("components"),
                 "references": references_schema(),
+                "removeReferences": removals_schema("references"),
             }),
             &[],
             overwriting.clone(),
@@ -672,14 +945,16 @@ pub(super) fn tools() -> Vec<Value> {
         tool(
             "save_resource",
             "Add or edit a resource",
-            "Adds a resource (name and kind required), or edits the one with the given id, keeping what the edit leaves out. `references`, when given, is the complete list of where the resource is (see the item's description); a resource can be the machine of its own paths, named by its id or its name. One that holds other systems' local copies cannot stop being a workstation. Logged as the agent's change.",
+            "Adds a resource (name and kind required), or edits the one with the given id, keeping what the edit leaves out. Adding is refused when a resource already has that name, ignoring case; a new resource's references take no id. An edit needs `basedOn` (its latestChange from list_systems or get_system) and is refused if the resource changed since. `references` adds and changes what it names and keeps the rest; `removeReferences` removes the ones it names (see the item's description). A resource can be the machine of its own paths, named by its id or its name. One that holds other systems' local copies cannot stop being a workstation. No text may hold control characters or invisible formatting ones (line breaks only in description). What it saves is declared inventory, never evidence, logged as the agent's change with each field before and after.",
             json!({
                 "id": { "type": "string", "description": "The resource to edit; leave out to add one." },
+                "basedOn": based_on_schema(),
                 "name": { "type": "string" },
                 "kind": { "type": "string", "enum": ["server", "workstation"] },
                 "description": { "type": "string" },
                 "operatingSystem": { "type": "string" },
                 "references": references_schema(),
+                "removeReferences": removals_schema("references"),
             }),
             &[],
             overwriting.clone(),

@@ -1,5 +1,6 @@
 import { vi } from 'vitest'
 import type { InventoryContextValue } from './inventory-context'
+import type { AgentAccessMode } from './inventory-api'
 
 // Tests judge validity against a fixed clock instead of the machine's.
 export const testNow = Date.parse('2026-09-30T12:00:00Z')
@@ -57,7 +58,7 @@ export function inventoryContext(
       changedAt: null,
       executable: '/opt/devhq/devhq',
     })),
-    setAgentAccess: vi.fn(async (mode: 'off' | 'read' | 'write') => ({
+    setAgentAccess: vi.fn(async (mode: AgentAccessMode) => ({
       mode,
       changedAt: new Date(testNow).toISOString(),
       executable: '/opt/devhq/devhq',

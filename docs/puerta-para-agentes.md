@@ -126,6 +126,12 @@ lo que habría que recuperar (README, «Puerta para agentes»). Lo que eso no ev
 
 ## Por probar con otros clientes
 
+Read and maintain (altas y ediciones con `basedOn`, listas que se fusionan y bajas que se nombran) solo
+se ha probado con los tests de Rust: falta verlo con un Claude Code y un Codex de verdad, desde una
+terminal sin paquete, y comprobar que el modelo, guiado por las descripciones de las herramientas,
+manda `basedOn` y no confunde una lista con la lista completa. Desde las apps de escritorio de Claude y
+de Codex (MSIX), la puerta abre la copia del inventario que Windows redirige para ellas.
+
 Solo Claude Code se ha probado como cliente. Codex u otro cliente MCP por stdio deberían funcionar
 igual (la puerta solo usa `initialize`, `ping`, `tools/list` y `tools/call`), pero nadie lo ha visto.
 

@@ -158,6 +158,47 @@ pub(crate) fn load(db: &Connection) -> Result<Vec<Change>, ApiError> {
     rows
 }
 
+/// The last entry written about `subject`, by insertion order (rowid), which no clock can reorder:
+/// any later change to its configuration, by the person or by an agent, writes another one. An
+/// agent's edit names the one it read (`basedOn`), so that an edit based on a state that is no
+/// longer the system's is refused. None when the log holds nothing about it.
+pub(crate) fn latest_of(db: &Connection, subject: &Subject) -> Result<Option<String>, ApiError> {
+    let (column, id) = match subject {
+        Subject::Application { id } => ("application_id", id),
+        Subject::Resource { id } => ("resource_id", id),
+    };
+    db.query_row(
+        &format!("SELECT id FROM change_log WHERE {column} = ?1 ORDER BY rowid DESC LIMIT 1"),
+        [id],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(ApiError::database)
+}
+
+/// `latest_of` for every subject the log holds anything about, read in one go.
+pub(crate) fn latest(
+    db: &Connection,
+) -> Result<std::collections::HashMap<Subject, String>, ApiError> {
+    let mut statement = db
+        .prepare("SELECT application_id, resource_id, id FROM change_log ORDER BY rowid")
+        .map_err(ApiError::database)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                Subject::from_columns(row.get(0)?, row.get(1)?)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(ApiError::database)?;
+    let mut latest = std::collections::HashMap::new();
+    for row in rows {
+        let (subject, id) = row.map_err(ApiError::database)?;
+        latest.insert(subject, id);
+    }
+    Ok(latest)
+}
+
 /// From when the person's changes are in the log: the moment v10 upgraded an inventory that
 /// already held applications or resources. None when the log was always complete.
 pub(crate) fn complete_since(db: &Connection) -> Result<Option<String>, ApiError> {
