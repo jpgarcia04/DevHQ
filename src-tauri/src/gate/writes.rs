@@ -108,38 +108,34 @@ fn subject_in(
     pick(kind, &candidates(tx, kind)?, arguments)
 }
 
-/// A resource named by ID or, failing that, by exact name: its ID. An unknown one is passed on
-/// as an ID, and the use case refuses it with its own message.
-fn resource_id(tx: &Transaction, named: &str) -> Result<String, ApiError> {
-    resource_named(tx, named, None)
-}
-
-/// Like `resource_id`, but also knowing `saving`, the resource being saved (its ID and its name
-/// as it will be), which can be the machine of its own paths even before it exists.
+/// The resource a relation names (a component's `runsOn`, a path's `machine`, given at `path` in
+/// the call), by its ID as list_systems and get_system give it: its ID. Never by its name, which can
+/// change hands between the agent's read and its write: if the person or another session renames
+/// that resource and gives its name to another, a link made by name would silently point at a
+/// resource the agent never saw, and `basedOn` would not tell, since neither change is the
+/// system's. An ID stays with its resource whatever it is called. `saving` is the resource being
+/// saved (its ID and its name as it will be), which can be the machine of its own paths even before
+/// it exists, by its ID or by that name: within the transaction that saves it, that name is its
+/// own. An ID no resource has is passed on, and the use case refuses it with its own message.
 fn resource_named(
     tx: &Transaction,
     named: &str,
     saving: Option<(&str, &str)>,
+    path: &str,
 ) -> Result<String, ApiError> {
-    let mut resources = candidates(tx, "resource")?;
-    if let Some((id, name)) = saving {
-        resources.retain(|(other, _)| other != id);
-        resources.push((id.to_owned(), name.to_owned()));
-    }
-    if resources.iter().any(|(id, _)| id == named) {
+    let resources = candidates(tx, "resource")?;
+    if saving.is_some_and(|(id, _)| id == named) || resources.iter().any(|(id, _)| id == named) {
         return Ok(named.to_owned());
     }
-    let matching: Vec<_> = resources
-        .iter()
-        .filter(|(_, name)| name.to_lowercase() == named.trim().to_lowercase())
-        .collect();
-    match matching.as_slice() {
-        [(id, _)] => Ok(id.clone()),
-        [] => Ok(named.to_owned()),
-        _ => Err(ApiError::invalid(format!(
-            "Several resources are named {named}; use the resource's id."
-        ))),
+    if let Some((id, _)) = saving.filter(|(_, name)| same_name(name, named)) {
+        return Ok(id.to_owned());
     }
+    if resources.iter().any(|(_, name)| same_name(name, named)) {
+        return Err(ApiError::invalid(format!(
+            "`{path}` is «{named}», a resource's name: a relation names a resource by its id, as list_systems and get_system give it, so that a resource renamed or added since it was read is never linked in its place. Nothing was done."
+        )));
+    }
+    Ok(named.to_owned())
 }
 
 /// The objects of the list `key`, none when it is left out.
@@ -181,7 +177,7 @@ fn ids(arguments: &Map<String, Value>, key: &str) -> Vec<String> {
 /// by `id`, keeping the fields the item leaves out (`label: null` and `machine: null` clear theirs),
 /// without the ones `removeReferences` names, and then the new ones, the items without `id`, in
 /// their order. A reference the call does not name stays as it is: leaving it out never removes
-/// it. Each `machine` is a resource named by ID or exact name; `saving` is the resource being
+/// it. Each `machine` is a resource's ID (see `resource_named`); `saving` is the resource being
 /// saved, which can be the machine of its own paths. `owner` names the system in a refusal.
 fn references_argument(
     tx: &Transaction,
@@ -204,8 +200,10 @@ fn references_argument(
         .filter(|reference| !removed.contains(&reference.id))
         .map(ReferenceInput::from)
         .collect();
-    for item in items(arguments, "references")? {
-        let machine = |named: &str| resource_named(tx, named, saving);
+    for (index, item) in items(arguments, "references")?.into_iter().enumerate() {
+        let machine = |named: &str| {
+            resource_named(tx, named, saving, &format!("references[{index}].machine"))
+        };
         match optional_text(item, "id")? {
             Some(id) => {
                 let reference = list
@@ -247,9 +245,12 @@ fn references_argument(
 
 /// The complete component list after an agent's call, built as `references_argument` builds the
 /// reference list: the stored components (`kept`), each changed where an item names it by `id`
-/// (`runsOn: null` unlinks it), without the ones `removeComponents` names, then the new ones. A new
-/// component with the name of one the application has is refused, since naming that one by its id
-/// changes it: a call repeated after its answer was lost adds nothing twice.
+/// (`runsOn`, a resource's ID, see `resource_named`; null unlinks it), without the ones
+/// `removeComponents` names, then the new ones. Then the names of the list as it would be saved,
+/// whatever the order of the call's items: a component the call adds or renames may not share its
+/// name with any other, since naming that one by its id changes it, so that a call repeated after
+/// its answer was lost adds nothing twice. Two components the application already had with one
+/// name (the window allows it) are kept as they are while the call gives neither of them that name.
 fn components_argument(
     tx: &Transaction,
     arguments: &Map<String, Value>,
@@ -275,18 +276,26 @@ fn components_argument(
             resource_id: component.resource_id.clone(),
         })
         .collect();
-    for item in items(arguments, "components")? {
+    // Which of `list` the call names anew: each component it adds, and each it renames.
+    let mut named_anew = vec![false; list.len()];
+    for (index, item) in items(arguments, "components")?.into_iter().enumerate() {
+        let runs_on =
+            |named: &str| resource_named(tx, named, None, &format!("components[{index}].runsOn"));
         match optional_text(item, "id")? {
             Some(id) => {
-                let component = list
-                    .iter_mut()
-                    .find(|component| component.id.as_deref() == Some(id))
+                let at = list
+                    .iter()
+                    .position(|component| component.id.as_deref() == Some(id))
                     .ok_or_else(|| {
                         ApiError::invalid(format!(
                             "{owner} has no component with the id {id}; get_system lists them, and a new component takes no id. Nothing was done."
                         ))
                     })?;
+                let component = &mut list[at];
                 if let Some(name) = optional_text(item, "name")? {
+                    if !same_name(&component.name, name) {
+                        named_anew[at] = true;
+                    }
                     name.clone_into(&mut component.name);
                 }
                 if let Some(kind) = optional_text(item, "kind")? {
@@ -295,35 +304,47 @@ fn components_argument(
                 match field(item, "runsOn")? {
                     Field::Keep => {}
                     Field::Clear => component.resource_id = None,
-                    Field::Set(named) => component.resource_id = Some(resource_id(tx, named)?),
+                    Field::Set(named) => component.resource_id = Some(runs_on(named)?),
                 }
             }
             None => {
-                let name = text(item, "name")?;
-                if let Some(same) = list
-                    .iter()
-                    .find(|component| same_name(&component.name, name))
-                {
-                    let known = same
-                        .id
-                        .as_ref()
-                        .map(|id| format!(" (id {id})"))
-                        .unwrap_or_default();
-                    return Err(ApiError::exists(format!(
-                        "{owner} already has a component named «{}»{known}. Nothing was done: to change it, name it by its id.",
-                        same.name
-                    )));
-                }
                 list.push(ComponentInput {
                     id: None,
-                    name: name.to_owned(),
+                    name: text(item, "name")?.to_owned(),
                     kind: text(item, "kind")?.to_owned(),
-                    resource_id: optional_text(item, "runsOn")?
-                        .map(|named| resource_id(tx, named))
-                        .transpose()?,
+                    resource_id: optional_text(item, "runsOn")?.map(runs_on).transpose()?,
                 });
+                named_anew.push(true);
             }
         }
+    }
+    for (at, component) in list.iter().enumerate() {
+        if !named_anew[at] {
+            continue;
+        }
+        let Some((other, same)) = list
+            .iter()
+            .enumerate()
+            .find(|&(other, item)| other != at && same_name(&item.name, &component.name))
+        else {
+            continue;
+        };
+        return Err(ApiError::exists(
+            match (&component.id, named_anew[other], &same.id) {
+                (None, false, Some(kept)) => format!(
+                    "{owner} already has a component named «{}» (id {kept}). Nothing was done: to change it, name it by its id.",
+                    same.name
+                ),
+                (Some(renamed), false, Some(kept)) => format!(
+                    "{owner} already has a component named «{}» (id {kept}), so the component {renamed} cannot take that name. Nothing was done.",
+                    same.name
+                ),
+                _ => format!(
+                    "This call would leave {owner} with two components named «{}». Nothing was done: give each component a name no other has.",
+                    component.name
+                ),
+            },
+        ));
     }
     Ok(list)
 }
@@ -861,7 +882,7 @@ fn references_schema() -> Value {
             "kind": { "type": "string", "enum": ["repository", "local_copy", "documentation", "logs", "dashboard"], "description": "Required for a new reference. repository and dashboard take an http(s) URL; local_copy an absolute path on a workstation; documentation and logs either." },
             "target": { "type": "string", "description": "Required for a new reference. An http(s) URL without user name or password, or an absolute path (C:\\…, \\\\server\\share\\… or /…), as it should be shown and copied. A repository is the code's canonical web address, never a local remote or an SSH URL." },
             "label": { "type": ["string", "null"], "description": "An optional name for people that tells two references of one kind apart. Never a locator. null clears it." },
-            "machine": { "type": ["string", "null"], "description": "For a path, required: the resource it is on, by id or exact name. For a URL, leave it out, or null to clear it." },
+            "machine": { "type": ["string", "null"], "description": "For a path, required: the id of the resource it is on, as list_systems or get_system gives it, never its name (in save_resource, the resource being saved can also be named by its own name). For a URL, leave it out, or null to clear it." },
         }, "required": [], "additionalProperties": false },
     })
 }
@@ -921,7 +942,7 @@ fn changing_tools() -> Vec<Value> {
         tool(
             "save_application",
             "Add or edit an application",
-            "Adds an application (name and lifecycle required), or edits the one with the given id. Adding is refused when an application already has that name, ignoring case, so that a repeated call never adds two; a new application's components and references take no id. An edit needs `basedOn` (its latestChange from list_systems or get_system) and is refused if the application changed since. An edit keeps everything it leaves out: `components` adds the items without id (name and kind required; one with the name of a kept component is refused) and changes the ones it names by id, keeping the fields an item leaves out; `runsOn` names a resource by id or exact name, and null unlinks it. Components it does not name are kept; `removeComponents` removes the ones it names. `references` and `removeReferences` work the same way (see the item's description). `version: null` clears the version. No text may hold control characters or invisible formatting ones (line breaks only in description). What it saves is declared inventory, never evidence, logged as the agent's change with each field before and after.",
+            "Adds an application (name and lifecycle required), or edits the one with the given id. Adding is refused when an application already has that name, ignoring case, so that a repeated call never adds two; a new application's components and references take no id. An edit needs `basedOn` (its latestChange from list_systems or get_system) and is refused if the application changed since. An edit keeps everything it leaves out: `components` adds the items without id (name and kind required; one with the name of a kept component is refused) and changes the ones it names by id, keeping the fields an item leaves out; `runsOn` is a resource's id (from list_systems or get_system), never its name, and null unlinks it. Components it does not name are kept; `removeComponents` removes the ones it names. A component it adds or renames may not end with the name of another one of the application, ignoring case, whatever the order of the items. `references` and `removeReferences` work the same way (see the item's description). `version: null` clears the version. No text may hold control characters or invisible formatting ones (line breaks only in description). What it saves is declared inventory, never evidence, logged as the agent's change with each field before and after.",
             json!({
                 "id": { "type": "string", "description": "The application to edit; leave out to add one." },
                 "basedOn": based_on_schema(),
@@ -933,7 +954,7 @@ fn changing_tools() -> Vec<Value> {
                     "id": { "type": "string", "description": "An existing component's id (from get_system), to change it. Leave it out for a new component." },
                     "name": { "type": "string", "description": "Required for a new component." },
                     "kind": { "type": "string", "enum": ["backend", "database", "docker", "frontend"], "description": "Required for a new component." },
-                    "runsOn": { "type": ["string", "null"], "description": "A resource's id or exact name; null unlinks the component." },
+                    "runsOn": { "type": ["string", "null"], "description": "A resource's id, as list_systems or get_system gives it, never its name; null unlinks the component." },
                 }, "required": [], "additionalProperties": false } },
                 "removeComponents": removals_schema("components"),
                 "references": references_schema(),
@@ -945,7 +966,7 @@ fn changing_tools() -> Vec<Value> {
         tool(
             "save_resource",
             "Add or edit a resource",
-            "Adds a resource (name and kind required), or edits the one with the given id, keeping what the edit leaves out. Adding is refused when a resource already has that name, ignoring case; a new resource's references take no id. An edit needs `basedOn` (its latestChange from list_systems or get_system) and is refused if the resource changed since. `references` adds and changes what it names and keeps the rest; `removeReferences` removes the ones it names (see the item's description). A resource can be the machine of its own paths, named by its id or its name. One that holds other systems' local copies cannot stop being a workstation. No text may hold control characters or invisible formatting ones (line breaks only in description). What it saves is declared inventory, never evidence, logged as the agent's change with each field before and after.",
+            "Adds a resource (name and kind required), or edits the one with the given id, keeping what the edit leaves out. Adding is refused when a resource already has that name, ignoring case; a new resource's references take no id. An edit needs `basedOn` (its latestChange from list_systems or get_system) and is refused if the resource changed since. `references` adds and changes what it names and keeps the rest; `removeReferences` removes the ones it names (see the item's description). A path's `machine` is a resource's id, never its name; the resource being saved can be the machine of its own paths, named by its id or by its own name. One that holds other systems' local copies cannot stop being a workstation. No text may hold control characters or invisible formatting ones (line breaks only in description). What it saves is declared inventory, never evidence, logged as the agent's change with each field before and after.",
             json!({
                 "id": { "type": "string", "description": "The resource to edit; leave out to add one." },
                 "basedOn": based_on_schema(),

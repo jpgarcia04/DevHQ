@@ -858,22 +858,35 @@ conservando los campos que el elemento no trae (`runsOn: null`, `label: null` y 
 el suyo); lo que no nombra se queda. Nada se quita por omisión: para quitar un componente o una
 referencia hay que nombrar su `id` en `removeComponents` o `removeReferences`, y un `id` que el
 sistema no tiene, también uno de otro sistema, rechaza la llamada entera. Un componente apunta a su
-recurso, y una ruta a su máquina, por ID o por nombre exacto, y un recurso puede nombrarse a sí mismo
-como máquina de sus rutas desde el alta.
+recurso (`runsOn`), y una ruta a su máquina (`machine`), por el ID del recurso, el que dan
+`list_systems` y `get_system`, nunca por su nombre: entre la lectura del agente y su escritura, tú u
+otra sesión podéis renombrar ese recurso y darle su nombre a otro, y un vínculo por nombre acabaría,
+sin que nadie lo viera, en un recurso que el agente nunca leyó; `basedOn` no lo notaría, porque ninguno
+de esos cambios es del sistema que edita. Un nombre donde va un recurso se rechaza (`invalid_input`) y
+no hace nada. La única excepción es el recurso que se guarda, que puede nombrarse a sí mismo, por su ID
+o por el nombre que va a tener, como máquina de sus rutas, también desde el alta: en esa transacción,
+ese nombre solo es el suyo.
 
 Cada edición dice en qué estado del sistema se basa (`basedOn`): la última entrada de su registro de
-cambios, que `list_systems` y `get_system` dan como `latestChange` (`null` si no tiene ninguna) y que
-la respuesta de cada guardado trae en `change`. Dentro de la transacción, con el lock de escritura de
+cambios, que `list_systems` y `get_system` dan como `latestChange` (`null` si no tiene ninguna),
+leído en la misma transacción que lo que muestran, y que la respuesta de cada guardado trae en
+`change`. Dentro de la transacción, con el lock de escritura de
 SQLite, la puerta comprueba que sigue siendo la última; si tú u otra sesión cambiasteis el sistema
 después, no hace nada y responde `changed_since_read`, para que ninguna edición pise un cambio que su
 agente no vio. La última entrada es la última escrita, no la de hora más reciente, que un reloj puede
 mover. Un alta con el nombre de una aplicación o un recurso que ya existe, sin distinguir mayúsculas
 ni espacios alrededor (como busca la puerta por nombre), o un renombre a ese nombre, se rechaza con
-`already_exists` y dice cuál es; también un componente nuevo con el nombre de uno que la aplicación ya
-tiene. Así, dos sesiones a las que se pide lo mismo, o una llamada que se repite porque se perdió su
+`already_exists` y dice cuál es. Los componentes de una aplicación se comprueban en la lista tal como
+quedaría guardada, sea cual sea el orden de los elementos de la llamada: ningún componente que la
+llamada añade o renombra puede acabar con el nombre de otro, así que renombrar API a DB junto a un DB
+se rechaza, y también añadir uno con el nombre al que se renombra otro; renombrar uno para que otro
+nuevo tome su nombre, intercambiar dos nombres o tomar el de un componente que la misma llamada quita
+se guarda. Así, dos sesiones a las que se pide lo mismo, o una llamada que se repite porque se perdió su
 respuesta, dejan una sola; y una edición repetida se rechaza porque la primera ya cambió el estado en
-que se basaban las dos. La ventana sí admite nombres repetidos, y un agente puede editar un sistema
-que comparte el suyo sin renombrarlo. Ningún texto que guarda un agente lleva caracteres de control
+que se basaban las dos. La ventana sí admite nombres repetidos: un agente puede editar un sistema que
+comparte el suyo sin renombrarlo, y dos componentes que ya compartían nombre se quedan como están
+mientras la llamada no le dé ese nombre a ninguno; ninguna edición de agente añade un tercero. Ningún
+texto que guarda un agente lleva caracteres de control
 (salvo saltos de línea y tabuladores en una descripción) ni de formato invisibles, como las marcas
 que invierten la dirección del texto o los espacios de ancho cero: harían que lo que ves en DevHQ no
 fuera lo que se guarda.
@@ -1453,7 +1466,14 @@ que una copia no leída diga por qué y nada más, que una leída tenga cada dat
 tree contado o desconocido con el motivo (nunca ambos, nunca a medias), un HEAD de 40 dígitos
 hexadecimales y ningún commit sin publicar sin HEAD. La v13 reconstruye `agent_access`, como la v7
 sus tablas, para admitir un cuarto modo, `maintain`: su fila, si la hay, conserva su `rowid` y sus
-valores, así que la puerta sigue con el acceso que elegiste; ninguna otra fila cambia. Los
+valores, así que la puerta sigue con el acceso que elegiste; ninguna otra fila cambia. También añade
+dos índices al registro de cambios, uno por aplicación y otro por recurso, que guardan las entradas de
+cada sistema en el orden en que se escribieron: la puerta encuentra el `latestChange` de un sistema,
+también con el lock de escritura de una edición, en un paso de índice, cuando los índices por hora de
+la v10 la obligaban a leer y ordenar todas las entradas del sistema (con 200 000 entradas sintéticas,
+la mitad de un sistema, de 58 ms a 0,004 ms; cada commit cuesta lo mismo a efectos prácticos y el
+archivo crece un 15 %). La consulta exige ese índice (`INDEXED BY`), porque las estadísticas que otra
+herramienta puede reunir (`ANALYZE`) llevan a SQLite a preferir el índice por hora y ordenar. Los
 registros usan dos columnas con clave foránea (`application_id`/`resource_id`) y un CHECK
 que exige exactamente una; las referencias de historial son `ON DELETE RESTRICT`, así que
 nada puede borrar un sujeto y dejar evidencia huérfana; los casos de uso de borrado lo

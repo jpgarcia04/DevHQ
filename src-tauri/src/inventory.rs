@@ -1594,6 +1594,14 @@ pub fn list(path: &Path) -> Result<Inventory, ApiError> {
 /// the caller opened, such as the agent gate's, which opens the inventory as it finds it.
 pub(crate) fn list_from(db: &mut Connection) -> Result<Inventory, ApiError> {
     let tx = begin(db, TransactionBehavior::Deferred)?;
+    let inventory = list_in(&tx)?;
+    tx.commit().map_err(ApiError::database)?;
+    Ok(inventory)
+}
+
+/// `list_from` inside a read transaction the caller holds, so that whatever else it reads there
+/// (the agent gate's `latestChange`) is of the same state of the inventory.
+pub(crate) fn list_in(tx: &Transaction) -> Result<Inventory, ApiError> {
     let mut resources = {
         let mut statement = tx.prepare("SELECT id, name, kind, description, operating_system FROM resources ORDER BY name COLLATE NOCASE, id").map_err(ApiError::database)?;
         let result = statement
@@ -1614,7 +1622,7 @@ pub(crate) fn list_from(db: &mut Connection) -> Result<Inventory, ApiError> {
     };
     for resource in &mut resources {
         resource.references = references::of(
-            &tx,
+            tx,
             &Subject::Resource {
                 id: resource.id.clone(),
             },
@@ -1654,11 +1662,11 @@ pub(crate) fn list_from(db: &mut Connection) -> Result<Inventory, ApiError> {
                 .map_err(ApiError::database)?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(ApiError::database)?;
-            app.references = references::of(&tx, &Subject::Application { id: app.id.clone() })?;
+            app.references = references::of(tx, &Subject::Application { id: app.id.clone() })?;
         }
     }
     let shared_repositories = references::shared_repositories(&applications, &resources);
-    let local_copies = readings::local_copies(&tx, &applications, &resources)?;
+    let local_copies = readings::local_copies(tx, &applications, &resources)?;
     let subjects: Vec<_> = applications
         .iter()
         .map(|app| records::Subject::Application { id: app.id.clone() })
@@ -1671,11 +1679,10 @@ pub(crate) fn list_from(db: &mut Connection) -> Result<Inventory, ApiError> {
         incidents,
         events,
         automated_history,
-    } = records::load(&tx, &subjects)?;
-    let http_checks = http_check::load(&tx)?;
-    let changes = change_log::load(&tx)?;
-    let changes_since = change_log::complete_since(&tx)?;
-    tx.commit().map_err(ApiError::database)?;
+    } = records::load(tx, &subjects)?;
+    let http_checks = http_check::load(tx)?;
+    let changes = change_log::load(tx)?;
+    let changes_since = change_log::complete_since(tx)?;
     Ok(Inventory {
         applications,
         resources,
@@ -3432,7 +3439,9 @@ pub(crate) mod tests {
             strings(&db, "SELECT name FROM sqlite_master WHERE type = 'index' AND name NOT LIKE 'sqlite_autoindex%' ORDER BY name"),
             [
                 "change_log_application_id",
+                "change_log_application_latest",
                 "change_log_resource_id",
+                "change_log_resource_latest",
                 "components_application_id",
                 "components_resource_id",
                 "copy_readings_application_id",
@@ -4142,7 +4151,12 @@ pub(crate) mod tests {
         .is_empty());
         assert_eq!(
             strings(&db, "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'change_log' AND name NOT LIKE 'sqlite_autoindex%' ORDER BY name"),
-            ["change_log_application_id", "change_log_resource_id"]
+            [
+                "change_log_application_id",
+                "change_log_application_latest",
+                "change_log_resource_id",
+                "change_log_resource_latest"
+            ]
         );
         // The inventory held systems whose earlier changes by the person left no trace: the log
         // is complete from the upgrade on, and the snapshot says so.

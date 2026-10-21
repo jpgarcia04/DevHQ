@@ -16,7 +16,7 @@ use crate::inventory::{ApiError, Application, Resource};
 use crate::records::{format_time, now_ms, time_at, Actor, Subject};
 use crate::references::{self, Reference};
 use rusqlite::types::Type;
-use rusqlite::{params, Connection, OptionalExtension, Row};
+use rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
@@ -158,43 +158,46 @@ pub(crate) fn load(db: &Connection) -> Result<Vec<Change>, ApiError> {
     rows
 }
 
+/// The last entry about an application, and about a resource (see `latest_of`). Each follows its
+/// index of v13 (`change_log_application_latest`, `change_log_resource_latest`), which keeps a
+/// subject's entries in rowid order: one step, however long the log or the subject's own history,
+/// where the indexes by time would read and sort every entry about it. An agent's edit runs it with
+/// SQLite's write lock held. `INDEXED BY` holds that plan: SQLite chooses by cost, and statistics
+/// another tool may gather (ANALYZE) make it prefer the index by time and the sort. A file without
+/// the index is refused before (its structure differs), and the query would fail rather than slow.
+const LATEST_OF: [&str; 2] = [
+    "SELECT id FROM change_log INDEXED BY change_log_application_latest
+      WHERE application_id = ?1 ORDER BY rowid DESC LIMIT 1",
+    "SELECT id FROM change_log INDEXED BY change_log_resource_latest
+      WHERE resource_id = ?1 ORDER BY rowid DESC LIMIT 1",
+];
+
 /// The last entry written about `subject`, by insertion order (rowid), which no clock can reorder:
 /// any later change to its configuration, by the person or by an agent, writes another one. An
 /// agent's edit names the one it read (`basedOn`), so that an edit based on a state that is no
 /// longer the system's is refused. None when the log holds nothing about it.
 pub(crate) fn latest_of(db: &Connection, subject: &Subject) -> Result<Option<String>, ApiError> {
-    let (column, id) = match subject {
-        Subject::Application { id } => ("application_id", id),
-        Subject::Resource { id } => ("resource_id", id),
+    let (sql, id) = match subject {
+        Subject::Application { id } => (LATEST_OF[0], id),
+        Subject::Resource { id } => (LATEST_OF[1], id),
     };
-    db.query_row(
-        &format!("SELECT id FROM change_log WHERE {column} = ?1 ORDER BY rowid DESC LIMIT 1"),
-        [id],
-        |row| row.get(0),
-    )
-    .optional()
-    .map_err(ApiError::database)
+    db.prepare_cached(sql)
+        .and_then(|mut statement| statement.query_row([id], |row| row.get(0)).optional())
+        .map_err(ApiError::database)
 }
 
-/// `latest_of` for every subject the log holds anything about, read in one go.
-pub(crate) fn latest(
-    db: &Connection,
+/// `latest_of` for each of `subjects`, those the log holds nothing about left out. Read in the
+/// transaction that read them, so that what an agent is shown and what its edit is based on are of
+/// one state of the inventory.
+pub(crate) fn latest<'a>(
+    tx: &Transaction,
+    subjects: impl IntoIterator<Item = &'a Subject>,
 ) -> Result<std::collections::HashMap<Subject, String>, ApiError> {
-    let mut statement = db
-        .prepare("SELECT application_id, resource_id, id FROM change_log ORDER BY rowid")
-        .map_err(ApiError::database)?;
-    let rows = statement
-        .query_map([], |row| {
-            Ok((
-                Subject::from_columns(row.get(0)?, row.get(1)?)?,
-                row.get::<_, String>(2)?,
-            ))
-        })
-        .map_err(ApiError::database)?;
     let mut latest = std::collections::HashMap::new();
-    for row in rows {
-        let (subject, id) = row.map_err(ApiError::database)?;
-        latest.insert(subject, id);
+    for subject in subjects {
+        if let Some(id) = latest_of(tx, subject)? {
+            latest.insert(subject.clone(), id);
+        }
     }
     Ok(latest)
 }
@@ -735,6 +738,55 @@ pub(crate) fn check_run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What an agent's edit is based on is found in one step of an index in rowid order, however
+    /// long the log and the subject's own history: never by reading the log, or every entry about
+    /// the subject, and sorting them. Also when statistics another tool gathered make each subject
+    /// look as large as the whole log.
+    #[test]
+    fn the_latest_change_of_a_system_follows_an_index_in_rowid_order() {
+        let path =
+            std::env::temp_dir().join(format!("devhq-change-log-test-{}.sqlite3", Uuid::new_v4()));
+        crate::inventory::start(&path).unwrap();
+        let check = |db: &Connection, when: &str| {
+            for (sql, index) in LATEST_OF.iter().zip([
+                "change_log_application_latest (application_id=?)",
+                "change_log_resource_latest (resource_id=?)",
+            ]) {
+                let steps: Vec<String> = db
+                    .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+                    .unwrap()
+                    .query_map(["x"], |row| row.get(3))
+                    .unwrap()
+                    .collect::<Result<_, _>>()
+                    .unwrap();
+                assert!(
+                    steps.iter().any(|step| step.contains(index))
+                        && steps
+                            .iter()
+                            .all(|step| !step.contains("TEMP B-TREE") && !step.starts_with("SCAN")),
+                    "{when}: {sql}\n{steps:#?}"
+                );
+            }
+        };
+        check(
+            &crate::inventory::open(&path).unwrap(),
+            "as DevHQ leaves it",
+        );
+        crate::inventory::open(&path)
+            .unwrap()
+            .execute_batch(
+                "ANALYZE sqlite_schema;
+                 INSERT INTO sqlite_stat1 VALUES
+                   ('change_log', 'change_log_application_latest', '1000000 1000000'),
+                   ('change_log', 'change_log_resource_latest', '1000000 1000000'),
+                   ('change_log', 'change_log_application_id', '1000000 1000000 1'),
+                   ('change_log', 'change_log_resource_id', '1000000 1000000 1');",
+            )
+            .unwrap();
+        check(&crate::inventory::open(&path).unwrap(), "with statistics");
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn keeps_a_summary_within_its_limit_without_splitting_a_character() {

@@ -439,9 +439,20 @@ impl Session {
     }
 
     /// The inventory and, read in the same transaction, the last change logged about each system:
-    /// what an agent's edit is based on (see `writes`).
+    /// what an agent's edit is based on (see `writes`). One transaction, so that both are of one
+    /// state of the inventory: a change committed between two reads would give a `latestChange`
+    /// newer than what the agent is shown, and an edit based on it would pass `basedOn` without its
+    /// agent having seen that change.
     fn inventory_with_latest(&self) -> Result<(Inventory, HashMap<Subject, String>), ApiError> {
-        self.read(|db| Ok((inventory::list_from(db)?, change_log::latest(db)?)))
+        self.read(|db| {
+            let tx = inventory::begin(db, rusqlite::TransactionBehavior::Deferred)?;
+            let inventory = inventory::list_in(&tx)?;
+            #[cfg(test)]
+            tests::between_reads();
+            let latest = change_log::latest(&tx, &subjects(&inventory))?;
+            tx.commit().map_err(ApiError::database)?;
+            Ok((inventory, latest))
+        })
     }
 
     fn list_systems(&self) -> Result<Value, ApiError> {
@@ -551,7 +562,7 @@ impl Session {
     }
 }
 
-const INSTRUCTIONS: &str = "DevHQ is the person's local operations inventory: applications, the resources they run on, where each one is (its references: repository, local copies, documentation, logs, dashboard), and the evidence about them (observations, incidents, events, HTTP checks). Working in a folder, an agent can find its system by a local copy's path or by its repository's URL in `list_systems`. A local copy's readings say what it held when DevHQ read it, never what it holds now. Start with `attention` to answer «what needs my attention?». Never present a system without current evidence as healthy: unobserved and expired evidence are gaps, not health. Every record says who produced it (`source`: manual, http or agent) and when. Applications, resources, components and references are declared inventory, by the person or an agent (each change in `changes`, with who made it), never evidence that DevHQ observed. To edit a system, base the edit on its `latestChange` (`basedOn`): DevHQ refuses it if the system changed after you read it, and never removes a component or reference you leave out. Every call is checked against its tool's input schema and the rules its description states: an argument the tool does not declare, misspelled or of the wrong type, is refused (invalid_input) and nothing is done.";
+const INSTRUCTIONS: &str = "DevHQ is the person's local operations inventory: applications, the resources they run on, where each one is (its references: repository, local copies, documentation, logs, dashboard), and the evidence about them (observations, incidents, events, HTTP checks). Working in a folder, an agent can find its system by a local copy's path or by its repository's URL in `list_systems`. A local copy's readings say what it held when DevHQ read it, never what it holds now. Start with `attention` to answer «what needs my attention?». Never present a system without current evidence as healthy: unobserved and expired evidence are gaps, not health. Every record says who produced it (`source`: manual, http or agent) and when. Applications, resources, components and references are declared inventory, by the person or an agent (each change in `changes`, with who made it), never evidence that DevHQ observed. To edit a system, base the edit on its `latestChange` (`basedOn`): DevHQ refuses it if the system changed after you read it, and never removes a component or reference you leave out. A component's `runsOn` and a path's `machine` name a resource by its id, never by its name. Every call is checked against its tool's input schema and the rules its description states: an argument the tool does not declare, misspelled or of the wrong type, is refused (invalid_input) and nothing is done.";
 
 /// Every application, then every resource, in the inventory's order.
 fn subjects(inventory: &Inventory) -> Vec<Subject> {
@@ -1748,12 +1759,12 @@ mod tests {
             "Added resource «VPS» (server, Ubuntu 24.04)"
         );
         assert_eq!(vps["change"]["agent"], "claude-code");
-        // A component runs on a resource named by id or by its name, ignoring case.
+        // A component runs on a resource named by its id.
         let added = use_tool(
             &mut agent,
             "save_application",
             json!({ "name": "Tienda", "lifecycle": "production", "description": "Online store", "version": "1.3.0",
-                    "components": [{ "name": "API", "kind": "backend", "runsOn": "vps" }, { "name": "Web", "kind": "frontend" }] }),
+                    "components": [{ "name": "API", "kind": "backend", "runsOn": vps_id }, { "name": "Web", "kind": "frontend" }] }),
         )
         .unwrap();
         let tienda = added["application"]["id"].as_str().unwrap().to_owned();
@@ -1920,14 +1931,14 @@ mod tests {
             laptop["resource"]["references"][0]["machineId"],
             laptop_id.as_str()
         );
-        // Each path's machine by exact name, ignoring case, or by id.
+        // Each path's machine by its id.
         let read = based_on(&mut agent, "application", &shop);
         let saved = use_tool(
             &mut agent,
             "save_application",
             json!({ "id": shop, "basedOn": read, "references": [
                 { "kind": "repository", "target": "https://github.com/me/platform" },
-                { "kind": "local_copy", "target": r"C:\src\platform", "machine": "LAPTOP", "label": "Work" },
+                { "kind": "local_copy", "target": r"C:\src\platform", "machine": laptop_id, "label": "Work" },
                 { "kind": "logs", "target": "/var/log/shop", "machine": host },
             ] }),
         )
@@ -2047,7 +2058,7 @@ mod tests {
             ),
             (
                 "save_application",
-                json!({ "id": shop, "basedOn": shop_now, "references": [{ "kind": "local_copy", "target": "/srv/shop", "machine": "Web host" }] }),
+                json!({ "id": shop, "basedOn": shop_now, "references": [{ "kind": "local_copy", "target": "/srv/shop", "machine": host }] }),
                 "Web host is a server, not a workstation",
             ),
             (
@@ -2307,7 +2318,7 @@ mod tests {
             &mut agent,
             "save_application",
             json!({ "name": "Shop", "id": shop, "basedOn": read,
-                    "references": [{ "kind": "local_copy", "target": copy.to_str().unwrap(), "machine": "Laptop" }] }),
+                    "references": [{ "kind": "local_copy", "target": copy.to_str().unwrap(), "machine": laptop }] }),
         )
         .unwrap();
         let refused = use_tool(&mut agent, "read_copies", json!({})).unwrap_err();
@@ -3601,16 +3612,23 @@ mod tests {
         )
         .unwrap();
         let vps_id = vps["resource"]["id"].as_str().unwrap().to_owned();
+        let spare = use_tool(
+            &mut agent,
+            "get_system",
+            json!({ "type": "resource", "name": "Spare box" }),
+        )
+        .unwrap()["system"]["system"]["id"]
+            .clone();
         let added = use_tool(
             &mut agent,
             "save_application",
             json!({ "name": "Finanzas", "lifecycle": "development", "version": "0.3.0",
                     "description": "Cuentas de casa,\nen dos líneas",
-                    "components": [{ "name": "API", "kind": "backend", "runsOn": "vps" },
+                    "components": [{ "name": "API", "kind": "backend", "runsOn": vps_id },
                                    { "name": "Base de datos", "kind": "database", "runsOn": vps_id }],
                     "references": [
                         { "kind": "repository", "target": "https://github.com/me/finanzas" },
-                        { "kind": "local_copy", "target": r"C:\src\finanzas", "machine": "Spare box" },
+                        { "kind": "local_copy", "target": r"C:\src\finanzas", "machine": spare },
                         { "kind": "documentation", "target": "https://github.com/me/finanzas#readme", "label": "README" },
                     ] }),
         )
@@ -3969,14 +3987,14 @@ mod tests {
     #[test]
     fn leaving_an_item_out_never_removes_it() {
         let path = path();
-        let (shop, _) = seed(&path);
+        let (shop, host) = seed(&path);
         crate::access::set_agent_access(&path, "maintain").unwrap();
         let mut agent = session(&path, "claude-code");
         let added = use_tool(
             &mut agent,
             "save_application",
             json!({ "name": "Finanzas", "lifecycle": "development",
-                    "components": [{ "name": "API", "kind": "backend", "runsOn": "Web host" }, { "name": "Web", "kind": "frontend" }],
+                    "components": [{ "name": "API", "kind": "backend", "runsOn": host }, { "name": "Web", "kind": "frontend" }],
                     "references": [{ "kind": "repository", "target": "https://github.com/me/finanzas" },
                                    { "kind": "documentation", "target": "https://docs.example/finanzas", "label": "Docs" }] }),
         )
@@ -4257,6 +4275,490 @@ mod tests {
             json!({ "name": "Otra", "lifecycle": "development" }),
         )
         .unwrap();
+        remove(&path);
+    }
+
+    thread_local! {
+        /// What a test does between the gate's read of the inventory and its read of each system's
+        /// latest change (see `inventory_with_latest`): the instant in which another connection
+        /// commits a change.
+        static BETWEEN_READS: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    pub(super) fn between_reads() {
+        BETWEEN_READS.with(|hook| {
+            if let Some(hook) = hook.borrow_mut().as_mut() {
+                hook();
+            }
+        });
+    }
+
+    /// The one with `id` among the `components` of a system as get_system gives it.
+    fn component_of<'a>(system: &'a Value, id: &str) -> &'a Value {
+        system["components"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|component| component["id"] == id)
+            .unwrap()
+    }
+
+    /// A relation never follows a name to another resource. Shop's API runs on «Host» (A). After
+    /// the agent read Shop, another session renames A and gives its name to a new resource, B:
+    /// neither change is Shop's, so Shop's latestChange, and the edit's `basedOn`, still hold. An
+    /// edit that named the resource «Host» would move the API to B, which the agent never saw; so
+    /// would a new component or a path named so, also in a new application. Each is refused and
+    /// nothing changes. Named by A's id, as get_system gave it, the edit keeps the API on A, under
+    /// its new name. A resource being saved can still be the machine of its own paths by its name.
+    #[test]
+    fn a_relation_never_follows_a_name_to_another_resource() {
+        let path = path();
+        inventory::start(&path).unwrap();
+        crate::access::set_agent_access(&path, "maintain").unwrap();
+        let mut agent = session(&path, "claude-code");
+        let mut other = session(&path, "codex");
+        let host = use_tool(
+            &mut agent,
+            "save_resource",
+            json!({ "name": "Host", "kind": "server" }),
+        )
+        .unwrap()["resource"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let shop = use_tool(
+            &mut agent,
+            "save_application",
+            json!({ "name": "Shop", "lifecycle": "production",
+                    "components": [{ "name": "API", "kind": "backend", "runsOn": host }] }),
+        )
+        .unwrap()["application"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let read = use_tool(
+            &mut agent,
+            "get_system",
+            json!({ "type": "application", "id": shop }),
+        )
+        .unwrap()["system"]
+            .clone();
+        let shop_read = read["latestChange"].clone();
+        let api = read["components"][0]["id"].as_str().unwrap().to_owned();
+        assert_eq!(
+            read["components"][0]["runsOn"],
+            json!({ "type": "resource", "id": host, "name": "Host" })
+        );
+
+        // Another session renames A, then gives its name to B.
+        let host_read = based_on(&mut other, "resource", &host);
+        use_tool(
+            &mut other,
+            "save_resource",
+            json!({ "id": host, "basedOn": host_read, "name": "Old host" }),
+        )
+        .unwrap();
+        let b = use_tool(
+            &mut other,
+            "save_resource",
+            json!({ "name": "Host", "kind": "server" }),
+        )
+        .unwrap()["resource"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(based_on(&mut agent, "application", &shop), shop_read);
+
+        let before = rows(&path);
+        let logged = changes(&path).len();
+        for (arguments, at) in [
+            (
+                json!({ "id": shop, "basedOn": shop_read, "components": [{ "id": api, "runsOn": "Host" }] }),
+                "components[0].runsOn",
+            ),
+            (
+                json!({ "id": shop, "basedOn": shop_read,
+                        "components": [{ "name": "Worker", "kind": "backend", "runsOn": " host" }] }),
+                "components[0].runsOn",
+            ),
+            (
+                json!({ "id": shop, "basedOn": shop_read,
+                        "references": [{ "kind": "repository", "target": "https://git.example/shop" },
+                                       { "kind": "logs", "target": "/var/log/shop", "machine": "Host" }] }),
+                "references[1].machine",
+            ),
+            (
+                json!({ "name": "Blog", "lifecycle": "development",
+                        "components": [{ "name": "Web", "kind": "frontend", "runsOn": "HOST" }] }),
+                "components[0].runsOn",
+            ),
+        ] {
+            let refused = use_tool(&mut agent, "save_application", arguments).unwrap_err();
+            assert!(
+                refused.starts_with(&format!("`{at}` is «"))
+                    && refused.contains("a relation names a resource by its id")
+                    && refused.ends_with("(invalid_input)"),
+                "{refused}"
+            );
+            assert_eq!(rows(&path), before);
+        }
+        assert_eq!(changes(&path).len(), logged);
+
+        // By its id the relation stays with A, whatever A is called now; B stays unused.
+        let edited = use_tool(
+            &mut agent,
+            "save_application",
+            json!({ "id": shop, "basedOn": shop_read, "version": "2",
+                    "components": [{ "id": api, "runsOn": host }] }),
+        )
+        .unwrap();
+        assert_eq!(edited["application"]["version"], "2");
+        let shown = use_tool(
+            &mut agent,
+            "get_system",
+            json!({ "type": "application", "id": shop }),
+        )
+        .unwrap()["system"]
+            .clone();
+        assert_eq!(
+            component_of(&shown, &api)["runsOn"],
+            json!({ "type": "resource", "id": host, "name": "Old host" })
+        );
+        let unused = use_tool(
+            &mut agent,
+            "get_system",
+            json!({ "type": "resource", "id": b }),
+        )
+        .unwrap()["system"]
+            .clone();
+        assert_eq!(unused["usedBy"], json!([]));
+
+        // A resource being saved names itself as the machine of its own paths, by its name.
+        let laptop = use_tool(
+            &mut agent,
+            "save_resource",
+            json!({ "name": "Laptop", "kind": "workstation",
+                    "references": [{ "kind": "local_copy", "target": "/home/me/notes", "machine": "laptop" }] }),
+        )
+        .unwrap()["resource"]
+            .clone();
+        assert_eq!(laptop["references"][0]["machineId"], laptop["id"]);
+        remove(&path);
+    }
+
+    /// The names of an application's components are checked on the list as it would be saved,
+    /// whatever the order of the call's items: no component the call adds or renames ends with the
+    /// name of another, so renaming API to DB beside a DB is refused, and so is adding a component
+    /// with the name another one is being renamed to. A rename that frees a name for another in the
+    /// same call, a swap, or a rename into the name of a component the call removes, leaves no two
+    /// with one name and is saved. Two components the person gave one name in the window stay as
+    /// they are while an edit leaves their names alone, and no edit adds a third.
+    #[test]
+    fn component_names_are_checked_on_the_list_as_it_would_be_saved() {
+        let path = path();
+        let (shop, _) = seed(&path);
+        crate::access::set_agent_access(&path, "maintain").unwrap();
+        let mut agent = session(&path, "claude-code");
+        let shown = use_tool(
+            &mut agent,
+            "get_system",
+            json!({ "type": "application", "id": shop }),
+        )
+        .unwrap()["system"]
+            .clone();
+        let api = shown["components"][0]["id"].as_str().unwrap().to_owned();
+        let added = use_tool(
+            &mut agent,
+            "save_application",
+            json!({ "id": shop, "basedOn": shown["latestChange"],
+                    "components": [{ "name": "DB", "kind": "database" }] }),
+        )
+        .unwrap();
+        let db = added["application"]["components"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|component| component["name"] == "DB")
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let names = |agent: &mut Session| -> Vec<String> {
+            let shown = use_tool(
+                agent,
+                "get_system",
+                json!({ "type": "application", "id": shop }),
+            )
+            .unwrap()["system"]
+                .clone();
+            let mut names: Vec<String> = shown["components"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|component| component["name"].as_str().unwrap().to_owned())
+                .collect();
+            names.sort();
+            names
+        };
+
+        let before = rows(&path);
+        let based = based_on(&mut agent, "application", &shop);
+        for (components, says) in [
+            (
+                json!({ "components": [{ "id": api, "name": "DB" }] }),
+                format!("already has a component named «DB» (id {db}), so the component {api} cannot take that name"),
+            ),
+            (
+                json!({ "components": [{ "id": api, "name": " db" }] }),
+                format!("already has a component named «DB» (id {db}), so the component {api} cannot take that name"),
+            ),
+            (
+                json!({ "components": [{ "name": "db", "kind": "database" }] }),
+                format!("already has a component named «DB» (id {db}). Nothing was done: to change it, name it by its id."),
+            ),
+            (
+                json!({ "components": [{ "name": "Cache", "kind": "database" }, { "id": api, "name": "cache" }] }),
+                "This call would leave «Shop» with two components named «cache»".to_owned(),
+            ),
+            (
+                json!({ "components": [{ "id": api, "name": "Cache" }, { "name": "Cache", "kind": "database" }] }),
+                "This call would leave «Shop» with two components named «Cache»".to_owned(),
+            ),
+            (
+                json!({ "components": [{ "name": "Queue", "kind": "backend" }, { "name": "QUEUE", "kind": "backend" }] }),
+                "This call would leave «Shop» with two components named «Queue»".to_owned(),
+            ),
+        ] {
+            let mut arguments = components.as_object().unwrap().clone();
+            arguments.insert("id".into(), json!(shop));
+            arguments.insert("basedOn".into(), based.clone());
+            let refused =
+                use_tool(&mut agent, "save_application", Value::Object(arguments)).unwrap_err();
+            assert!(
+                refused.contains(&says) && refused.ends_with("(already_exists)"),
+                "{says}\n{refused}"
+            );
+            assert_eq!(rows(&path), before);
+        }
+
+        // What leaves no two with one name is saved, whatever the order of the items.
+        let mut based = based;
+        for (components, after) in [
+            // A new API added before the old one is renamed, which frees its name.
+            (
+                json!({ "components": [{ "name": "API", "kind": "backend" }, { "id": api, "name": "Gateway" }] }),
+                vec!["API", "DB", "Gateway"],
+            ),
+            // A swap.
+            (
+                json!({ "components": [{ "id": api, "name": "DB" }, { "id": db, "name": "Gateway" }] }),
+                vec!["API", "DB", "Gateway"],
+            ),
+            // A rename into the name of a component the call removes.
+            (
+                json!({ "removeComponents": [db], "components": [{ "id": api, "name": "Gateway" }] }),
+                vec!["API", "Gateway"],
+            ),
+        ] {
+            let mut arguments = components.as_object().unwrap().clone();
+            arguments.insert("id".into(), json!(shop));
+            arguments.insert("basedOn".into(), based.clone());
+            let saved = use_tool(&mut agent, "save_application", Value::Object(arguments)).unwrap();
+            based = saved["change"]["id"].clone();
+            assert_eq!(names(&mut agent), after);
+        }
+
+        // Two «Worker» components the person saved in the window, which allows it.
+        let stored = inventory::list(&path).unwrap();
+        let mine = stored
+            .applications
+            .iter()
+            .find(|item| item.id == shop)
+            .unwrap();
+        let mut components: Vec<ComponentInput> = mine
+            .components
+            .iter()
+            .map(|component| ComponentInput {
+                id: Some(component.id.clone()),
+                name: component.name.clone(),
+                kind: component.kind.clone(),
+                resource_id: component.resource_id.clone(),
+            })
+            .collect();
+        for _ in 0..2 {
+            components.push(ComponentInput {
+                id: None,
+                name: "Worker".into(),
+                kind: "backend".into(),
+                resource_id: None,
+            });
+        }
+        save_application(
+            &path,
+            ApplicationInput {
+                id: Some(shop.clone()),
+                name: mine.name.clone(),
+                description: mine.description.clone(),
+                lifecycle: mine.lifecycle.clone(),
+                version: mine.version.clone(),
+                components,
+                references: mine
+                    .references
+                    .iter()
+                    .map(crate::references::ReferenceInput::from)
+                    .collect(),
+            },
+        )
+        .unwrap();
+        let shown = use_tool(
+            &mut agent,
+            "get_system",
+            json!({ "type": "application", "id": shop }),
+        )
+        .unwrap()["system"]
+            .clone();
+        let workers: Vec<String> = shown["components"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|component| component["name"] == "Worker")
+            .map(|component| component["id"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(workers.len(), 2);
+        let mut based = shown["latestChange"].clone();
+        // Left alone, or changed without taking a new name, they stay as they are.
+        for edit in [
+            json!({ "version": "3" }),
+            json!({ "components": [{ "id": workers[0], "kind": "docker" }, { "id": workers[1], "name": "worker" }] }),
+        ] {
+            let mut arguments = edit.as_object().unwrap().clone();
+            arguments.insert("id".into(), json!(shop));
+            arguments.insert("basedOn".into(), based.clone());
+            let saved = use_tool(&mut agent, "save_application", Value::Object(arguments)).unwrap();
+            based = saved["change"]["id"].clone();
+        }
+        assert_eq!(names(&mut agent), ["API", "Gateway", "Worker", "worker"]);
+        // No edit adds a third, nor gives their name to another.
+        let before = rows(&path);
+        for edit in [
+            json!({ "components": [{ "name": "WORKER", "kind": "backend" }] }),
+            json!({ "components": [{ "id": api, "name": "Worker" }] }),
+        ] {
+            let mut arguments = edit.as_object().unwrap().clone();
+            arguments.insert("id".into(), json!(shop));
+            arguments.insert("basedOn".into(), based.clone());
+            let refused =
+                use_tool(&mut agent, "save_application", Value::Object(arguments)).unwrap_err();
+            assert!(refused.ends_with("(already_exists)"), "{refused}");
+            assert_eq!(rows(&path), before);
+        }
+        // Renaming one of them away from the shared name is fine: it leaves none repeated.
+        let mut arguments = Map::new();
+        arguments.insert("id".into(), json!(shop));
+        arguments.insert("basedOn".into(), based);
+        arguments.insert(
+            "components".into(),
+            json!([{ "id": workers[1], "name": "Scheduler" }]),
+        );
+        use_tool(&mut agent, "save_application", Value::Object(arguments)).unwrap();
+        assert_eq!(names(&mut agent), ["API", "Gateway", "Scheduler", "Worker"]);
+        remove(&path);
+    }
+
+    /// What an agent is shown and the latestChange its edit is based on are of one state of the
+    /// inventory. With a connection holding the log, as an open window does, the gate reads through
+    /// it; the person's change commits between the gate's read of Shop and its read of Shop's latest
+    /// change. Read in one transaction, both are of the state before that change: the agent is
+    /// shown the old version with the old latestChange, and an edit based on it is refused. Read in
+    /// two, the agent would be shown the old version with the new latestChange, and its edit would
+    /// overwrite a change it never saw.
+    #[test]
+    fn what_an_agent_is_shown_and_what_its_edit_is_based_on_are_one_state() {
+        let path = path();
+        let (shop, _) = seed(&path);
+        crate::access::set_agent_access(&path, "maintain").unwrap();
+        let holder = rusqlite::Connection::open(&path).unwrap();
+        holder
+            .query_row("SELECT count(*) FROM applications", [], |_| Ok(()))
+            .unwrap();
+        let mut agent = session(&path, "claude-code");
+        let before = based_on(&mut agent, "application", &shop);
+
+        let person = path.clone();
+        let edited = shop.clone();
+        let mut done = false;
+        BETWEEN_READS.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                if std::mem::replace(&mut done, true) {
+                    return;
+                }
+                let stored = inventory::list(&person).unwrap();
+                let shop = stored
+                    .applications
+                    .iter()
+                    .find(|item| item.id == edited)
+                    .unwrap();
+                save_application(
+                    &person,
+                    ApplicationInput {
+                        id: Some(shop.id.clone()),
+                        name: shop.name.clone(),
+                        description: shop.description.clone(),
+                        lifecycle: shop.lifecycle.clone(),
+                        version: Some("9.9.9".into()),
+                        components: shop
+                            .components
+                            .iter()
+                            .map(|component| ComponentInput {
+                                id: Some(component.id.clone()),
+                                name: component.name.clone(),
+                                kind: component.kind.clone(),
+                                resource_id: component.resource_id.clone(),
+                            })
+                            .collect(),
+                        references: shop
+                            .references
+                            .iter()
+                            .map(crate::references::ReferenceInput::from)
+                            .collect(),
+                    },
+                )
+                .unwrap();
+            }));
+        });
+        let shown = use_tool(
+            &mut agent,
+            "get_system",
+            json!({ "type": "application", "id": shop }),
+        );
+        BETWEEN_READS.with(|hook| *hook.borrow_mut() = None);
+        let shown = shown.unwrap()["system"].clone();
+        assert_eq!(shown["application"]["version"], "2.4.1");
+        assert_eq!(shown["latestChange"], before);
+
+        let refused = use_tool(
+            &mut agent,
+            "save_application",
+            json!({ "id": shop, "basedOn": shown["latestChange"], "description": "Shop front" }),
+        )
+        .unwrap_err();
+        assert!(refused.ends_with("(changed_since_read)"), "{refused}");
+        let now = use_tool(
+            &mut agent,
+            "get_system",
+            json!({ "type": "application", "id": shop }),
+        )
+        .unwrap()["system"]
+            .clone();
+        assert_eq!(
+            (
+                &now["application"]["version"],
+                &now["application"]["description"]
+            ),
+            (&json!("9.9.9"), &json!("Store front"))
+        );
+        drop(holder);
         remove(&path);
     }
 }
