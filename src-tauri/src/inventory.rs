@@ -75,6 +75,21 @@ impl ApiError {
             message: message.into(),
         }
     }
+    /// An agent's edit was based on a state of the system that is no longer its state: someone
+    /// changed it after the agent read it. Nothing was done; reading it again tells what is there.
+    pub(crate) fn changed(message: impl Into<String>) -> Self {
+        Self {
+            code: "changed_since_read",
+            message: message.into(),
+        }
+    }
+    /// An agent asked to add what is already there, by its name. Nothing was added.
+    pub(crate) fn exists(message: impl Into<String>) -> Self {
+        Self {
+            code: "already_exists",
+            message: message.into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -236,11 +251,11 @@ pub(crate) fn plain(path: &Path) -> String {
     }
 }
 
-pub(crate) const SCHEMA_VERSION: i64 = 12;
+pub(crate) const SCHEMA_VERSION: i64 = 13;
 /// Each schema version with the migration that brings an inventory to it from the one before.
 /// They build a new inventory (`create`) and upgrade an older one (`upgrade.rs`), and are never
 /// edited once released: an inventory left at any version has the structure they give it there.
-pub(crate) const MIGRATIONS: [(i64, &str); 12] = [
+pub(crate) const MIGRATIONS: [(i64, &str); 13] = [
     (1, include_str!("../migrations/001_inventory.sql")),
     (2, include_str!("../migrations/002_inventory_details.sql")),
     (3, include_str!("../migrations/003_operational_records.sql")),
@@ -253,6 +268,7 @@ pub(crate) const MIGRATIONS: [(i64, &str); 12] = [
     (10, include_str!("../migrations/010_change_log.sql")),
     (11, include_str!("../migrations/011_references.sql")),
     (12, include_str!("../migrations/012_copy_readings.sql")),
+    (13, include_str!("../migrations/013_maintain_access.sql")),
 ];
 
 // How DevHQ reaches its inventory. No opening changes its schema: an inventory in an older schema
@@ -338,11 +354,22 @@ fn begin_on(db: &Connection, behavior: TransactionBehavior) -> Result<Transactio
 /// write (see `access`): that decides, so that closing the agent gate in Settings, or replacing,
 /// upgrading or emptying the file, can never race a write that was asked for before.
 pub(crate) fn begin_write<'a>(db: &'a mut Connection, by: &Actor) -> Result<Writing<'a>, ApiError> {
+    begin_write_for(db, by, "write")
+}
+
+/// `begin_write` for a change that needs `need` of the agent gate's access (see
+/// `access::permitted`): `maintain` to add or edit applications and resources, `write` for
+/// anything else. The person's own changes need none.
+pub(crate) fn begin_write_for<'a>(
+    db: &'a mut Connection,
+    by: &Actor,
+    need: &str,
+) -> Result<Writing<'a>, ApiError> {
     let db: &'a Connection = db;
     let tx = begin_on(db, TransactionBehavior::Immediate)?;
     let agent = matches!(by, Actor::Agent(_));
     if agent {
-        access::permitted(&access::mode(&tx)?, "write")?;
+        access::permitted(&access::mode(&tx)?, need)?;
     }
     Ok(Writing { tx, db, agent })
 }
@@ -1597,6 +1624,14 @@ pub fn list(path: &Path) -> Result<Inventory, ApiError> {
 /// the caller opened, such as the agent gate's, which opens the inventory as it finds it.
 pub(crate) fn list_from(db: &mut Connection) -> Result<Inventory, ApiError> {
     let tx = begin(db, TransactionBehavior::Deferred)?;
+    let inventory = list_in(&tx)?;
+    tx.commit().map_err(ApiError::database)?;
+    Ok(inventory)
+}
+
+/// `list_from` inside a read transaction the caller holds, so that whatever else it reads there
+/// (the agent gate's `latestChange`) is of the same state of the inventory.
+pub(crate) fn list_in(tx: &Transaction) -> Result<Inventory, ApiError> {
     let mut resources = {
         let mut statement = tx.prepare("SELECT id, name, kind, description, operating_system FROM resources ORDER BY name COLLATE NOCASE, id").map_err(ApiError::database)?;
         let result = statement
@@ -1617,7 +1652,7 @@ pub(crate) fn list_from(db: &mut Connection) -> Result<Inventory, ApiError> {
     };
     for resource in &mut resources {
         resource.references = references::of(
-            &tx,
+            tx,
             &Subject::Resource {
                 id: resource.id.clone(),
             },
@@ -1657,11 +1692,11 @@ pub(crate) fn list_from(db: &mut Connection) -> Result<Inventory, ApiError> {
                 .map_err(ApiError::database)?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(ApiError::database)?;
-            app.references = references::of(&tx, &Subject::Application { id: app.id.clone() })?;
+            app.references = references::of(tx, &Subject::Application { id: app.id.clone() })?;
         }
     }
     let shared_repositories = references::shared_repositories(&applications, &resources);
-    let local_copies = readings::local_copies(&tx, &applications, &resources)?;
+    let local_copies = readings::local_copies(tx, &applications, &resources)?;
     let subjects: Vec<_> = applications
         .iter()
         .map(|app| records::Subject::Application { id: app.id.clone() })
@@ -1674,11 +1709,10 @@ pub(crate) fn list_from(db: &mut Connection) -> Result<Inventory, ApiError> {
         incidents,
         events,
         automated_history,
-    } = records::load(&tx, &subjects)?;
-    let http_checks = http_check::load(&tx)?;
-    let changes = change_log::load(&tx)?;
-    let changes_since = change_log::complete_since(&tx)?;
-    tx.commit().map_err(ApiError::database)?;
+    } = records::load(tx, &subjects)?;
+    let http_checks = http_check::load(tx)?;
+    let changes = change_log::load(tx)?;
+    let changes_since = change_log::complete_since(tx)?;
     Ok(Inventory {
         applications,
         resources,
@@ -3435,7 +3469,9 @@ pub(crate) mod tests {
             strings(&db, "SELECT name FROM sqlite_master WHERE type = 'index' AND name NOT LIKE 'sqlite_autoindex%' ORDER BY name"),
             [
                 "change_log_application_id",
+                "change_log_application_latest",
                 "change_log_resource_id",
+                "change_log_resource_latest",
                 "components_application_id",
                 "components_resource_id",
                 "copy_readings_application_id",
@@ -4145,7 +4181,12 @@ pub(crate) mod tests {
         .is_empty());
         assert_eq!(
             strings(&db, "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'change_log' AND name NOT LIKE 'sqlite_autoindex%' ORDER BY name"),
-            ["change_log_application_id", "change_log_resource_id"]
+            [
+                "change_log_application_id",
+                "change_log_application_latest",
+                "change_log_resource_id",
+                "change_log_resource_latest"
+            ]
         );
         // The inventory held systems whose earlier changes by the person left no trace: the log
         // is complete from the upgrade on, and the snapshot says so.
@@ -4667,13 +4708,13 @@ pub(crate) mod tests {
             found_after("DROP INDEX events_reported"),
             Found::Mismatch(vec!["no index events_reported".to_owned()])
         );
-        // Stamped 12 with only the two tables that tell a DevHQ inventory apart.
+        // Stamped 13 with only the two tables that tell a DevHQ inventory apart.
         let stamped = nothing();
         let db = Connection::open(&stamped).unwrap();
         db.execute_batch(
             "CREATE TABLE applications (id TEXT PRIMARY KEY);
              CREATE TABLE resources (id TEXT PRIMARY KEY);
-             PRAGMA user_version = 12;",
+             PRAGMA user_version = 13;",
         )
         .unwrap();
         drop(db);

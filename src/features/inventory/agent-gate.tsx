@@ -19,10 +19,16 @@ const modes: { value: AgentAccessMode; label: string; detail: string }[] = [
       'Agents can read what needs attention, every application and resource, and their history. They change nothing.',
   },
   {
+    value: 'maintain',
+    label: 'Read and maintain',
+    detail:
+      'Agents can also add applications and resources and edit them, with their components and references. An edit only changes what it names, and is refused if someone changed the system after the agent read it. They cannot delete anything, record observations, incidents or events, set up or run checks, read local copies or back up. Each change is tagged as theirs in Activity, with every field before and after.',
+  },
+  {
     value: 'write',
     label: 'Read and write',
     detail:
-      'Agents can also do what you do here: add and edit applications and resources, record observations, incidents and events, set up and run checks, delete what has no history and back up. Each change is tagged as theirs.',
+      'Agents can also do everything else you do here: record observations, incidents and events, set up and run checks, read local copies, delete what has no history and back up. This is broad access: DevHQ does not ask you before any of it. Each change is tagged as theirs.',
   },
 ]
 
@@ -113,6 +119,11 @@ export function AgentGate() {
               ))}
             </div>
           </fieldset>
+          <p className="mt-3 text-xs leading-6 text-muted-foreground">
+            What you choose here is not an approval of each change. It holds until you change it,
+            for every agent session that opens this inventory: Claude Code, Codex or any other
+            client.
+          </p>
           <p role="status" className="mt-2 text-[11px] text-muted-foreground">
             {saving
               ? 'Saving…'

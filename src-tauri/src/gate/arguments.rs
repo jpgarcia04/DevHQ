@@ -275,26 +275,193 @@ pub(super) fn rules(tool: &str, arguments: &Map<String, Value>) -> Vec<String> {
                 found.push("`before` is required for observations and events: the id of the oldest one already shown (get_system shows them).".to_owned());
             }
         }
-        // Adding needs what editing keeps; the transaction says it again, in the same words.
-        "save_application" if !given("id") => {
-            if !given("name") {
-                found.push("name is required to add an application.".to_owned());
+        "save_application" | "save_resource" => {
+            let editing = given("id");
+            if editing {
+                // Present, even as null: null says the system had no change logged.
+                if !arguments.contains_key("basedOn") {
+                    found.push("`basedOn` is required to edit: the latestChange that list_systems or get_system gave for this system (null when they gave null). DevHQ refuses an edit if the system changed after it was read.".to_owned());
+                }
+            } else {
+                // Adding needs what editing keeps; the transaction says it again, in the same words.
+                let needed: [(&str, &str); 2] = if tool == "save_application" {
+                    [
+                        ("name", "name is required to add an application."),
+                        ("lifecycle", "lifecycle is required to add an application: development, testing, production or archived."),
+                    ]
+                } else {
+                    [
+                        ("name", "name is required to add a resource."),
+                        (
+                            "kind",
+                            "kind is required to add a resource: server or workstation.",
+                        ),
+                    ]
+                };
+                for (key, message) in needed {
+                    if !given(key) {
+                        found.push(message.to_owned());
+                    }
+                }
+                for key in ["basedOn", "removeComponents", "removeReferences"] {
+                    if arguments.contains_key(key) {
+                        found.push(format!("`{key}` is only for an edit, with `id`."));
+                    }
+                }
             }
-            if !given("lifecycle") {
-                found.push("lifecycle is required to add an application: development, testing, production or archived.".to_owned());
-            }
-        }
-        "save_resource" if !given("id") => {
-            if !given("name") {
-                found.push("name is required to add a resource.".to_owned());
-            }
-            if !given("kind") {
-                found.push("kind is required to add a resource: server or workstation.".to_owned());
-            }
+            merged_list(
+                arguments,
+                ("components", "removeComponents"),
+                ("component", &["name", "kind"]),
+                editing,
+                &mut found,
+            );
+            merged_list(
+                arguments,
+                ("references", "removeReferences"),
+                ("reference", &["kind", "target"]),
+                editing,
+                &mut found,
+            );
+            hidden_characters(arguments, &mut found);
         }
         _ => {}
     }
     found
+}
+
+/// The rules of a list that an agent's call merges into what the system has (`components`,
+/// `references`) and of the ids it removes from it: an item without `id` is a new one and needs
+/// what it cannot keep (`needs`); an item with `id` changes that one, so only an edit has them, and
+/// once each; an id is removed once, and never also changed.
+fn merged_list(
+    arguments: &Map<String, Value>,
+    (list, removals): (&str, &str),
+    (noun, needs): (&str, &[&str]),
+    editing: bool,
+    found: &mut Vec<String>,
+) {
+    let mut named: Vec<&str> = Vec::new();
+    let items = arguments
+        .get(list)
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten();
+    for (index, item) in items.enumerate() {
+        let Some(item) = item.as_object() else {
+            continue;
+        };
+        match item.get("id").and_then(Value::as_str) {
+            Some(_) if !editing => found.push(format!(
+                "`{list}[{index}].id`: everything a new system has is new, so its {noun}s take no id."
+            )),
+            Some(id) if named.contains(&id) => found.push(format!(
+                "`{list}[{index}].id`: {id} is named twice; change each {noun} once."
+            )),
+            Some(id) => named.push(id),
+            None => {
+                for key in needs {
+                    if !item.contains_key(*key) {
+                        found.push(format!(
+                            "`{list}[{index}].{key}` is required for a new {noun}, one without id."
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    let mut removed: Vec<&str> = Vec::new();
+    let ids = arguments
+        .get(removals)
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten();
+    for (index, id) in ids.filter_map(Value::as_str).enumerate() {
+        if named.contains(&id) {
+            found.push(format!(
+                "`{removals}[{index}]`: {id} is also in `{list}`; change that {noun} or remove it, not both."
+            ));
+        }
+        if removed.contains(&id) {
+            found.push(format!("`{removals}[{index}]`: {id} is named twice."));
+        }
+        removed.push(id);
+    }
+}
+
+/// Text an agent saves that would not read as it is kept: a control character (a tab, a NUL, a line
+/// break anywhere but in a description…) or an invisible formatting one (Unicode's format
+/// characters: marks that reverse the direction of text, zero-width spaces and joiners, a byte
+/// order mark…). Either would make a name the person reads in DevHQ differ from the one kept, or
+/// hide part of it. The window takes what the person types; agents write text nobody typed.
+fn hidden_characters(arguments: &Map<String, Value>, found: &mut Vec<String>) {
+    let mut check = |path: String, value: Option<&Value>, lines: bool| {
+        let Some(text) = value.and_then(Value::as_str) else {
+            return;
+        };
+        if let Some(character) = text.chars().find(|character| hidden(*character, lines)) {
+            found.push(format!(
+                "`{path}` holds U+{:04X}, a control or invisible formatting character: what DevHQ shows would not be what it keeps. Remove it.",
+                u32::from(character)
+            ));
+        }
+    };
+    for key in ["name", "description", "version", "operatingSystem"] {
+        check(key.to_owned(), arguments.get(key), key == "description");
+    }
+    for (list, keys) in [
+        ("components", &["name"][..]),
+        ("references", &["target", "label"][..]),
+    ] {
+        let items = arguments
+            .get(list)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten();
+        for (index, item) in items.enumerate() {
+            for key in keys {
+                check(format!("{list}[{index}].{key}"), item.get(*key), false);
+            }
+        }
+    }
+}
+
+/// Whether `character` hides or breaks what a text shows: a control character (line breaks and
+/// tabs are fine where the text has `lines`), or a format character.
+fn hidden(character: char, lines: bool) -> bool {
+    if lines && matches!(character, '\n' | '\r' | '\t') {
+        return false;
+    }
+    character.is_control() || format_character(character)
+}
+
+/// Unicode's format characters (general category Cf, Unicode 15.1), which Rust's standard library
+/// does not name: invisible, they change how the text around them is shown.
+fn format_character(character: char) -> bool {
+    matches!(
+        u32::from(character),
+        0x00AD
+            | 0x0600..=0x0605
+            | 0x061C
+            | 0x06DD
+            | 0x070F
+            | 0x0890..=0x0891
+            | 0x08E2
+            | 0x180E
+            | 0x200B..=0x200F
+            | 0x202A..=0x202E
+            | 0x2060..=0x2064
+            | 0x2066..=0x206F
+            | 0xFEFF
+            | 0xFFF9..=0xFFFB
+            | 0x110BD
+            | 0x110CD
+            | 0x13430..=0x1343F
+            | 0x1BCA0..=0x1BCA3
+            | 0x1D173..=0x1D17A
+            | 0xE0001
+            | 0xE0020..=0xE007F
+    )
 }
 
 #[cfg(test)]
@@ -458,6 +625,118 @@ mod tests {
         assert_eq!(whole(&json!(30.5)), None);
         assert_eq!(whole(&json!(1e19)), None);
         assert_eq!(whole(&json!(-5.0)), Some(-5));
+    }
+
+    fn saving(tool: &str, arguments: Value) -> Vec<String> {
+        rules(tool, arguments.as_object().unwrap())
+    }
+
+    #[test]
+    fn an_edit_says_what_it_read_and_names_what_it_removes() {
+        let based = "`basedOn` is required to edit";
+        let found = saving("save_application", json!({ "id": "shop", "version": "2" }));
+        assert!(
+            found.len() == 1 && found[0].starts_with(based),
+            "{found:#?}"
+        );
+        let found = saving("save_resource", json!({ "id": "host", "name": "Host" }));
+        assert!(
+            found.len() == 1 && found[0].starts_with(based),
+            "{found:#?}"
+        );
+        // Null is what to send for a system whose change log held nothing.
+        assert!(saving("save_application", json!({ "id": "shop", "basedOn": null })).is_empty());
+        assert!(saving(
+            "save_application",
+            json!({ "id": "shop", "basedOn": "c1",
+                    "components": [{ "id": "api", "runsOn": null }, { "name": "Web", "kind": "frontend" }],
+                    "removeComponents": ["db"], "references": [{ "id": "repo", "label": null }],
+                    "removeReferences": ["docs"] })
+        )
+        .is_empty());
+
+        let found = saving(
+            "save_application",
+            json!({ "id": "shop", "basedOn": "c1",
+                    "components": [{ "id": "api" }, { "id": "api" }, { "name": "Web" }],
+                    "removeComponents": ["api", "db", "db"],
+                    "references": [{ "target": "https://shop.example/" }] }),
+        );
+        assert_eq!(
+            found,
+            [
+                "`components[1].id`: api is named twice; change each component once.",
+                "`components[2].kind` is required for a new component, one without id.",
+                "`removeComponents[0]`: api is also in `components`; change that component or remove it, not both.",
+                "`removeComponents[2]`: db is named twice.",
+                "`references[0].kind` is required for a new reference, one without id.",
+            ]
+        );
+
+        // What a new system has is all new: nothing to base it on, to name by id or to remove.
+        let found = saving(
+            "save_application",
+            json!({ "name": "Shop", "lifecycle": "production", "basedOn": null,
+                    "removeReferences": ["repo"],
+                    "components": [{ "id": "api", "name": "API", "kind": "backend" }] }),
+        );
+        assert_eq!(
+            found,
+            [
+                "`basedOn` is only for an edit, with `id`.",
+                "`removeReferences` is only for an edit, with `id`.",
+                "`components[0].id`: everything a new system has is new, so its components take no id.",
+            ]
+        );
+        let found = saving(
+            "save_resource",
+            json!({ "name": "Box", "references": [{ "id": "logs", "kind": "logs", "target": "/var/log" }] }),
+        );
+        assert_eq!(
+            found,
+            [
+                "kind is required to add a resource: server or workstation.",
+                "`references[0].id`: everything a new system has is new, so its references take no id.",
+            ]
+        );
+    }
+
+    #[test]
+    fn refuses_text_that_would_not_read_as_it_is_kept() {
+        let found = saving(
+            "save_application",
+            json!({ "name": "Pass\u{202E}Guardian", "lifecycle": "development",
+                    "description": "Two lines\nand a\ttab are fine here", "version": "1.0\u{200B}",
+                    "components": [{ "name": "API\u{0007}", "kind": "backend" }],
+                    "references": [{ "kind": "repository", "target": "https://x.example/\u{2066}", "label": "\u{FEFF}Main" }] }),
+        );
+        let held = |path: &str, code: &str| {
+            format!("`{path}` holds U+{code}, a control or invisible formatting character: what DevHQ shows would not be what it keeps. Remove it.")
+        };
+        assert_eq!(
+            found,
+            [
+                held("name", "202E"),
+                held("version", "200B"),
+                held("components[0].name", "0007"),
+                held("references[0].target", "2066"),
+                held("references[0].label", "FEFF"),
+            ]
+        );
+        // A line break is fine only in a description.
+        assert_eq!(
+            saving(
+                "save_resource",
+                json!({ "name": "Box\nTwo", "kind": "server", "operatingSystem": "Linux\t" })
+            ),
+            [held("name", "000A"), held("operatingSystem", "0009")]
+        );
+        // Letters of any script, accents and emoji are text, not hidden characters.
+        assert!(saving(
+            "save_application",
+            json!({ "name": "Ñandú — Финансы 財務 🚀", "lifecycle": "development" })
+        )
+        .is_empty());
     }
 
     #[test]

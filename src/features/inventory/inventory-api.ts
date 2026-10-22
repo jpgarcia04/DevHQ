@@ -310,7 +310,7 @@ export interface ConfigurationChange {
 }
 
 /** How far agents may act through the agent gate (`devhq --mcp`). Off until the person opens it. */
-export type AgentAccessMode = 'off' | 'read' | 'write'
+export type AgentAccessMode = 'off' | 'read' | 'maintain' | 'write'
 
 export interface AgentAccess {
   mode: AgentAccessMode

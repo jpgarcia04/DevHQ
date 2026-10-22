@@ -627,10 +627,16 @@ try {
     const status = await gate.tool('status')
     assert.equal(status.access, 'write')
     assert.equal(status.windowOpen, true, 'the gate sees the open window')
+    // A relation names its resource by the id the agent read, never by its name.
+    const listed = await gate.tool('list_systems')
+    const buildServer = (listed.resources as { system: { id: string; name: string } }[]).find(
+      (resource) => resource.system.name === 'Build server',
+    )
+    assert.ok(buildServer, 'the gate lists the Build server')
     const saved = await gate.tool('save_application', {
       name: 'Release notes',
       lifecycle: 'development',
-      components: [{ name: 'site', kind: 'frontend', runsOn: 'Build server' }],
+      components: [{ name: 'site', kind: 'frontend', runsOn: buildServer.system.id }],
     })
     assert.equal((saved.change as { agent: string }).agent, 'native-walk')
     // Nothing in the window is touched: it notices the gate's commit on its own.

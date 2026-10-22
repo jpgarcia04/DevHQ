@@ -13,6 +13,7 @@ mod writes;
 
 use crate::access;
 use crate::attention::{self, AttentionItem};
+use crate::change_log;
 use crate::http_check::HttpCheck;
 use crate::identity;
 use crate::inventory::{self, ApiError, Inventory};
@@ -230,7 +231,8 @@ impl Session {
             "list_systems" => self.allow("read").and_then(|()| self.list_systems()),
             "get_system" => self.allow("read").and_then(|()| self.get_system(arguments)),
             "history" => self.allow("read").and_then(|()| self.history(arguments)),
-            // Configuration changes check the access inside their own transaction; records,
+            // Configuration changes check the access inside their own transaction (adding and
+            // editing applications and resources needs `maintain`, the rest `write`); records,
             // checks run and backups check it first.
             "save_application" => self.save_application(arguments),
             "save_resource" => self.save_resource(arguments),
@@ -436,8 +438,25 @@ impl Session {
         }))
     }
 
+    /// The inventory and, read in the same transaction, the last change logged about each system:
+    /// what an agent's edit is based on (see `writes`). One transaction, so that both are of one
+    /// state of the inventory: a change committed between two reads would give a `latestChange`
+    /// newer than what the agent is shown, and an edit based on it would pass `basedOn` without its
+    /// agent having seen that change.
+    fn inventory_with_latest(&self) -> Result<(Inventory, HashMap<Subject, String>), ApiError> {
+        self.read(|db| {
+            let tx = inventory::begin(db, rusqlite::TransactionBehavior::Deferred)?;
+            let inventory = inventory::list_in(&tx)?;
+            #[cfg(test)]
+            tests::between_reads();
+            let latest = change_log::latest(&tx, &subjects(&inventory))?;
+            tx.commit().map_err(ApiError::database)?;
+            Ok((inventory, latest))
+        })
+    }
+
     fn list_systems(&self) -> Result<Value, ApiError> {
-        let inventory = self.inventory()?;
+        let (inventory, latest) = self.inventory_with_latest()?;
         let now = records::now_ms();
         let names = Names::of(&inventory);
         let this = self.this_workstation(&inventory);
@@ -446,30 +465,22 @@ impl Session {
             .applications
             .iter()
             .map(|application| {
-                summary(
-                    &inventory,
-                    &names,
-                    &Subject::Application {
-                        id: application.id.clone(),
-                    },
-                    now,
-                    this,
-                )
+                let subject = Subject::Application {
+                    id: application.id.clone(),
+                };
+                summary(&inventory, &names, &subject, now, this)
+                    .map(|value| with_latest(value, &latest, &subject))
             })
             .collect::<Result<Vec<_>, _>>()?;
         let resources = inventory
             .resources
             .iter()
             .map(|resource| {
-                summary(
-                    &inventory,
-                    &names,
-                    &Subject::Resource {
-                        id: resource.id.clone(),
-                    },
-                    now,
-                    this,
-                )
+                let subject = Subject::Resource {
+                    id: resource.id.clone(),
+                };
+                summary(&inventory, &names, &subject, now, this)
+                    .map(|value| with_latest(value, &latest, &subject))
             })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(json!({
@@ -481,18 +492,22 @@ impl Session {
     }
 
     fn get_system(&self, arguments: &Map<String, Value>) -> Result<Value, ApiError> {
-        let inventory = self.inventory()?;
+        let (inventory, latest) = self.inventory_with_latest()?;
         let now = records::now_ms();
         let names = Names::of(&inventory);
         let subject = find_system(&inventory, arguments)?;
         let this = self.this_workstation(&inventory);
-        let mut system = summary(
-            &inventory,
-            &names,
+        let mut system = with_latest(
+            summary(
+                &inventory,
+                &names,
+                &subject,
+                now,
+                this.resource_id.as_deref(),
+            )?,
+            &latest,
             &subject,
-            now,
-            this.resource_id.as_deref(),
-        )?;
+        );
         let mine = |record_subject: &Subject| record_subject == &subject;
         let detail = json!({
             "observations": inventory.observations.iter().filter(|item| mine(&item.subject)).collect::<Vec<_>>(),
@@ -547,7 +562,7 @@ impl Session {
     }
 }
 
-const INSTRUCTIONS: &str = "DevHQ is the person's local operations inventory: applications, the resources they run on, where each one is (its references: repository, local copies, documentation, logs, dashboard), and the evidence about them (observations, incidents, events, HTTP checks). Working in a folder, an agent can find its system by a local copy's path or by its repository's URL in `list_systems`. A local copy's readings say what it held when DevHQ read it, never what it holds now. Start with `attention` to answer «what needs my attention?». Never present a system without current evidence as healthy: unobserved and expired evidence are gaps, not health. Every record says who produced it (`source`: manual, http or agent) and when. Every call is checked against its tool's input schema and the rules its description states: an argument the tool does not declare, misspelled or of the wrong type, is refused (invalid_input) and nothing is done.";
+const INSTRUCTIONS: &str = "DevHQ is the person's local operations inventory: applications, the resources they run on, where each one is (its references: repository, local copies, documentation, logs, dashboard), and the evidence about them (observations, incidents, events, HTTP checks). Working in a folder, an agent can find its system by a local copy's path or by its repository's URL in `list_systems`. A local copy's readings say what it held when DevHQ read it, never what it holds now. Start with `attention` to answer «what needs my attention?». Never present a system without current evidence as healthy: unobserved and expired evidence are gaps, not health. Every record says who produced it (`source`: manual, http or agent) and when. Applications, resources, components and references are declared inventory, by the person or an agent (each change in `changes`, with who made it), never evidence that DevHQ observed. To edit a system, base the edit on its `latestChange` (`basedOn`): DevHQ refuses it if the system changed after you read it, and never removes a component or reference you leave out. A component's `runsOn` and a path's `machine` name a resource by its id, never by its name. Every call is checked against its tool's input schema and the rules its description states: an argument the tool does not declare, misspelled or of the wrong type, is refused (invalid_input) and nothing is done.";
 
 /// Every application, then every resource, in the inventory's order.
 fn subjects(inventory: &Inventory) -> Vec<Subject> {
@@ -721,6 +736,15 @@ fn summary(
         object.insert("localActivity".into(), local_activity(inventory, subject));
     }
     Ok(value)
+}
+
+/// A system's summary with the last change logged about it (`latestChange`, null when there is
+/// none): what an edit of it is based on (`basedOn`).
+fn with_latest(mut value: Value, latest: &HashMap<Subject, String>, subject: &Subject) -> Value {
+    if let Value::Object(object) = &mut value {
+        object.insert("latestChange".into(), json!(latest.get(subject)));
+    }
+    value
 }
 
 /// The newest commit any reading of the system's copies found, and how many of its copies were
@@ -911,7 +935,7 @@ fn read_tools() -> Vec<Value> {
         read_only(
             "status",
             "DevHQ status",
-"Which inventory file the gate opened, where the system really keeps it, what the file is (`schema`: the version it declares, the one this DevHQ supports, its state: current, mismatch, outdated, newer, not_an_inventory, needs_recovery, unreadable or missing; whether it has the structure of this DevHQ's schema, compared table by table and column by column: matches, differs or not_checked for another version; its integrity, never checked by the gate: not_checked; `schemaVersion` is the declared one, null when unknown), whether the person lets agents read or write through the gate (`access`: off, read or write), whether a DevHQ window is open on it (`windowOpen`; null when the system cannot say), how many systems it holds, which of its workstations this computer is (`thisWorkstation`, or why DevHQ does not know: only the window chooses it), and what the gate cannot know. Access, counts and workstation are null unless the inventory is current, which is the only kind the gate serves. An inventory left needing recovery (a write that did not finish, or a log no connection holds) is reported, never recovered: DevHQ's window recovers it when it starts, only if it is in this DevHQ's schema. Always answered, even with the gate off, and never writes to the inventory or changes what it holds; the one file it can create is an empty log (`-wal`), if the last connection to the inventory closes just as the gate opens it.",
+"Which inventory file the gate opened, where the system really keeps it, what the file is (`schema`: the version it declares, the one this DevHQ supports, its state: current, mismatch, outdated, newer, not_an_inventory, needs_recovery, unreadable or missing; whether it has the structure of this DevHQ's schema, compared table by table and column by column: matches, differs or not_checked for another version; its integrity, never checked by the gate: not_checked; `schemaVersion` is the declared one, null when unknown), how far the person lets agents go through the gate (`access`: off; read; maintain, which also adds and edits applications and resources; or write, everything), which holds for every agent session until the person changes it, whether a DevHQ window is open on it (`windowOpen`; null when the system cannot say), how many systems it holds, which of its workstations this computer is (`thisWorkstation`, or why DevHQ does not know: only the window chooses it), and what the gate cannot know. Access, counts and workstation are null unless the inventory is current, which is the only kind the gate serves. An inventory left needing recovery (a write that did not finish, or a log no connection holds) is reported, never recovered: DevHQ's window recovers it when it starts, only if it is in this DevHQ's schema. Always answered, even with the gate off, and never writes to the inventory or changes what it holds; the one file it can create is an empty log (`-wal`), if the last connection to the inventory closes just as the gate opens it.",
             json!({}),
             &[],
         ),
@@ -925,14 +949,14 @@ fn read_tools() -> Vec<Value> {
         read_only(
             "list_systems",
             "List applications and resources",
-            "Every application and resource with its evidence state and latest observation, active incidents, HTTP check, relations (components and what they run on; what uses each resource) and references: where its repository, its local copies (each path with the machine it is on), its documentation, its logs and its dashboard are, and which other systems declare the same repository (`sameRepositoryAs`, by exact URL). References are declared inventory: DevHQ never opens or checks them. Each local copy also says whether it is on this workstation and its newest reading (`latestReading`, null if never read): what the copy held when DevHQ read it, at `observedAt`, which may no longer be so; `localActivity` gives the newest commit those readings found.",
+            "Every application and resource with its evidence state and latest observation, active incidents, HTTP check, relations (components and what they run on; what uses each resource) and references: where its repository, its local copies (each path with the machine it is on), its documentation, its logs and its dashboard are, and which other systems declare the same repository (`sameRepositoryAs`, by exact URL). References are declared inventory: DevHQ never opens or checks them. Each local copy also says whether it is on this workstation and its newest reading (`latestReading`, null if never read): what the copy held when DevHQ read it, at `observedAt`, which may no longer be so; `localActivity` gives the newest commit those readings found. Each system's `latestChange` (the last entry of its change log, null when it has none) is what an edit of it is based on (`basedOn`).",
             json!({}),
             &[],
         ),
         read_only(
             "get_system",
             "System detail",
-            "One application or resource with its references (as list_systems gives them), every loaded observation, incident and event about it, every change to its configuration (who made it, and each field before and after), newest first, and from when its automated results are complete.",
+            "One application or resource with its references (as list_systems gives them), every loaded observation, incident and event about it, every change to its configuration (who made it, and each field before and after), newest first, its `latestChange` (what an edit of it is based on), and from when its automated results are complete.",
             system_arguments(json!({})),
             &["type"],
         ),
@@ -1630,6 +1654,14 @@ mod tests {
         }
     }
 
+    /// What an agent's next edit of a system is based on: its latestChange, as get_system gives
+    /// it to the agent.
+    fn based_on(agent: &mut Session, kind: &str, id: &str) -> Value {
+        use_tool(agent, "get_system", json!({ "type": kind, "id": id })).unwrap()["system"]
+            ["latestChange"]
+            .clone()
+    }
+
     fn changes(path: &Path) -> Vec<(String, String, String)> {
         let db = inventory::open(path).unwrap();
         let mut statement = db
@@ -1727,12 +1759,12 @@ mod tests {
             "Added resource «VPS» (server, Ubuntu 24.04)"
         );
         assert_eq!(vps["change"]["agent"], "claude-code");
-        // A component runs on a resource named by id or by its name, ignoring case.
+        // A component runs on a resource named by its id.
         let added = use_tool(
             &mut agent,
             "save_application",
             json!({ "name": "Tienda", "lifecycle": "production", "description": "Online store", "version": "1.3.0",
-                    "components": [{ "name": "API", "kind": "backend", "runsOn": "vps" }, { "name": "Web", "kind": "frontend" }] }),
+                    "components": [{ "name": "API", "kind": "backend", "runsOn": vps_id }, { "name": "Web", "kind": "frontend" }] }),
         )
         .unwrap();
         let tienda = added["application"]["id"].as_str().unwrap().to_owned();
@@ -1744,11 +1776,12 @@ mod tests {
             added["change"]["summary"],
             "Added application «Tienda» (production, version 1.3.0) with API (backend, on VPS), Web (frontend)"
         );
-        // An edit of one field keeps every other, components included.
+        // An edit of one field keeps every other, components included. It is based on the
+        // application's latest change, which the answer to each save gives.
         let edited = use_tool(
             &mut agent,
             "save_application",
-            json!({ "id": tienda, "version": "1.4.0" }),
+            json!({ "id": tienda, "basedOn": added["change"]["id"], "version": "1.4.0" }),
         )
         .unwrap();
         assert_eq!(edited["application"]["description"], "Online store");
@@ -1764,7 +1797,7 @@ mod tests {
         let cleared = use_tool(
             &mut agent,
             "save_application",
-            json!({ "id": tienda, "version": null, "lifecycle": "testing" }),
+            json!({ "id": tienda, "basedOn": edited["change"]["id"], "version": null, "lifecycle": "testing" }),
         )
         .unwrap();
         assert_eq!(cleared["application"]["version"], Value::Null);
@@ -1772,12 +1805,26 @@ mod tests {
             cleared["change"]["summary"],
             "Updated application «Tienda»: lifecycle production → testing; version «1.4.0» → none"
         );
-        // A given component list is the complete list.
+        // A component list keeps what it leaves out: naming one by its id changes only that one,
+        // and here nothing, so there is no change to log.
         let api = added["application"]["components"][0]["id"].clone();
+        let web = added["application"]["components"][1]["id"].clone();
+        let kept = use_tool(
+            &mut agent,
+            "save_application",
+            json!({ "id": tienda, "basedOn": cleared["change"]["id"], "components": [{ "id": api, "runsOn": vps_id }] }),
+        )
+        .unwrap();
+        assert_eq!(
+            kept["application"]["components"],
+            added["application"]["components"]
+        );
+        assert_eq!(kept["change"], Value::Null);
+        // Removing one takes naming it.
         let trimmed = use_tool(
             &mut agent,
             "save_application",
-            json!({ "id": tienda, "components": [{ "id": api, "name": "API", "kind": "backend", "runsOn": vps_id }] }),
+            json!({ "id": tienda, "basedOn": cleared["change"]["id"], "removeComponents": [web] }),
         )
         .unwrap();
         assert_eq!(
@@ -1794,7 +1841,7 @@ mod tests {
         let renamed = use_tool(
             &mut agent,
             "save_resource",
-            json!({ "id": vps_id, "name": "VPS Hetzner" }),
+            json!({ "id": vps_id, "basedOn": vps["change"]["id"], "name": "VPS Hetzner" }),
         )
         .unwrap();
         assert_eq!(renamed["resource"]["operatingSystem"], "Ubuntu 24.04");
@@ -1818,7 +1865,7 @@ mod tests {
             ),
             (
                 "save_application",
-                json!({ "id": "ghost", "version": "2" }),
+                json!({ "id": "ghost", "basedOn": null, "version": "2" }),
                 "No application has the id ghost",
             ),
             (
@@ -1884,13 +1931,14 @@ mod tests {
             laptop["resource"]["references"][0]["machineId"],
             laptop_id.as_str()
         );
-        // Each path's machine by exact name, ignoring case, or by id; the list is complete.
+        // Each path's machine by its id.
+        let read = based_on(&mut agent, "application", &shop);
         let saved = use_tool(
             &mut agent,
             "save_application",
-            json!({ "id": shop, "references": [
+            json!({ "id": shop, "basedOn": read, "references": [
                 { "kind": "repository", "target": "https://github.com/me/platform" },
-                { "kind": "local_copy", "target": r"C:\src\platform", "machine": "LAPTOP", "label": "Work" },
+                { "kind": "local_copy", "target": r"C:\src\platform", "machine": laptop_id, "label": "Work" },
                 { "kind": "logs", "target": "/var/log/shop", "machine": host },
             ] }),
         )
@@ -1903,7 +1951,7 @@ mod tests {
         let versioned = use_tool(
             &mut agent,
             "save_application",
-            json!({ "id": shop, "version": "2.5.0" }),
+            json!({ "id": shop, "basedOn": saved["change"]["id"], "version": "2.5.0" }),
         )
         .unwrap();
         assert_eq!(
@@ -1995,25 +2043,27 @@ mod tests {
 
         // Refused as the window's save refuses them, and nothing changes.
         let logged = changes(&path).len();
+        let shop_now = based_on(&mut agent, "application", &shop);
+        let laptop_now = based_on(&mut agent, "resource", &laptop_id);
         for (tool, arguments, why) in [
             (
                 "save_application",
-                json!({ "id": shop, "references": "https://github.com/me/platform" }),
+                json!({ "id": shop, "basedOn": shop_now, "references": "https://github.com/me/platform" }),
                 "`references` must be a list, not a string.",
             ),
             (
                 "save_application",
-                json!({ "id": shop, "references": [{ "target": "https://x.example" }] }),
-                "`references[0].kind` is required.",
+                json!({ "id": shop, "basedOn": shop_now, "references": [{ "target": "https://x.example" }] }),
+                "`references[0].kind` is required for a new reference",
             ),
             (
                 "save_application",
-                json!({ "id": shop, "references": [{ "kind": "local_copy", "target": "/srv/shop", "machine": "Web host" }] }),
+                json!({ "id": shop, "basedOn": shop_now, "references": [{ "kind": "local_copy", "target": "/srv/shop", "machine": host }] }),
                 "Web host is a server, not a workstation",
             ),
             (
                 "save_resource",
-                json!({ "id": laptop_id, "kind": "server" }),
+                json!({ "id": laptop_id, "basedOn": laptop_now, "kind": "server" }),
                 r"Laptop holds local copies of other systems: Shop (local copy C:\src\platform)",
             ),
             (
@@ -2262,11 +2312,13 @@ mod tests {
             .as_str()
             .unwrap()
             .to_owned();
+        let shop = inventory::list(&path).unwrap().applications[0].id.clone();
+        let read = based_on(&mut agent, "application", &shop);
         use_tool(
             &mut agent,
             "save_application",
-            json!({ "name": "Shop", "id": inventory::list(&path).unwrap().applications[0].id,
-                    "references": [{ "kind": "local_copy", "target": copy.to_str().unwrap(), "machine": "Laptop" }] }),
+            json!({ "name": "Shop", "id": shop, "basedOn": read,
+                    "references": [{ "kind": "local_copy", "target": copy.to_str().unwrap(), "machine": laptop }] }),
         )
         .unwrap();
         let refused = use_tool(&mut agent, "read_copies", json!({})).unwrap_err();
@@ -2734,11 +2786,15 @@ mod tests {
         let (shop, _) = seed(&path);
         crate::access::set_agent_access(&path, "write").unwrap();
         let mut agent = session(&path, "claude-code");
+        let api = inventory::list(&path).unwrap().applications[0].components[0]
+            .id
+            .clone();
+        let read = based_on(&mut agent, "application", &shop);
         let saved = use_tool(
             &mut agent,
             "save_application",
-            json!({ "id": shop, "version": null,
-                    "components": [{ "name": "API", "kind": "backend", "runsOn": null }],
+            json!({ "id": shop, "basedOn": read, "version": null,
+                    "components": [{ "id": api, "runsOn": null }],
                     "references": [{ "kind": "repository", "target": "https://github.com/me/shop", "label": null, "machine": null }] }),
         )
         .unwrap();
@@ -2858,7 +2914,7 @@ mod tests {
         Option<&'static str>,
     );
 
-    /// A v12 inventory as `seed` leaves it (write-ahead logged, Read only), replaced by a backup
+    /// A v13 inventory as `seed` leaves it (write-ahead logged, Read only), replaced by a backup
     /// of itself: a rollback-journal file, as every DevHQ backup is.
     fn backup_copy(path: &Path) {
         seed(path);
@@ -2907,9 +2963,9 @@ mod tests {
                 Some("schema_outdated"),
             ),
             (
-                "v11, Read only",
+                "v12, Read only",
                 |path| {
-                    database_at(path, 11)
+                    database_at(path, 12)
                         .execute(
                             "INSERT INTO agent_access (id, mode, changed_at) VALUES (1, 'read', 0)",
                             [],
@@ -2917,54 +2973,54 @@ mod tests {
                         .unwrap();
                 },
                 true,
-                json!(11),
+                json!(12),
                 "outdated",
                 Value::Null,
                 Value::Null,
                 Some("schema_outdated"),
             ),
             (
-                "v12 backup, rollback journal, Read only",
+                "v13 backup, rollback journal, Read only",
                 backup_copy,
                 true,
-                json!(12),
+                json!(13),
                 "current",
                 json!("read"),
                 counts.clone(),
                 None,
             ),
             (
-                "v12, write-ahead log, Read only",
+                "v13, write-ahead log, Read only",
                 |path| drop(seed(path)),
                 true,
-                json!(12),
+                json!(13),
                 "current",
                 json!("read"),
                 counts.clone(),
                 None,
             ),
             (
-                "v12, write-ahead log, Off",
+                "v13, write-ahead log, Off",
                 |path| {
                     seed(path);
                     crate::access::set_agent_access(path, "off").unwrap();
                 },
                 true,
-                json!(12),
+                json!(13),
                 "current",
                 json!("off"),
                 Value::Null,
                 Some("access_denied"),
             ),
             (
-                "v13",
+                "v14",
                 |path| {
-                    database_at(path, 12)
-                        .pragma_update(None, "user_version", 13)
+                    database_at(path, 13)
+                        .pragma_update(None, "user_version", 14)
                         .unwrap();
                 },
                 true,
-                json!(13),
+                json!(14),
                 "newer",
                 Value::Null,
                 Value::Null,
@@ -2996,11 +3052,11 @@ mod tests {
                 Some("not_an_inventory"),
             ),
             (
-                "a SQLite database stamped 12 without DevHQ's tables",
+                "a SQLite database stamped 13 without DevHQ's tables",
                 |path| {
                     sqlite(
                         path,
-                        "CREATE TABLE notes (body TEXT); PRAGMA user_version = 12;",
+                        "CREATE TABLE notes (body TEXT); PRAGMA user_version = 13;",
                     )
                 },
                 true,
@@ -3011,37 +3067,37 @@ mod tests {
                 Some("not_an_inventory"),
             ),
             (
-                "v12 stamped, with only the tables that tell an inventory apart",
+                "v13 stamped, with only the tables that tell an inventory apart",
                 |path| {
                     sqlite(
                         path,
                         "CREATE TABLE applications (id TEXT PRIMARY KEY);
                          CREATE TABLE resources (id TEXT PRIMARY KEY);
-                         PRAGMA user_version = 12;",
+                         PRAGMA user_version = 13;",
                     )
                 },
                 true,
-                json!(12),
+                json!(13),
                 "mismatch",
                 Value::Null,
                 Value::Null,
                 Some("schema_mismatch"),
             ),
             (
-                "v12 without agent_access",
+                "v13 without agent_access",
                 |path| {
                     seed(path);
                     sqlite(path, "DROP TABLE agent_access");
                 },
                 true,
-                json!(12),
+                json!(13),
                 "mismatch",
                 Value::Null,
                 Value::Null,
                 Some("schema_mismatch"),
             ),
             (
-                "v12, Off, its write-ahead log left by a writer that was killed",
+                "v13, Off, its write-ahead log left by a writer that was killed",
                 |path| {
                     seed(path);
                     crate::access::set_agent_access(path, "off").unwrap();
@@ -3055,7 +3111,7 @@ mod tests {
                 Some("needs_recovery"),
             ),
             (
-                "v12, Read only, its write-ahead log left without its index",
+                "v13, Read only, its write-ahead log left without its index",
                 |path| {
                     seed(path);
                     kill(writer(path, "log"), path);
@@ -3084,7 +3140,7 @@ mod tests {
                 Some("needs_recovery"),
             ),
             (
-                "v12 backup, Read only, rollback journal left by a write that was killed",
+                "v13 backup, Read only, rollback journal left by a write that was killed",
                 |path| {
                     backup_copy(path);
                     kill(writer(path, "journal"), path);
@@ -3466,5 +3522,1243 @@ mod tests {
             }
             remove(&path);
         }
+    }
+
+    /// The read tools, as `valid_calls` calls them.
+    fn read_calls() -> Vec<(&'static str, Value)> {
+        valid_calls()
+            .into_iter()
+            .filter(|(tool, _)| {
+                [
+                    "status",
+                    "attention",
+                    "list_systems",
+                    "get_system",
+                    "history",
+                ]
+                .contains(tool)
+            })
+            .collect()
+    }
+
+    /// Read only holds until the person changes it: every new session, with no DevHQ window open,
+    /// reads all the gate offers, and nothing changes; Read and maintain reads the same.
+    #[test]
+    fn read_only_lasts_for_every_session_and_changes_nothing() {
+        let path = path();
+        seed(&path);
+        let before = rows(&path);
+        for (mode, sessions) in [("read", 3), ("maintain", 1)] {
+            crate::access::set_agent_access(&path, mode).unwrap();
+            let before = rows(&path);
+            for _ in 0..sessions {
+                let mut messages = vec![
+                    json!({ "jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {
+                    "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "claude-code", "version": "2" },
+                } }),
+                ];
+                for (index, (tool, arguments)) in read_calls().into_iter().enumerate() {
+                    messages.push(
+                        json!({ "jsonrpc": "2.0", "id": index + 1, "method": "tools/call",
+                                          "params": { "name": tool, "arguments": arguments } }),
+                    );
+                }
+                let replies = exchange(&path, &messages);
+                assert_eq!(replies.len(), 6);
+                for reply in &replies[1..] {
+                    assert_eq!(reply["result"]["isError"], false, "{mode}: {reply:#}");
+                }
+                let status = &replies[1]["result"]["structuredContent"];
+                assert_eq!(
+                    (&status["access"], &status["windowOpen"]),
+                    (&json!(mode), &json!(false))
+                );
+                assert_eq!(rows(&path), before, "{mode}: reading changed a row");
+            }
+        }
+        // Only the person's choices changed anything: no agent's.
+        assert_eq!(
+            rows(&path)
+                .into_iter()
+                .filter(|(table, _)| table != "agent_access")
+                .collect::<Vec<_>>(),
+            before
+                .into_iter()
+                .filter(|(table, _)| table != "agent_access")
+                .collect::<Vec<_>>()
+        );
+        assert!(changes(&path).is_empty());
+        remove(&path);
+    }
+
+    /// With Read and maintain, an agent adds and edits applications and resources with their
+    /// components and references: declared inventory, logged as its own change, never evidence.
+    /// Everything else that changes something is refused before anything is written, and Read only
+    /// refuses the maintenance too.
+    #[test]
+    fn read_and_maintain_adds_and_edits_and_refuses_everything_else() {
+        let path = path();
+        seed(&path);
+        crate::access::set_agent_access(&path, "maintain").unwrap();
+        let mut agent = session(&path, "codex");
+        assert_eq!(
+            use_tool(&mut agent, "status", json!({})).unwrap()["access"],
+            "maintain"
+        );
+        let vps = use_tool(
+            &mut agent,
+            "save_resource",
+            json!({ "name": "VPS", "kind": "server", "operatingSystem": "Ubuntu 24.04" }),
+        )
+        .unwrap();
+        let vps_id = vps["resource"]["id"].as_str().unwrap().to_owned();
+        let spare = use_tool(
+            &mut agent,
+            "get_system",
+            json!({ "type": "resource", "name": "Spare box" }),
+        )
+        .unwrap()["system"]["system"]["id"]
+            .clone();
+        let added = use_tool(
+            &mut agent,
+            "save_application",
+            json!({ "name": "Finanzas", "lifecycle": "development", "version": "0.3.0",
+                    "description": "Cuentas de casa,\nen dos líneas",
+                    "components": [{ "name": "API", "kind": "backend", "runsOn": vps_id },
+                                   { "name": "Base de datos", "kind": "database", "runsOn": vps_id }],
+                    "references": [
+                        { "kind": "repository", "target": "https://github.com/me/finanzas" },
+                        { "kind": "local_copy", "target": r"C:\src\finanzas", "machine": spare },
+                        { "kind": "documentation", "target": "https://github.com/me/finanzas#readme", "label": "README" },
+                    ] }),
+        )
+        .unwrap();
+        let finanzas = added["application"]["id"].as_str().unwrap().to_owned();
+        assert_eq!(
+            (
+                &added["change"]["action"],
+                &added["change"]["source"],
+                &added["change"]["agent"]
+            ),
+            (&json!("created"), &json!("agent"), &json!("codex"))
+        );
+        // Declared, not observed: no record is made, and the system is a gap, never healthy.
+        let listed = use_tool(&mut agent, "list_systems", json!({})).unwrap();
+        let shown = listed["applications"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["system"]["id"] == finanzas.as_str())
+            .unwrap()
+            .clone();
+        assert_eq!(shown["evidence"]["state"], "unobserved");
+        assert_eq!(shown["latestChange"], added["change"]["id"]);
+        let attention = use_tool(&mut agent, "attention", json!({})).unwrap();
+        assert!(attention["neverObserved"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["name"] == "Finanzas"));
+        assert_ne!(attention["status"], "covered");
+        let held = inventory::list(&path).unwrap();
+        let mine = Subject::Application {
+            id: finanzas.clone(),
+        };
+        assert!(held.observations.iter().all(|item| item.subject != mine));
+        assert!(held.incidents.iter().all(|item| item.subject != mine));
+        assert!(held.events.iter().all(|item| item.subject != mine));
+
+        // An edit changes what it names and keeps everything else.
+        let components = added["application"]["components"].clone();
+        let references = added["application"]["references"].clone();
+        let edited = use_tool(
+            &mut agent,
+            "save_application",
+            json!({ "id": finanzas, "basedOn": added["change"]["id"], "version": "0.4.0",
+                    "components": [{ "id": components[0]["id"], "name": "API pública" }],
+                    "references": [{ "kind": "dashboard", "target": "https://grafana.example/d/finanzas" }],
+                    "removeReferences": [references[2]["id"]] }),
+        )
+        .unwrap();
+        let application = &edited["application"];
+        assert_eq!(application["version"], "0.4.0");
+        assert_eq!(
+            application["description"],
+            "Cuentas de casa,\nen dos líneas"
+        );
+        assert_eq!(application["components"][0]["name"], "API pública");
+        assert_eq!(application["components"][0]["resourceId"], vps_id.as_str());
+        assert_eq!(application["components"][1], components[1]);
+        assert_eq!(application["references"][0], references[0]);
+        assert_eq!(application["references"][1], references[1]);
+        assert_eq!(application["references"][2]["kind"], "dashboard");
+        assert_eq!(application["references"].as_array().unwrap().len(), 3);
+        let fields: Vec<&str> = edited["change"]["changes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|change| change["field"].as_str().unwrap())
+            .collect();
+        assert_eq!(fields, ["version", "components", "references"]);
+        let described = use_tool(
+            &mut agent,
+            "save_resource",
+            json!({ "id": vps_id, "basedOn": vps["change"]["id"], "description": "Hetzner CX22" }),
+        )
+        .unwrap();
+        assert_eq!(described["resource"]["operatingSystem"], "Ubuntu 24.04");
+        assert_eq!(described["change"]["agent"], "codex");
+
+        // Every other tool that changes something is refused before it writes anything.
+        let before = rows(&path);
+        for (tool, arguments) in valid_calls() {
+            if read_calls().iter().any(|(read, _)| *read == tool)
+                || writes::MAINTAIN.contains(&tool)
+            {
+                continue;
+            }
+            let refused = use_tool(&mut agent, tool, arguments).unwrap_err();
+            assert!(
+                refused.contains("read and maintain the inventory")
+                    && refused.ends_with("(access_denied)"),
+                "{tool}: {refused}"
+            );
+        }
+        assert_eq!(rows(&path), before);
+        assert!(!path.parent().unwrap().join("backups").exists());
+        // Each tool says which access it needs.
+        for tool in tools() {
+            let name = tool["name"].as_str().unwrap();
+            let description = tool["description"].as_str().unwrap();
+            if writes::MAINTAIN.contains(&name) {
+                assert!(
+                    description.starts_with("Needs Read and maintain."),
+                    "{name}"
+                );
+            } else if tool["annotations"]["readOnlyHint"] == false {
+                assert!(description.starts_with("Needs Read and write."), "{name}");
+            }
+        }
+
+        // Read only refuses the maintenance, and says what the person could choose.
+        crate::access::set_agent_access(&path, "read").unwrap();
+        let before = rows(&path);
+        let refused = use_tool(
+            &mut agent,
+            "save_application",
+            json!({ "name": "Otra", "lifecycle": "development" }),
+        )
+        .unwrap_err();
+        assert!(refused.contains("choose Read and maintain"), "{refused}");
+        assert_eq!(rows(&path), before);
+        remove(&path);
+    }
+
+    /// An agent never leaves two applications or resources with one name: the same call twice, the
+    /// same name in other letters, or a rename onto another's name add nothing. An edit repeated
+    /// after its answer was lost is refused too, since the first one changed what both were based
+    /// on.
+    #[test]
+    fn a_repeated_call_adds_and_changes_nothing_twice() {
+        let path = path();
+        seed(&path);
+        crate::access::set_agent_access(&path, "maintain").unwrap();
+        let mut agent = session(&path, "claude-code");
+        let call = json!({ "name": "Finanzas", "lifecycle": "development",
+                           "components": [{ "name": "API", "kind": "backend" }] });
+        let added = use_tool(&mut agent, "save_application", call.clone()).unwrap();
+        let id = added["application"]["id"].as_str().unwrap().to_owned();
+        let logged = changes(&path).len();
+        let before = rows(&path);
+        for (tool, arguments, names) in [
+            ("save_application", call.clone(), "«Finanzas»"),
+            (
+                "save_application",
+                json!({ "name": "  fINANZAS ", "lifecycle": "testing" }),
+                "«Finanzas»",
+            ),
+            (
+                "save_resource",
+                json!({ "name": "SPARE BOX", "kind": "server" }),
+                "«Spare box»",
+            ),
+            (
+                "save_application",
+                json!({ "id": id, "basedOn": added["change"]["id"], "name": "shop" }),
+                "«Shop»",
+            ),
+            (
+                "save_application",
+                json!({ "id": id, "basedOn": added["change"]["id"],
+                        "components": [{ "name": "api", "kind": "frontend" }] }),
+                "already has a component named «API»",
+            ),
+        ] {
+            let refused = use_tool(&mut agent, tool, arguments).unwrap_err();
+            assert!(
+                refused.contains(names) && refused.ends_with("(already_exists)"),
+                "{refused}"
+            );
+        }
+        assert_eq!(rows(&path), before);
+        assert_eq!(changes(&path).len(), logged);
+        // The refusal names the one that is there, so that the agent can edit it instead.
+        let refused = use_tool(&mut agent, "save_application", call).unwrap_err();
+        assert!(refused.contains(&format!("(id {id})")), "{refused}");
+
+        let edit = json!({ "id": id, "basedOn": added["change"]["id"], "version": "1.0.0" });
+        let edited = use_tool(&mut agent, "save_application", edit.clone()).unwrap();
+        let after = rows(&path);
+        let refused = use_tool(&mut agent, "save_application", edit).unwrap_err();
+        assert!(refused.ends_with("(changed_since_read)"), "{refused}");
+        assert!(
+            refused.contains(&format!(
+                "its latestChange is now {}",
+                edited["change"]["id"].as_str().unwrap()
+            )),
+            "{refused}"
+        );
+        assert_eq!(rows(&path), after);
+
+        // Keeping a name the window let two systems share is not refused.
+        save_resource(
+            &path,
+            ResourceInput {
+                id: None,
+                name: "Spare box".into(),
+                kind: "server".into(),
+                description: String::new(),
+                operating_system: String::new(),
+                references: vec![],
+            },
+        )
+        .unwrap();
+        let twin = inventory::list(&path)
+            .unwrap()
+            .resources
+            .into_iter()
+            .find(|item| item.name == "Spare box" && item.kind == "server")
+            .unwrap()
+            .id;
+        let read = based_on(&mut agent, "resource", &twin);
+        use_tool(
+            &mut agent,
+            "save_resource",
+            json!({ "id": twin, "basedOn": read, "operatingSystem": "Linux" }),
+        )
+        .unwrap();
+        remove(&path);
+    }
+
+    /// An edit is checked against the state it was based on inside its own transaction, with
+    /// SQLite's write lock held: none overwrites a change it never saw, the person's included, and
+    /// of several sessions that read the same state and edit it at once, one does and every other is
+    /// refused. Several adding the same application at once add one.
+    #[test]
+    fn edits_made_at_once_never_overwrite_each_other() {
+        let path = path();
+        let (shop, _) = seed(&path);
+        crate::access::set_agent_access(&path, "maintain").unwrap();
+        // A connection held open, as the window holds one, so that what this measures is the
+        // transaction's check, and not the gate's look at a log that comes and goes as connections
+        // open and close (see docs/puerta-para-agentes.md).
+        let window = inventory::open(&path).unwrap();
+        let mut first = session(&path, "claude-code");
+        let mut second = session(&path, "codex");
+        let read = based_on(&mut first, "application", &shop);
+        assert_eq!(based_on(&mut second, "application", &shop), read);
+        let current = |path: &Path| {
+            inventory::list(path)
+                .unwrap()
+                .applications
+                .into_iter()
+                .find(|item| item.id == shop)
+                .unwrap()
+        };
+        // The person changes it in the window after both agents read it.
+        let shown = current(&path);
+        save_application(
+            &path,
+            ApplicationInput {
+                id: Some(shop.clone()),
+                name: shown.name.clone(),
+                description: "Changed by the person".into(),
+                lifecycle: shown.lifecycle.clone(),
+                version: shown.version.clone(),
+                components: shown
+                    .components
+                    .iter()
+                    .map(|component| ComponentInput {
+                        id: Some(component.id.clone()),
+                        name: component.name.clone(),
+                        kind: component.kind.clone(),
+                        resource_id: component.resource_id.clone(),
+                    })
+                    .collect(),
+                references: vec![],
+            },
+        )
+        .unwrap();
+        let before = rows(&path);
+        for agent in [&mut first, &mut second] {
+            let refused = use_tool(
+                agent,
+                "save_application",
+                json!({ "id": shop, "basedOn": read, "description": "Overwritten" }),
+            )
+            .unwrap_err();
+            assert!(refused.ends_with("(changed_since_read)"), "{refused}");
+        }
+        assert_eq!(rows(&path), before);
+        // Read again, the edit goes in on top of what the person did.
+        let read = based_on(&mut first, "application", &shop);
+        use_tool(
+            &mut first,
+            "save_application",
+            json!({ "id": shop, "basedOn": read, "version": "2.5.0" }),
+        )
+        .unwrap();
+        let now = current(&path);
+        assert_eq!(
+            (now.description.as_str(), now.version.as_deref()),
+            ("Changed by the person", Some("2.5.0"))
+        );
+
+        // Eight sessions at once, all based on the same state, each adding a reference.
+        let at_once = |arguments: &dyn Fn(usize) -> Value| -> Vec<Result<Value, String>> {
+            let start = std::sync::Barrier::new(8);
+            std::thread::scope(|scope| {
+                let handles: Vec<_> = (0..8)
+                    .map(|number| {
+                        let (path, start, arguments) = (&path, &start, arguments(number));
+                        scope.spawn(move || {
+                            let mut agent = session(path, &format!("agent-{number}"));
+                            start.wait();
+                            use_tool(&mut agent, "save_application", arguments)
+                        })
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|handle| handle.join().unwrap())
+                    .collect()
+            })
+        };
+        let read = based_on(&mut first, "application", &shop);
+        let outcomes = at_once(&|number| {
+            json!({ "id": shop, "basedOn": read,
+                    "references": [{ "kind": "documentation", "target": format!("https://docs.example/{number}") }] })
+        });
+        let done = outcomes.iter().filter(|outcome| outcome.is_ok()).count();
+        assert_eq!(done, 1, "{outcomes:#?}");
+        assert!(
+            outcomes.iter().all(|outcome| outcome
+                .as_ref()
+                .err()
+                .is_none_or(|refused| refused.ends_with("(changed_since_read)"))),
+            "{outcomes:#?}"
+        );
+        assert_eq!(current(&path).references.len(), 1);
+
+        let outcomes = at_once(&|_| json!({ "name": "Nómina", "lifecycle": "development" }));
+        let done = outcomes.iter().filter(|outcome| outcome.is_ok()).count();
+        assert_eq!(done, 1, "{outcomes:#?}");
+        assert!(
+            outcomes.iter().all(|outcome| outcome
+                .as_ref()
+                .err()
+                .is_none_or(|refused| refused.ends_with("(already_exists)"))),
+            "{outcomes:#?}"
+        );
+        let named = inventory::list(&path)
+            .unwrap()
+            .applications
+            .iter()
+            .filter(|item| item.name == "Nómina")
+            .count();
+        assert_eq!(named, 1);
+        drop(window);
+        remove(&path);
+    }
+
+    /// Leaving a component or a reference out of an edit never removes it. Removing one takes
+    /// naming it, and naming one the system does not have, another system's included, does
+    /// nothing at all.
+    #[test]
+    fn leaving_an_item_out_never_removes_it() {
+        let path = path();
+        let (shop, host) = seed(&path);
+        crate::access::set_agent_access(&path, "maintain").unwrap();
+        let mut agent = session(&path, "claude-code");
+        let added = use_tool(
+            &mut agent,
+            "save_application",
+            json!({ "name": "Finanzas", "lifecycle": "development",
+                    "components": [{ "name": "API", "kind": "backend", "runsOn": host }, { "name": "Web", "kind": "frontend" }],
+                    "references": [{ "kind": "repository", "target": "https://github.com/me/finanzas" },
+                                   { "kind": "documentation", "target": "https://docs.example/finanzas", "label": "Docs" }] }),
+        )
+        .unwrap();
+        let id = added["application"]["id"].as_str().unwrap().to_owned();
+        let component = |index: usize| added["application"]["components"][index]["id"].clone();
+        let reference = |index: usize| added["application"]["references"][index]["id"].clone();
+        let others = inventory::list(&path)
+            .unwrap()
+            .applications
+            .into_iter()
+            .find(|item| item.id == shop)
+            .unwrap()
+            .components[0]
+            .id
+            .clone();
+        let names = |saved: &Value| -> Vec<String> {
+            saved["application"]["components"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|item| item["name"].as_str().unwrap().to_owned())
+                .collect()
+        };
+        // Given only a new component, an edit keeps both it had.
+        let grown = use_tool(
+            &mut agent,
+            "save_application",
+            json!({ "id": id, "basedOn": added["change"]["id"],
+                    "components": [{ "name": "Worker", "kind": "docker" }] }),
+        )
+        .unwrap();
+        assert_eq!(names(&grown), ["API", "Web", "Worker"]);
+        // Changing one field of one reference keeps the other reference and the other fields.
+        let moved = use_tool(
+            &mut agent,
+            "save_application",
+            json!({ "id": id, "basedOn": grown["change"]["id"],
+                    "references": [{ "id": reference(0), "target": "https://github.com/me/finanzas-v2" }] }),
+        )
+        .unwrap();
+        let kept = &moved["application"]["references"];
+        assert_eq!(
+            (
+                &kept[0]["id"],
+                &kept[0]["target"],
+                &kept[0]["kind"],
+                &kept[0]["label"]
+            ),
+            (
+                &reference(0),
+                &json!("https://github.com/me/finanzas-v2"),
+                &json!("repository"),
+                &Value::Null
+            )
+        );
+        assert_eq!(kept[1], added["application"]["references"][1]);
+
+        let at = moved["change"]["id"].clone();
+        let before = rows(&path);
+        for (arguments, why) in [
+            (
+                json!({ "id": id, "basedOn": at, "removeComponents": ["ghost"] }),
+                "«Finanzas» has no component with the id ghost".to_owned(),
+            ),
+            (
+                json!({ "id": id, "basedOn": at, "removeComponents": [others] }),
+                format!("«Finanzas» has no component with the id {others}"),
+            ),
+            (
+                json!({ "id": id, "basedOn": at, "components": [{ "id": others, "name": "Taken" }] }),
+                format!("«Finanzas» has no component with the id {others}"),
+            ),
+            (
+                json!({ "id": id, "basedOn": at, "removeReferences": ["ghost"] }),
+                "«Finanzas» has no reference with the id ghost".to_owned(),
+            ),
+            (
+                json!({ "id": id, "basedOn": at, "removeComponents": [component(0)],
+                        "components": [{ "id": component(0), "name": "Both" }] }),
+                "change that component or remove it, not both".to_owned(),
+            ),
+        ] {
+            let refused = use_tool(&mut agent, "save_application", arguments).unwrap_err();
+            assert!(refused.contains(&why), "{refused}");
+        }
+        assert_eq!(rows(&path), before);
+
+        // Named, it goes, and the change log says what it was. `runsOn: null` unlinks only the
+        // component it names.
+        let trimmed = use_tool(
+            &mut agent,
+            "save_application",
+            json!({ "id": id, "basedOn": at, "removeComponents": [component(1)],
+                    "removeReferences": [reference(1)],
+                    "components": [{ "id": component(0), "runsOn": null }] }),
+        )
+        .unwrap();
+        assert_eq!(names(&trimmed), ["API", "Worker"]);
+        assert_eq!(
+            trimmed["application"]["components"][0]["resourceId"],
+            Value::Null
+        );
+        assert_eq!(
+            trimmed["application"]["references"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        let fields: Vec<&str> = trimmed["change"]["changes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|change| change["field"].as_str().unwrap())
+            .collect();
+        assert_eq!(fields, ["components", "references"]);
+        remove(&path);
+    }
+
+    /// An agent's mistaken addition is put right. The agent can edit it (a name, a lifecycle) but
+    /// not delete it; the person deletes it in the window while it has no history, and once it has
+    /// some it is kept and archived. Every step stays in the change log.
+    #[test]
+    fn a_mistaken_addition_is_corrected_archived_or_deleted_by_the_person() {
+        let path = path();
+        seed(&path);
+        crate::access::set_agent_access(&path, "maintain").unwrap();
+        let mut agent = session(&path, "claude-code");
+        let mut add = |name: &str| {
+            let added = use_tool(
+                &mut agent,
+                "save_application",
+                json!({ "name": name, "lifecycle": "development" }),
+            )
+            .unwrap();
+            (
+                added["application"]["id"].as_str().unwrap().to_owned(),
+                added["change"]["id"].clone(),
+            )
+        };
+        let (typo, typo_read) = add("Finanzaz");
+        let (wrong, _) = add("Prueba");
+        let (observed, _) = add("Temporal");
+        let refused =
+            use_tool(&mut agent, "delete_application", json!({ "id": typo })).unwrap_err();
+        assert!(refused.ends_with("(access_denied)"), "{refused}");
+        let fixed = use_tool(
+            &mut agent,
+            "save_application",
+            json!({ "id": typo, "basedOn": typo_read, "name": "Finanzas" }),
+        )
+        .unwrap();
+        assert_eq!(
+            fixed["change"]["summary"],
+            "Updated application «Finanzas»: name «Finanzaz» → «Finanzas»"
+        );
+        // Added altogether by mistake, and with no history: the person deletes it.
+        inventory::delete_application(&path, &wrong).unwrap();
+        // Once it has history it is kept: archived instead.
+        record_observation(
+            &path,
+            ObservationInput {
+                subject: Subject::Application {
+                    id: observed.clone(),
+                },
+                result: "healthy".into(),
+                summary: "Seen running".into(),
+                observed_at: None,
+                valid_for_minutes: 60,
+            },
+        )
+        .unwrap();
+        let kept = inventory::delete_application(&path, &observed).unwrap_err();
+        assert!(
+            kept.message.contains("DevHQ keeps history"),
+            "{}",
+            kept.message
+        );
+        let read = based_on(&mut agent, "application", &observed);
+        use_tool(
+            &mut agent,
+            "save_application",
+            json!({ "id": observed, "basedOn": read, "lifecycle": "archived" }),
+        )
+        .unwrap();
+        let held = inventory::list(&path).unwrap();
+        let names: Vec<&str> = held
+            .applications
+            .iter()
+            .map(|item| item.name.as_str())
+            .collect();
+        // By name, as the inventory lists them.
+        assert_eq!(names, ["Finanzas", "Shop", "Temporal"]);
+        // The log, oldest first: who added, fixed, deleted and archived what.
+        let mut steps: Vec<(String, String, String)> = held
+            .changes
+            .iter()
+            .filter(|change| {
+                matches!(&change.subject, Subject::Application { id } if [&typo, &wrong, &observed].contains(&id))
+            })
+            .map(|change| {
+                (
+                    change.subject_name.clone(),
+                    change.action.clone(),
+                    change.source.clone(),
+                )
+            })
+            .collect();
+        steps.reverse();
+        let step = |name: &str, action: &str, source: &str| {
+            (name.to_owned(), action.to_owned(), source.to_owned())
+        };
+        assert_eq!(
+            steps,
+            [
+                step("Finanzaz", "created", "agent"),
+                step("Prueba", "created", "agent"),
+                step("Temporal", "created", "agent"),
+                step("Finanzas", "updated", "agent"),
+                step("Prueba", "deleted", "manual"),
+                step("Temporal", "updated", "agent"),
+            ]
+        );
+        remove(&path);
+    }
+
+    /// What a writer killed while it held the log leaves needs recovering: the gate refuses to
+    /// read or maintain it, changing no file, and once the window's start recovers it, every change
+    /// the agent made is there once, and the agent maintains it again.
+    #[test]
+    fn recovers_what_a_killed_writer_left_with_each_change_kept_once() {
+        let path = path();
+        seed(&path);
+        crate::access::set_agent_access(&path, "maintain").unwrap();
+        let mut agent = session(&path, "claude-code");
+        use_tool(
+            &mut agent,
+            "save_application",
+            json!({ "name": "Finanzas", "lifecycle": "development" }),
+        )
+        .unwrap();
+        crate::inventory::tests::kill(crate::inventory::tests::writer(&path, "log"), &path);
+        let folder = path.parent().unwrap().to_owned();
+        let left = files(&folder);
+        for (tool, arguments) in [
+            ("list_systems", json!({})),
+            (
+                "save_application",
+                json!({ "name": "Otra", "lifecycle": "development" }),
+            ),
+        ] {
+            let refused = use_tool(&mut agent, tool, arguments).unwrap_err();
+            assert!(refused.ends_with("(needs_recovery)"), "{tool}: {refused}");
+        }
+        assert_eq!(files(&folder), left);
+        // The window's start recovers it.
+        inventory::start(&path).unwrap();
+        let held = inventory::list(&path).unwrap();
+        let named = |name: &str| {
+            held.applications
+                .iter()
+                .filter(|item| item.name == name)
+                .count()
+                + held
+                    .resources
+                    .iter()
+                    .filter(|item| item.name == name)
+                    .count()
+        };
+        assert_eq!(
+            (named("Finanzas"), named("Live box"), named("Otra")),
+            (1, 1, 0)
+        );
+        use_tool(
+            &mut agent,
+            "save_application",
+            json!({ "name": "Otra", "lifecycle": "development" }),
+        )
+        .unwrap();
+        remove(&path);
+    }
+
+    thread_local! {
+        /// What a test does between the gate's read of the inventory and its read of each system's
+        /// latest change (see `inventory_with_latest`): the instant in which another connection
+        /// commits a change.
+        static BETWEEN_READS: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    pub(super) fn between_reads() {
+        BETWEEN_READS.with(|hook| {
+            if let Some(hook) = hook.borrow_mut().as_mut() {
+                hook();
+            }
+        });
+    }
+
+    /// The one with `id` among the `components` of a system as get_system gives it.
+    fn component_of<'a>(system: &'a Value, id: &str) -> &'a Value {
+        system["components"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|component| component["id"] == id)
+            .unwrap()
+    }
+
+    /// A relation never follows a name to another resource. Shop's API runs on «Host» (A). After
+    /// the agent read Shop, another session renames A and gives its name to a new resource, B:
+    /// neither change is Shop's, so Shop's latestChange, and the edit's `basedOn`, still hold. An
+    /// edit that named the resource «Host» would move the API to B, which the agent never saw; so
+    /// would a new component or a path named so, also in a new application. Each is refused and
+    /// nothing changes. Named by A's id, as get_system gave it, the edit keeps the API on A, under
+    /// its new name. A resource being saved can still be the machine of its own paths by its name.
+    #[test]
+    fn a_relation_never_follows_a_name_to_another_resource() {
+        let path = path();
+        inventory::start(&path).unwrap();
+        crate::access::set_agent_access(&path, "maintain").unwrap();
+        let mut agent = session(&path, "claude-code");
+        let mut other = session(&path, "codex");
+        let host = use_tool(
+            &mut agent,
+            "save_resource",
+            json!({ "name": "Host", "kind": "server" }),
+        )
+        .unwrap()["resource"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let shop = use_tool(
+            &mut agent,
+            "save_application",
+            json!({ "name": "Shop", "lifecycle": "production",
+                    "components": [{ "name": "API", "kind": "backend", "runsOn": host }] }),
+        )
+        .unwrap()["application"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let read = use_tool(
+            &mut agent,
+            "get_system",
+            json!({ "type": "application", "id": shop }),
+        )
+        .unwrap()["system"]
+            .clone();
+        let shop_read = read["latestChange"].clone();
+        let api = read["components"][0]["id"].as_str().unwrap().to_owned();
+        assert_eq!(
+            read["components"][0]["runsOn"],
+            json!({ "type": "resource", "id": host, "name": "Host" })
+        );
+
+        // Another session renames A, then gives its name to B.
+        let host_read = based_on(&mut other, "resource", &host);
+        use_tool(
+            &mut other,
+            "save_resource",
+            json!({ "id": host, "basedOn": host_read, "name": "Old host" }),
+        )
+        .unwrap();
+        let b = use_tool(
+            &mut other,
+            "save_resource",
+            json!({ "name": "Host", "kind": "server" }),
+        )
+        .unwrap()["resource"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(based_on(&mut agent, "application", &shop), shop_read);
+
+        let before = rows(&path);
+        let logged = changes(&path).len();
+        for (arguments, at) in [
+            (
+                json!({ "id": shop, "basedOn": shop_read, "components": [{ "id": api, "runsOn": "Host" }] }),
+                "components[0].runsOn",
+            ),
+            (
+                json!({ "id": shop, "basedOn": shop_read,
+                        "components": [{ "name": "Worker", "kind": "backend", "runsOn": " host" }] }),
+                "components[0].runsOn",
+            ),
+            (
+                json!({ "id": shop, "basedOn": shop_read,
+                        "references": [{ "kind": "repository", "target": "https://git.example/shop" },
+                                       { "kind": "logs", "target": "/var/log/shop", "machine": "Host" }] }),
+                "references[1].machine",
+            ),
+            (
+                json!({ "name": "Blog", "lifecycle": "development",
+                        "components": [{ "name": "Web", "kind": "frontend", "runsOn": "HOST" }] }),
+                "components[0].runsOn",
+            ),
+        ] {
+            let refused = use_tool(&mut agent, "save_application", arguments).unwrap_err();
+            assert!(
+                refused.starts_with(&format!("`{at}` is «"))
+                    && refused.contains("a relation names a resource by its id")
+                    && refused.ends_with("(invalid_input)"),
+                "{refused}"
+            );
+            assert_eq!(rows(&path), before);
+        }
+        assert_eq!(changes(&path).len(), logged);
+
+        // By its id the relation stays with A, whatever A is called now; B stays unused.
+        let edited = use_tool(
+            &mut agent,
+            "save_application",
+            json!({ "id": shop, "basedOn": shop_read, "version": "2",
+                    "components": [{ "id": api, "runsOn": host }] }),
+        )
+        .unwrap();
+        assert_eq!(edited["application"]["version"], "2");
+        let shown = use_tool(
+            &mut agent,
+            "get_system",
+            json!({ "type": "application", "id": shop }),
+        )
+        .unwrap()["system"]
+            .clone();
+        assert_eq!(
+            component_of(&shown, &api)["runsOn"],
+            json!({ "type": "resource", "id": host, "name": "Old host" })
+        );
+        let unused = use_tool(
+            &mut agent,
+            "get_system",
+            json!({ "type": "resource", "id": b }),
+        )
+        .unwrap()["system"]
+            .clone();
+        assert_eq!(unused["usedBy"], json!([]));
+
+        // A resource being saved names itself as the machine of its own paths, by its name.
+        let laptop = use_tool(
+            &mut agent,
+            "save_resource",
+            json!({ "name": "Laptop", "kind": "workstation",
+                    "references": [{ "kind": "local_copy", "target": "/home/me/notes", "machine": "laptop" }] }),
+        )
+        .unwrap()["resource"]
+            .clone();
+        assert_eq!(laptop["references"][0]["machineId"], laptop["id"]);
+        remove(&path);
+    }
+
+    /// The names of an application's components are checked on the list as it would be saved,
+    /// whatever the order of the call's items: no component the call adds or renames ends with the
+    /// name of another, so renaming API to DB beside a DB is refused, and so is adding a component
+    /// with the name another one is being renamed to. A rename that frees a name for another in the
+    /// same call, a swap, or a rename into the name of a component the call removes, leaves no two
+    /// with one name and is saved. Two components the person gave one name in the window stay as
+    /// they are while an edit leaves their names alone, and no edit adds a third.
+    #[test]
+    fn component_names_are_checked_on_the_list_as_it_would_be_saved() {
+        let path = path();
+        let (shop, _) = seed(&path);
+        crate::access::set_agent_access(&path, "maintain").unwrap();
+        let mut agent = session(&path, "claude-code");
+        let shown = use_tool(
+            &mut agent,
+            "get_system",
+            json!({ "type": "application", "id": shop }),
+        )
+        .unwrap()["system"]
+            .clone();
+        let api = shown["components"][0]["id"].as_str().unwrap().to_owned();
+        let added = use_tool(
+            &mut agent,
+            "save_application",
+            json!({ "id": shop, "basedOn": shown["latestChange"],
+                    "components": [{ "name": "DB", "kind": "database" }] }),
+        )
+        .unwrap();
+        let db = added["application"]["components"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|component| component["name"] == "DB")
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let names = |agent: &mut Session| -> Vec<String> {
+            let shown = use_tool(
+                agent,
+                "get_system",
+                json!({ "type": "application", "id": shop }),
+            )
+            .unwrap()["system"]
+                .clone();
+            let mut names: Vec<String> = shown["components"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|component| component["name"].as_str().unwrap().to_owned())
+                .collect();
+            names.sort();
+            names
+        };
+
+        let before = rows(&path);
+        let based = based_on(&mut agent, "application", &shop);
+        for (components, says) in [
+            (
+                json!({ "components": [{ "id": api, "name": "DB" }] }),
+                format!("already has a component named «DB» (id {db}), so the component {api} cannot take that name"),
+            ),
+            (
+                json!({ "components": [{ "id": api, "name": " db" }] }),
+                format!("already has a component named «DB» (id {db}), so the component {api} cannot take that name"),
+            ),
+            (
+                json!({ "components": [{ "name": "db", "kind": "database" }] }),
+                format!("already has a component named «DB» (id {db}). Nothing was done: to change it, name it by its id."),
+            ),
+            (
+                json!({ "components": [{ "name": "Cache", "kind": "database" }, { "id": api, "name": "cache" }] }),
+                "This call would leave «Shop» with two components named «cache»".to_owned(),
+            ),
+            (
+                json!({ "components": [{ "id": api, "name": "Cache" }, { "name": "Cache", "kind": "database" }] }),
+                "This call would leave «Shop» with two components named «Cache»".to_owned(),
+            ),
+            (
+                json!({ "components": [{ "name": "Queue", "kind": "backend" }, { "name": "QUEUE", "kind": "backend" }] }),
+                "This call would leave «Shop» with two components named «Queue»".to_owned(),
+            ),
+        ] {
+            let mut arguments = components.as_object().unwrap().clone();
+            arguments.insert("id".into(), json!(shop));
+            arguments.insert("basedOn".into(), based.clone());
+            let refused =
+                use_tool(&mut agent, "save_application", Value::Object(arguments)).unwrap_err();
+            assert!(
+                refused.contains(&says) && refused.ends_with("(already_exists)"),
+                "{says}\n{refused}"
+            );
+            assert_eq!(rows(&path), before);
+        }
+
+        // What leaves no two with one name is saved, whatever the order of the items.
+        let mut based = based;
+        for (components, after) in [
+            // A new API added before the old one is renamed, which frees its name.
+            (
+                json!({ "components": [{ "name": "API", "kind": "backend" }, { "id": api, "name": "Gateway" }] }),
+                vec!["API", "DB", "Gateway"],
+            ),
+            // A swap.
+            (
+                json!({ "components": [{ "id": api, "name": "DB" }, { "id": db, "name": "Gateway" }] }),
+                vec!["API", "DB", "Gateway"],
+            ),
+            // A rename into the name of a component the call removes.
+            (
+                json!({ "removeComponents": [db], "components": [{ "id": api, "name": "Gateway" }] }),
+                vec!["API", "Gateway"],
+            ),
+        ] {
+            let mut arguments = components.as_object().unwrap().clone();
+            arguments.insert("id".into(), json!(shop));
+            arguments.insert("basedOn".into(), based.clone());
+            let saved = use_tool(&mut agent, "save_application", Value::Object(arguments)).unwrap();
+            based = saved["change"]["id"].clone();
+            assert_eq!(names(&mut agent), after);
+        }
+
+        // Two «Worker» components the person saved in the window, which allows it.
+        let stored = inventory::list(&path).unwrap();
+        let mine = stored
+            .applications
+            .iter()
+            .find(|item| item.id == shop)
+            .unwrap();
+        let mut components: Vec<ComponentInput> = mine
+            .components
+            .iter()
+            .map(|component| ComponentInput {
+                id: Some(component.id.clone()),
+                name: component.name.clone(),
+                kind: component.kind.clone(),
+                resource_id: component.resource_id.clone(),
+            })
+            .collect();
+        for _ in 0..2 {
+            components.push(ComponentInput {
+                id: None,
+                name: "Worker".into(),
+                kind: "backend".into(),
+                resource_id: None,
+            });
+        }
+        save_application(
+            &path,
+            ApplicationInput {
+                id: Some(shop.clone()),
+                name: mine.name.clone(),
+                description: mine.description.clone(),
+                lifecycle: mine.lifecycle.clone(),
+                version: mine.version.clone(),
+                components,
+                references: mine
+                    .references
+                    .iter()
+                    .map(crate::references::ReferenceInput::from)
+                    .collect(),
+            },
+        )
+        .unwrap();
+        let shown = use_tool(
+            &mut agent,
+            "get_system",
+            json!({ "type": "application", "id": shop }),
+        )
+        .unwrap()["system"]
+            .clone();
+        let workers: Vec<String> = shown["components"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|component| component["name"] == "Worker")
+            .map(|component| component["id"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(workers.len(), 2);
+        let mut based = shown["latestChange"].clone();
+        // Left alone, or changed without taking a new name, they stay as they are.
+        for edit in [
+            json!({ "version": "3" }),
+            json!({ "components": [{ "id": workers[0], "kind": "docker" }, { "id": workers[1], "name": "worker" }] }),
+        ] {
+            let mut arguments = edit.as_object().unwrap().clone();
+            arguments.insert("id".into(), json!(shop));
+            arguments.insert("basedOn".into(), based.clone());
+            let saved = use_tool(&mut agent, "save_application", Value::Object(arguments)).unwrap();
+            based = saved["change"]["id"].clone();
+        }
+        assert_eq!(names(&mut agent), ["API", "Gateway", "Worker", "worker"]);
+        // No edit adds a third, nor gives their name to another.
+        let before = rows(&path);
+        for edit in [
+            json!({ "components": [{ "name": "WORKER", "kind": "backend" }] }),
+            json!({ "components": [{ "id": api, "name": "Worker" }] }),
+        ] {
+            let mut arguments = edit.as_object().unwrap().clone();
+            arguments.insert("id".into(), json!(shop));
+            arguments.insert("basedOn".into(), based.clone());
+            let refused =
+                use_tool(&mut agent, "save_application", Value::Object(arguments)).unwrap_err();
+            assert!(refused.ends_with("(already_exists)"), "{refused}");
+            assert_eq!(rows(&path), before);
+        }
+        // Renaming one of them away from the shared name is fine: it leaves none repeated.
+        let mut arguments = Map::new();
+        arguments.insert("id".into(), json!(shop));
+        arguments.insert("basedOn".into(), based);
+        arguments.insert(
+            "components".into(),
+            json!([{ "id": workers[1], "name": "Scheduler" }]),
+        );
+        use_tool(&mut agent, "save_application", Value::Object(arguments)).unwrap();
+        assert_eq!(names(&mut agent), ["API", "Gateway", "Scheduler", "Worker"]);
+        remove(&path);
+    }
+
+    /// What an agent is shown and the latestChange its edit is based on are of one state of the
+    /// inventory. With a connection holding the log, as an open window does, the gate reads through
+    /// it; the person's change commits between the gate's read of Shop and its read of Shop's latest
+    /// change. Read in one transaction, both are of the state before that change: the agent is
+    /// shown the old version with the old latestChange, and an edit based on it is refused. Read in
+    /// two, the agent would be shown the old version with the new latestChange, and its edit would
+    /// overwrite a change it never saw.
+    #[test]
+    fn what_an_agent_is_shown_and_what_its_edit_is_based_on_are_one_state() {
+        let path = path();
+        let (shop, _) = seed(&path);
+        crate::access::set_agent_access(&path, "maintain").unwrap();
+        let holder = rusqlite::Connection::open(&path).unwrap();
+        holder
+            .query_row("SELECT count(*) FROM applications", [], |_| Ok(()))
+            .unwrap();
+        let mut agent = session(&path, "claude-code");
+        let before = based_on(&mut agent, "application", &shop);
+
+        let person = path.clone();
+        let edited = shop.clone();
+        let mut done = false;
+        BETWEEN_READS.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                if std::mem::replace(&mut done, true) {
+                    return;
+                }
+                let stored = inventory::list(&person).unwrap();
+                let shop = stored
+                    .applications
+                    .iter()
+                    .find(|item| item.id == edited)
+                    .unwrap();
+                save_application(
+                    &person,
+                    ApplicationInput {
+                        id: Some(shop.id.clone()),
+                        name: shop.name.clone(),
+                        description: shop.description.clone(),
+                        lifecycle: shop.lifecycle.clone(),
+                        version: Some("9.9.9".into()),
+                        components: shop
+                            .components
+                            .iter()
+                            .map(|component| ComponentInput {
+                                id: Some(component.id.clone()),
+                                name: component.name.clone(),
+                                kind: component.kind.clone(),
+                                resource_id: component.resource_id.clone(),
+                            })
+                            .collect(),
+                        references: shop
+                            .references
+                            .iter()
+                            .map(crate::references::ReferenceInput::from)
+                            .collect(),
+                    },
+                )
+                .unwrap();
+            }));
+        });
+        let shown = use_tool(
+            &mut agent,
+            "get_system",
+            json!({ "type": "application", "id": shop }),
+        );
+        BETWEEN_READS.with(|hook| *hook.borrow_mut() = None);
+        let shown = shown.unwrap()["system"].clone();
+        assert_eq!(shown["application"]["version"], "2.4.1");
+        assert_eq!(shown["latestChange"], before);
+
+        let refused = use_tool(
+            &mut agent,
+            "save_application",
+            json!({ "id": shop, "basedOn": shown["latestChange"], "description": "Shop front" }),
+        )
+        .unwrap_err();
+        assert!(refused.ends_with("(changed_since_read)"), "{refused}");
+        let now = use_tool(
+            &mut agent,
+            "get_system",
+            json!({ "type": "application", "id": shop }),
+        )
+        .unwrap()["system"]
+            .clone();
+        assert_eq!(
+            (
+                &now["application"]["version"],
+                &now["application"]["description"]
+            ),
+            (&json!("9.9.9"), &json!("Store front"))
+        );
+        drop(holder);
+        remove(&path);
     }
 }
