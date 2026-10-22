@@ -711,6 +711,32 @@ con alcance de usuario, y desde entonces cualquier sesión local de Claude Code 
 claude mcp add --scope user devhq -- "<ruta del ejecutable de DevHQ>" --mcp
 ```
 
+Con Codex se registra igual, en `~/.codex/config.toml`, la configuración que comparten su CLI y su app
+de escritorio:
+
+```sh
+codex mcp add devhq -- "<ruta del ejecutable de DevHQ>" --mcp
+```
+
+Codex pide aprobación antes de cada herramienta MCP que no se declara de solo lectura y, con
+`approval_policy = "never"`, no pregunta: la rechaza él mismo, sin que la llamada llegue a la puerta, y
+el agente solo recibe «MCP tool call requires approval, but approval policy is never». Para que lo que
+un agente puede escribir lo decida el acceso que eliges en DevHQ, aprueba en ese archivo solo las dos
+herramientas de Read and maintain:
+
+```toml
+[mcp_servers.devhq.tools.save_application]
+approval_mode = "approve"
+
+[mcp_servers.devhq.tools.save_resource]
+approval_mode = "approve"
+```
+
+Las demás herramientas que cambian algo, las de Read and write, siguen necesitando la aprobación de
+Codex aunque abras ese acceso en Settings; `default_tools_approval_mode = "approve"` en
+`[mcp_servers.devhq]` las aprobaría todas. La app de escritorio de Codex, como la de Claude, está
+empaquetada, y la puerta que lanza ve `AppData` redirigido (ver más abajo).
+
 El instalador pone el ejecutable en `%LOCALAPPDATA%\DevHQ`. El cliente lanza la puerta al empezar una
 sesión y la termina al cerrarla (al cerrarse stdin): no abre ningún puerto, no acepta conexiones, no
 queda nada corriendo ni guarda credenciales. Abre el mismo `inventory.sqlite3` que la ventana del
@@ -820,8 +846,9 @@ ventana la cambia; ninguna herramienta de la puerta lo hace. Tampoco es una barr
 archivo es tuyo y está en tu disco) sino de intención: ningún agente lee ni escribe en tu inventario
 sin que lo hayas decidido. Con la puerta cerrada solo responde `status`, sin decir qué contiene el inventario,
 para que el agente pueda explicarte dónde abrirla; las demás herramientas responden
-`access_denied`. Settings también muestra el comando de registro con la ruta real del ejecutable,
-para copiarlo; DevHQ nunca lo ejecuta ni toca la configuración de Claude Code. Para leer basta Read
+`access_denied`. Settings también muestra el comando de registro de Claude Code con la ruta real del
+ejecutable, para copiarlo; DevHQ nunca lo ejecuta ni toca la configuración de Claude Code ni la de
+Codex. Para leer basta Read
 only:
 
 | Herramienta    | Qué responde                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
@@ -890,6 +917,11 @@ texto que guarda un agente lleva caracteres de control
 (salvo saltos de línea y tabuladores en una descripción) ni de formato invisibles, como las marcas
 que invierten la dirección del texto o los espacios de ancho cero: harían que lo que ves en DevHQ no
 fuera lo que se guarda.
+
+Con Claude Code y con Codex reales, lanzados desde un proceso sin paquete sobre inventarios sintéticos,
+el modelo, guiado por las descripciones de las herramientas, mandó como `basedOn` el `latestChange` que
+acababa de leer, editó enviando solo lo que cambiaba, nombró los recursos por su ID y, ante
+`changed_since_read`, volvió a leer y guardó su cambio sin deshacer el de la otra sesión.
 
 Lo que guarda un agente con Read and maintain es inventario declarado, nunca evidencia: no crea
 observaciones, incidencias ni eventos, un sistema que da de alta aparece como nunca observado, y el
@@ -993,9 +1025,10 @@ se acepta ahí y, si un nombre parece mal escrito, cuál se quiso decir; no se h
 comprueban los argumentos de la herramienta: el resto de `params` (`_meta`, y lo que añadan
 revisiones posteriores del protocolo) es del protocolo, y la puerta no lo rechaza.
 
-En Windows, una puerta lanzada desde una app empaquetada (MSIX), como la app de escritorio de Claude,
-ve `AppData` redirigido (ver [Arquitectura](#arquitectura)) y podría leer y escribir otro inventario,
-o no encontrar ninguno: `status` lo dice con `storedAt`, y la puerta no se niega a escribir. Claude Code desde una terminal normal no está empaquetado. El workflow de
+En Windows, una puerta lanzada desde una app empaquetada (MSIX), como las apps de escritorio de Claude
+o de Codex, ve `AppData` redirigido (ver [Arquitectura](#arquitectura)) y podría leer y escribir otro
+inventario, o no encontrar ninguno: `status` lo dice con `storedAt`, y la puerta no se niega a escribir.
+Claude Code y Codex desde una terminal normal no están empaquetados. El workflow de
 Windows instala DevHQ y habla con la puerta del ejecutable instalado como lo hace un cliente MCP:
 comprueba que responde por stdin y stdout aunque no tenga consola, que abre el inventario de
 `%APPDATA%`, que ve cerrada la ventana que acaba de cerrarse (Windows soltó su lock) y que termina al

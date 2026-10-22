@@ -15,8 +15,9 @@ ventana que acaba de cerrarse y que termina al cerrarse su entrada; y con la bui
 recorrido nativo sobre WebView2, que la ventana nota sola lo que escribe la puerta y que `status` la ve
 abierta. Lo que solo se ve en la laptop:
 
-- Claude Code de verdad, registrado con `claude mcp add --scope user`, lanzando el `devhq.exe`
-  instalado desde una terminal normal: una sesión que lee y escribe con la ventana abierta.
+- Claude Code y Codex de verdad, registrados como dice el README (`claude mcp add --scope user`,
+  `codex mcp add` con sus dos aprobaciones), lanzando el `devhq.exe` instalado desde una terminal
+  normal: una sesión que lee y escribe con la ventana abierta.
 - Que una escritura de agente vacíe el log también con los bloqueos de Windows (`LockFileEx`), sin
   retener el de escritura mientras espera: los tests
   `an_agents_write_leaves_no_changes_in_a_log_that_another_read_outlives`,
@@ -126,17 +127,13 @@ lo que habría que recuperar (README, «Puerta para agentes»). Lo que eso no ev
 
 ## Por probar con otros clientes
 
-Read and maintain (altas y ediciones con `basedOn`, listas que se fusionan y bajas que se nombran) solo
-se ha probado con los tests de Rust: falta verlo con un Claude Code y un Codex de verdad, desde una
-terminal sin paquete, y comprobar que el modelo, guiado por las descripciones de las herramientas,
-manda `basedOn`, no confunde una lista con la lista completa y nombra los recursos de `runsOn` y
-`machine` por su ID, no por su nombre. Desde las apps de escritorio de Claude y
-de Codex (MSIX), la puerta abre la copia del inventario que Windows redirige para ellas.
+Claude Code y Codex, lanzados desde un proceso sin paquete sobre inventarios sintéticos, ya se han visto
+consultar, dar de alta y editar con Read and maintain (README, «Puerta para agentes»), y ninguno mandó
+un argumento que la puerta estricta rechazara. Desde las apps de escritorio de Claude y de Codex (MSIX),
+la puerta abre la copia del inventario que Windows redirige para ellas, y ningún agente ha escrito
+desde ellas.
 
-Solo Claude Code se ha probado como cliente. Codex u otro cliente MCP por stdio deberían funcionar
-igual (la puerta solo usa `initialize`, `ping`, `tools/list` y `tools/call`), pero nadie lo ha visto.
-
-Desde que la puerta comprueba los argumentos contra los esquemas que publica, un cliente que mande
-claves que una herramienta no declara, o `null` en un campo opcional que no lo admite (como hacen
-algunos clientes con todo lo que el modelo deja vacío), recibe `invalid_input` donde antes la puerta lo
-ignoraba. Ningún cliente real se ha probado aún contra la puerta estricta, tampoco Claude Code.
+Otro cliente MCP por stdio debería funcionar igual (la puerta solo usa `initialize`, `ping`,
+`tools/list` y `tools/call`), pero nadie lo ha visto. Uno que mande claves que una herramienta no
+declara, o `null` en un campo opcional que no lo admite (como hacen algunos clientes con todo lo que el
+modelo deja vacío), recibe `invalid_input` donde antes la puerta lo ignoraba.
