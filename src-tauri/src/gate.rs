@@ -3856,13 +3856,15 @@ mod tests {
     /// refused. Several adding the same application at once add one.
     #[test]
     fn edits_made_at_once_never_overwrite_each_other() {
+        use crate::inventory::tests::{kill, writer};
         let path = path();
         let (shop, _) = seed(&path);
         crate::access::set_agent_access(&path, "maintain").unwrap();
-        // A connection held open, as the window holds one, so that what this measures is the
-        // transaction's check, and not the gate's look at a log that comes and goes as connections
-        // open and close (see docs/puerta-para-agentes.md).
-        let window = inventory::open(&path).unwrap();
+        // A connection held open by a process of its own, as the window holds one, so that what
+        // this measures is the transaction's check, and not the gate's look at a log that comes and
+        // goes as connections open and close (see docs/puerta-para-agentes.md). In this process,
+        // Unix would hide its lock from that look (see `log_held`).
+        let window = writer(&path, "connection");
         let mut first = session(&path, "claude-code");
         let mut second = session(&path, "codex");
         let read = based_on(&mut first, "application", &shop);
@@ -3925,25 +3927,7 @@ mod tests {
         );
 
         // Eight sessions at once, all based on the same state, each adding a reference.
-        let at_once = |arguments: &dyn Fn(usize) -> Value| -> Vec<Result<Value, String>> {
-            let start = std::sync::Barrier::new(8);
-            std::thread::scope(|scope| {
-                let handles: Vec<_> = (0..8)
-                    .map(|number| {
-                        let (path, start, arguments) = (&path, &start, arguments(number));
-                        scope.spawn(move || {
-                            let mut agent = session(path, &format!("agent-{number}"));
-                            start.wait();
-                            use_tool(&mut agent, "save_application", arguments)
-                        })
-                    })
-                    .collect();
-                handles
-                    .into_iter()
-                    .map(|handle| handle.join().unwrap())
-                    .collect()
-            })
-        };
+        let at_once = |arguments: &dyn Fn(usize) -> Value| edits_at_once(&path, 8, arguments);
         let read = based_on(&mut first, "application", &shop);
         let outcomes = at_once(&|number| {
             json!({ "id": shop, "basedOn": read,
@@ -3977,8 +3961,89 @@ mod tests {
             .filter(|item| item.name == "Nómina")
             .count();
         assert_eq!(named, 1);
-        drop(window);
+        kill(window, &path);
         remove(&path);
+    }
+
+    /// The environment variable that makes `edits_when_told` edit: the inventory's path, the
+    /// agent's name, the arguments of its save_application, the file whose appearance starts the
+    /// edit, the file its outcome goes to and the file to create once it is ready, one per line.
+    const EDITOR: &str = "DEVHQ_TEST_GATE_EDITOR";
+
+    /// What `count` agents' save_application with `arguments(number)` give when they run at once
+    /// on the inventory at `path`: each in a process of its own, as each agent's gate is, all
+    /// started together once every one is ready. Threads of one process would not do on Unix: the
+    /// gate looks at the log's locks before it opens a connection (`log_held`), and there that look
+    /// drops every lock its process holds on the log, the other sessions' included.
+    fn edits_at_once(
+        path: &Path,
+        count: usize,
+        arguments: &dyn Fn(usize) -> Value,
+    ) -> Vec<Result<Value, String>> {
+        let folder = path.parent().unwrap();
+        let start = folder.join(format!("start-{}", uuid::Uuid::new_v4()));
+        let editors: Vec<_> = (0..count)
+            .map(|number| {
+                let outcome = folder.join(format!("outcome-{}", uuid::Uuid::new_v4()));
+                let spec = [
+                    path.display().to_string(),
+                    format!("agent-{number}"),
+                    arguments(number).to_string(),
+                    start.display().to_string(),
+                    outcome.display().to_string(),
+                ]
+                .join("\n");
+                let editor =
+                    crate::inventory::tests::helper("gate::tests::edits_when_told", EDITOR, &spec);
+                (editor, outcome)
+            })
+            .collect();
+        std::fs::write(&start, "").unwrap();
+        let outcomes = editors
+            .into_iter()
+            .map(|(editor, outcome)| {
+                assert!(editor.finished(), "an editor failed");
+                let written: Value =
+                    serde_json::from_slice(&std::fs::read(&outcome).unwrap()).unwrap();
+                std::fs::remove_file(outcome).unwrap();
+                match written["refused"].as_str() {
+                    Some(refused) => Err(refused.to_owned()),
+                    None => Ok(written["saved"].clone()),
+                }
+            })
+            .collect();
+        std::fs::remove_file(start).unwrap();
+        outcomes
+    }
+
+    /// Run by `edits_at_once` in a process of its own, as one agent's gate: a session that, once
+    /// the start file appears, calls save_application and writes what it gave; on its own, it does
+    /// nothing.
+    #[test]
+    #[ignore = "a helper that other tests run in a process of its own"]
+    fn edits_when_told() {
+        let Some(spec) = std::env::var_os(EDITOR) else {
+            return;
+        };
+        let spec = spec.into_string().unwrap();
+        let [path, agent, arguments, start, outcome, ready] =
+            spec.split('\n').collect::<Vec<_>>()[..]
+        else {
+            panic!("{spec}")
+        };
+        let mut session = session(Path::new(path), agent);
+        let arguments: Value = serde_json::from_str(arguments).unwrap();
+        std::fs::write(ready, "").unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while !Path::new(start).exists() {
+            assert!(std::time::Instant::now() < deadline, "never told to start");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let written = match use_tool(&mut session, "save_application", arguments) {
+            Ok(saved) => json!({ "saved": saved }),
+            Err(refused) => json!({ "refused": refused }),
+        };
+        std::fs::write(outcome, written.to_string()).unwrap();
     }
 
     /// Leaving a component or a reference out of an edit never removes it. Removing one takes
@@ -4678,53 +4743,36 @@ mod tests {
         let path = path();
         let (shop, _) = seed(&path);
         crate::access::set_agent_access(&path, "maintain").unwrap();
-        let holder = rusqlite::Connection::open(&path).unwrap();
-        holder
-            .query_row("SELECT count(*) FROM applications", [], |_| Ok(()))
-            .unwrap();
+        // The window is a process of its own, which holds the log and commits the person's change
+        // when told. In this process neither would do: on Unix the gate's look at the log never sees
+        // a lock this process holds (see `log_held`), and a write here, beside the gate's read-only
+        // connection, would share the read-only view of the log's index that connection opened.
+        let folder = path.parent().unwrap();
+        let (go, changed) = (folder.join("go"), folder.join("changed"));
+        let spec = [&path, &go, &changed].map(|file| file.display().to_string());
+        let window = crate::inventory::tests::helper(
+            "gate::tests::window_changes_when_told",
+            WINDOW,
+            &format!("{}\n{shop}\n{}\n{}", spec[0], spec[1], spec[2]),
+        );
         let mut agent = session(&path, "claude-code");
         let before = based_on(&mut agent, "application", &shop);
 
-        let person = path.clone();
-        let edited = shop.clone();
         let mut done = false;
         BETWEEN_READS.with(|hook| {
             *hook.borrow_mut() = Some(Box::new(move || {
                 if std::mem::replace(&mut done, true) {
                     return;
                 }
-                let stored = inventory::list(&person).unwrap();
-                let shop = stored
-                    .applications
-                    .iter()
-                    .find(|item| item.id == edited)
-                    .unwrap();
-                save_application(
-                    &person,
-                    ApplicationInput {
-                        id: Some(shop.id.clone()),
-                        name: shop.name.clone(),
-                        description: shop.description.clone(),
-                        lifecycle: shop.lifecycle.clone(),
-                        version: Some("9.9.9".into()),
-                        components: shop
-                            .components
-                            .iter()
-                            .map(|component| ComponentInput {
-                                id: Some(component.id.clone()),
-                                name: component.name.clone(),
-                                kind: component.kind.clone(),
-                                resource_id: component.resource_id.clone(),
-                            })
-                            .collect(),
-                        references: shop
-                            .references
-                            .iter()
-                            .map(crate::references::ReferenceInput::from)
-                            .collect(),
-                    },
-                )
-                .unwrap();
+                std::fs::write(&go, "").unwrap();
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+                while !changed.exists() {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "the window never changed Shop"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
             }));
         });
         let shown = use_tool(
@@ -4758,7 +4806,75 @@ mod tests {
             ),
             (&json!("9.9.9"), &json!("Store front"))
         );
-        drop(holder);
+        crate::inventory::tests::kill(window, &path);
         remove(&path);
+    }
+
+    /// The environment variable that makes `window_changes_when_told` act: the inventory's path,
+    /// the application's id, the file whose appearance makes it change the application, the file it
+    /// creates once it has and the file to create once it is ready, one per line.
+    const WINDOW: &str = "DEVHQ_TEST_GATE_WINDOW";
+
+    /// Run by `what_an_agent_is_shown_and_what_its_edit_is_based_on_are_one_state` in a process of
+    /// its own, as the window: holds a connection to the inventory open, and once told, saves the
+    /// person's change of the application's version to 9.9.9, then holds the connection until it is
+    /// killed; on its own, it does nothing.
+    #[test]
+    #[ignore = "a helper that other tests run in a process of its own"]
+    fn window_changes_when_told() {
+        let Some(spec) = std::env::var_os(WINDOW) else {
+            return;
+        };
+        let spec = spec.into_string().unwrap();
+        let [path, id, go, changed, ready] = spec.split('\n').collect::<Vec<_>>()[..] else {
+            panic!("{spec}")
+        };
+        let path = Path::new(path);
+        // A plain connection, as `writes_until_killed` holds one: its first read opens the log.
+        let held = rusqlite::Connection::open(path).unwrap();
+        held.query_row("SELECT count(*) FROM applications", [], |_| Ok(()))
+            .unwrap();
+        std::fs::write(ready, "").unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while !Path::new(go).exists() {
+            assert!(std::time::Instant::now() < deadline, "never told to change");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let stored = inventory::list(path).unwrap();
+        let shop = stored
+            .applications
+            .iter()
+            .find(|item| item.id == id)
+            .unwrap();
+        save_application(
+            path,
+            ApplicationInput {
+                id: Some(shop.id.clone()),
+                name: shop.name.clone(),
+                description: shop.description.clone(),
+                lifecycle: shop.lifecycle.clone(),
+                version: Some("9.9.9".into()),
+                components: shop
+                    .components
+                    .iter()
+                    .map(|component| ComponentInput {
+                        id: Some(component.id.clone()),
+                        name: component.name.clone(),
+                        kind: component.kind.clone(),
+                        resource_id: component.resource_id.clone(),
+                    })
+                    .collect(),
+                references: shop
+                    .references
+                    .iter()
+                    .map(crate::references::ReferenceInput::from)
+                    .collect(),
+            },
+        )
+        .unwrap();
+        std::fs::write(changed, "").unwrap();
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(60));
+        }
     }
 }

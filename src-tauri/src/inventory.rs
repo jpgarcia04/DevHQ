@@ -5067,7 +5067,10 @@ pub(crate) mod tests {
     /// own, it does nothing. `log`: with a connection held open, as a window holds one, adds the
     /// resource «Live box» to a write-ahead-logged inventory, which stays in the log. `journal`:
     /// starts a write to a rollback-journal inventory, large enough to have reached the file
-    /// already, and never ends it.
+    /// already, and never ends it. `connection`: holds the log of a write-ahead-logged inventory
+    /// open, as a window holds it, and writes nothing; on Unix a test that needs a window's
+    /// connection beside the gate needs it from another process, since `log_held` never sees a
+    /// lock its own process holds.
     #[test]
     #[ignore = "a helper that other tests run in a process of its own"]
     fn writes_until_killed() {
@@ -5088,6 +5091,11 @@ pub(crate) mod tests {
                 // Its own connection commits and closes, and cannot fold the log while `held`
                 // is open.
                 resource(path, "Live box");
+            }
+            "connection" => {
+                // Its first read opens the log and takes the lock that says it is held.
+                held.query_row("SELECT count(*) FROM resources", [], |_| Ok(()))
+                    .unwrap();
             }
             "journal" => {
                 held.pragma_update(None, "cache_size", 2).unwrap();
