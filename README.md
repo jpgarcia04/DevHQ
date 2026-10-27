@@ -362,8 +362,13 @@ copia se lee; en las de otra máquina, la ventana dice que las lee DevHQ allí, 
 por qué no lee ninguna y dónde elegirla. Un fallo de DevHQ al leer se muestra y no guarda nada. «Show
 every reading» carga, solo al abrirlo, todas las lecturas del sistema, las más nuevas primero y de
 200 en 200, en una línea cada una, y dice cuándo están todas y qué lecturas son de rutas que el
-sistema ya no declara; se ofrece en los sistemas que declaran alguna copia local, y las de un sistema
-que ya no declara ninguna siguen guardadas y la puerta las da (`history`). Overview tiene un panel
+sistema ya no declara. Mientras está abierto, cada vez que el inventario recargado trae una lectura
+más nueva de alguna de sus copias (Read en esta ventana o un agente por la puerta), vuelve a cargar
+la primera página y la pone delante de las ya cargadas, cada lectura una sola vez y sin perder las
+anteriores que se hubieran pedido; si esa página no alcanza ninguna de las cargadas, empieza de nuevo
+desde ella para no esconder un hueco. Cerrado no carga nada, y cerrarlo olvida lo cargado. Se ofrece
+en los sistemas que declaran alguna copia local, y las de un sistema que ya no declara ninguna siguen
+guardadas y la puerta las da (`history`). Overview tiene un panel
 **Local copies**, junto a Supervision y fuera de «Needs attention»: cuántas copias tiene esta estación y
 Read all on this computer, que las lee en serie y dice cuántas leyó y cuáles no pudo; el trabajo que
 solo existía en una copia, las copias que no se encontraron donde se declaran, las de esta estación

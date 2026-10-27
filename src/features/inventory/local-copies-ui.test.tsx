@@ -608,6 +608,83 @@ describe('the provider', () => {
     expect(list).toHaveBeenCalledTimes(2)
   })
 
+  // Shop's laptop copy before and after one Read, through the provider, which reloads the
+  // inventory once the reading is kept.
+  function readShopWithHistoryOpen(before: LocalCopy['latest'], after: CopyReading) {
+    vi.spyOn(inventoryApi, 'watchHttpMonitor').mockResolvedValue()
+    const withLatest = (latest: LocalCopy['latest']) => ({
+      ...snapshot,
+      localCopies: copies.map((item) =>
+        item.referenceId === 'shop-laptop' ? { ...item, latest } : item,
+      ),
+    })
+    vi.spyOn(inventoryApi, 'list')
+      .mockResolvedValueOnce(withLatest(before))
+      .mockResolvedValue(withLatest(after))
+    vi.spyOn(inventoryApi, 'thisWorkstation').mockResolvedValue(laptop)
+    vi.spyOn(inventoryApi, 'readCopies').mockResolvedValue({
+      readings: [after],
+      failures: [],
+      thisWorkstation: laptop,
+    })
+    const olderReadings = vi.spyOn(inventoryApi, 'olderReadings')
+    render(
+      <MemoryRouter initialEntries={['/applications/shop']}>
+        <InventoryProvider>
+          <SelectRealInventory />
+          <Routes>
+            <Route path="/applications/:applicationId" element={<RealApplicationDetailPage />} />
+          </Routes>
+        </InventoryProvider>
+      </MemoryRouter>,
+    )
+    return olderReadings
+  }
+
+  it('shows a reading made while every reading is open, without closing it', async () => {
+    const fresh = reading('r-fresh', { observedAt: minutesFromNow(-1) })
+    const olderReadings = readShopWithHistoryOpen(null, fresh)
+      .mockResolvedValueOnce({ readings: [], more: false })
+      .mockResolvedValueOnce({ readings: [fresh], more: false })
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: 'Select real inventory' }))
+    await user.click(await screen.findByRole('button', { name: 'Show every reading' }))
+    expect(await screen.findByText(/No copy of Shop has been read/)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Read C:\\src\\shop' }))
+    const history = await screen.findByRole('list', { name: 'Readings of Shop, newest first' })
+    expect(within(history).getAllByRole('listitem')).toHaveLength(1)
+    expect(screen.queryByText(/No copy of Shop has been read/)).not.toBeInTheDocument()
+    expect(screen.getByText('Every reading of Shop is shown.')).toBeInTheDocument()
+    expect(olderReadings).toHaveBeenCalledTimes(2)
+    expect(olderReadings).toHaveBeenLastCalledWith(shop, null)
+  })
+
+  it('puts a new reading in front of the older ones already loaded, each once', async () => {
+    const first = reading('r-1')
+    const oldest = reading('r-0', { observedAt: minutesFromNow(-60 * 24) })
+    const fresh = reading('r-fresh', { observedAt: minutesFromNow(-1) })
+    readShopWithHistoryOpen(first, fresh)
+      .mockResolvedValueOnce({ readings: [first], more: true })
+      .mockResolvedValueOnce({ readings: [oldest], more: false })
+      .mockResolvedValueOnce({ readings: [fresh, first], more: true })
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: 'Select real inventory' }))
+    await user.click(await screen.findByRole('button', { name: 'Show every reading' }))
+    await user.click(await screen.findByRole('button', { name: 'Show 200 older readings' }))
+    expect(await screen.findByText('Every reading of Shop is shown.')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Read C:\\src\\shop' }))
+    expect(await screen.findByText('Read and kept. What it found is above.')).toBeInTheDocument()
+    const history = screen.getByRole('list', { name: 'Readings of Shop, newest first' })
+    await vi.waitFor(() => expect(within(history).getAllByRole('listitem')).toHaveLength(3))
+    expect(
+      within(history)
+        .getAllByRole('listitem')
+        .map((item) => item.querySelector('time')?.getAttribute('datetime')),
+    ).toEqual([fresh.observedAt, first.observedAt, oldest.observedAt])
+    // The page reaches a reading already loaded, so what was loaded beyond it stays complete.
+    expect(screen.getByText('Every reading of Shop is shown.')).toBeInTheDocument()
+  })
+
   it('says nothing was read when the native process refused before reading', async () => {
     vi.spyOn(inventoryApi, 'watchHttpMonitor').mockResolvedValue()
     vi.spyOn(inventoryApi, 'list').mockResolvedValue(snapshot)
