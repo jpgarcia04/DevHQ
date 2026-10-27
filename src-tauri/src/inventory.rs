@@ -5022,11 +5022,11 @@ pub(crate) mod tests {
     /// change is in the file and the log is empty; a write by the person still leaves it to SQLite.
     #[test]
     fn an_agents_write_leaves_no_changes_in_a_log_that_another_read_outlives() {
-        let folder = Scratch::new("outlived");
-        let path = folder.0.join("inventory.sqlite3");
+        let folder = scratch("outlived");
+        let path = folder.join("inventory.sqlite3");
         start(&path).unwrap();
         access::set_agent_access(&path, "write").unwrap();
-        let release = folder.0.join("release");
+        let release = folder.join("release");
         for (by, name) in [
             (Actor::agent("Claude Code").unwrap(), "Agent's box"),
             (Actor::Person, "Person's box"),
@@ -5075,12 +5075,12 @@ pub(crate) mod tests {
     /// the wait, the change stayed in a log nothing held once the reader closed after the writer.
     #[test]
     fn an_agents_write_waits_for_a_read_in_progress_and_then_empties_the_log() {
-        let folder = Scratch::new("read-ends");
-        let path = folder.0.join("inventory.sqlite3");
+        let folder = scratch("read-ends");
+        let path = folder.join("inventory.sqlite3");
         start(&path).unwrap();
         access::set_agent_access(&path, "write").unwrap();
         let agent = Actor::agent("Claude Code").unwrap();
-        let release = folder.0.join("release");
+        let release = folder.join("release");
         let mut db = open_current(&path).unwrap();
         let tx = begin_write(&mut db, &agent).unwrap();
         let reader = reader(&path, &release, "transaction");
@@ -5121,11 +5121,11 @@ pub(crate) mod tests {
     /// writes. The patience is shortened here to keep the test quick; the window recovers the same.
     #[test]
     fn a_read_that_outlasts_the_fold_blocks_no_write_and_leaves_the_log_to_the_window() {
-        let folder = Scratch::new("read-outlasts");
-        let path = folder.0.join("inventory.sqlite3");
+        let folder = scratch("read-outlasts");
+        let path = folder.join("inventory.sqlite3");
         start(&path).unwrap();
         access::set_agent_access(&path, "write").unwrap();
-        let release = folder.0.join("release");
+        let release = folder.join("release");
         let mut db = open_current(&path).unwrap();
         // The person's write, whose commit leaves the fold to this test, to try with less patience.
         let tx = begin_write(&mut db, &Actor::Person).unwrap();
@@ -5171,25 +5171,14 @@ pub(crate) mod tests {
         assert_eq!(list(&path).unwrap().resources.len(), 2);
     }
 
-    /// A folder of the temporary folder for one test, removed with everything in it when the test
-    /// ends, also when it fails. Declared before what uses it, so that the connections and helper
-    /// processes that hold its files are gone when it is removed.
-    /// `inventory::tests::disposable` (pull request #12) replaces it once that merges.
-    struct Scratch(PathBuf);
-
-    impl Scratch {
-        fn new(what: &str) -> Self {
-            let folder = std::env::temp_dir().join(format!("devhq-{what}-{}", Uuid::new_v4()));
-            std::fs::create_dir(&folder).unwrap();
-            Self(folder)
-        }
-    }
-
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            // Never panics: a panic while a failed test unwinds would abort every test running.
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
+    /// A new folder of the temporary folder for one test, removed with everything in it when the
+    /// test's thread ends, passed or failed (see `disposable`): after the connections and helper
+    /// processes that hold its files are gone.
+    fn scratch(what: &str) -> PathBuf {
+        let folder =
+            disposable(std::env::temp_dir().join(format!("devhq-{what}-{}", Uuid::new_v4())));
+        std::fs::create_dir(&folder).unwrap();
+        folder
     }
 
     /// Another agent's gate reading the inventory at `path` (see `reads_until_released`), started
@@ -5488,7 +5477,8 @@ pub(crate) mod tests {
     /// still refused after the wait, with every file as it was.
     #[test]
     fn tells_a_log_being_folded_from_one_left_behind() {
-        let folder = std::env::temp_dir().join(format!("devhq-settling-{}", Uuid::new_v4()));
+        let folder =
+            disposable(std::env::temp_dir().join(format!("devhq-settling-{}", Uuid::new_v4())));
         std::fs::create_dir(&folder).unwrap();
         let path = folder.join("inventory.sqlite3");
         start(&path).unwrap();
