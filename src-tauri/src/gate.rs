@@ -1005,7 +1005,7 @@ mod tests {
     }
 
     fn remove(path: &Path) {
-        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        crate::inventory::tests::remove_now(path.parent().unwrap());
     }
 
     /// The computer the tests run on: its local folder beside the inventory, and a fingerprint of
@@ -3331,7 +3331,7 @@ mod tests {
                 );
             }
             assert_eq!(files(&folder), before, "{case}: the folder changed");
-            std::fs::remove_dir_all(folder).unwrap();
+            crate::inventory::tests::remove_now(folder);
         }
 
         // Without even its folder, nothing is created either.

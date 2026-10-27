@@ -2971,14 +2971,38 @@ pub(crate) mod tests {
         path
     }
 
+    /// How long a removal tries again while Windows refuses it (a sharing violation) because
+    /// something still holds a file: a process that just ended, or an antivirus scanning what the
+    /// test just wrote. Under the Windows workflow's real-time protection one held a test's file
+    /// past half a second.
+    const REMOVAL_PATIENCE: Duration = Duration::from_secs(10);
+
+    /// Removes `path`, a folder with everything in it, before the test goes on or ends: as
+    /// `std::fs::remove_dir_all` does, but trying again for `REMOVAL_PATIENCE` while the system
+    /// refuses, and failing the test only if it still cannot. What is gone already is fine. Only
+    /// `path`: unlike `remove_disposable`, nothing beside it whose name starts with its own.
+    pub(crate) fn remove_now(path: impl AsRef<Path>) {
+        let path = path.as_ref();
+        let deadline = std::time::Instant::now() + REMOVAL_PATIENCE;
+        loop {
+            match remove_entry(path) {
+                Ok(()) => return,
+                Err(_) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(error) => panic!("{} could not be removed: {error}", path.display()),
+            }
+        }
+    }
+
     /// Removes `path` and every entry beside it whose name starts with its own: what SQLite keeps
     /// beside an inventory, the window's lock, the name `create` builds under. Windows can refuse
-    /// for a moment while a process that just ended still holds a file, so it tries again.
+    /// for a while (see `REMOVAL_PATIENCE`), so it tries again.
     fn remove_disposable(path: &Path) -> std::io::Result<()> {
         let (Some(folder), Some(name)) = (path.parent(), path.file_name()) else {
             return Ok(());
         };
-        let mut attempts = 0;
+        let deadline = std::time::Instant::now() + REMOVAL_PATIENCE;
         loop {
             let removed = std::fs::read_dir(folder).and_then(|entries| {
                 // An entry that fails to list is another test's, gone meanwhile.
@@ -2994,8 +3018,7 @@ pub(crate) mod tests {
                 Ok(())
             });
             match removed {
-                Err(_) if attempts < 10 => {
-                    attempts += 1;
+                Err(_) if std::time::Instant::now() < deadline => {
                     std::thread::sleep(Duration::from_millis(50));
                 }
                 removed => return removed,
@@ -3026,6 +3049,34 @@ pub(crate) mod tests {
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
             removed => removed,
         }
+    }
+
+    /// A folder whose file something holds without sharing it, as an antivirus does while it scans
+    /// what a test just wrote, cannot be removed on Windows until it lets go: `remove_dir_all`
+    /// fails at once, and `remove_now` removes it once the file is released.
+    #[cfg(windows)]
+    #[test]
+    fn removes_a_folder_once_windows_lets_go_of_its_file() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let folder =
+            disposable(std::env::temp_dir().join(format!("devhq-held-{}", Uuid::new_v4())));
+        std::fs::create_dir(&folder).unwrap();
+        let file = folder.join("scanned.sqlite3");
+        std::fs::write(&file, "scanned").unwrap();
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&file)
+            .unwrap();
+        let refused = std::fs::remove_dir_all(&folder).unwrap_err();
+        assert_eq!(refused.raw_os_error(), Some(32), "{refused}");
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(500));
+            drop(held);
+        });
+        remove_now(&folder);
+        release.join().unwrap();
+        assert!(!folder.exists());
     }
 
     /// A test that fails leaves nothing in the temporary folder: what it made goes when its thread
@@ -3076,7 +3127,7 @@ pub(crate) mod tests {
         assert_eq!(left, Vec::<std::ffi::OsString>::new());
         let outside = std::fs::read_to_string(real.join("outside.txt")).unwrap();
         assert_eq!(outside, "kept");
-        std::fs::remove_dir_all(real).unwrap();
+        remove_now(real);
         // Nothing outside the temporary folder, and nothing from a thread the test started.
         for outside in [
             std::env::current_dir().unwrap().join("devhq-test"),
@@ -3119,7 +3170,7 @@ pub(crate) mod tests {
         std::fs::remove_dir(&link).unwrap();
         #[cfg(unix)]
         std::fs::remove_file(&link).unwrap();
-        std::fs::remove_dir_all(real).unwrap();
+        remove_now(real);
     }
 
     #[test]
@@ -3163,7 +3214,7 @@ pub(crate) mod tests {
             .collect();
         assert_eq!(names, ["inventory.sqlite3"]);
         assert_eq!(examine(&path, |_| Ok(())).0, Found::Current);
-        std::fs::remove_dir_all(folder).unwrap();
+        remove_now(folder);
     }
 
     fn host() -> ResourceInput {
@@ -3253,7 +3304,7 @@ pub(crate) mod tests {
             }
             assert_eq!(files_of(&path), before, "{case}");
             assert!(!folder.join("backups").exists(), "{case}: a backups folder");
-            std::fs::remove_dir_all(folder).unwrap();
+            remove_now(folder);
         }
     }
 
@@ -4989,7 +5040,7 @@ pub(crate) mod tests {
             .map(|entry| entry.unwrap().file_name())
             .collect();
         assert_eq!(names, ["inventory.sqlite3"]);
-        std::fs::remove_dir_all(folder).unwrap();
+        remove_now(folder);
     }
 
     /// A snapshot read counts only if no writer changed the file meanwhile: one that did is read
@@ -5438,7 +5489,7 @@ pub(crate) mod tests {
             Found::NeedsRecovery(Recovery::LogWithoutIndex)
         );
         assert_eq!(files(), before);
-        std::fs::remove_dir_all(&folder).unwrap();
+        remove_now(&folder);
 
         std::fs::create_dir(&folder).unwrap();
         drop(database_at(&path, 6));
@@ -5453,7 +5504,7 @@ pub(crate) mod tests {
             Found::NeedsRecovery(Recovery::Journal)
         );
         assert_eq!(files(), before);
-        std::fs::remove_dir_all(&folder).unwrap();
+        remove_now(&folder);
     }
 
     thread_local! {
@@ -5532,7 +5583,7 @@ pub(crate) mod tests {
         assert_eq!(found, Found::Current);
         assert_eq!(read.unwrap().unwrap(), ["Host", "Live box"]);
         assert!(!beside(&path, "-wal").exists());
-        std::fs::remove_dir_all(&folder).unwrap();
+        remove_now(&folder);
     }
 
     /// What a writer killed in the middle left, as the window finds it when it starts: an
@@ -5573,7 +5624,7 @@ pub(crate) mod tests {
             .collect();
         assert_eq!(names, ["Host", "Live box"], "what was committed is kept");
         assert_eq!(examine(&path, |_| Ok(())).0, Found::Current);
-        std::fs::remove_dir_all(&folder).unwrap();
+        remove_now(&folder);
 
         // Older and newer, each with a write that did not finish.
         for (version, code) in [(6, "schema_outdated"), (SCHEMA_VERSION + 1, "schema_newer")] {
@@ -5591,7 +5642,7 @@ pub(crate) mod tests {
                 refused.message
             );
             assert_eq!(files(), before, "v{version}: its files were changed");
-            std::fs::remove_dir_all(&folder).unwrap();
+            remove_now(&folder);
         }
     }
 
@@ -5702,7 +5753,7 @@ pub(crate) mod tests {
                 before
             };
             assert_eq!(resource_names(&path), expected, "{case}");
-            std::fs::remove_dir_all(&folder).unwrap();
+            remove_now(&folder);
         }
         // An index without its log, or anything else with one of those names, is refused too.
         let path = nothing();
@@ -5839,6 +5890,6 @@ pub(crate) mod tests {
         assert_eq!(moments, [Moment::Copied, Moment::Opened]);
         assert_eq!(resource_names(&path), ["Renamed"]);
         assert_eq!(integrity(&path), "ok");
-        std::fs::remove_dir_all(&root).unwrap();
+        remove_now(&root);
     }
 }

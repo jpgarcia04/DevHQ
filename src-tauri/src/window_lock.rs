@@ -74,7 +74,7 @@ mod tests {
     }
 
     fn remove(database: &Path) {
-        std::fs::remove_dir_all(database.parent().unwrap()).unwrap();
+        crate::inventory::tests::remove_now(database.parent().unwrap());
     }
 
     /// Asks until the answer is `expected`: the system may release a dead process's lock a moment

@@ -409,7 +409,7 @@ mod tests {
         // The file says nothing of the machine but a fingerprint.
         let text = std::fs::read_to_string(file_in(&local)).unwrap();
         assert!(text.contains("laptop-print") && text.contains("desktop-print"));
-        std::fs::remove_dir_all(local).unwrap();
+        crate::inventory::tests::remove_now(local);
     }
 
     #[test]
@@ -442,7 +442,7 @@ mod tests {
             Some("no_machine_id")
         );
         assert!(anonymous.choose(&resources, Some("laptop")).is_err());
-        std::fs::remove_dir_all(local).unwrap();
+        crate::inventory::tests::remove_now(local);
     }
 
     #[test]

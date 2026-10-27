@@ -648,7 +648,7 @@ pub(crate) mod tests {
             );
             assert_eq!(read.worktree, None);
         }
-        std::fs::remove_dir_all(folder).unwrap();
+        crate::inventory::tests::remove_now(folder);
     }
 
     /// What the installed `git` says of the copy at `dir`, as the reader would count it.
@@ -852,7 +852,7 @@ pub(crate) mod tests {
             (worktree.changed, worktree.untracked, worktree.unverifiable),
             (Some(0), Some(0), Some(1))
         );
-        std::fs::remove_dir_all(root).unwrap();
+        crate::inventory::tests::remove_now(root);
     }
 
     /// A ref's log is read as Git reads it, whatever its length, or not at all: the newest entry
@@ -945,7 +945,7 @@ pub(crate) mod tests {
             assert_eq!(reading.worktree, None);
         }
         assert_eq!(read(&copy).unwrap().refs.stashes, Some(1));
-        std::fs::remove_dir_all(root).unwrap();
+        crate::inventory::tests::remove_now(root);
     }
 
     #[test]
@@ -985,7 +985,7 @@ pub(crate) mod tests {
                 .starts_with("libgit2 could not read the working tree"),
             "{worktree:?}"
         );
-        std::fs::remove_dir_all(root).unwrap();
+        crate::inventory::tests::remove_now(root);
     }
 
     /// Keeps this user from looking into `dir` (`chmod 000`) until the guard drops. None when
@@ -1084,7 +1084,7 @@ pub(crate) mod tests {
             let reading = reader.read(&path_text(&copy), DEADLINE).unwrap();
             assert_eq!(reading.refs.outcome, "read", "{forbidden}: {reading:?}");
         }
-        std::fs::remove_dir_all(root).unwrap();
+        crate::inventory::tests::remove_now(root);
     }
 
     /// On Windows, Git for Windows' own config usually sets `core.autocrlf=true`, and the person's
@@ -1124,7 +1124,7 @@ pub(crate) mod tests {
             .read(&path_text(&dir), DEADLINE)
             .unwrap();
         assert_eq!(reading.worktree.unwrap().changed, Some(0));
-        std::fs::remove_dir_all(dir).unwrap();
+        crate::inventory::tests::remove_now(dir);
     }
 
     #[test]

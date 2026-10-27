@@ -56,7 +56,7 @@ fn path() -> PathBuf {
 }
 
 fn remove(path: &Path) {
-    std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    crate::inventory::tests::remove_now(path.parent().unwrap());
 }
 
 /// The computer the contract runs on: its local folder beside the inventory and a fingerprint of

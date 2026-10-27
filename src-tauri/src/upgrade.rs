@@ -890,7 +890,7 @@ mod tests {
     }
 
     fn remove(path: &Path) {
-        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        crate::inventory::tests::remove_now(path.parent().unwrap());
     }
 
     /// Every file in `folder` and below, by path relative to it, with its bytes.
@@ -1314,7 +1314,7 @@ line break', 'manual', 800, 800);",
                 // Put in place of the inventory, it is what the person was shown, and it upgrades
                 // again to the same rows.
                 let mut first = whole(&readonly(&path));
-                std::fs::remove_dir_all(folder.join("backups")).unwrap();
+                crate::inventory::tests::remove_now(folder.join("backups"));
                 std::fs::write(&path, &bytes).unwrap();
                 assert_eq!(
                     inspect(&path).fingerprint.as_deref(),
@@ -1728,7 +1728,7 @@ line break', 'manual', 800, 800);",
             std::fs::read(backups.join(&manifest)).unwrap(),
             b"an earlier file"
         );
-        std::fs::remove_dir_all(&backups).unwrap();
+        crate::inventory::tests::remove_now(&backups);
 
         // Both are named, and the system does not confirm that the names reached the disk: they
         // are kept, complete and verified, and nothing is migrated.
@@ -1769,7 +1769,7 @@ line break', 'manual', 800, 800);",
                 std::fs::read(backups.join(BACKUP_V6)).unwrap()
             ))
         );
-        std::fs::remove_dir_all(&backups).unwrap();
+        crate::inventory::tests::remove_now(&backups);
         assert_eq!(files(&folder), on_disk);
 
         // No backups folder can be made: a file has its name.
@@ -2082,7 +2082,7 @@ line break', 'manual', 800, 800);",
             let recovered = whole(&readonly(&apart.join("inventory.sqlite3")));
             assert_eq!(recovered, whole(&readonly(&backup)));
             assert_eq!(fingerprint_of(&apart.join("inventory.sqlite3")), shown);
-            std::fs::remove_dir_all(&apart).unwrap();
+            crate::inventory::tests::remove_now(&apart);
             assert_eq!(files(&folder), left);
 
             // The way back: the inventory's files out of the folder, the backup in.

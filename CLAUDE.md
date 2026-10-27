@@ -58,6 +58,9 @@ where it stays (a note beside it, the report that uses it): what it is, why it s
   then says where they are. A Rust test passes each temporary path through
   `inventory::tests::disposable`, which removes it when the test's thread ends, failed or not
   (`DEVHQ_KEEP_TEST_FILES` keeps it); the Windows workflow checks that a passing run leaves nothing.
+  A test that removes something itself uses `inventory::tests::remove_now`, never
+  `std::fs::remove_dir_all(…).unwrap()`: Windows refuses a removal while anything holds a file,
+  Defender's real-time protection included, and `remove_now` tries again for up to 10 s.
 - What a forced stop leaves (a killed run, an abort, a crash) cannot be removed by the process
   that made it: a killed `cargo test` leaves its `devhq-<name>-<uuid>` entries in the temporary
   folder. Remove it from outside only by the exact names its creator gives (prefix and
