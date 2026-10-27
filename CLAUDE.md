@@ -24,6 +24,23 @@ agents here: keep every rule in this file and only pointers there.
   authorizes nothing: the README stays the specification, and the rules above hold until a
   change that must break one rewrites that rule, here and in the README, in the same commit.
 
+## What stays out of the repository
+
+The repository is public and holds only the product: its code, its tests, its documentation and a
+demo of invented systems. The person's own use of DevHQ never enters it, in any commit:
+
+- Their real inventory and everything derived from it: the systems they register (applications,
+  resources, components, paths, repositories, URLs), observations, incidents, events, readings,
+  backups, copies, exports, answers read from it, screenshots of their window, and hashes or counts
+  that identify any of these. It lives in DevHQ's data folder (see `identity`), never in a checkout.
+- Their notes, validation records and reports, and the details of their machines: hardware, user
+  and folder names, machine fingerprints, which workstation is which.
+- Tests, fixtures, contracts, the demo (`src/data/mock/`), the preview (`src/preview/`) and the
+  documentation use only invented systems, people and paths (`*.example`, `*.invalid`, `Ana Ruiz`):
+  never a real record copied in, not even renamed.
+- Before every commit, read what it adds (`git diff --cached`). `.gitignore` refuses database files,
+  `this-workstation.json` and `notas/`, but it cannot recognise a real name written in a source file.
+
 ## Checks
 
 Run all of them before every commit and look at each exit code. Never pipe a check through
