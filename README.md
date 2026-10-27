@@ -362,8 +362,13 @@ copia se lee; en las de otra máquina, la ventana dice que las lee DevHQ allí, 
 por qué no lee ninguna y dónde elegirla. Un fallo de DevHQ al leer se muestra y no guarda nada. «Show
 every reading» carga, solo al abrirlo, todas las lecturas del sistema, las más nuevas primero y de
 200 en 200, en una línea cada una, y dice cuándo están todas y qué lecturas son de rutas que el
-sistema ya no declara; se ofrece en los sistemas que declaran alguna copia local, y las de un sistema
-que ya no declara ninguna siguen guardadas y la puerta las da (`history`). Overview tiene un panel
+sistema ya no declara. Mientras está abierto, cada vez que el inventario recargado trae una lectura
+más nueva de alguna de sus copias (Read en esta ventana o un agente por la puerta), vuelve a cargar
+la primera página y la pone delante de las ya cargadas, cada lectura una sola vez y sin perder las
+anteriores que se hubieran pedido; si esa página no alcanza ninguna de las cargadas, empieza de nuevo
+desde ella para no esconder un hueco. Cerrado no carga nada, y cerrarlo olvida lo cargado. Se ofrece
+en los sistemas que declaran alguna copia local, y las de un sistema que ya no declara ninguna siguen
+guardadas y la puerta las da (`history`). Overview tiene un panel
 **Local copies**, junto a Supervision y fuera de «Needs attention»: cuántas copias tiene esta estación y
 Read all on this computer, que las lee en serie y dice cuántas leyó y cuáles no pudo; el trabajo que
 solo existía en una copia, las copias que no se encontraron donde se declaran, las de esta estación
@@ -474,7 +479,7 @@ ejecución, que es idéntica a la de Run check y sigue la misma semántica de vi
   un índice tan grande como el historial y la recarga leía 3.9 MB a los 90 días. Las cifras
   son de Linux, en release y con la caché del sistema caliente (`history_costs`, ver
   [Ejecutar](#ejecutar)); en otros sistemas esa prueba no mide lo leído del archivo. En una
-  laptop con Windows 11 (i5-13420H), con la protección en tiempo real de Defender activa, dos
+  laptop de gama media con Windows 11, con la protección en tiempo real de Defender activa, dos
   corridas dieron 8.9 y 12.6 ms por recarga, 2.2 a 2.4 ms por página de Activity global al
   principio, a la mitad y al final del historial, y 2.2–3.2, 2.7–2.8 y 4.1–4.3 ms con 5, 20 y 50
   sistemas, con los mismos 855 y 79 KB hacia la ventana: más lento que en Linux, pero igual de
@@ -1094,7 +1099,7 @@ respaldarlo y actualizarlo; la preview rechaza la actualización como toda escri
 esto. `npm run e2e` usa el Chrome instalado (en CI, el del runner) o el ejecutable que indique
 `DEVHQ_CHROMIUM`; nunca descarga navegadores, y reutiliza un `npm run dev` en marcha. Antes de
 la primera prueba carga la preview una vez (`e2e/warm-up.ts`): Vite transforma cada módulo la
-primera vez que se pide y no guarda nada entre arranques. En una laptop con Windows (i5-13420H),
+primera vez que se pide y no guarda nada entre arranques. En una laptop de gama media con Windows,
 con seis pestañas a la vez, la primera ventana tardaba unos 3.5 s de los 5 s que una prueba le
 da para aparecer, y a veces más: fallaban las seis primeras pruebas, o una con 12 workers. Además de
 recorrer el historial y comprobar que el aviso no tapa la ventana, audita con axe-core (reglas
@@ -1245,8 +1250,8 @@ la ejecución en curso de la misma rama). Si ningún commit de la rama pasó tod
 las ejecuciones anteriores, compara con el punto en que la rama salió de su base, como hacía el
 filtro: un job omitido nunca esconde un cambio del pull request sin probar.
 
-Lo que el workflow no hace como una persona se comprobó a mano el 2 oct 2026 en una laptop con
-Windows 11 (i5-13420H), WebView2 154 y Defender en tiempo real, con `npm run tauri dev`, con el
+Lo que el workflow no hace como una persona se comprobó a mano el 2 oct 2026 en una laptop de gama media
+con Windows 11, WebView2 154 y Defender en tiempo real, con `npm run tauri dev`, con el
 instalador y con el `devhq.exe` de release. Una base v5 en journal de rollback se migró a v6 al
 abrir, con todas sus filas y `rowid` intactos, y pasó a WAL; `-wal` y `-shm` aparecen al abrir cada
 conexión y desaparecen al cerrarla, y al cerrar la ventana el proceso terminó en menos de 200 ms

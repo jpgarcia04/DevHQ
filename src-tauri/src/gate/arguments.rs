@@ -705,7 +705,7 @@ mod tests {
     fn refuses_text_that_would_not_read_as_it_is_kept() {
         let found = saving(
             "save_application",
-            json!({ "name": "Pass\u{202E}Guardian", "lifecycle": "development",
+            json!({ "name": "Pine\u{202E}Vault", "lifecycle": "development",
                     "description": "Two lines\nand a\ttab are fine here", "version": "1.0\u{200B}",
                     "components": [{ "name": "API\u{0007}", "kind": "backend" }],
                     "references": [{ "kind": "repository", "target": "https://x.example/\u{2066}", "label": "\u{FEFF}Main" }] }),

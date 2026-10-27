@@ -9,11 +9,11 @@ import { InventoryContext, type InventoryContextValue } from './inventory-contex
 import { RealSettingsPage } from './real-settings-page'
 import { inventoryContext } from './test-context'
 
-const folder = 'C:\\Users\\Juan Pablo\\AppData\\Roaming\\com.devhq.desktop'
+const folder = 'C:\\Users\\Ana Ruiz\\AppData\\Roaming\\com.devhq.desktop'
 const database = `${folder}\\inventory.sqlite3`
 // Where Windows keeps that folder's files for a DevHQ started from a packaged app.
 const packaged =
-  'C:\\Users\\Juan Pablo\\AppData\\Local\\Packages\\Claude_pzs8sxrjxfjjc\\LocalCache\\Roaming\\com.devhq.desktop'
+  'C:\\Users\\Ana Ruiz\\AppData\\Local\\Packages\\Claude_pzs8sxrjxfjjc\\LocalCache\\Roaming\\com.devhq.desktop'
 
 function renderSettings(value: InventoryContextValue) {
   return render(
@@ -142,7 +142,7 @@ describe('the database file in Settings', () => {
     expect(
       screen.getByText(
         paragraph(
-          /^DevHQ asked for C:\\Users\\Juan Pablo\\AppData\\Roaming\\com\.devhq\.desktop\\inventory\.sqlite3, but the file system keeps the file at the path above\. .*Claude or Codex desktop app.* DevHQ opened from the Start menu or File Explorer uses the other path, which holds another inventory or none\. Back up, copy and restore at the path above\.$/,
+          /^DevHQ asked for C:\\Users\\Ana Ruiz\\AppData\\Roaming\\com\.devhq\.desktop\\inventory\.sqlite3, but the file system keeps the file at the path above\. .*Claude or Codex desktop app.* DevHQ opened from the Start menu or File Explorer uses the other path, which holds another inventory or none\. Back up, copy and restore at the path above\.$/,
         ),
       ),
     ).toBeInTheDocument()

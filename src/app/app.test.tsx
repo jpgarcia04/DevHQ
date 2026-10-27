@@ -43,8 +43,8 @@ describe('workspace navigation', () => {
   it('opens application cards and navigates every detail tab', async () => {
     const user = userEvent.setup()
     renderApp('/applications')
-    await user.click(screen.getByRole('link', { name: 'Open Pass Guardian' }))
-    expect(screen.getByRole('heading', { level: 1, name: 'Pass Guardian' })).toBeInTheDocument()
+    await user.click(screen.getByRole('link', { name: 'Open Pine Vault' }))
+    expect(screen.getByRole('heading', { level: 1, name: 'Pine Vault' })).toBeInTheDocument()
     expect(screen.getByText('3 days ago')).toBeInTheDocument()
     expect(screen.getByText('8 hours ago')).toBeInTheDocument()
     for (const name of [
@@ -64,8 +64,8 @@ describe('workspace navigation', () => {
     const user = userEvent.setup()
     renderApp('/applications')
     await user.selectOptions(screen.getByLabelText('Filter applications'), 'attention')
-    expect(screen.getByRole('link', { name: 'Open ClipOps' })).toBeInTheDocument()
-    expect(screen.queryByRole('link', { name: 'Open Pass Guardian' })).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Open Canvas Media' })).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Open Pine Vault' })).not.toBeInTheDocument()
     await user.type(screen.getByRole('textbox', { name: 'Search applications' }), 'no-such-app')
     expect(screen.getByText('No applications found')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Clear filters' }))
@@ -76,24 +76,24 @@ describe('workspace navigation', () => {
     renderApp('/applications')
     expect(screen.getByText('4 applications')).toBeInTheDocument()
     expect(screen.getByText('4 applications shown')).toBeInTheDocument()
-    // Orchestrator's Brain has one open incident; ClipOps, on the same VPS, has two.
+    // Orbit Planner has one open incident; Canvas Media, on the same VPS, has two.
     expect(screen.getByText('1 linked incident')).toBeInTheDocument()
     expect(screen.getByText('2 linked incidents')).toBeInTheDocument()
-    await user.type(screen.getByRole('textbox', { name: 'Search applications' }), 'ClipOps')
+    await user.type(screen.getByRole('textbox', { name: 'Search applications' }), 'Canvas Media')
     expect(screen.getByText('1 application shown')).toBeInTheDocument()
   })
   it('filters incidents without changing sample statuses', async () => {
     const user = userEvent.setup()
     renderApp('/incidents')
     await user.selectOptions(screen.getByLabelText('Incident severity'), 'critical')
-    expect(screen.getByText('ClipOps deployment failed')).toBeInTheDocument()
+    expect(screen.getByText('Canvas Media deployment failed')).toBeInTheDocument()
     expect(screen.queryByText('Disk usage increased significantly')).not.toBeInTheDocument()
     await user.selectOptions(screen.getByLabelText('Incident status'), 'resolved')
     expect(screen.getByText('No incidents in this view.')).toBeInTheDocument()
   })
   it('supports direct detail links and keyboard tabs', async () => {
     const user = userEvent.setup()
-    renderApp('/applications/rentia?tab=health')
+    renderApp('/applications/rivet-rooms?tab=health')
     const tab = screen.getByRole('tab', { name: 'Health' })
     expect(tab).toHaveAttribute('aria-selected', 'true')
     tab.focus()
@@ -102,23 +102,21 @@ describe('workspace navigation', () => {
   })
   it('keeps infrastructure-to-application navigation connected', async () => {
     const user = userEvent.setup()
-    renderApp('/infrastructure?resource=orchestrator-vps')
-    await waitFor(() =>
-      expect(screen.getByRole('region', { name: 'Orchestrator VPS' })).toHaveFocus(),
-    )
+    renderApp('/infrastructure?resource=orbit-vps')
+    await waitFor(() => expect(screen.getByRole('region', { name: 'Orbit VPS' })).toHaveFocus())
     await user.click(
-      within(screen.getByRole('region', { name: 'Orchestrator VPS' })).getByRole('link', {
-        name: 'ClipOps',
+      within(screen.getByRole('region', { name: 'Orbit VPS' })).getByRole('link', {
+        name: 'Canvas Media',
       }),
     )
-    expect(screen.getByRole('heading', { level: 1, name: 'ClipOps' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 1, name: 'Canvas Media' })).toBeInTheDocument()
     expect(screen.getByText('2 linked incidents')).toBeInTheDocument()
   })
   it('connects an application component to its resource and shows its incident', async () => {
     const user = userEvent.setup()
-    renderApp('/applications/clipops')
-    await user.click(screen.getAllByRole('link', { name: 'Orchestrator VPS' })[0]!)
-    const resource = screen.getByRole('region', { name: 'Orchestrator VPS' })
+    renderApp('/applications/canvas-media')
+    await user.click(screen.getAllByRole('link', { name: 'Orbit VPS' })[0]!)
+    const resource = screen.getByRole('region', { name: 'Orbit VPS' })
     expect(within(resource).getByText('Disk usage increased significantly')).toBeInTheDocument()
     expect(within(resource).getByText('Open resource incidents')).toBeInTheDocument()
   })

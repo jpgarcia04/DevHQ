@@ -61,7 +61,7 @@ const pages: { name: string; path: string; open?: string }[] = [
   { name: 'unknown view', path: '/preview.html#/nowhere' },
   { name: 'demo overview', path: '/#/' },
   { name: 'demo applications', path: '/#/applications' },
-  { name: 'demo application', path: '/#/applications/clipops?tab=infrastructure' },
+  { name: 'demo application', path: '/#/applications/canvas-media?tab=infrastructure' },
   { name: 'demo incidents', path: '/#/incidents' },
   { name: 'demo activity', path: '/#/activity' },
   { name: 'demo automations', path: '/#/automations' },

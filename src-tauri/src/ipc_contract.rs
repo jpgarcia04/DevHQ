@@ -618,7 +618,7 @@ fn every_answer_has_the_shape_the_window_expects() {
         chosen_at: Some(at("08:00")),
         problem: None,
         message: None,
-        file: r"C:\Users\Juan Pablo\AppData\Local\com.devhq.desktop\this-workstation.json".into(),
+        file: r"C:\Users\Ana Ruiz\AppData\Local\com.devhq.desktop\this-workstation.json".into(),
         stored_at: None,
     };
     let snapshot = Inventory {
@@ -891,9 +891,9 @@ fn every_answer_has_the_shape_the_window_expects() {
         recorded_at: at("10:00"),
         agent: None,
     };
-    let folder = r"C:\Users\Juan Pablo\AppData\Roaming\com.devhq.desktop";
+    let folder = r"C:\Users\Ana Ruiz\AppData\Roaming\com.devhq.desktop";
     // Where Windows keeps that folder's files for a DevHQ started from a packaged app.
-    let packaged = r"C:\Users\Juan Pablo\AppData\Local\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\com.devhq.desktop";
+    let packaged = r"C:\Users\Ana Ruiz\AppData\Local\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\com.devhq.desktop";
     let supervision = MonitorStatus {
         checks: vec![CheckStatus {
             subject: host(),
@@ -945,7 +945,7 @@ fn every_answer_has_the_shape_the_window_expects() {
             value(&AgentAccess {
                 mode: "read".into(),
                 changed_at: Some(at("09:15")),
-                executable: Some(r"C:\Users\Juan Pablo\AppData\Local\DevHQ\devhq.exe".into()),
+                executable: Some(r"C:\Users\Ana Ruiz\AppData\Local\DevHQ\devhq.exe".into()),
             }),
         ),
         ("watch_http_monitor".to_owned(), value(&supervision)),
