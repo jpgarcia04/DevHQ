@@ -366,8 +366,9 @@ sistema ya no declara. Mientras está abierto, cada vez que el inventario recarg
 más nueva de alguna de sus copias (Read en esta ventana o un agente por la puerta), vuelve a cargar
 la primera página y la pone delante de las ya cargadas, cada lectura una sola vez y sin perder las
 anteriores que se hubieran pedido; si esa página no alcanza ninguna de las cargadas, empieza de nuevo
-desde ella para no esconder un hueco. Cerrado no carga nada, y cerrarlo olvida lo cargado. Se ofrece en los sistemas que declaran alguna copia local, y las de un sistema
-que ya no declara ninguna siguen guardadas y la puerta las da (`history`). Overview tiene un panel
+desde ella para no esconder un hueco. Cerrado no carga nada, y cerrarlo olvida lo cargado. Se ofrece
+en los sistemas que declaran alguna copia local, y las de un sistema que ya no declara ninguna siguen
+guardadas y la puerta las da (`history`). Overview tiene un panel
 **Local copies**, junto a Supervision y fuera de «Needs attention»: cuántas copias tiene esta estación y
 Read all on this computer, que las lee en serie y dice cuántas leyó y cuáles no pudo; el trabajo que
 solo existía en una copia, las copias que no se encontraron donde se declaran, las de esta estación
