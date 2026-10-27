@@ -10,3 +10,12 @@ playwright-report/
 .env
 .env.*
 !.env.example
+
+# The person's own data never enters the repository (CLAUDE.md, «What stays out of the
+# repository»): inventories, their logs, journals and backups, this computer's workstation file
+# and private notes.
+*.sqlite3
+*.sqlite3-*
+*.db
+this-workstation.json
+notas/

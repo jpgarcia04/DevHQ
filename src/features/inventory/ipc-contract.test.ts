@@ -218,7 +218,7 @@ const laptop: Answer<'thisWorkstation'> = {
   chosenAt: at('08:00'),
   problem: null,
   message: null,
-  file: 'C:\\Users\\Juan Pablo\\AppData\\Local\\com.devhq.desktop\\this-workstation.json',
+  file: 'C:\\Users\\Ana Ruiz\\AppData\\Local\\com.devhq.desktop\\this-workstation.json',
   storedAt: null,
 }
 
@@ -546,10 +546,10 @@ const olderEvents: Answer<'olderEvents'> = {
   more: false,
 }
 
-const folder = 'C:\\Users\\Juan Pablo\\AppData\\Roaming\\com.devhq.desktop'
+const folder = 'C:\\Users\\Ana Ruiz\\AppData\\Roaming\\com.devhq.desktop'
 // Where Windows keeps that folder's files for a DevHQ started from a packaged app.
 const packaged =
-  'C:\\Users\\Juan Pablo\\AppData\\Local\\Packages\\Claude_pzs8sxrjxfjjc\\LocalCache\\Roaming\\com.devhq.desktop'
+  'C:\\Users\\Ana Ruiz\\AppData\\Local\\Packages\\Claude_pzs8sxrjxfjjc\\LocalCache\\Roaming\\com.devhq.desktop'
 const dataLocation: Answer<'dataLocation'> = {
   database: `${folder}\\inventory.sqlite3`,
   directory: folder,
@@ -559,7 +559,7 @@ const dataLocation: Answer<'dataLocation'> = {
 const agentAccess: Answer<'agentAccess'> = {
   mode: 'read',
   changedAt: at('09:15'),
-  executable: 'C:\\Users\\Juan Pablo\\AppData\\Local\\DevHQ\\devhq.exe',
+  executable: 'C:\\Users\\Ana Ruiz\\AppData\\Local\\DevHQ\\devhq.exe',
 }
 
 const backup: Answer<'backupInventory'> = {

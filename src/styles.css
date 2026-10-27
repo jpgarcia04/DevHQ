@@ -119,19 +119,19 @@
   .health-dot {
     @apply inline-block size-1.5 shrink-0 rounded-full bg-current;
   }
-  .art-guardian {
+  .art-vault {
     --art-color: #8fb9ad;
     --art-bg: #1b2928;
   }
-  .art-brain {
+  .art-planner {
     --art-color: #afa0d2;
     --art-bg: #242131;
   }
-  .art-rentia {
+  .art-rooms {
     --art-color: #c5b28e;
     --art-bg: #29261f;
   }
-  .art-clipops {
+  .art-media {
     --art-color: #a2b8cd;
     --art-bg: #202731;
   }

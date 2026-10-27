@@ -349,7 +349,7 @@ export function previewBackend(database: PreviewDatabase) {
         return {
           mode: 'off',
           changedAt: null,
-          executable: 'C:\\Users\\Juan Pablo\\AppData\\Local\\DevHQ\\devhq.exe',
+          executable: 'C:\\Users\\Ana Ruiz\\AppData\\Local\\DevHQ\\devhq.exe',
         } satisfies AgentAccess
       case 'older_observations':
         return olderObservations(args.subject as EntityRef, args.before as string)

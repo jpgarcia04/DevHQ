@@ -338,7 +338,7 @@ describe('real operational records', () => {
     await user.click(screen.getByText('Checkout returns 502'))
     expect(screen.getByRole('link', { name: 'Shop' })).toBeInTheDocument()
     expect(screen.getByText('Manual entry')).toBeInTheDocument()
-    expect(screen.queryByText('ClipOps deployment failed')).not.toBeInTheDocument()
+    expect(screen.queryByText('Canvas Media deployment failed')).not.toBeInTheDocument()
   })
 
   it.each([
