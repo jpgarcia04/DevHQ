@@ -2964,7 +2964,11 @@ pub(crate) mod tests {
     }
 
     /// Two windows starting at once on no inventory: one creates it, the other finds it, and
-    /// nothing either built under its own name is left behind.
+    /// nothing either built under its own name is left behind. Their log may be: SQLite folds and
+    /// deletes it only when the connection that closes last can take the file to itself, and one
+    /// that closes while another window still looks at the file cannot. Whether that happens is a
+    /// race, so this checks what the next window does with what they leave: it opens it as the
+    /// one inventory, in this build's schema.
     #[test]
     fn concurrent_starts_create_one_inventory() {
         let folder = std::env::temp_dir().join(format!("devhq-starts-{}", Uuid::new_v4()));
@@ -2982,7 +2986,21 @@ pub(crate) mod tests {
             .unwrap()
             .map(|entry| entry.unwrap().file_name().into_string().unwrap())
             .collect();
-        assert_eq!(names, ["inventory.sqlite3"]);
+        // The inventory and, perhaps, its log and the log's index: no building name, no journal.
+        let own = [
+            "inventory.sqlite3",
+            "inventory.sqlite3-wal",
+            "inventory.sqlite3-shm",
+        ];
+        assert!(
+            names.iter().all(|name| own.contains(&name.as_str())),
+            "{names:?}"
+        );
+        assert!(
+            names.iter().any(|name| name == "inventory.sqlite3"),
+            "{names:?}"
+        );
+        start(&path).unwrap();
         assert_eq!(examine(&path, |_| Ok(())).0, Found::Current);
         std::fs::remove_dir_all(folder).unwrap();
     }

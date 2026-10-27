@@ -1703,7 +1703,8 @@ lo hace v14, con la conexión que lo va a recuperar ya abierta (se rechaza igual
 de abrirla, SQLite volcaba ese log en el archivo). La concurrencia de SQLite se
 prueba sin esperas medidas: una lectura no espera a una escritura en curso, una escritura no espera a
 una lectura abierta (que conserva su estado), cuatro arranques simultáneos crean un único inventario
-sin dejar nombres provisionales, un inventario actual en rollback no lo convierte ninguna consulta ni
-escritura y, ocupado, la ventana arranca sin convertirlo y lo convierte en el siguiente arranque, y al
-cerrar queda un único archivo completo. Por encima de todo eso, el recorrido nativo de `npm run e2e:native` prueba la app real,
+sin dejar nombres provisionales (su log puede quedar, según cuál cierre el último, y el siguiente
+arranque lo abre como el inventario actual), un inventario actual en rollback no lo convierte ninguna
+consulta ni escritura y, ocupado, la ventana arranca sin convertirlo y lo convierte en el siguiente
+arranque, y al cerrar queda un único archivo completo. Por encima de todo eso, el recorrido nativo de `npm run e2e:native` prueba la app real,
 con su ventana, de punta a punta (ver [Ejecutar](#ejecutar)).
