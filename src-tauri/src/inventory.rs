@@ -75,6 +75,21 @@ impl ApiError {
             message: message.into(),
         }
     }
+    /// An agent's edit was based on a state of the system that is no longer its state: someone
+    /// changed it after the agent read it. Nothing was done; reading it again tells what is there.
+    pub(crate) fn changed(message: impl Into<String>) -> Self {
+        Self {
+            code: "changed_since_read",
+            message: message.into(),
+        }
+    }
+    /// An agent asked to add what is already there, by its name. Nothing was added.
+    pub(crate) fn exists(message: impl Into<String>) -> Self {
+        Self {
+            code: "already_exists",
+            message: message.into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -236,11 +251,11 @@ pub(crate) fn plain(path: &Path) -> String {
     }
 }
 
-pub(crate) const SCHEMA_VERSION: i64 = 12;
+pub(crate) const SCHEMA_VERSION: i64 = 13;
 /// Each schema version with the migration that brings an inventory to it from the one before.
 /// They build a new inventory (`create`) and upgrade an older one (`upgrade.rs`), and are never
 /// edited once released: an inventory left at any version has the structure they give it there.
-pub(crate) const MIGRATIONS: [(i64, &str); 12] = [
+pub(crate) const MIGRATIONS: [(i64, &str); 13] = [
     (1, include_str!("../migrations/001_inventory.sql")),
     (2, include_str!("../migrations/002_inventory_details.sql")),
     (3, include_str!("../migrations/003_operational_records.sql")),
@@ -253,6 +268,7 @@ pub(crate) const MIGRATIONS: [(i64, &str); 12] = [
     (10, include_str!("../migrations/010_change_log.sql")),
     (11, include_str!("../migrations/011_references.sql")),
     (12, include_str!("../migrations/012_copy_readings.sql")),
+    (13, include_str!("../migrations/013_maintain_access.sql")),
 ];
 
 // How DevHQ reaches its inventory. No opening changes its schema: an inventory in an older schema
@@ -338,11 +354,22 @@ fn begin_on(db: &Connection, behavior: TransactionBehavior) -> Result<Transactio
 /// write (see `access`): that decides, so that closing the agent gate in Settings, or replacing,
 /// upgrading or emptying the file, can never race a write that was asked for before.
 pub(crate) fn begin_write<'a>(db: &'a mut Connection, by: &Actor) -> Result<Writing<'a>, ApiError> {
+    begin_write_for(db, by, "write")
+}
+
+/// `begin_write` for a change that needs `need` of the agent gate's access (see
+/// `access::permitted`): `maintain` to add or edit applications and resources, `write` for
+/// anything else. The person's own changes need none.
+pub(crate) fn begin_write_for<'a>(
+    db: &'a mut Connection,
+    by: &Actor,
+    need: &str,
+) -> Result<Writing<'a>, ApiError> {
     let db: &'a Connection = db;
     let tx = begin_on(db, TransactionBehavior::Immediate)?;
     let agent = matches!(by, Actor::Agent(_));
     if agent {
-        access::permitted(&access::mode(&tx)?, "write")?;
+        access::permitted(&access::mode(&tx)?, need)?;
     }
     Ok(Writing { tx, db, agent })
 }
@@ -982,6 +1009,27 @@ impl Found {
 /// How many times the gate looks again at files that changed while it looked or read.
 const LOOKS: usize = 3;
 
+/// How long the gate waits, each time, before it looks again at files that need recovering, to
+/// tell files left so from files caught in the instant a connection closes. The last connection to
+/// a write-ahead-logged database lets go of the log's index, deletes the index and only then
+/// deletes the log: a look in between finds a log with changes that nothing holds, or one without
+/// its index, which a moment later is gone.
+const SETTLE: [Duration; 2] = [Duration::from_millis(25), Duration::from_millis(100)];
+
+/// Whether the files at `path` are still `disk` after each pause of `SETTLE`: what needs recovering
+/// was left so, and is not a connection closing, or a writer committing, in that instant.
+fn settled(path: &Path, disk: &OnDisk) -> bool {
+    for pause in SETTLE {
+        #[cfg(test)]
+        tests::while_settling();
+        std::thread::sleep(pause);
+        if OnDisk::look(path).as_ref() != Ok(disk) {
+            return false;
+        }
+    }
+    true
+}
+
 /// What is at `path`, told without changing any of its files, and, when it is an inventory in this
 /// build's schema, what `read` made of it on a connection that cannot change them either.
 ///
@@ -1023,6 +1071,15 @@ pub(crate) fn examine_where<T>(
         };
         let way = match disk.way(path) {
             Ok(way) => way,
+            // Taken at its word only once the files stay as they are: a connection closing in that
+            // instant changes them, and then the gate looks again.
+            Err(Some(found @ Found::NeedsRecovery(_))) => {
+                if settled(path, &disk) {
+                    return (found, None);
+                }
+                changing = "what needed recovering changed a moment later".to_owned();
+                continue;
+            }
             Err(Some(found)) => return (found, None),
             Err(None) => {
                 changing = "the log's index went away".to_owned();
@@ -1567,6 +1624,14 @@ pub fn list(path: &Path) -> Result<Inventory, ApiError> {
 /// the caller opened, such as the agent gate's, which opens the inventory as it finds it.
 pub(crate) fn list_from(db: &mut Connection) -> Result<Inventory, ApiError> {
     let tx = begin(db, TransactionBehavior::Deferred)?;
+    let inventory = list_in(&tx)?;
+    tx.commit().map_err(ApiError::database)?;
+    Ok(inventory)
+}
+
+/// `list_from` inside a read transaction the caller holds, so that whatever else it reads there
+/// (the agent gate's `latestChange`) is of the same state of the inventory.
+pub(crate) fn list_in(tx: &Transaction) -> Result<Inventory, ApiError> {
     let mut resources = {
         let mut statement = tx.prepare("SELECT id, name, kind, description, operating_system FROM resources ORDER BY name COLLATE NOCASE, id").map_err(ApiError::database)?;
         let result = statement
@@ -1587,7 +1652,7 @@ pub(crate) fn list_from(db: &mut Connection) -> Result<Inventory, ApiError> {
     };
     for resource in &mut resources {
         resource.references = references::of(
-            &tx,
+            tx,
             &Subject::Resource {
                 id: resource.id.clone(),
             },
@@ -1627,11 +1692,11 @@ pub(crate) fn list_from(db: &mut Connection) -> Result<Inventory, ApiError> {
                 .map_err(ApiError::database)?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(ApiError::database)?;
-            app.references = references::of(&tx, &Subject::Application { id: app.id.clone() })?;
+            app.references = references::of(tx, &Subject::Application { id: app.id.clone() })?;
         }
     }
     let shared_repositories = references::shared_repositories(&applications, &resources);
-    let local_copies = readings::local_copies(&tx, &applications, &resources)?;
+    let local_copies = readings::local_copies(tx, &applications, &resources)?;
     let subjects: Vec<_> = applications
         .iter()
         .map(|app| records::Subject::Application { id: app.id.clone() })
@@ -1644,11 +1709,10 @@ pub(crate) fn list_from(db: &mut Connection) -> Result<Inventory, ApiError> {
         incidents,
         events,
         automated_history,
-    } = records::load(&tx, &subjects)?;
-    let http_checks = http_check::load(&tx)?;
-    let changes = change_log::load(&tx)?;
-    let changes_since = change_log::complete_since(&tx)?;
-    tx.commit().map_err(ApiError::database)?;
+    } = records::load(tx, &subjects)?;
+    let http_checks = http_check::load(tx)?;
+    let changes = change_log::load(tx)?;
+    let changes_since = change_log::complete_since(tx)?;
     Ok(Inventory {
         applications,
         resources,
@@ -3405,7 +3469,9 @@ pub(crate) mod tests {
             strings(&db, "SELECT name FROM sqlite_master WHERE type = 'index' AND name NOT LIKE 'sqlite_autoindex%' ORDER BY name"),
             [
                 "change_log_application_id",
+                "change_log_application_latest",
                 "change_log_resource_id",
+                "change_log_resource_latest",
                 "components_application_id",
                 "components_resource_id",
                 "copy_readings_application_id",
@@ -4115,7 +4181,12 @@ pub(crate) mod tests {
         .is_empty());
         assert_eq!(
             strings(&db, "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'change_log' AND name NOT LIKE 'sqlite_autoindex%' ORDER BY name"),
-            ["change_log_application_id", "change_log_resource_id"]
+            [
+                "change_log_application_id",
+                "change_log_application_latest",
+                "change_log_resource_id",
+                "change_log_resource_latest"
+            ]
         );
         // The inventory held systems whose earlier changes by the person left no trace: the log
         // is complete from the upgrade on, and the snapshot says so.
@@ -4637,13 +4708,13 @@ pub(crate) mod tests {
             found_after("DROP INDEX events_reported"),
             Found::Mismatch(vec!["no index events_reported".to_owned()])
         );
-        // Stamped 12 with only the two tables that tell a DevHQ inventory apart.
+        // Stamped 13 with only the two tables that tell a DevHQ inventory apart.
         let stamped = nothing();
         let db = Connection::open(&stamped).unwrap();
         db.execute_batch(
             "CREATE TABLE applications (id TEXT PRIMARY KEY);
              CREATE TABLE resources (id TEXT PRIMARY KEY);
-             PRAGMA user_version = 12;",
+             PRAGMA user_version = 13;",
         )
         .unwrap();
         drop(db);
@@ -4996,7 +5067,10 @@ pub(crate) mod tests {
     /// own, it does nothing. `log`: with a connection held open, as a window holds one, adds the
     /// resource «Live box» to a write-ahead-logged inventory, which stays in the log. `journal`:
     /// starts a write to a rollback-journal inventory, large enough to have reached the file
-    /// already, and never ends it.
+    /// already, and never ends it. `connection`: holds the log of a write-ahead-logged inventory
+    /// open, as a window holds it, and writes nothing; on Unix a test that needs a window's
+    /// connection beside the gate needs it from another process, since `log_held` never sees a
+    /// lock its own process holds.
     #[test]
     #[ignore = "a helper that other tests run in a process of its own"]
     fn writes_until_killed() {
@@ -5017,6 +5091,11 @@ pub(crate) mod tests {
                 // Its own connection commits and closes, and cannot fold the log while `held`
                 // is open.
                 resource(path, "Live box");
+            }
+            "connection" => {
+                // Its first read opens the log and takes the lock that says it is held.
+                held.query_row("SELECT count(*) FROM resources", [], |_| Ok(()))
+                    .unwrap();
             }
             "journal" => {
                 held.pragma_update(None, "cache_size", 2).unwrap();
@@ -5202,6 +5281,84 @@ pub(crate) mod tests {
             Found::NeedsRecovery(Recovery::Journal)
         );
         assert_eq!(files(), before);
+        std::fs::remove_dir_all(&folder).unwrap();
+    }
+
+    thread_local! {
+        /// What a test does while `examine` waits to see whether files that need recovering stay
+        /// so (see `settled`): the instant in which another connection finishes closing.
+        static SETTLING: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    pub(crate) fn while_settling() {
+        SETTLING.with(|hook| {
+            if let Some(hook) = hook.borrow_mut().as_mut() {
+                hook();
+            }
+        });
+    }
+
+    /// A log caught in the instant its last connection closes, which nothing holds any more and
+    /// which a moment later is folded into the file and gone, is not taken for one left behind:
+    /// the gate looks again before it answers, and reads what the fold left. A log left behind is
+    /// still refused after the wait, with every file as it was.
+    #[test]
+    fn tells_a_log_being_folded_from_one_left_behind() {
+        let folder = std::env::temp_dir().join(format!("devhq-settling-{}", Uuid::new_v4()));
+        std::fs::create_dir(&folder).unwrap();
+        let path = folder.join("inventory.sqlite3");
+        start(&path).unwrap();
+        resource(&path, "Host");
+        kill(writer(&path, "log"), &path);
+        let files = || {
+            let mut found: Vec<_> = std::fs::read_dir(&folder)
+                .unwrap()
+                .map(|entry| {
+                    let entry = entry.unwrap();
+                    (entry.file_name(), std::fs::read(entry.path()).unwrap())
+                })
+                .collect();
+            found.sort();
+            found
+        };
+        let names = |db: &mut Connection| -> Result<Vec<String>, ApiError> {
+            let mut statement = db
+                .prepare("SELECT name FROM resources ORDER BY name")
+                .map_err(ApiError::database)?;
+            let rows = statement
+                .query_map([], |row| row.get(0))
+                .map_err(ApiError::database)?
+                .collect::<Result<Vec<String>, _>>()
+                .map_err(ApiError::database);
+            rows
+        };
+
+        // Left behind: refused once the files stayed as they were.
+        let before = files();
+        let (found, read) = examine(&path, names);
+        assert_eq!(found, Found::NeedsRecovery(Recovery::Log));
+        assert!(read.is_none());
+        assert_eq!(files(), before);
+
+        // Caught as it is folded: while the gate waits, a connection finishes with the log and,
+        // as the last one to close does, folds it into the file and deletes it.
+        let closing = path.clone();
+        let mut done = false;
+        SETTLING.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                if !std::mem::replace(&mut done, true) {
+                    let db = Connection::open(&closing).unwrap();
+                    db.query_row("SELECT count(*) FROM resources", [], |_| Ok(()))
+                        .unwrap();
+                }
+            }));
+        });
+        let (found, read) = examine(&path, names);
+        SETTLING.with(|hook| *hook.borrow_mut() = None);
+        assert_eq!(found, Found::Current);
+        assert_eq!(read.unwrap().unwrap(), ["Host", "Live box"]);
+        assert!(!beside(&path, "-wal").exists());
         std::fs::remove_dir_all(&folder).unwrap();
     }
 

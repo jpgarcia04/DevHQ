@@ -455,6 +455,31 @@ describe('the agent gate in Settings', () => {
     expect(value.setAgentAccess).toHaveBeenCalledTimes(1)
   })
 
+  it('says what each access grants, and that none of them approves each change', async () => {
+    const user = userEvent.setup()
+    const value = inventoryContext()
+    renderSettings(value)
+    const maintain = await gate().findByRole('radio', { name: /^Read and maintain/ })
+    for (const grants of [
+      'add applications and resources and edit them, with their components and references',
+      'is refused if someone changed the system after the agent read it',
+      'They cannot delete anything, record observations, incidents or events, set up or run checks, read local copies or back up.',
+    ])
+      expect(maintain).toHaveAccessibleName(expect.stringContaining(grants))
+    // Read and write is broad access, never presented as an approval of what is dangerous.
+    expect(gate().getByRole('radio', { name: /^Read and write/ })).toHaveAccessibleName(
+      expect.stringContaining('This is broad access: DevHQ does not ask you before any of it.'),
+    )
+    expect(
+      gate().getByText(
+        'What you choose here is not an approval of each change. It holds until you change it, for every agent session that opens this inventory: Claude Code, Codex or any other client.',
+      ),
+    ).toBeVisible()
+    await user.click(maintain)
+    expect(value.setAgentAccess).toHaveBeenCalledWith('maintain')
+    expect(gate().getByRole('radio', { name: /^Read and maintain/ })).toBeChecked()
+  })
+
   it('keeps the access in force when changing it fails', async () => {
     const user = userEvent.setup()
     const value = inventoryContext({

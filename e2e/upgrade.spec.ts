@@ -9,7 +9,7 @@ test('an outdated inventory is offered a backup and an upgrade, and nothing else
   await page.goto('/preview.html?scenario=outdated#/')
   const panel = page.getByRole('region', { name: 'Inventory needs a schema upgrade' })
   await expect(panel).toContainText('is a DevHQ inventory in schema version 6')
-  await expect(panel).toContainText('this DevHQ reads version 12')
+  await expect(panel).toContainText('this DevHQ reads version 13')
   await expect(panel).toContainText('It holds 69 rows in 7 tables')
   await expect(panel).toContainText('There is no upgrade without this backup.')
   // One way forward, never one without the backup, and nothing to retry.

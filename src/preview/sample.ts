@@ -259,15 +259,15 @@ export function sampleDatabase(scenario: Scenario, now: number): PreviewDatabase
       backups: sampleBackups(now),
       unavailable: {
         code: 'schema_outdated',
-        message: `${previewDatabasePath}: A DevHQ inventory that declares schema version 6, older than this DevHQ's (12). This DevHQ never upgrades an inventory when it opens it: neither its window nor the gate serves anything from this one, and both leave it as it is. Only the person upgrades it, from DevHQ's window (Back up and upgrade), which first makes and verifies a backup of it; the gate never does. Nothing was read or changed.`,
+        message: `${previewDatabasePath}: A DevHQ inventory that declares schema version 6, older than this DevHQ's (13). This DevHQ never upgrades an inventory when it opens it: neither its window nor the gate serves anything from this one, and both leave it as it is. Only the person upgrades it, from DevHQ's window (Back up and upgrade), which first makes and verifies a backup of it; the gate never does. Nothing was read or changed.`,
       },
       upgrade: {
         database: previewDatabasePath,
         storedAt: null,
         state: 'outdated',
         storedVersion: 6,
-        version: 12,
-        message: `A DevHQ inventory in schema version 6, older than this DevHQ's (12). DevHQ read it without changing it, and serves nothing from it until it is upgraded.`,
+        version: 13,
+        message: `A DevHQ inventory in schema version 6, older than this DevHQ's (13). DevHQ read it without changing it, and serves nothing from it until it is upgraded.`,
         upgradable: true,
         problems: [],
         tables: [

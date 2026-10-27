@@ -561,7 +561,7 @@ anterior solo lo actualiza la persona, desde la ventana, con **Back up and upgra
 hace: ni una consulta, ni la supervisión, ni un respaldo, ni la [puerta para agentes](#puerta-para-agentes),
 que no tiene ninguna herramienta para ello. Lo implementa `src-tauri/src/upgrade.rs`.
 
-- **Ver antes de decidir.** Una ventana que arranca sobre un inventario anterior a la v12 no lo sirve:
+- **Ver antes de decidir.** Una ventana que arranca sobre un inventario anterior a la v13 no lo sirve:
   cada página de Mi inventario muestra **Inventory needs a schema upgrade** con lo que es, leído sin
   cambiar ningún archivo y como lee la puerta, con una conexión que no puede escribir
   (`inspect_upgrade`). Dice la ruta, la versión que declara y la de este DevHQ, y cuántas filas tiene
@@ -594,7 +594,7 @@ que no tiene ninguna herramienta para ello. Lo implementa `src-tauri/src/upgrade
      y su manifiesto no se migra nada, ni cuando el sistema responde que no pudo hacer alguno de esos
      pasos.
   4. Aplica las migraciones en la misma transacción.
-  5. Antes de confirmar, comprueba el resultado: la versión 12 y su estructura, `integrity_check`,
+  5. Antes de confirmar, comprueba el resultado: la versión 13 y su estructura, `integrity_check`,
      `foreign_key_check`, y que cada fila de cada tabla sigue ahí con su `rowid` y los mismos valores
      en las columnas que ya tenía, comparados valor a valor y tipo a tipo. En cada columna nueva, cada
      fila debe tener el valor por defecto que declara la columna (`NULL` si no declara ninguno), que es
@@ -636,10 +636,10 @@ que no tiene ninguna herramienta para ello. Lo implementa `src-tauri/src/upgrade
     nada después. Pero el archivo queda con un journal o un log que hay que recuperar, y DevHQ no
     recupera por su cuenta un inventario de un esquema anterior: al arrancar lo rechaza sin tocar sus
     archivos (ver «Un inventario antiguo que necesita recuperación», abajo).
-  - Si termina después del commit, el inventario ya es v12: al arrancar, la ventana lo recupera como
+  - Si termina después del commit, el inventario ya es v13: al arrancar, la ventana lo recupera como
     cualquier inventario actual y lo sirve.
   - Dos actualizaciones a la vez, desde dos ventanas, las ordena el lock. La segunda, al obtenerlo,
-    encuentra el inventario ya en la v12, no hace otro respaldo y la ventana lo sirve (**Inventory
+    encuentra el inventario ya en la v13, no hace otro respaldo y la ventana lo sirve (**Inventory
     already upgraded**); si espera más de 5 s se rechaza con `upgrade_refused` y basta con reintentar.
 - **Los respaldos** van a la misma carpeta `backups/` que los de Back up now, en el mismo disco que el
   inventario: un disco que falla se los lleva, y desinstalar DevHQ con «Delete the application data»
@@ -696,7 +696,7 @@ que no tiene ninguna herramienta para ello. Lo implementa `src-tauri/src/upgrade
        Si no coinciden, o no hay respaldo, no pongas ninguno en su lugar y conserva los archivos como
        están: esta versión de DevHQ no ofrece otro camino.
 
-- **Volver a una versión anterior de DevHQ.** Un DevHQ anterior no lee la v12: volver es restaurar el
+- **Volver a una versión anterior de DevHQ.** Un DevHQ anterior no lee la v13: volver es restaurar el
   respaldo previo a la actualización, de su versión, como arriba, y lo escrito después se pierde. Los
   DevHQ anteriores a que ninguna apertura actualizara un inventario actualizan sin respaldo lo que
   abren, y convierten a WAL uno más nuevo antes de rechazarlo: no abras con ellos un inventario que
@@ -714,6 +714,32 @@ con alcance de usuario, y desde entonces cualquier sesión local de Claude Code 
 ```sh
 claude mcp add --scope user devhq -- "<ruta del ejecutable de DevHQ>" --mcp
 ```
+
+Con Codex se registra igual, en `~/.codex/config.toml`, la configuración que comparten su CLI y su app
+de escritorio:
+
+```sh
+codex mcp add devhq -- "<ruta del ejecutable de DevHQ>" --mcp
+```
+
+Codex pide aprobación antes de cada herramienta MCP que no se declara de solo lectura y, con
+`approval_policy = "never"`, no pregunta: la rechaza él mismo, sin que la llamada llegue a la puerta, y
+el agente solo recibe «MCP tool call requires approval, but approval policy is never». Para que lo que
+un agente puede escribir lo decida el acceso que eliges en DevHQ, aprueba en ese archivo solo las dos
+herramientas de Read and maintain:
+
+```toml
+[mcp_servers.devhq.tools.save_application]
+approval_mode = "approve"
+
+[mcp_servers.devhq.tools.save_resource]
+approval_mode = "approve"
+```
+
+Las demás herramientas que cambian algo, las de Read and write, siguen necesitando la aprobación de
+Codex aunque abras ese acceso en Settings; `default_tools_approval_mode = "approve"` en
+`[mcp_servers.devhq]` las aprobaría todas. La app de escritorio de Codex, como la de Claude, está
+empaquetada, y la puerta que lanza ve `AppData` redirigido (ver más abajo).
 
 El instalador pone el ejecutable en `%LOCALAPPDATA%\DevHQ`. El cliente lanza la puerta al empezar una
 sesión y la termina al cerrarla (al cerrarse stdin): no abre ningún puerto, no acepta conexiones, no
@@ -764,16 +790,20 @@ si es un inventario del esquema actual (lo averigua antes en una copia), y desde
 lee como cualquier otro. Para saber si una conexión mantiene
 abierto un log, la puerta pregunta lo mismo que SQLite y de la misma manera: si alguien tiene el
 bloqueo del byte 128 del índice, que cada conexión conserva mientras vive y que el sistema suelta
-cuando su proceso termina, termine como termine.
+cuando su proceso termina, termine como termine. Antes de responder `needs_recovery`, la puerta espera
+25 ms y otros 100 ms y vuelve a mirar los archivos: la última conexión que se cierra suelta ese
+bloqueo, borra el índice y solo después vuelca y borra el log, y una mirada en ese instante ve un log
+que nadie mantiene. Si los archivos cambiaron, mira otra vez desde el principio; solo responde
+`needs_recovery` si siguieron igual, lo que retrasa esa respuesta unos 125 ms.
 
-La puerta solo sirve un inventario en el esquema de este DevHQ (v12) y con su estructura. Lo demás lo
+La puerta solo sirve un inventario en el esquema de este DevHQ (v13) y con su estructura. Lo demás lo
 rechaza sin leer ni cambiar nada, también con la puerta cerrada: un inventario más antiguo con
 `schema_outdated` (este DevHQ nunca actualiza un inventario al abrirlo; solo la persona lo actualiza,
 desde la ventana, con [Back up and upgrade](#actualizar-un-inventario-antiguo), y la puerta no tiene
 herramienta para ello), uno más nuevo con `schema_newer`, un archivo SQLite sin las tablas de DevHQ (vacío o de otro
 programa) con `not_an_inventory`, uno que habría que recuperar con `needs_recovery`, y lo que no se puede
 leer como SQLite (otro tipo de archivo, una carpeta, un archivo dañado o bloqueado) con
-`database_error`. Que un archivo declare la versión 12 no basta. La puerta compara sus tablas, columna
+`database_error`. Que un archivo declare la versión 13 no basta. La puerta compara sus tablas, columna
 por columna, y sus índices, por nombre, con el esquema que crean las migraciones de este DevHQ; si algo
 falta o difiere lo rechaza con `schema_mismatch` y dice qué. Las tablas e índices que el esquema no tiene
 no los juzga. Esa comparación no es una comprobación de integridad: la puerta nunca lee cada página y
@@ -815,14 +845,18 @@ escritura, antes de que DevHQ vea qué es. Lo que la lectura sin cambios no cubr
 [docs/puerta-para-agentes.md](docs/puerta-para-agentes.md).
 
 Hasta dónde llega un agente lo decides tú en Settings → **Agent gate**: **Off** (por defecto, también
-tras actualizar), **Read only** o **Read and write**. La elección se guarda en el inventario
-(`agent_access`), porque la ventana la cambia y la puerta, otro proceso, la lee en cada llamada: se
-aplica de inmediato, también a una sesión ya abierta. No es una barrera de seguridad (el archivo es
-tuyo y está en tu disco) sino de intención: ningún agente lee ni escribe en tu inventario sin que lo
-hayas decidido. Con la puerta cerrada solo responde `status`, sin decir qué contiene el inventario,
+tras actualizar), **Read only**, **Read and maintain** o **Read and write**; cada uno permite lo del
+anterior. La elección se guarda en el inventario (`agent_access`), porque la ventana la cambia y la
+puerta, otro proceso, la lee en cada llamada: se aplica de inmediato, también a una sesión ya
+abierta, y dura hasta que la cambias. No es la aprobación de cada cambio: vale igual para toda sesión
+de agente que abra el inventario, sea Claude Code, Codex u otro cliente, y Settings lo dice. Solo la
+ventana la cambia; ninguna herramienta de la puerta lo hace. Tampoco es una barrera de seguridad (el
+archivo es tuyo y está en tu disco) sino de intención: ningún agente lee ni escribe en tu inventario
+sin que lo hayas decidido. Con la puerta cerrada solo responde `status`, sin decir qué contiene el inventario,
 para que el agente pueda explicarte dónde abrirla; las demás herramientas responden
-`access_denied`. Settings también muestra el comando de registro con la ruta real del ejecutable,
-para copiarlo; DevHQ nunca lo ejecuta ni toca la configuración de Claude Code. Para leer basta Read
+`access_denied`. Settings también muestra el comando de registro de Claude Code con la ruta real del
+ejecutable, para copiarlo; DevHQ nunca lo ejecuta ni toca la configuración de Claude Code ni la de
+Codex. Para leer basta Read
 only:
 
 | Herramienta    | Qué responde                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
@@ -833,12 +867,18 @@ only:
 | `get_system`   | Una aplicación o recurso (por ID, por nombre exacto sin distinguir mayúsculas, o por ambos si son del mismo sistema) con sus referencias, sus observaciones, incidencias y eventos cargados, y desde cuándo su historial automático está completo                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `history`      | Los resultados automáticos anteriores de un sistema, o las lecturas de sus copias locales (`records: "readings"`), de 200 en 200, como la carga bajo demanda de la ventana                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 
-Con Read and write, el agente también hace lo que tú haces en la ventana, pasando por los mismos
-casos de uso, con sus validaciones, límites y transacciones:
+Con Read and maintain, el agente además da de alta y edita aplicaciones y recursos, pasando por los
+mismos casos de uso que la ventana, con sus validaciones, límites y transacciones:
+
+| Herramienta                         | Qué hace                                                                                                 |
+| ----------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `save_application`, `save_resource` | Dar de alta (nombre y lifecycle, o nombre y tipo) o editar por ID, con sus componentes y sus referencias |
+
+Con Read and write, también hace todo lo demás que haces tú en la ventana. Es un acceso amplio, no una
+forma de aprobar lo que tiene riesgo: DevHQ no te pregunta antes de ninguna de estas operaciones.
 
 | Herramienta                                      | Qué hace                                                                                                                                              |
 | ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `save_application`, `save_resource`              | Dar de alta (nombre y lifecycle, o nombre y tipo) o editar por ID, con sus componentes y sus referencias                                              |
 | `delete_application`, `delete_resource`          | Borrar lo que no tiene historial; lo demás se rechaza con el mismo motivo que en la ventana                                                           |
 | `record_observation`, `record_event`             | Registrar una observación (resultado, qué vio, vigencia) o un despliegue, respaldo, mantenimiento o nota                                              |
 | `open_incident`, `update_incident`               | Abrir una incidencia o cambiar su estado con una nota                                                                                                 |
@@ -847,11 +887,58 @@ casos de uso, con sus validaciones, límites y transacciones:
 | `backup`                                         | Back up now                                                                                                                                           |
 | `read_copies`                                    | Leer ahora, como Read, una copia local (por su referencia), las de un sistema o todas las de esta estación: la lectura es evidencia de DevHQ (`read`) |
 
-Una edición es **parcial**: lo que el agente no manda se conserva, para que cambiar la versión nunca
-borre los componentes ni las referencias por omisión. La lista de componentes y la de referencias,
-cuando se mandan, son la lista completa, como en el formulario; un componente apunta a su recurso, y
-una ruta a su máquina, por ID o por nombre exacto, y un recurso puede nombrarse a sí mismo como
-máquina de sus rutas desde el alta. Los registros que escribe llevan `source = agent` y su nombre. La
+Una edición es **parcial**: lo que el agente no manda se conserva, también los componentes y las
+referencias. Una lista que manda añade lo que no lleva `id` y cambia lo que nombra por su `id`,
+conservando los campos que el elemento no trae (`runsOn: null`, `label: null` y `machine: null` borran
+el suyo); lo que no nombra se queda. Nada se quita por omisión: para quitar un componente o una
+referencia hay que nombrar su `id` en `removeComponents` o `removeReferences`, y un `id` que el
+sistema no tiene, también uno de otro sistema, rechaza la llamada entera. Un componente apunta a su
+recurso (`runsOn`), y una ruta a su máquina (`machine`), por el ID del recurso, el que dan
+`list_systems` y `get_system`, nunca por su nombre: entre la lectura del agente y su escritura, tú u
+otra sesión podéis renombrar ese recurso y darle su nombre a otro, y un vínculo por nombre acabaría,
+sin que nadie lo viera, en un recurso que el agente nunca leyó; `basedOn` no lo notaría, porque ninguno
+de esos cambios es del sistema que edita. Un nombre donde va un recurso se rechaza (`invalid_input`) y
+no hace nada. La única excepción es el recurso que se guarda, que puede nombrarse a sí mismo, por su ID
+o por el nombre que va a tener, como máquina de sus rutas, también desde el alta: en esa transacción,
+ese nombre solo es el suyo.
+
+Cada edición dice en qué estado del sistema se basa (`basedOn`): la última entrada de su registro de
+cambios, que `list_systems` y `get_system` dan como `latestChange` (`null` si no tiene ninguna),
+leído en la misma transacción que lo que muestran, y que la respuesta de cada guardado trae en
+`change`. Dentro de la transacción, con el lock de escritura de
+SQLite, la puerta comprueba que sigue siendo la última; si tú u otra sesión cambiasteis el sistema
+después, no hace nada y responde `changed_since_read`, para que ninguna edición pise un cambio que su
+agente no vio. La última entrada es la última escrita, no la de hora más reciente, que un reloj puede
+mover. Un alta con el nombre de una aplicación o un recurso que ya existe, sin distinguir mayúsculas
+ni espacios alrededor (como busca la puerta por nombre), o un renombre a ese nombre, se rechaza con
+`already_exists` y dice cuál es. Los componentes de una aplicación se comprueban en la lista tal como
+quedaría guardada, sea cual sea el orden de los elementos de la llamada: ningún componente que la
+llamada añade o renombra puede acabar con el nombre de otro, así que renombrar API a DB junto a un DB
+se rechaza, y también añadir uno con el nombre al que se renombra otro; renombrar uno para que otro
+nuevo tome su nombre, intercambiar dos nombres o tomar el de un componente que la misma llamada quita
+se guarda. Así, dos sesiones a las que se pide lo mismo, o una llamada que se repite porque se perdió su
+respuesta, dejan una sola; y una edición repetida se rechaza porque la primera ya cambió el estado en
+que se basaban las dos. La ventana sí admite nombres repetidos: un agente puede editar un sistema que
+comparte el suyo sin renombrarlo, y dos componentes que ya compartían nombre se quedan como están
+mientras la llamada no le dé ese nombre a ninguno; ninguna edición de agente añade un tercero. Ningún
+texto que guarda un agente lleva caracteres de control
+(salvo saltos de línea y tabuladores en una descripción) ni de formato invisibles, como las marcas
+que invierten la dirección del texto o los espacios de ancho cero: harían que lo que ves en DevHQ no
+fuera lo que se guarda.
+
+Con Claude Code y con Codex reales, lanzados desde un proceso sin paquete sobre inventarios sintéticos,
+el modelo, guiado por las descripciones de las herramientas, mandó como `basedOn` el `latestChange` que
+acababa de leer, editó enviando solo lo que cambiaba, nombró los recursos por su ID y, ante
+`changed_since_read`, volvió a leer y guardó su cambio sin deshacer el de la otra sesión.
+
+Lo que guarda un agente con Read and maintain es inventario declarado, nunca evidencia: no crea
+observaciones, incidencias ni eventos, un sistema que da de alta aparece como nunca observado, y el
+registro de cambios dice qué agente lo declaró. Un alta equivocada se corrige editándola (otro
+nombre, otro lifecycle, Archived); Read and maintain no borra nada, y la borras tú en la ventana
+mientras no tenga historial. Una vez lo tiene (una observación, una incidencia, un evento o una
+lectura de una de sus copias), se conserva y solo se puede archivar. El registro de cambios guarda el
+alta, cada corrección y el borrado. Los registros que escribe un agente llevan `source = agent` y su
+nombre. La
 configuración (aplicaciones, recursos, componentes, referencias y comprobaciones) no tiene `source`: cada cambio que hace un agente queda en el
 [registro de cambios](#registro-de-cambios) con su nombre, por los mismos casos de uso que la
 ventana y **en la misma transacción** que el cambio, después de comprobar ahí, con el lock de
@@ -862,6 +949,7 @@ registros no se repiten en ese log: ya dicen quién los escribió. Ejecutar una 
 el log qué agente la pidió. Un rechazo no cambia nada ni deja entrada. Las herramientas que sobrescriben o quitan configuración se
 declaran destructivas (`destructiveHint`) y `run_check`, que sale de tu computadora, de mundo
 abierto (`openWorldHint`), así que el cliente pide confirmación según cómo lo tengas configurado.
+DevHQ no sabe si te la pidió: lo que impone es el nivel de acceso y las reglas de cada herramienta.
 
 **Leer una copia no es configurar DevHQ.** `read_copies` exige Read and write porque guarda
 evidencia, como `record_observation`: con Read only un agente ve las lecturas pero nunca provoca una.
@@ -871,8 +959,8 @@ lleva su nombre una comprobación que un agente hizo salir de tu computadora. Se
 `readOnlyHint` (escribe evidencia), sin `destructiveHint` (no cambia nada que exista) y sin
 `openWorldHint` (nada sale del equipo). Lo que la hace posible sí deja rastro: declarar o mover una copia
 local es editar las referencias de un sistema. Qué estación es este equipo solo lo elige la ventana. Con
-Read and write, un agente puede declarar como copia local cualquier ruta absoluta de esta estación y hacer
-que DevHQ la lea; DevHQ solo dirá si ahí hay una copia y los datos de una lectura, nunca nombres de
+Read and maintain, un agente puede declarar como copia local cualquier ruta absoluta de esta estación, y
+con Read and write, además, hacer que DevHQ la lea; DevHQ solo dirá si ahí hay una copia y los datos de una lectura, nunca nombres de
 archivo, contenidos, autores ni mensajes, que un agente con terminal ya ve. Como el resto de la puerta,
 los modos son de intención, no una barrera de seguridad.
 
@@ -929,13 +1017,15 @@ subconjunto pequeño de JSON Schema (`type`, `enum`, `properties`, `required`,
 test recorre todos los esquemas publicados y falla si alguno usa otra palabra clave, o deja un objeto
 abierto o un entero sin límites, para que ningún esquema anuncie una regla que la puerta no aplica.
 Como en JSON Schema, un número sin parte fraccionaria es un entero: `30.0` vale como `30`, y `30.5`
-se rechaza. `null` solo vale donde el esquema lo admite (`version`, `runsOn`, `label` y `machine` de
-una referencia, `supervisionIntervalMinutes`, y `before` en `history`), con el significado que da la
+se rechaza. `null` solo vale donde el esquema lo admite (`version`, `basedOn`, `runsOn`, `label` y
+`machine` de una referencia, `supervisionIntervalMinutes`, y `before` en `history`), con el significado que da la
 descripción; en cualquier otro campo se rechaza en vez de ignorarse. Las reglas entre argumentos que
 ese subconjunto no expresa están en la descripción de cada herramienta y se comprueban igual, antes
 de abrir nada: nombrar el sistema por `id` o por `name`; en `read_copies`, una referencia o un
 sistema con su `type`, no ambos; `before` con observaciones y eventos; nombre y lifecycle, o nombre
-y tipo, para dar de alta. Un `id` y un `name` juntos deben nombrar el mismo sistema, y si no, la
+y tipo, para dar de alta; `basedOn` para editar; `removeComponents`, `removeReferences` y el `id`
+de un componente o una referencia solo al editar, un elemento nuevo con lo que necesita, y nunca un
+`id` que se quita y se cambia a la vez; y ningún carácter de control o de formato invisible. Un `id` y un `name` juntos deben nombrar el mismo sistema, y si no, la
 llamada se rechaza en vez de tomar el `id` y callar el `name`; esto se comprueba al buscar el
 sistema, dentro de la transacción en las escrituras, porque necesita el inventario. Un rechazo es un
 resultado con `isError` y el código `invalid_input` cuyo texto dice cada problema con su ruta, qué
@@ -943,9 +1033,10 @@ se acepta ahí y, si un nombre parece mal escrito, cuál se quiso decir; no se h
 comprueban los argumentos de la herramienta: el resto de `params` (`_meta`, y lo que añadan
 revisiones posteriores del protocolo) es del protocolo, y la puerta no lo rechaza.
 
-En Windows, una puerta lanzada desde una app empaquetada (MSIX), como la app de escritorio de Claude,
-ve `AppData` redirigido (ver [Arquitectura](#arquitectura)) y podría leer y escribir otro inventario,
-o no encontrar ninguno: `status` lo dice con `storedAt`, y la puerta no se niega a escribir. Claude Code desde una terminal normal no está empaquetado. El workflow de
+En Windows, una puerta lanzada desde una app empaquetada (MSIX), como las apps de escritorio de Claude
+o de Codex, ve `AppData` redirigido (ver [Arquitectura](#arquitectura)) y podría leer y escribir otro
+inventario, o no encontrar ninguno: `status` lo dice con `storedAt`, y la puerta no se niega a escribir.
+Claude Code y Codex desde una terminal normal no están empaquetados. El workflow de
 Windows instala DevHQ y habla con la puerta del ejecutable instalado como lo hace un cliente MCP:
 comprueba que responde por stdin y stdout aunque no tenga consola, que abre el inventario de
 `%APPDATA%`, que ve cerrada la ventana que acaba de cerrarse (Windows soltó su lock) y que termina al
@@ -1280,7 +1371,7 @@ pánico que en Linux abortaba el proceso al abrir Mi inventario (lo comprueba `n
   (`upgrade.rs`), cuando la persona pulsa Back up and upgrade en la ventana: con su propia conexión
   (`open_to_upgrade`), bajo el lock de escritura, después de un respaldo verificado y comprobando el
   resultado antes de confirmar (ver [Actualizar un inventario antiguo](#actualizar-un-inventario-antiguo)).
-  Las migraciones transaccionales v1→v12 (`PRAGMA user_version`) crean el esquema de un inventario
+  Las migraciones transaccionales v1→v13 (`PRAGMA user_version`) crean el esquema de un inventario
   nuevo y actualizan uno anterior; ninguna apertura, consulta, respaldo, supervisión ni herramienta MCP
   las aplica. Una versión más nueva se rechaza en vez de adivinarse.
 
@@ -1414,7 +1505,16 @@ referencia y por sistema; ninguna fila cambia. Su sistema es `ON DELETE RESTRICT
 registro, y la referencia, la máquina y la ruta que leyó se copian sin claves foráneas. Sus CHECK exigen
 que una copia no leída diga por qué y nada más, que una leída tenga cada dato obligatorio y su working
 tree contado o desconocido con el motivo (nunca ambos, nunca a medias), un HEAD de 40 dígitos
-hexadecimales y ningún commit sin publicar sin HEAD. Los
+hexadecimales y ningún commit sin publicar sin HEAD. La v13 reconstruye `agent_access`, como la v7
+sus tablas, para admitir un cuarto modo, `maintain`: su fila, si la hay, conserva su `rowid` y sus
+valores, así que la puerta sigue con el acceso que elegiste; ninguna otra fila cambia. También añade
+dos índices al registro de cambios, uno por aplicación y otro por recurso, que guardan las entradas de
+cada sistema en el orden en que se escribieron: la puerta encuentra el `latestChange` de un sistema,
+también con el lock de escritura de una edición, en un paso de índice, cuando los índices por hora de
+la v10 la obligaban a leer y ordenar todas las entradas del sistema (con 200 000 entradas sintéticas,
+la mitad de un sistema, de 58 ms a 0,004 ms; cada commit cuesta lo mismo a efectos prácticos y el
+archivo crece un 15 %). La consulta exige ese índice (`INDEXED BY`), porque las estadísticas que otra
+herramienta puede reunir (`ANALYZE`) llevan a SQLite a preferir el índice por hora y ordenar. Los
 registros usan dos columnas con clave foránea (`application_id`/`resource_id`) y un CHECK
 que exige exactamente una; las referencias de historial son `ON DELETE RESTRICT`, así que
 nada puede borrar un sujeto y dejar evidencia huérfana; los casos de uso de borrado lo
@@ -1482,12 +1582,12 @@ no una especificación ni un backlog: nada de lo que describe existe hasta que e
 Las pruebas cubren navegación, tabs/teclado, filtros, rutas desconocidas, relaciones
 compartidas, cronología de la demo, salud desconocida, persistencia tras reapertura,
 rechazo de referencias inválidas sin escrituras parciales, restricciones del esquema,
-migraciones v1/v2→v3, v3→v4, v4→v5, v5→v6, v6→v7, v7→v8, v8→v9, v9→v10, v10→v11 y v11→v12 (incluida la negativa a confirmar relaciones rotas), la actualización explícita (cada versión de la v1 a la v11, con journal de rollback y en WAL, actualizada con su consentimiento:
+migraciones v1/v2→v3, v3→v4, v4→v5, v5→v6, v6→v7, v7→v8, v8→v9, v9→v10, v10→v11, v11→v12 y v12→v13 (incluida la negativa a confirmar relaciones rotas), la actualización explícita (cada versión de la v1 a la v12, con journal de rollback y en WAL, actualizada con su consentimiento:
 cada fila conservada valor a valor, un respaldo idéntico al inventario anterior con su manifiesto, que
 restaurado vuelve a ser lo que se vio y se actualiza igual; ningún archivo cambia al mirarlo ni al
 rechazar otra versión, otro contenido o un archivo cambiado después de mirarlo; nada se actualiza sin
 la estructura exacta de su versión, con un índice que falta, una tabla o un trigger de más, una
-relación rota, páginas dañadas o una columna declarada de otra forma, ni siendo v13 o de otro
+relación rota, páginas dañadas o una columna declarada de otra forma, ni siendo v14 o de otro
 programa; ninguna migración se confirma sin un respaldo verificado, con una copia dañada, cambiada o con
 una fila de más, un nombre de respaldo o de manifiesto ocupado, unos nombres que el sistema no confirma
 en disco (el respaldo y su manifiesto se quedan) o una carpeta imposible; una migración
@@ -1540,11 +1640,22 @@ con la puerta abierta para escribir, sin cambiar una fila; con las llamadas que 
 silencio (un campo mal escrito o en otra capitalización, `null` donde no cabe, un componente con
 `runOn`, un `type` de más y un `id` que contradice al `name` en un borrado, un `id` numérico, `30.5`
 como entero) y con las que se aceptan (`30.0`, `id` y `name` del mismo sistema, `null` donde el
-esquema lo admite, `_meta` y otros campos del protocolo en `params`). Su apertura del inventario se
-prueba con inventarios v6 con journal de rollback y en WAL, v11 con Read only, v12 en WAL con Read only
-y con Off, la copia de un respaldo (rollback) con Read only, v13, un archivo vacío, una base SQLite de
-otro programa, otra marcada con la versión 12 sin las tablas de DevHQ, otra marcada con la versión 12
-con solo `applications` y `resources`, un v12 sin `agent_access`, un v12 con Off cuyo log dejó con
+esquema lo admite, `_meta` y otros campos del protocolo en `params`). Read and maintain se prueba con sesiones
+nuevas que leen con Read only, sin ventana, todo lo que da la puerta sin cambiar nada; con altas y
+ediciones de aplicaciones y recursos con sus componentes y referencias, que quedan como cambios del
+agente y como sistemas nunca observados; con cada otra herramienta que cambia algo, rechazada sin
+escribir; con nombres repetidos en otras mayúsculas, un renombre al nombre de otro sistema y un
+componente repetido; con una edición repetida después de confirmarse; con ediciones basadas en un
+estado que la persona u otra sesión cambiaron, con ocho sesiones a la vez sobre el mismo estado, de
+las que edita una, y con ocho que dan de alta la misma aplicación, de las que queda una; con listas
+que dejan elementos fuera sin quitarlos y bajas de lo que no es del sistema, rechazadas enteras; con
+un alta equivocada que se corrige, se borra en la ventana o, con historial, se archiva; con el log
+que deja un escritor al que se mata, que la puerta rechaza sin tocar ningún archivo y que la ventana
+recupera con cada cambio una sola vez; y con la actualización a la v13, que conserva el modo elegido. Su apertura del inventario se
+prueba con inventarios v6 con journal de rollback y en WAL, v12 con Read only, v13 en WAL con Read only
+y con Off, la copia de un respaldo (rollback) con Read only, v14, un archivo vacío, una base SQLite de
+otro programa, otra marcada con la versión 13 sin las tablas de DevHQ, otra marcada con la versión 13
+con solo `applications` y `resources`, un v13 sin `agent_access`, un v13 con Off cuyo log dejó con
 cambios un escritor al que se mata (como lo deja un cierre brusco), ese mismo log sin su índice, un v6
 y la copia de un respaldo con el journal de rollback que deja una escritura a la que se mata a medias,
 un archivo de texto, una carpeta y nada: `status` dice qué es cada uno sin presentar como sabido lo que
@@ -1570,24 +1681,24 @@ sistema solo lo que devuelve de él y una fila más, y los planes de consulta, q
 completo ni buscan un evento automático por su observación, tampoco con estadísticas que otra
 herramienta haya calculado sobre el archivo. Que ninguna apertura cambia el esquema se prueba con
 cada comando de la ventana, por el manejador real de comandos, sobre un v6 en rollback y en WAL, un
-v11, un v13 en rollback y en WAL, un archivo vacío, una base de otro programa y una marcada con la
-versión 12 sin su estructura: cada comando que abriría el inventario se rechaza con su código y ningún
+v11, un v14 en rollback y en WAL, un archivo vacío, una base de otro programa y una marcada con la
+versión 13 sin su estructura: cada comando que abriría el inventario se rechaza con su código y ningún
 archivo de la carpeta cambia, aparece ni desaparece. También con casos de uso que abren de verdad un
-v6, un v11 en WAL y un v13 en rollback y en WAL y los rechazan sin cambiar un byte ni su modo de
+v6, un v11 en WAL y un v14 en rollback y en WAL y los rechazan sin cambiar un byte ni su modo de
 journal y sin crear `backups/`; con una conexión cuyo archivo pasa a la v11 después de abrirse, que
 rechaza leer y escribir sin actualizarlo; con un agente al que se le cierra la puerta después de abrir
 su conexión; con un inventario que desaparece con la ventana abierta y que nadie vuelve a crear; con un
 archivo vacío que nunca se inicializa, tampoco con un journal al lado; con la ventana que arranca donde
 no hay nada y crea un inventario en WAL; con arranques sobre escritores a los que se mata a medias: un
-v12 se recupera con lo confirmado, y un v6 y un v13 se rechazan sin cambiar ningún archivo; con el
+v13 se recupera con lo confirmado, y un v6 y un v14 se rechazan sin cambiar ningún archivo; con el
 journal de una escritura que reescribía doscientos recursos, y con el log de otra ya confirmada, que
 quedan sin su inventario: la ventana no crea ninguno (sin la protección, el journal dañaba el
 inventario nuevo, como dice `PRAGMA integrity_check`, y el log le metía los recursos del anterior),
 no cambia ningún byte de lo que quedó y, devuelto el inventario, lo recupera íntegro y con lo
-confirmado; y con archivos que se sustituyen mientras la ventana recupera un v12: todos, por un v13
-con una escritura sin terminar, después de que la copia resultara actual (el v13 se rechaza y queda
+confirmado; y con archivos que se sustituyen mientras la ventana recupera un v13: todos, por un v14
+con una escritura sin terminar, después de que la copia resultara actual (el v14 se rechaza y queda
 byte a byte como se puso; sin la protección SQLite reproducía su journal), y solo el log, por uno que
-lo hace v13, con la conexión que lo va a recuperar ya abierta (se rechaza igual; si se compara antes
+lo hace v14, con la conexión que lo va a recuperar ya abierta (se rechaza igual; si se compara antes
 de abrirla, SQLite volcaba ese log en el archivo). La concurrencia de SQLite se
 prueba sin esperas medidas: una lectura no espera a una escritura en curso, una escritura no espera a
 una lectura abierta (que conserva su estado), cuatro arranques simultáneos crean un único inventario
