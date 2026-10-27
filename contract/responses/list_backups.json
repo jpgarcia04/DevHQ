@@ -1,5 +1,5 @@
 {
-  "directory": "C:\\Users\\Juan Pablo\\AppData\\Roaming\\com.devhq.desktop\\backups",
+  "directory": "C:\\Users\\Ana Ruiz\\AppData\\Roaming\\com.devhq.desktop\\backups",
   "files": [
     {
       "name": "inventory-20260101T100500.123Z.sqlite3",
@@ -13,7 +13,7 @@
       "sizeBytes": 1048576,
       "modifiedAt": null,
       "partial": true,
-      "storedAt": "C:\\Users\\Juan Pablo\\AppData\\Local\\Packages\\Claude_pzs8sxrjxfjjc\\LocalCache\\Roaming\\com.devhq.desktop\\backups\\inventory-20260101T090000.000Z.sqlite3.partial"
+      "storedAt": "C:\\Users\\Ana Ruiz\\AppData\\Local\\Packages\\Claude_pzs8sxrjxfjjc\\LocalCache\\Roaming\\com.devhq.desktop\\backups\\inventory-20260101T090000.000Z.sqlite3.partial"
     }
   ]
 }

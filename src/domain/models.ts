@@ -22,7 +22,7 @@ export interface Application {
   name: string
   description: string
   mark: 'shield' | 'brain' | 'home' | 'clapperboard'
-  artwork: 'guardian' | 'brain' | 'rentia' | 'clipops'
+  artwork: 'vault' | 'planner' | 'rooms' | 'media'
   logoUrl?: string
   thumbnailUrl?: string
   lifecycle: Lifecycle

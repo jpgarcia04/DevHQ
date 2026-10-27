@@ -474,7 +474,7 @@ ejecución, que es idéntica a la de Run check y sigue la misma semántica de vi
   un índice tan grande como el historial y la recarga leía 3.9 MB a los 90 días. Las cifras
   son de Linux, en release y con la caché del sistema caliente (`history_costs`, ver
   [Ejecutar](#ejecutar)); en otros sistemas esa prueba no mide lo leído del archivo. En una
-  laptop con Windows 11 (i5-13420H), con la protección en tiempo real de Defender activa, dos
+  laptop de gama media con Windows 11, con la protección en tiempo real de Defender activa, dos
   corridas dieron 8.9 y 12.6 ms por recarga, 2.2 a 2.4 ms por página de Activity global al
   principio, a la mitad y al final del historial, y 2.2–3.2, 2.7–2.8 y 4.1–4.3 ms con 5, 20 y 50
   sistemas, con los mismos 855 y 79 KB hacia la ventana: más lento que en Linux, pero igual de
@@ -1086,7 +1086,7 @@ respaldarlo y actualizarlo; la preview rechaza la actualización como toda escri
 esto. `npm run e2e` usa el Chrome instalado (en CI, el del runner) o el ejecutable que indique
 `DEVHQ_CHROMIUM`; nunca descarga navegadores, y reutiliza un `npm run dev` en marcha. Antes de
 la primera prueba carga la preview una vez (`e2e/warm-up.ts`): Vite transforma cada módulo la
-primera vez que se pide y no guarda nada entre arranques. En una laptop con Windows (i5-13420H),
+primera vez que se pide y no guarda nada entre arranques. En una laptop de gama media con Windows,
 con seis pestañas a la vez, la primera ventana tardaba unos 3.5 s de los 5 s que una prueba le
 da para aparecer, y a veces más: fallaban las seis primeras pruebas, o una con 12 workers. Además de
 recorrer el historial y comprobar que el aviso no tapa la ventana, audita con axe-core (reglas
@@ -1237,8 +1237,8 @@ la ejecución en curso de la misma rama). Si ningún commit de la rama pasó tod
 las ejecuciones anteriores, compara con el punto en que la rama salió de su base, como hacía el
 filtro: un job omitido nunca esconde un cambio del pull request sin probar.
 
-Lo que el workflow no hace como una persona se comprobó a mano el 2 oct 2026 en una laptop con
-Windows 11 (i5-13420H), WebView2 154 y Defender en tiempo real, con `npm run tauri dev`, con el
+Lo que el workflow no hace como una persona se comprobó a mano el 2 oct 2026 en una laptop de gama media
+con Windows 11, WebView2 154 y Defender en tiempo real, con `npm run tauri dev`, con el
 instalador y con el `devhq.exe` de release. Una base v5 en journal de rollback se migró a v6 al
 abrir, con todas sus filas y `rowid` intactos, y pasó a WAL; `-wal` y `-shm` aparecen al abrir cada
 conexión y desaparecen al cerrarla, y al cerrar la ventana el proceso terminó en menos de 200 ms

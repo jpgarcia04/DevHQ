@@ -18,18 +18,16 @@ import {
 
 describe('operational relationships', () => {
   it('includes shared infrastructure incidents in an application context', () => {
-    const app = applications.find((item) => item.id === 'clipops')!
+    const app = applications.find((item) => item.id === 'canvas-media')!
     expect(applicationIncidents(incidents, app).map((item) => item.id)).toEqual([
       'INC-024',
       'INC-023',
     ])
-    expect(resourceApplications(applications, 'orchestrator-vps').map((item) => item.id)).toEqual([
-      'orchestrators-brain',
-      'clipops',
+    expect(resourceApplications(applications, 'orbit-vps').map((item) => item.id)).toEqual([
+      'orbit-planner',
+      'canvas-media',
     ])
-    expect(resourceIncidents(incidents, 'orchestrator-vps').map((item) => item.id)).toEqual([
-      'INC-023',
-    ])
+    expect(resourceIncidents(incidents, 'orbit-vps').map((item) => item.id)).toEqual(['INC-023'])
     expect(applicationEvents(events, app).map((item) => item.id)).toContain('evt-2')
     expect(applicationEvents(events, app).map((item) => item.id)).not.toContain('evt-7')
   })
@@ -42,7 +40,7 @@ describe('operational relationships', () => {
     expect(ecosystemHealth([], [])).toBe('unknown')
     expect(
       ecosystemHealth(
-        applications.filter((item) => item.id === 'rentia'),
+        applications.filter((item) => item.id === 'rivet-rooms'),
         [],
       ),
     ).toBe('unknown')
@@ -69,7 +67,7 @@ describe('operational relationships', () => {
     const timestamps = events.map((event) => Date.parse(event.occurredAt))
     expect(timestamps).toEqual([...timestamps].sort((a, b) => b - a))
     expect(timestamps.every((timestamp) => timestamp <= Date.parse(scenario.observedAt))).toBe(true)
-    const backup = applications.find((app) => app.id === 'pass-guardian')!
+    const backup = applications.find((app) => app.id === 'pine-vault')!
     const backupRun = automations.find((item) => item.id === 'daily-backup')!
     expect(Date.parse(backupRun.lastRun!.occurredAt)).toBeGreaterThan(
       Date.parse(backup.lastBackupAt!),
@@ -78,9 +76,9 @@ describe('operational relationships', () => {
     expect(backupRun.lastRun!.occurredAt).toBe(
       events.find((event) => event.id === 'evt-1')!.occurredAt,
     )
-    const clipops = applications.find((app) => app.id === 'clipops')!
+    const canvasMedia = applications.find((app) => app.id === 'canvas-media')!
     const failedRelease = events.find((event) => event.id === 'evt-3')!
-    expect(Date.parse(clipops.lastVerifiedDeploymentAt!)).toBeLessThan(
+    expect(Date.parse(canvasMedia.lastVerifiedDeploymentAt!)).toBeLessThan(
       Date.parse(failedRelease.occurredAt),
     )
     expect(events.find((event) => event.id === 'evt-5')!.kind).toBe('build')

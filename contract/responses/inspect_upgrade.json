@@ -1,5 +1,5 @@
 {
-  "database": "C:\\Users\\Juan Pablo\\AppData\\Roaming\\com.devhq.desktop\\inventory.sqlite3",
+  "database": "C:\\Users\\Ana Ruiz\\AppData\\Roaming\\com.devhq.desktop\\inventory.sqlite3",
   "storedAt": null,
   "state": "outdated",
   "storedVersion": 6,
@@ -17,5 +17,5 @@
     { "table": "resources", "rows": 1 }
   ],
   "fingerprint": "3a7bd3e2360a3d29eea436fcfb7e44c735d117c42d1c1835420b6b9942dd4f1b",
-  "backups": "C:\\Users\\Juan Pablo\\AppData\\Roaming\\com.devhq.desktop\\backups"
+  "backups": "C:\\Users\\Ana Ruiz\\AppData\\Roaming\\com.devhq.desktop\\backups"
 }
