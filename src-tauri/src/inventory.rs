@@ -75,6 +75,21 @@ impl ApiError {
             message: message.into(),
         }
     }
+    /// An agent's edit was based on a state of the system that is no longer its state: someone
+    /// changed it after the agent read it. Nothing was done; reading it again tells what is there.
+    pub(crate) fn changed(message: impl Into<String>) -> Self {
+        Self {
+            code: "changed_since_read",
+            message: message.into(),
+        }
+    }
+    /// An agent asked to add what is already there, by its name. Nothing was added.
+    pub(crate) fn exists(message: impl Into<String>) -> Self {
+        Self {
+            code: "already_exists",
+            message: message.into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -236,11 +251,11 @@ pub(crate) fn plain(path: &Path) -> String {
     }
 }
 
-pub(crate) const SCHEMA_VERSION: i64 = 12;
+pub(crate) const SCHEMA_VERSION: i64 = 13;
 /// Each schema version with the migration that brings an inventory to it from the one before.
 /// They build a new inventory (`create`) and upgrade an older one (`upgrade.rs`), and are never
 /// edited once released: an inventory left at any version has the structure they give it there.
-pub(crate) const MIGRATIONS: [(i64, &str); 12] = [
+pub(crate) const MIGRATIONS: [(i64, &str); 13] = [
     (1, include_str!("../migrations/001_inventory.sql")),
     (2, include_str!("../migrations/002_inventory_details.sql")),
     (3, include_str!("../migrations/003_operational_records.sql")),
@@ -253,6 +268,7 @@ pub(crate) const MIGRATIONS: [(i64, &str); 12] = [
     (10, include_str!("../migrations/010_change_log.sql")),
     (11, include_str!("../migrations/011_references.sql")),
     (12, include_str!("../migrations/012_copy_readings.sql")),
+    (13, include_str!("../migrations/013_maintain_access.sql")),
 ];
 
 // How DevHQ reaches its inventory. No opening changes its schema: an inventory in an older schema
@@ -273,11 +289,14 @@ pub(crate) const MIGRATIONS: [(i64, &str); 12] = [
 // - `open_to_upgrade` is the explicit upgrade's own connection, and the only one that applies a
 //   migration to an inventory that exists.
 
+/// How long a use case's connection waits for another writer before SQLite refuses with "database
+/// is locked", and how long an agent's write waits for readers to let it empty the log.
+const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// What a use case's connection does on top of SQLite's defaults: waits up to five seconds for
 /// another writer, and enforces relationships.
 fn prepared(db: Connection) -> Result<Connection, ApiError> {
-    db.busy_timeout(Duration::from_secs(5))
-        .map_err(ApiError::database)?;
+    db.busy_timeout(BUSY_TIMEOUT).map_err(ApiError::database)?;
     db.pragma_update(None, "foreign_keys", "ON")
         .map_err(ApiError::database)?;
     Ok(db)
@@ -315,10 +334,15 @@ pub(crate) fn begin(
     db: &mut Connection,
     behavior: TransactionBehavior,
 ) -> Result<Transaction<'_>, ApiError> {
+    begin_on(db, behavior)
+}
+
+/// `begin` on a connection borrowed for as long as the transaction lives: `begin_write` needs the
+/// connection again once the transaction has committed. The borrow comes from `&mut`, so nothing
+/// else uses the connection meanwhile, as `Connection::transaction_with_behavior` ensures.
+fn begin_on(db: &Connection, behavior: TransactionBehavior) -> Result<Transaction<'_>, ApiError> {
     let path = PathBuf::from(db.path().unwrap_or_default());
-    let tx = db
-        .transaction_with_behavior(behavior)
-        .map_err(ApiError::database)?;
+    let tx = Transaction::new_unchecked(db, behavior).map_err(ApiError::database)?;
     match classify(&tx).map_err(ApiError::database)? {
         Found::Current => Ok(tx),
         found => Err(found.refusal(&path)),
@@ -329,15 +353,117 @@ pub(crate) fn begin(
 /// inside it an inventory in this build's schema and, for an agent, that the person lets agents
 /// write (see `access`): that decides, so that closing the agent gate in Settings, or replacing,
 /// upgrading or emptying the file, can never race a write that was asked for before.
-pub(crate) fn begin_write<'a>(
+pub(crate) fn begin_write<'a>(db: &'a mut Connection, by: &Actor) -> Result<Writing<'a>, ApiError> {
+    begin_write_for(db, by, "write")
+}
+
+/// `begin_write` for a change that needs `need` of the agent gate's access (see
+/// `access::permitted`): `maintain` to add or edit applications and resources, `write` for
+/// anything else. The person's own changes need none.
+pub(crate) fn begin_write_for<'a>(
     db: &'a mut Connection,
     by: &Actor,
-) -> Result<Transaction<'a>, ApiError> {
-    let tx = begin(db, TransactionBehavior::Immediate)?;
-    if let Actor::Agent(_) = by {
-        access::permitted(&access::mode(&tx)?, "write")?;
+    need: &str,
+) -> Result<Writing<'a>, ApiError> {
+    let db: &'a Connection = db;
+    let tx = begin_on(db, TransactionBehavior::Immediate)?;
+    let agent = matches!(by, Actor::Agent(_));
+    if agent {
+        access::permitted(&access::mode(&tx)?, need)?;
     }
-    Ok(tx)
+    Ok(Writing { tx, db, agent })
+}
+
+/// A write transaction from `begin_write`, used as the `Transaction` it holds. Dropped without
+/// `commit`, it rolls back, as a `Transaction` does.
+#[derive(Debug)]
+pub(crate) struct Writing<'a> {
+    tx: Transaction<'a>,
+    db: &'a Connection,
+    agent: bool,
+}
+
+impl<'a> std::ops::Deref for Writing<'a> {
+    type Target = Transaction<'a>;
+
+    fn deref(&self) -> &Transaction<'a> {
+        &self.tx
+    }
+}
+
+impl Writing<'_> {
+    /// Commits the transaction and, for an agent, then tries to empty the log (see `empty_log`):
+    /// once the commit succeeded, the write succeeded, whether or not the log could be emptied.
+    pub(crate) fn commit(self) -> rusqlite::Result<()> {
+        self.tx.commit()?;
+        if self.agent {
+            empty_log(self.db, BUSY_TIMEOUT);
+        }
+        Ok(())
+    }
+}
+
+/// Folds what the write-ahead log holds into the file and empties the log, on `db`, a connection
+/// that has just committed an agent's write, before it closes; true once the log is empty.
+///
+/// SQLite folds the log into the file and deletes it only when the last connection to the database
+/// closes, and only if that connection can: one that closes while another reads (a gate's read is
+/// read-only, and in WAL mode a reader holds the file shared) leaves its changes in the log, and the
+/// read-only connection that closes after it cannot fold them. With the window closed nothing holds
+/// that log, and every gate, which never recovers what it finds (see `examine`), refuses the
+/// inventory with `needs_recovery`, reads and writes alike, since every write first reads: only the
+/// window's start recovers it. Two agent sessions, one writing while the other reads, were enough.
+/// Folding here, before the connection closes, leaves that log empty instead, which the gate reads
+/// as it reads a file without a log.
+///
+/// `TRUNCATE` can empty the log only once no read in progress still uses it, which a gate's read
+/// does for milliseconds, and it empties it to zero bytes: a log that is only reset keeps its size,
+/// and the gate tells a log with changes by its size. Waiting with the busy timeout would hold
+/// SQLite's write lock all the while, and another write, an agent's or the window's, would wait
+/// behind it and could be refused with "database is locked". So each try waits for nothing and
+/// lets go of the lock at once, and the tries repeat, with SQLite's own pauses between tries of a
+/// lock, for up to `patience` (the busy timeout, as any lock): another write takes the lock between
+/// two tries, and only the agent's answer waits.
+///
+/// Nothing it does is a decision: the write has committed, and what it folds are committed pages,
+/// so a fold that does not finish (a read kept the log past `patience`) is not an error, and leaves
+/// the log as SQLite would have. While a connection still holds it, a later agent's write folds it
+/// the same way; if the last to close is a gate's read, nothing holds it, every gate refuses the
+/// inventory before any write could fold it, and the window recovers it when it starts.
+/// The window's own writes are left as they were: while it is open its own connection keeps the
+/// log, and it folds it when it closes.
+fn empty_log(db: &Connection, patience: Duration) -> bool {
+    /// The pauses SQLite's default busy handler makes between tries of a lock, in milliseconds;
+    /// the last one repeats.
+    const PAUSES: [u64; 12] = [1, 2, 5, 10, 15, 20, 25, 25, 25, 50, 50, 100];
+    let deadline = std::time::Instant::now() + patience;
+    // Without a busy timeout a try that finds a read in progress, or another writer, gives up at
+    // once, and lets go of the write lock, instead of waiting with it held.
+    if db.busy_timeout(Duration::ZERO).is_err() {
+        return false;
+    }
+    let mut tries = 0;
+    let emptied = loop {
+        // Its first column is 1 when the log could not be emptied because something used it.
+        match db.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+            row.get::<_, i64>(0)
+        }) {
+            Ok(0) => break true,
+            Ok(_) => {}
+            Err(rusqlite::Error::SqliteFailure(failure, _))
+                if failure.code == rusqlite::ErrorCode::DatabaseBusy => {}
+            Err(_) => break false,
+        }
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            break false;
+        }
+        let pause = Duration::from_millis(PAUSES[tries.min(PAUSES.len() - 1)]);
+        std::thread::sleep(pause.min(left));
+        tries += 1;
+    };
+    let _ = db.busy_timeout(BUSY_TIMEOUT);
+    emptied
 }
 
 /// Runs `work` in a write transaction for `by` on the inventory at `path` (see `begin_write`), and
@@ -883,6 +1009,27 @@ impl Found {
 /// How many times the gate looks again at files that changed while it looked or read.
 const LOOKS: usize = 3;
 
+/// How long the gate waits, each time, before it looks again at files that need recovering, to
+/// tell files left so from files caught in the instant a connection closes. The last connection to
+/// a write-ahead-logged database lets go of the log's index, deletes the index and only then
+/// deletes the log: a look in between finds a log with changes that nothing holds, or one without
+/// its index, which a moment later is gone.
+const SETTLE: [Duration; 2] = [Duration::from_millis(25), Duration::from_millis(100)];
+
+/// Whether the files at `path` are still `disk` after each pause of `SETTLE`: what needs recovering
+/// was left so, and is not a connection closing, or a writer committing, in that instant.
+fn settled(path: &Path, disk: &OnDisk) -> bool {
+    for pause in SETTLE {
+        #[cfg(test)]
+        tests::while_settling();
+        std::thread::sleep(pause);
+        if OnDisk::look(path).as_ref() != Ok(disk) {
+            return false;
+        }
+    }
+    true
+}
+
 /// What is at `path`, told without changing any of its files, and, when it is an inventory in this
 /// build's schema, what `read` made of it on a connection that cannot change them either.
 ///
@@ -924,6 +1071,15 @@ pub(crate) fn examine_where<T>(
         };
         let way = match disk.way(path) {
             Ok(way) => way,
+            // Taken at its word only once the files stay as they are: a connection closing in that
+            // instant changes them, and then the gate looks again.
+            Err(Some(found @ Found::NeedsRecovery(_))) => {
+                if settled(path, &disk) {
+                    return (found, None);
+                }
+                changing = "what needed recovering changed a moment later".to_owned();
+                continue;
+            }
             Err(Some(found)) => return (found, None),
             Err(None) => {
                 changing = "the log's index went away".to_owned();
@@ -1468,6 +1624,14 @@ pub fn list(path: &Path) -> Result<Inventory, ApiError> {
 /// the caller opened, such as the agent gate's, which opens the inventory as it finds it.
 pub(crate) fn list_from(db: &mut Connection) -> Result<Inventory, ApiError> {
     let tx = begin(db, TransactionBehavior::Deferred)?;
+    let inventory = list_in(&tx)?;
+    tx.commit().map_err(ApiError::database)?;
+    Ok(inventory)
+}
+
+/// `list_from` inside a read transaction the caller holds, so that whatever else it reads there
+/// (the agent gate's `latestChange`) is of the same state of the inventory.
+pub(crate) fn list_in(tx: &Transaction) -> Result<Inventory, ApiError> {
     let mut resources = {
         let mut statement = tx.prepare("SELECT id, name, kind, description, operating_system FROM resources ORDER BY name COLLATE NOCASE, id").map_err(ApiError::database)?;
         let result = statement
@@ -1488,7 +1652,7 @@ pub(crate) fn list_from(db: &mut Connection) -> Result<Inventory, ApiError> {
     };
     for resource in &mut resources {
         resource.references = references::of(
-            &tx,
+            tx,
             &Subject::Resource {
                 id: resource.id.clone(),
             },
@@ -1528,11 +1692,11 @@ pub(crate) fn list_from(db: &mut Connection) -> Result<Inventory, ApiError> {
                 .map_err(ApiError::database)?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(ApiError::database)?;
-            app.references = references::of(&tx, &Subject::Application { id: app.id.clone() })?;
+            app.references = references::of(tx, &Subject::Application { id: app.id.clone() })?;
         }
     }
     let shared_repositories = references::shared_repositories(&applications, &resources);
-    let local_copies = readings::local_copies(&tx, &applications, &resources)?;
+    let local_copies = readings::local_copies(tx, &applications, &resources)?;
     let subjects: Vec<_> = applications
         .iter()
         .map(|app| records::Subject::Application { id: app.id.clone() })
@@ -1545,11 +1709,10 @@ pub(crate) fn list_from(db: &mut Connection) -> Result<Inventory, ApiError> {
         incidents,
         events,
         automated_history,
-    } = records::load(&tx, &subjects)?;
-    let http_checks = http_check::load(&tx)?;
-    let changes = change_log::load(&tx)?;
-    let changes_since = change_log::complete_since(&tx)?;
-    tx.commit().map_err(ApiError::database)?;
+    } = records::load(tx, &subjects)?;
+    let http_checks = http_check::load(tx)?;
+    let changes = change_log::load(tx)?;
+    let changes_since = change_log::complete_since(tx)?;
     Ok(Inventory {
         applications,
         resources,
@@ -3486,7 +3649,9 @@ pub(crate) mod tests {
             strings(&db, "SELECT name FROM sqlite_master WHERE type = 'index' AND name NOT LIKE 'sqlite_autoindex%' ORDER BY name"),
             [
                 "change_log_application_id",
+                "change_log_application_latest",
                 "change_log_resource_id",
+                "change_log_resource_latest",
                 "components_application_id",
                 "components_resource_id",
                 "copy_readings_application_id",
@@ -4196,7 +4361,12 @@ pub(crate) mod tests {
         .is_empty());
         assert_eq!(
             strings(&db, "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'change_log' AND name NOT LIKE 'sqlite_autoindex%' ORDER BY name"),
-            ["change_log_application_id", "change_log_resource_id"]
+            [
+                "change_log_application_id",
+                "change_log_application_latest",
+                "change_log_resource_id",
+                "change_log_resource_latest"
+            ]
         );
         // The inventory held systems whose earlier changes by the person left no trace: the log
         // is complete from the upgrade on, and the snapshot says so.
@@ -4718,13 +4888,13 @@ pub(crate) mod tests {
             found_after("DROP INDEX events_reported"),
             Found::Mismatch(vec!["no index events_reported".to_owned()])
         );
-        // Stamped 12 with only the two tables that tell a DevHQ inventory apart.
+        // Stamped 13 with only the two tables that tell a DevHQ inventory apart.
         let stamped = nothing();
         let db = Connection::open(&stamped).unwrap();
         db.execute_batch(
             "CREATE TABLE applications (id TEXT PRIMARY KEY);
              CREATE TABLE resources (id TEXT PRIMARY KEY);
-             PRAGMA user_version = 12;",
+             PRAGMA user_version = 13;",
         )
         .unwrap();
         drop(db);
@@ -4845,6 +5015,231 @@ pub(crate) mod tests {
         std::fs::remove_file(path).unwrap();
     }
 
+    /// Two agent sessions with the window closed: one's write ends while the other's gate reads.
+    /// The writer's connection is not the last to close, so SQLite does not fold its log, and the
+    /// reader's, read-only, cannot: without `empty_log` the change stayed in a log nothing held,
+    /// and every gate refused the inventory with `needs_recovery` until the window started. The
+    /// change is in the file and the log is empty; a write by the person still leaves it to SQLite.
+    #[test]
+    fn an_agents_write_leaves_no_changes_in_a_log_that_another_read_outlives() {
+        let folder = Scratch::new("outlived");
+        let path = folder.0.join("inventory.sqlite3");
+        start(&path).unwrap();
+        access::set_agent_access(&path, "write").unwrap();
+        let release = folder.0.join("release");
+        for (by, name) in [
+            (Actor::agent("Claude Code").unwrap(), "Agent's box"),
+            (Actor::Person, "Person's box"),
+        ] {
+            let mut db = open_current(&path).unwrap();
+            let tx = begin_write(&mut db, &by).unwrap();
+            // The other session's gate looks while this connection holds the log, so it reads
+            // beside it, and goes on holding its connection until it is released.
+            let reader = reader(&path, &release, "connection");
+            let input = ResourceInput {
+                name: name.into(),
+                ..host()
+            };
+            save_resource_in(&tx, input, &by).unwrap();
+            tx.commit().unwrap();
+            drop(db);
+            std::fs::write(&release, "").unwrap();
+            assert!(reader.finished(), "{name}");
+            std::fs::remove_file(&release).unwrap();
+            let log = std::fs::metadata(beside(&path, "-wal")).map_or(0, |log| log.len());
+            let (found, names) = examine(&path, |db| {
+                let mut statement = db.prepare("SELECT name FROM resources").unwrap();
+                let names = statement
+                    .query_map([], |row| row.get::<_, String>(0))
+                    .unwrap();
+                Ok(names.collect::<Result<Vec<_>, _>>().unwrap())
+            });
+            if let Actor::Agent(_) = by {
+                assert_eq!(log, 0);
+                assert_eq!(found, Found::Current);
+                assert_eq!(names.unwrap().unwrap(), [name]);
+            } else {
+                // As before: the window recovers it when it starts.
+                assert!(log > LOG_HEADER, "{log}");
+                assert_eq!(found, Found::NeedsRecovery(Recovery::Log));
+                start(&path).unwrap();
+                assert_eq!(list(&path).unwrap().resources.len(), 2);
+            }
+        }
+    }
+
+    /// A gate's read in the middle of its transaction while an agent's write commits, as `list_from`
+    /// is for its milliseconds: unlike an open connection, it keeps the log in use, so `empty_log`
+    /// cannot empty it until the read ends. Released while the commit waits, the read ends, the log
+    /// is emptied before the writer's connection closes, and the gate reads the inventory; without
+    /// the wait, the change stayed in a log nothing held once the reader closed after the writer.
+    #[test]
+    fn an_agents_write_waits_for_a_read_in_progress_and_then_empties_the_log() {
+        let folder = Scratch::new("read-ends");
+        let path = folder.0.join("inventory.sqlite3");
+        start(&path).unwrap();
+        access::set_agent_access(&path, "write").unwrap();
+        let agent = Actor::agent("Claude Code").unwrap();
+        let release = folder.0.join("release");
+        let mut db = open_current(&path).unwrap();
+        let tx = begin_write(&mut db, &agent).unwrap();
+        let reader = reader(&path, &release, "transaction");
+        let input = ResourceInput {
+            name: "Agent's box".into(),
+            ..host()
+        };
+        save_resource_in(&tx, input, &agent).unwrap();
+        // The read ends a moment into the commit's wait, well before the patience runs out.
+        let held = Duration::from_millis(400);
+        let releasing = {
+            let release = release.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(held);
+                std::fs::write(release, "").unwrap();
+            })
+        };
+        let committing = std::time::Instant::now();
+        tx.commit().unwrap();
+        let waited = committing.elapsed();
+        drop(db);
+        releasing.join().unwrap();
+        assert!(reader.finished());
+        assert!(waited >= held, "{waited:?}");
+        assert!(waited < BUSY_TIMEOUT, "{waited:?}");
+        let log = std::fs::metadata(beside(&path, "-wal")).map_or(0, |log| log.len());
+        assert_eq!(log, 0);
+        let (found, names) = examine(&path, |db| Ok(list_from(db)?.resources.len()));
+        assert_eq!(found, Found::Current);
+        assert_eq!(names.unwrap().unwrap(), 1);
+    }
+
+    /// A read that outlasts the patience: `empty_log` gives up without an error, the write it
+    /// followed stays committed, and while it waits another write takes SQLite's write lock and
+    /// commits, since no try holds it while waiting. What remains is the case the fold cannot
+    /// cover: the reader, read-only, closes last, nothing holds the log, the gate refuses the
+    /// inventory before any write could fold it, and only the window's start recovers it, with both
+    /// writes. The patience is shortened here to keep the test quick; the window recovers the same.
+    #[test]
+    fn a_read_that_outlasts_the_fold_blocks_no_write_and_leaves_the_log_to_the_window() {
+        let folder = Scratch::new("read-outlasts");
+        let path = folder.0.join("inventory.sqlite3");
+        start(&path).unwrap();
+        access::set_agent_access(&path, "write").unwrap();
+        let release = folder.0.join("release");
+        let mut db = open_current(&path).unwrap();
+        // The person's write, whose commit leaves the fold to this test, to try with less patience.
+        let tx = begin_write(&mut db, &Actor::Person).unwrap();
+        let reader = reader(&path, &release, "transaction");
+        let input = ResourceInput {
+            name: "First box".into(),
+            ..host()
+        };
+        save_resource_in(&tx, input, &Actor::Person).unwrap();
+        tx.commit().unwrap();
+        let patience = Duration::from_millis(1500);
+        let folding = std::thread::spawn(move || {
+            let started = std::time::Instant::now();
+            let emptied = empty_log(&db, patience);
+            (emptied, started.elapsed())
+        });
+        // Another write starts while the fold waits, and waits for the write lock far less than
+        // the fold does: holding the lock while waiting would refuse it with "database is locked".
+        std::thread::sleep(Duration::from_millis(200));
+        let mut other = open_current(&path).unwrap();
+        other.busy_timeout(Duration::from_millis(500)).unwrap();
+        let tx = begin_write(&mut other, &Actor::Person).unwrap();
+        let input = ResourceInput {
+            name: "Second box".into(),
+            ..host()
+        };
+        save_resource_in(&tx, input, &Actor::Person).unwrap();
+        tx.commit().unwrap();
+        drop(other);
+        let (emptied, waited) = folding.join().unwrap();
+        assert!(!emptied);
+        assert!(waited >= patience, "{waited:?}");
+        std::fs::write(&release, "").unwrap();
+        assert!(reader.finished());
+        let log = std::fs::metadata(beside(&path, "-wal")).map_or(0, |log| log.len());
+        assert!(log > LOG_HEADER, "{log}");
+        assert_eq!(
+            examine(&path, |_| Ok(())).0,
+            Found::NeedsRecovery(Recovery::Log)
+        );
+        assert_eq!(open_to_write(&path).unwrap_err().code, "needs_recovery");
+        start(&path).unwrap();
+        assert_eq!(list(&path).unwrap().resources.len(), 2);
+    }
+
+    /// A folder of the temporary folder for one test, removed with everything in it when the test
+    /// ends, also when it fails. Declared before what uses it, so that the connections and helper
+    /// processes that hold its files are gone when it is removed.
+    /// `inventory::tests::disposable` (pull request #12) replaces it once that merges.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(what: &str) -> Self {
+            let folder = std::env::temp_dir().join(format!("devhq-{what}-{}", Uuid::new_v4()));
+            std::fs::create_dir(&folder).unwrap();
+            Self(folder)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            // Never panics: a panic while a failed test unwinds would abort every test running.
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Another agent's gate reading the inventory at `path` (see `reads_until_released`), started
+    /// once it reads, and holding its `connection` or its read `transaction` until `release` appears.
+    fn reader(path: &Path, release: &Path, hold: &str) -> Writer {
+        helper(
+            "inventory::tests::reads_until_released",
+            READER,
+            &format!("{}\n{}\n{hold}", path.display(), release.display()),
+        )
+    }
+
+    /// The environment variable that makes `reads_until_released` read: the inventory's path, the
+    /// file whose appearance ends the read, what it holds meanwhile (`connection` or `transaction`)
+    /// and the file to create once it reads, one per line.
+    const READER: &str = "DEVHQ_TEST_INVENTORY_READER";
+
+    /// Run by `helper` in a process of its own, as another agent's gate: reads the inventory as the
+    /// gate does (`examine`) and keeps its connection open, or a read transaction in progress, until
+    /// the release file appears; on its own, it does nothing.
+    #[test]
+    #[ignore = "a helper that other tests run in a process of its own"]
+    fn reads_until_released() {
+        let Some(spec) = std::env::var_os(READER) else {
+            return;
+        };
+        let spec = spec.into_string().unwrap();
+        let [path, release, hold, ready] = spec.split('\n').collect::<Vec<_>>()[..] else {
+            panic!("{spec}")
+        };
+        let (found, outcome) = examine(Path::new(path), |db| {
+            // `begin` reads inside the transaction, as `list_from` does: from then on the read
+            // keeps its snapshot, and the log it was taken from, in use.
+            let read = match hold {
+                "connection" => None,
+                "transaction" => Some(begin(db, TransactionBehavior::Deferred)?),
+                other => panic!("{other}"),
+            };
+            std::fs::write(ready, "").unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(30);
+            while !Path::new(release).exists() && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            drop(read);
+            Ok(())
+        });
+        assert_eq!(found, Found::Current);
+        outcome.unwrap().unwrap();
+    }
+
     /// The environment variable that makes `writes_until_killed` write: what to leave behind, the
     /// inventory's path and the file to create once it has, one per line.
     const WRITER: &str = "DEVHQ_TEST_INVENTORY_WRITER";
@@ -4853,7 +5248,10 @@ pub(crate) mod tests {
     /// own, it does nothing. `log`: with a connection held open, as a window holds one, adds the
     /// resource «Live box» to a write-ahead-logged inventory, which stays in the log. `journal`:
     /// starts a write to a rollback-journal inventory, large enough to have reached the file
-    /// already, and never ends it.
+    /// already, and never ends it. `connection`: holds the log of a write-ahead-logged inventory
+    /// open, as a window holds it, and writes nothing; on Unix a test that needs a window's
+    /// connection beside the gate needs it from another process, since `log_held` never sees a
+    /// lock its own process holds.
     #[test]
     #[ignore = "a helper that other tests run in a process of its own"]
     fn writes_until_killed() {
@@ -4874,6 +5272,11 @@ pub(crate) mod tests {
                 // Its own connection commits and closes, and cannot fold the log while `held`
                 // is open.
                 resource(path, "Live box");
+            }
+            "connection" => {
+                // Its first read opens the log and takes the lock that says it is held.
+                held.query_row("SELECT count(*) FROM resources", [], |_| Ok(()))
+                    .unwrap();
             }
             "journal" => {
                 held.pragma_update(None, "cache_size", 2).unwrap();
@@ -5061,6 +5464,84 @@ pub(crate) mod tests {
             Found::NeedsRecovery(Recovery::Journal)
         );
         assert_eq!(files(), before);
+        std::fs::remove_dir_all(&folder).unwrap();
+    }
+
+    thread_local! {
+        /// What a test does while `examine` waits to see whether files that need recovering stay
+        /// so (see `settled`): the instant in which another connection finishes closing.
+        static SETTLING: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    pub(crate) fn while_settling() {
+        SETTLING.with(|hook| {
+            if let Some(hook) = hook.borrow_mut().as_mut() {
+                hook();
+            }
+        });
+    }
+
+    /// A log caught in the instant its last connection closes, which nothing holds any more and
+    /// which a moment later is folded into the file and gone, is not taken for one left behind:
+    /// the gate looks again before it answers, and reads what the fold left. A log left behind is
+    /// still refused after the wait, with every file as it was.
+    #[test]
+    fn tells_a_log_being_folded_from_one_left_behind() {
+        let folder = std::env::temp_dir().join(format!("devhq-settling-{}", Uuid::new_v4()));
+        std::fs::create_dir(&folder).unwrap();
+        let path = folder.join("inventory.sqlite3");
+        start(&path).unwrap();
+        resource(&path, "Host");
+        kill(writer(&path, "log"), &path);
+        let files = || {
+            let mut found: Vec<_> = std::fs::read_dir(&folder)
+                .unwrap()
+                .map(|entry| {
+                    let entry = entry.unwrap();
+                    (entry.file_name(), std::fs::read(entry.path()).unwrap())
+                })
+                .collect();
+            found.sort();
+            found
+        };
+        let names = |db: &mut Connection| -> Result<Vec<String>, ApiError> {
+            let mut statement = db
+                .prepare("SELECT name FROM resources ORDER BY name")
+                .map_err(ApiError::database)?;
+            let rows = statement
+                .query_map([], |row| row.get(0))
+                .map_err(ApiError::database)?
+                .collect::<Result<Vec<String>, _>>()
+                .map_err(ApiError::database);
+            rows
+        };
+
+        // Left behind: refused once the files stayed as they were.
+        let before = files();
+        let (found, read) = examine(&path, names);
+        assert_eq!(found, Found::NeedsRecovery(Recovery::Log));
+        assert!(read.is_none());
+        assert_eq!(files(), before);
+
+        // Caught as it is folded: while the gate waits, a connection finishes with the log and,
+        // as the last one to close does, folds it into the file and deletes it.
+        let closing = path.clone();
+        let mut done = false;
+        SETTLING.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                if !std::mem::replace(&mut done, true) {
+                    let db = Connection::open(&closing).unwrap();
+                    db.query_row("SELECT count(*) FROM resources", [], |_| Ok(()))
+                        .unwrap();
+                }
+            }));
+        });
+        let (found, read) = examine(&path, names);
+        SETTLING.with(|hook| *hook.borrow_mut() = None);
+        assert_eq!(found, Found::Current);
+        assert_eq!(read.unwrap().unwrap(), ["Host", "Live box"]);
+        assert!(!beside(&path, "-wal").exists());
         std::fs::remove_dir_all(&folder).unwrap();
     }
 

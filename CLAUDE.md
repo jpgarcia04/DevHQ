@@ -185,7 +185,11 @@ folds, deletes and creates files on opening whatever `query_only` says, so never
 another kind of connection. Every write asks for the inventory and access through that read first,
 then opens the file with `inventory::open_current` (configuration through `open_to_write`) and decides
 in its transaction (`begin_write`): the schema and, for an agent, the access are checked again there,
-under SQLite's write lock. On Unix `log_held` must never run while the process holds a connection to
+under SQLite's write lock. An agent's write tries to empty the log once it commits (`Writing::commit`,
+`empty_log`): a connection that closes while another reads cannot fold its log, and every gate refuses a
+log nothing holds (`needs_recovery`), so no later write can fold it; only the window's start recovers it.
+It retries for up to the busy timeout without waiting inside a try, so it never holds the write lock
+while a reader finishes, and a fold that does not finish never turns the committed write into an error. On Unix `log_held` must never run while the process holds a connection to
 the same database. While a window is open, its process notices what other connections
 commit (`Monitor::notice_changes`, `PRAGMA data_version` every 2 s) and holds the lock that tells
 `status` a window is open (`window_lock.rs`). The native walk drives the gate as a child process.

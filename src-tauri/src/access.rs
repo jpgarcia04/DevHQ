@@ -1,7 +1,10 @@
-//! Whether agents may use the agent gate, and how far: `off` (the default), `read`, or `write`.
-//! The person decides it at the window; the gate (another process) reads it on every call, so it
-//! lives in the inventory, which both open. It is a statement of intent, not a security barrier:
-//! the inventory is the person's own file on their own disk.
+//! Whether agents may use the agent gate, and how far: `off` (the default), `read`, `maintain`
+//! (reading, and adding and editing applications and resources with their components and
+//! references), or `write` (everything the gate offers). The person decides it at the window; the
+//! gate (another process) reads it on every call, so it lives in the inventory, which both open.
+//! It holds until the person changes it, for every agent session that opens the inventory: it is
+//! never an approval of one change. It is a statement of intent, not a security barrier: the
+//! inventory is the person's own file on their own disk.
 
 use crate::inventory::{self, allowed, plain, ApiError};
 use crate::records::Actor;
@@ -10,7 +13,7 @@ use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::Serialize;
 use std::path::Path;
 
-pub(crate) const MODES: [&str; 3] = ["off", "read", "write"];
+pub(crate) const MODES: [&str; 4] = ["off", "read", "maintain", "write"];
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -23,19 +26,28 @@ pub struct AgentAccess {
     pub executable: Option<String>,
 }
 
-/// Whether the access mode in force allows what an agent needs: `read` or `write`.
+/// Whether the access mode in force allows what an agent needs: `read`, `maintain` (adding and
+/// editing applications and resources) or `write` (anything else that changes something). Each
+/// mode allows what the ones before it do.
 pub(crate) fn permitted(mode: &str, need: &str) -> Result<(), ApiError> {
     let enough = match need {
         "read" => mode != "off",
+        "maintain" => mode == "maintain" || mode == "write",
         _ => mode == "write",
     };
-    match (enough, mode) {
-        (true, _) => Ok(()),
-        (false, "off") => Err(ApiError::denied(
-            "The person has not opened the agent gate. They can choose Read only or Read and write in DevHQ, under Settings → Agent gate.",
+    match (enough, mode, need) {
+        (true, _, _) => Ok(()),
+        (false, "off", _) => Err(ApiError::denied(
+            "The person has not opened the agent gate. They can choose Read only, Read and maintain or Read and write in DevHQ, under Settings → Agent gate.",
         )),
-        (false, _) => Err(ApiError::denied(
-            "The person opened the agent gate for reading only. To let agents change the inventory, they can choose Read and write in DevHQ, under Settings → Agent gate.",
+        (false, "read", "maintain") => Err(ApiError::denied(
+            "The person opened the agent gate for reading only. To let agents add and edit applications and resources, they can choose Read and maintain in DevHQ, under Settings → Agent gate.",
+        )),
+        (false, "read", _) => Err(ApiError::denied(
+            "The person opened the agent gate for reading only. This needs Read and write, which only the person chooses, in DevHQ under Settings → Agent gate; or the person can do it there.",
+        )),
+        (false, _, _) => Err(ApiError::denied(
+            "The person lets agents read and maintain the inventory (add and edit applications and resources, with their components and references), not this. This needs Read and write, which only the person chooses, in DevHQ under Settings → Agent gate; or the person can do it there.",
         )),
     }
 }
@@ -124,6 +136,43 @@ mod tests {
             .unwrap()
             .execute("INSERT INTO agent_access VALUES (2, 'read', 0)", [])
             .is_err());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn each_mode_allows_what_the_ones_before_it_do_and_holds_until_changed() {
+        let allows = |mode: &str| -> Vec<&str> {
+            ["read", "maintain", "write"]
+                .into_iter()
+                .filter(|need| permitted(mode, need).is_ok())
+                .collect()
+        };
+        assert_eq!(allows("off"), Vec::<&str>::new());
+        assert_eq!(allows("read"), ["read"]);
+        assert_eq!(allows("maintain"), ["read", "maintain"]);
+        assert_eq!(allows("write"), ["read", "maintain", "write"]);
+        // Each refusal says what the person can choose, and only the person.
+        for (mode, need, says) in [
+            ("off", "read", "has not opened the agent gate"),
+            ("read", "maintain", "choose Read and maintain"),
+            ("read", "write", "This needs Read and write"),
+            ("maintain", "write", "This needs Read and write"),
+        ] {
+            let refused = permitted(mode, need).unwrap_err();
+            assert_eq!(refused.code, "access_denied");
+            assert!(
+                refused.message.contains(says),
+                "{mode}/{need}: {}",
+                refused.message
+            );
+        }
+
+        // Kept in the inventory: another connection, like the gate's, reads the same mode.
+        let path = path();
+        let chosen = set_agent_access(&path, "maintain").unwrap();
+        assert_eq!(chosen.mode, "maintain");
+        assert_eq!(mode(&open(&path).unwrap()).unwrap(), "maintain");
+        assert_eq!(agent_access(&path).unwrap(), chosen);
         std::fs::remove_file(path).unwrap();
     }
 }

@@ -15,8 +15,15 @@ ventana que acaba de cerrarse y que termina al cerrarse su entrada; y con la bui
 recorrido nativo sobre WebView2, que la ventana nota sola lo que escribe la puerta y que `status` la ve
 abierta. Lo que solo se ve en la laptop:
 
-- Claude Code de verdad, registrado con `claude mcp add --scope user`, lanzando el `devhq.exe`
-  instalado desde una terminal normal: una sesión que lee y escribe con la ventana abierta.
+- Claude Code y Codex de verdad, registrados como dice el README (`claude mcp add --scope user`,
+  `codex mcp add` con sus dos aprobaciones), lanzando el `devhq.exe` instalado desde una terminal
+  normal: una sesión que lee y escribe con la ventana abierta.
+- Que una escritura de agente vacíe el log también con los bloqueos de Windows (`LockFileEx`), sin
+  retener el de escritura mientras espera: los tests
+  `an_agents_write_leaves_no_changes_in_a_log_that_another_read_outlives`,
+  `an_agents_write_waits_for_a_read_in_progress_and_then_empties_the_log` y
+  `a_read_that_outlasts_the_fold_blocks_no_write_and_leaves_the_log_to_the_window`, y dos sesiones de
+  Claude Code escribiendo a la vez con la ventana cerrada.
 - Una puerta lanzada desde la app de escritorio de Claude (MSIX): qué inventario abre, qué dice
   `storedAt` y si `windowOpen` ve la ventana del DevHQ instalado. El lock está junto al inventario, y
   Windows también redirige ese archivo.
@@ -71,7 +78,38 @@ lo que habría que recuperar (README, «Puerta para agentes»). Lo que eso no ev
   base. El log se queda, sin conexión que lo mantenga, y la puerta rechaza el inventario con
   `needs_recovery` hasta que la ventana vuelve a abrirse y lo recupera. No se pierde nada confirmado.
   Cualquier lector que no vuelque el log tiene el mismo efecto; volcarlo es justo el cambio que la
-  puerta no hace.
+  puerta no hace. Las escrituras de un agente casi nunca lo provocan ya, porque intentan vaciar el log
+  antes de cerrar (README, «Puerta para agentes»); antes bastaban dos sesiones con la ventana cerrada,
+  una escribiendo mientras la otra leía. Con datos sintéticos en Linux, 19 de 24 ejecuciones de 2 a 8
+  sesiones terminaban así y ninguna de 84 después; en todas, lo que la puerta dio por guardado estaba
+  en el archivo, una vez recuperado, exactamente una vez, y `integrity_check` lo daba por correcto.
+  Queda la ventana al cerrarse, y una escritura de agente cuyo volcado no terminó porque una lectura
+  usó el log más de 5 s: si esa lectura es la última conexión en cerrarse, el log queda sin nadie que
+  lo mantenga y solo la ventana lo recupera; ninguna escritura posterior de un agente llega a volcarlo,
+  porque la puerta rechaza el inventario antes (test
+  `a_read_that_outlasts_the_fold_blocks_no_write_and_leaves_the_log_to_the_window`).
+- La primera versión del volcado esperaba a los lectores con el bloqueo de escritura tomado: con un
+  lector retenido 7 s, el volcado tardaba unos 5 s y otra escritura simultánea podía fallar con
+  «database is locked». Ahora cada intento suelta el bloqueo al momento y la otra escritura pasa entre
+  dos intentos; el mismo test lo comprueba con una escritura que solo espera 500 ms mientras el volcado
+  espera 1,5 s. Que una escritura se rechace porque otra la retiene más de 5 s sigue pudiendo ocurrir,
+  como en cualquier programa que use SQLite, pero ya no por el volcado.
+- Con varias sesiones escribiendo a la vez, la mirada de la puerta (también la que precede a cada
+  escritura) puede encontrar los archivos cambiando en sus tres intentos y responder `database_error`
+  («its files kept changing while DevHQ looked at them»). No lee ni cambia nada, y repetir la llamada
+  basta. Con datos sintéticos en Linux salió en 1 de 13 ejecuciones de 8 sesiones simultáneas antes
+  del vaciado del log y en 2 de 32 después, y en ninguna de las 66 con 2 o 4 sesiones.
+- Con la ventana cerrada y varias sesiones a la vez, la puerta respondía a veces `needs_recovery` de
+  forma pasajera a un inventario que no necesitaba recuperación: miraba los archivos en el instante en
+  que la última conexión se cerraba, que suelta el bloqueo del log y borra el índice antes de borrar el
+  log. Ahora espera 25 ms y 100 ms y solo lo responde si los archivos siguen igual (README, «Puerta para
+  agentes»). En la laptop con Windows, con copias de un inventario sintético y el arnés del 15 oct: sin
+  pausas, de 2 a 4 sesiones, 84 `needs_recovery` en 1920 llamadas antes y ninguno después; al ritmo de
+  un agente, 4 de 270 antes y ninguno después; con la ventana abierta, ninguno ni antes ni después. Lo
+  que queda sin pausas: una parte de esos casos pasa a `database_error` («its files kept changing while
+  DevHQ looked at them», de 66 a 103 en 1920), que tampoco lee ni cambia nada y basta con repetir. En
+  todas las ejecuciones lo que la puerta dio por guardado estaba una sola vez y `integrity_check` lo
+  daba por correcto.
 - Si la última conexión se cierra entre que la puerta mira los archivos y SQLite abre el log, un
   instante de microsegundos, SQLite crea un `-wal` vacío junto al inventario: abrir un archivo en WAL sin
   log lo crea, y solo `immutable` lo evita, que no sirve para una base que alguien tiene abierta. No
@@ -88,10 +126,13 @@ lo que habría que recuperar (README, «Puerta para agentes»). Lo que eso no ev
 
 ## Por probar con otros clientes
 
-Solo Claude Code se ha probado como cliente. Codex u otro cliente MCP por stdio deberían funcionar
-igual (la puerta solo usa `initialize`, `ping`, `tools/list` y `tools/call`), pero nadie lo ha visto.
+Claude Code y Codex, lanzados desde un proceso sin paquete sobre inventarios sintéticos, ya se han visto
+consultar, dar de alta y editar con Read and maintain (README, «Puerta para agentes»), y ninguno mandó
+un argumento que la puerta estricta rechazara. Desde las apps de escritorio de Claude y de Codex (MSIX),
+la puerta abre la copia del inventario que Windows redirige para ellas, y ningún agente ha escrito
+desde ellas.
 
-Desde que la puerta comprueba los argumentos contra los esquemas que publica, un cliente que mande
-claves que una herramienta no declara, o `null` en un campo opcional que no lo admite (como hacen
-algunos clientes con todo lo que el modelo deja vacío), recibe `invalid_input` donde antes la puerta lo
-ignoraba. Ningún cliente real se ha probado aún contra la puerta estricta, tampoco Claude Code.
+Otro cliente MCP por stdio debería funcionar igual (la puerta solo usa `initialize`, `ping`,
+`tools/list` y `tools/call`), pero nadie lo ha visto. Uno que mande claves que una herramienta no
+declara, o `null` en un campo opcional que no lo admite (como hacen algunos clientes con todo lo que el
+modelo deja vacío), recibe `invalid_input` donde antes la puerta lo ignoraba.

@@ -370,19 +370,19 @@ fn no_command_changes_an_inventory_the_window_does_not_serve() {
             "schema_outdated",
         ),
         (
-            "v13, rollback journal",
+            "v14, rollback journal",
             |path| {
-                let db = database_at(path, 12);
+                let db = database_at(path, 13);
                 db.execute_batch(ROWS).unwrap();
-                db.pragma_update(None, "user_version", 13).unwrap();
+                db.pragma_update(None, "user_version", 14).unwrap();
             },
             "schema_newer",
         ),
         (
-            "v13, write-ahead log",
+            "v14, write-ahead log",
             |path| {
-                let db = database_at(path, 12);
-                db.pragma_update(None, "user_version", 13).unwrap();
+                let db = database_at(path, 13);
+                db.pragma_update(None, "user_version", 14).unwrap();
                 db.pragma_update(None, "journal_mode", "WAL").unwrap();
             },
             "schema_newer",
@@ -403,9 +403,9 @@ fn no_command_changes_an_inventory_the_window_does_not_serve() {
             "not_an_inventory",
         ),
         (
-            "stamped 12 without the schema's structure",
+            "stamped 13 without the schema's structure",
             |path| {
-                database_at(path, 12)
+                database_at(path, 13)
                     .execute_batch("DROP TABLE agent_access;")
                     .unwrap()
             },
@@ -519,7 +519,7 @@ fn serves_an_outdated_inventory_once_the_person_upgrades_it() {
     let upgraded = invoke(&window, "upgrade_inventory", consent.clone()).unwrap();
     assert_eq!(
         (&upgraded["from"], &upgraded["to"]),
-        (&json!(6), &json!(12))
+        (&json!(6), &json!(13))
     );
     let backup = PathBuf::from(upgraded["backup"]["path"].as_str().unwrap());
     assert!(
@@ -544,7 +544,7 @@ fn serves_an_outdated_inventory_once_the_person_upgrades_it() {
     let again = invoke(&window, "upgrade_inventory", consent).unwrap();
     assert_eq!(
         (&again["from"], &again["backup"]),
-        (&json!(12), &Value::Null)
+        (&json!(13), &Value::Null)
     );
     assert_eq!(
         std::fs::read_dir(backup.parent().unwrap()).unwrap().count(),
