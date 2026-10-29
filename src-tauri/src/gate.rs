@@ -987,8 +987,10 @@ mod tests {
     /// a link the test makes, never a short 8.3 name in `TMP` (as on a Windows runner), can put
     /// the file somewhere else than asked.
     fn path() -> PathBuf {
-        let folder = crate::inventory::tests::resolved_temp_dir()
-            .join(format!("devhq-gate-test-{}", uuid::Uuid::new_v4()));
+        let folder = crate::inventory::tests::disposable(
+            crate::inventory::tests::resolved_temp_dir()
+                .join(format!("devhq-gate-test-{}", uuid::Uuid::new_v4())),
+        );
         std::fs::create_dir_all(&folder).unwrap();
         let path = folder.join("inventory.sqlite3");
         inventory::start(&path).unwrap();
@@ -1003,7 +1005,7 @@ mod tests {
     }
 
     fn remove(path: &Path) {
-        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        crate::inventory::tests::remove_now(path.parent().unwrap());
     }
 
     /// The computer the tests run on: its local folder beside the inventory, and a fingerprint of
@@ -3329,7 +3331,7 @@ mod tests {
                 );
             }
             assert_eq!(files(&folder), before, "{case}: the folder changed");
-            std::fs::remove_dir_all(folder).unwrap();
+            crate::inventory::tests::remove_now(folder);
         }
 
         // Without even its folder, nothing is created either.

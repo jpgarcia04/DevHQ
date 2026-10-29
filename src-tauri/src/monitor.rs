@@ -630,8 +630,9 @@ mod tests {
 
     /// A new inventory, as the window creates one.
     fn path() -> PathBuf {
-        let path =
-            std::env::temp_dir().join(format!("devhq-monitor-test-{}.sqlite3", Uuid::new_v4()));
+        let path = crate::inventory::tests::disposable(
+            std::env::temp_dir().join(format!("devhq-monitor-test-{}.sqlite3", Uuid::new_v4())),
+        );
         crate::inventory::start(&path).unwrap();
         path
     }
@@ -1182,7 +1183,9 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn an_unreadable_configuration_is_reported_and_read_again() {
         // A directory cannot be opened as the database.
-        let directory = std::env::temp_dir().join(format!("devhq-monitor-dir-{}", Uuid::new_v4()));
+        let directory = crate::inventory::tests::disposable(
+            std::env::temp_dir().join(format!("devhq-monitor-dir-{}", Uuid::new_v4())),
+        );
         std::fs::create_dir(&directory).unwrap();
         let harness = Harness::launch(directory.clone());
         sleep(SECOND).await;

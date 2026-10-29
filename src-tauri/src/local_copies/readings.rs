@@ -836,7 +836,7 @@ mod tests {
             .read(&Which::References(vec![blog.references[1].id.clone()]))
             .unwrap();
         assert_eq!(asked.readings.len(), 1);
-        std::fs::remove_dir_all(&world.folder).unwrap();
+        crate::inventory::tests::remove_now(&world.folder);
     }
 
     #[test]
@@ -887,7 +887,7 @@ mod tests {
             read.this_workstation.resource_id.as_deref(),
             Some(laptop.as_str())
         );
-        std::fs::remove_dir_all(&world.folder).unwrap();
+        crate::inventory::tests::remove_now(&world.folder);
     }
 
     /// A credential in a remote's URL reaches neither the reader's answer nor the inventory, in any
@@ -969,7 +969,7 @@ mod tests {
             assert!(!shown.contains(secret), "{secret} shown");
             assert!(!stored.contains(secret), "{secret} stored");
         }
-        std::fs::remove_dir_all(&world.folder).unwrap();
+        crate::inventory::tests::remove_now(&world.folder);
     }
 
     #[test]
@@ -1025,7 +1025,7 @@ mod tests {
             .unwrap();
         assert_eq!(rows, 0);
         drop(db);
-        std::fs::remove_dir_all(&world.folder).unwrap();
+        crate::inventory::tests::remove_now(&world.folder);
     }
 
     #[test]
@@ -1158,7 +1158,7 @@ mod tests {
             .execute("DELETE FROM applications WHERE id = 'shop'", [])
             .is_err());
         drop(db);
-        std::fs::remove_dir_all(&world.folder).unwrap();
+        crate::inventory::tests::remove_now(&world.folder);
     }
 
     #[test]
@@ -1210,7 +1210,7 @@ mod tests {
             "{}",
             error.message
         );
-        std::fs::remove_dir_all(&world.folder).unwrap();
+        crate::inventory::tests::remove_now(&world.folder);
     }
 
     #[test]
@@ -1263,6 +1263,6 @@ mod tests {
             );
         }
         drop(db);
-        std::fs::remove_dir_all(&world.folder).unwrap();
+        crate::inventory::tests::remove_now(&world.folder);
     }
 }
