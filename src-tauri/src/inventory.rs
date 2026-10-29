@@ -4142,6 +4142,22 @@ pub(crate) mod tests {
         db
     }
 
+    /// SQLite's clock now, read as migration 010 reads it to stamp `change_log_start`. Only this
+    /// clock can bound that stamp: on Windows SQLite reads the system time that moves once per
+    /// timer tick (about 15.6 ms), behind the precise time `records::now_ms` reads, and anywhere it
+    /// divides by 1000 in floating point, which the cast back to milliseconds may truncate by one.
+    /// Both put the stamp before the precise time; read the same way, it never goes backwards.
+    fn sqlite_now_ms() -> i64 {
+        Connection::open_in_memory()
+            .unwrap()
+            .query_row(
+                "SELECT CAST(unixepoch('subsec') * 1000 AS INTEGER)",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
     #[test]
     fn upgrades_v9_agent_log_into_the_change_log_keeping_every_row() {
         let path = nothing();
@@ -4160,10 +4176,10 @@ pub(crate) mod tests {
         let log = dump(&db, "agent_log");
         drop(db);
 
-        let started = records::now_ms();
+        let started = sqlite_now_ms();
         upgrade(&path).unwrap();
         let upgraded = list(&path).unwrap();
-        let finished = records::now_ms();
+        let finished = sqlite_now_ms();
         let db = Connection::open(&path).unwrap();
         let version: i64 = db
             .query_row("PRAGMA user_version", [], |row| row.get(0))
