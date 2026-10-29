@@ -233,7 +233,9 @@ impl Session {
             "history" => self.allow("read").and_then(|()| self.history(arguments)),
             // Configuration changes check the access inside their own transaction (adding and
             // editing applications and resources needs `maintain`, the rest `write`); records,
-            // checks run and backups check it first.
+            // checks run, backups and readings check it first, and again inside theirs. Reading
+            // local copies and recording an observation need `maintain`; the other records, a
+            // check run (which leaves this computer) and a backup need `write`.
             "save_application" => self.save_application(arguments),
             "save_resource" => self.save_resource(arguments),
             "delete_application" => self.delete("application", arguments),
@@ -247,7 +249,7 @@ impl Session {
             "remove_check" => self.remove_check(arguments),
             "run_check" => self.allow("write").and_then(|()| self.run_check(arguments)),
             "record_observation" => self
-                .allow("write")
+                .allow("maintain")
                 .and_then(|()| self.record_observation(arguments)),
             "open_incident" => self
                 .allow("write")
@@ -260,7 +262,7 @@ impl Session {
                 .and_then(|()| self.record_event(arguments)),
             "backup" => self.allow("write").and_then(|()| self.backup()),
             "read_copies" => self
-                .allow("write")
+                .allow("maintain")
                 .and_then(|()| self.read_copies(arguments)),
             // `tools` declares it, but nothing here runs it: a test calls every tool it declares.
             other => Err(ApiError::invalid(format!(
@@ -935,7 +937,7 @@ fn read_tools() -> Vec<Value> {
         read_only(
             "status",
             "DevHQ status",
-"Which inventory file the gate opened, where the system really keeps it, what the file is (`schema`: the version it declares, the one this DevHQ supports, its state: current, mismatch, outdated, newer, not_an_inventory, needs_recovery, unreadable or missing; whether it has the structure of this DevHQ's schema, compared table by table and column by column: matches, differs or not_checked for another version; its integrity, never checked by the gate: not_checked; `schemaVersion` is the declared one, null when unknown), how far the person lets agents go through the gate (`access`: off; read; maintain, which also adds and edits applications and resources; or write, everything), which holds for every agent session until the person changes it, whether a DevHQ window is open on it (`windowOpen`; null when the system cannot say), how many systems it holds, which of its workstations this computer is (`thisWorkstation`, or why DevHQ does not know: only the window chooses it), and what the gate cannot know. Access, counts and workstation are null unless the inventory is current, which is the only kind the gate serves. An inventory left needing recovery (a write that did not finish, or a log no connection holds) is reported, never recovered: DevHQ's window recovers it when it starts, only if it is in this DevHQ's schema. Always answered, even with the gate off, and never writes to the inventory or changes what it holds; the one file it can create is an empty log (`-wal`), if the last connection to the inventory closes just as the gate opens it.",
+"Which inventory file the gate opened, where the system really keeps it, what the file is (`schema`: the version it declares, the one this DevHQ supports, its state: current, mismatch, outdated, newer, not_an_inventory, needs_recovery, unreadable or missing; whether it has the structure of this DevHQ's schema, compared table by table and column by column: matches, differs or not_checked for another version; its integrity, never checked by the gate: not_checked; `schemaVersion` is the declared one, null when unknown), how far the person lets agents go through the gate (`access`: off; read; maintain, which also adds and edits applications and resources, reads local copies and records observations that vouch for at most 7 days; or write, everything), which holds for every agent session until the person changes it, whether a DevHQ window is open on it (`windowOpen`; null when the system cannot say), how many systems it holds, which of its workstations this computer is (`thisWorkstation`, or why DevHQ does not know: only the window chooses it), and what the gate cannot know. Access, counts and workstation are null unless the inventory is current, which is the only kind the gate serves. An inventory left needing recovery (a write that did not finish, or a log no connection holds) is reported, never recovered: DevHQ's window recovers it when it starts, only if it is in this DevHQ's schema. Always answered, even with the gate off, and never writes to the inventory or changes what it holds; the one file it can create is an empty log (`-wal`), if the last connection to the inventory closes just as the gate opens it.",
             json!({}),
             &[],
         ),
@@ -2301,7 +2303,8 @@ mod tests {
         crate::local_copies::tests::git(&copy, &["add", "-A"]);
         crate::local_copies::tests::git(&copy, &["commit", "-q", "-m", "a"]);
         std::fs::write(copy.join("a.txt"), "changed\n").unwrap();
-        crate::access::set_agent_access(&path, "write").unwrap();
+        // Read and maintain is enough: a reading is DevHQ's own evidence and changes nothing.
+        crate::access::set_agent_access(&path, "maintain").unwrap();
         let mut agent = session(&path, "claude-code");
         agent.reader = Some(crate::local_copies::tests::test_reader("confined", &[]));
         // An agent declares where the copy is; which workstation this computer is, it cannot say.
@@ -3710,6 +3713,51 @@ mod tests {
         .unwrap();
         assert_eq!(described["resource"]["operatingSystem"], "Ubuntu 24.04");
         assert_eq!(described["change"]["agent"], "codex");
+
+        // What the agent observed is kept as reported by it, for a week at most: the system is no
+        // longer a gap, and nothing in the change log says otherwise.
+        let review = |minutes: i64| {
+            json!({ "type": "application", "id": finanzas, "result": "healthy",
+                    "summary": "Tests and build pass at 1a2b3c4", "validForMinutes": minutes })
+        };
+        let longer =
+            use_tool(&mut agent, "record_observation", review(7 * 24 * 60 + 1)).unwrap_err();
+        assert!(
+            longer.contains("at most 7 days") && longer.ends_with("(access_denied)"),
+            "{longer}"
+        );
+        let logged = changes(&path).len();
+        let observed = use_tool(&mut agent, "record_observation", review(7 * 24 * 60)).unwrap();
+        assert_eq!(
+            (
+                &observed["observation"]["source"],
+                &observed["observation"]["agent"]
+            ),
+            (&json!("agent"), &json!("codex"))
+        );
+        assert_eq!(changes(&path).len(), logged);
+        let listed = use_tool(&mut agent, "list_systems", json!({})).unwrap();
+        let shown = listed["applications"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["system"]["id"] == finanzas.as_str())
+            .unwrap()
+            .clone();
+        assert_eq!(shown["evidence"]["state"], "healthy");
+        // The transaction decides, not only the gate's look before it.
+        let direct = crate::records::record_observation_by(
+            &path,
+            ObservationInput {
+                subject: mine.clone(),
+                result: "healthy".into(),
+                summary: "Longer than a week".into(),
+                observed_at: None,
+                valid_for_minutes: 7 * 24 * 60 + 1,
+            },
+            &crate::records::Actor::agent("codex").unwrap(),
+        );
+        assert_eq!(direct.unwrap_err().code, "access_denied");
 
         // Every other tool that changes something is refused before it writes anything.
         let before = rows(&path);

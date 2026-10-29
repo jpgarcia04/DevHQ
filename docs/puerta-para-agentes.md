@@ -128,7 +128,9 @@ lo que habría que recuperar (README, «Puerta para agentes»). Lo que eso no ev
 
 Claude Code y Codex, lanzados desde un proceso sin paquete sobre inventarios sintéticos, ya se han visto
 consultar, dar de alta y editar con Read and maintain (README, «Puerta para agentes»), y ninguno mandó
-un argumento que la puerta estricta rechazara. Desde las apps de escritorio de Claude y de Codex (MSIX),
+un argumento que la puerta estricta rechazara. Que Read and maintain también lea copias locales y
+registre observaciones de 7 días como mucho solo lo han probado los tests de la puerta: ningún cliente
+real ha hecho todavía una revisión diaria con esas dos herramientas. Desde las apps de escritorio de Claude y de Codex (MSIX),
 la puerta abre la copia del inventario que Windows redirige para ellas, y ningún agente ha escrito
 desde ellas.
 

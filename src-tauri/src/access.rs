@@ -1,6 +1,7 @@
 //! Whether agents may use the agent gate, and how far: `off` (the default), `read`, `maintain`
-//! (reading, and adding and editing applications and resources with their components and
-//! references), or `write` (everything the gate offers). The person decides it at the window; the
+//! (reading; adding and editing applications and resources with their components and references;
+//! reading local copies; and recording what the agent observed, vouching for at most a week), or
+//! `write` (everything the gate offers). The person decides it at the window; the
 //! gate (another process) reads it on every call, so it lives in the inventory, which both open.
 //! It holds until the person changes it, for every agent session that opens the inventory: it is
 //! never an approval of one change. It is a statement of intent, not a security barrier: the
@@ -26,9 +27,24 @@ pub struct AgentAccess {
     pub executable: Option<String>,
 }
 
+/// How long an agent's observation may vouch for a system under Read and maintain: a week, so that
+/// a review nobody repeats expires and shows as a gap again. Read and write allows what the
+/// person's own observations do (`records::MAX_VALIDITY_MINUTES`).
+pub(crate) const MAINTAIN_VALIDITY_MINUTES: i64 = 7 * 24 * 60;
+
+/// Whether an agent's observation may vouch for `minutes` under the access mode in force.
+pub(crate) fn observation_validity(mode: &str, minutes: i64) -> Result<(), ApiError> {
+    if mode == "maintain" && minutes > MAINTAIN_VALIDITY_MINUTES {
+        return Err(ApiError::denied(format!(
+            "With Read and maintain, an agent's observation vouches for at most 7 days (validForMinutes up to {MAINTAIN_VALIDITY_MINUTES}). Record it for 7 days or less; only Read and write, which only the person chooses in DevHQ under Settings → Agent gate, allows up to 30 days."
+        )));
+    }
+    Ok(())
+}
+
 /// Whether the access mode in force allows what an agent needs: `read`, `maintain` (adding and
-/// editing applications and resources) or `write` (anything else that changes something). Each
-/// mode allows what the ones before it do.
+/// editing applications and resources, reading local copies and recording observations) or
+/// `write` (anything else that changes something). Each mode allows what the ones before it do.
 pub(crate) fn permitted(mode: &str, need: &str) -> Result<(), ApiError> {
     let enough = match need {
         "read" => mode != "off",
@@ -41,13 +57,13 @@ pub(crate) fn permitted(mode: &str, need: &str) -> Result<(), ApiError> {
             "The person has not opened the agent gate. They can choose Read only, Read and maintain or Read and write in DevHQ, under Settings → Agent gate.",
         )),
         (false, "read", "maintain") => Err(ApiError::denied(
-            "The person opened the agent gate for reading only. To let agents add and edit applications and resources, they can choose Read and maintain in DevHQ, under Settings → Agent gate.",
+            "The person opened the agent gate for reading only. To let agents add and edit applications and resources, read local copies and record what they observed, they can choose Read and maintain in DevHQ, under Settings → Agent gate.",
         )),
         (false, "read", _) => Err(ApiError::denied(
             "The person opened the agent gate for reading only. This needs Read and write, which only the person chooses, in DevHQ under Settings → Agent gate; or the person can do it there.",
         )),
         (false, _, _) => Err(ApiError::denied(
-            "The person lets agents read and maintain the inventory (add and edit applications and resources, with their components and references), not this. This needs Read and write, which only the person chooses, in DevHQ under Settings → Agent gate; or the person can do it there.",
+            "The person lets agents read and maintain the inventory (add and edit applications and resources, with their components and references; read local copies; record what they observed), not this. This needs Read and write, which only the person chooses, in DevHQ under Settings → Agent gate; or the person can do it there.",
         )),
     }
 }
@@ -166,6 +182,12 @@ mod tests {
                 refused.message
             );
         }
+        // An agent's observation vouches for a week at most under Read and maintain; Read and
+        // write allows what the person's own observations do.
+        assert!(observation_validity("maintain", MAINTAIN_VALIDITY_MINUTES).is_ok());
+        let longer = observation_validity("maintain", MAINTAIN_VALIDITY_MINUTES + 1).unwrap_err();
+        assert_eq!(longer.code, "access_denied");
+        assert!(observation_validity("write", crate::records::MAX_VALIDITY_MINUTES).is_ok());
 
         // Kept in the inventory: another connection, like the gate's, reads the same mode.
         let path = path();

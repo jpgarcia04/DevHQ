@@ -1,3 +1,4 @@
+use crate::access;
 use crate::change_log::{self, Change};
 use crate::inventory::{
     self, allowed, bounded_text, open_current, required_text, ApiError, MAX_DESCRIPTION,
@@ -666,10 +667,19 @@ pub(crate) fn store_observation(
     // connection has closed and folded its log back into the file.
     let _alive;
     let mut db = open_current(path)?;
-    // The window's own runs and records are the person's; what an agent reports or asks for is
-    // kept only while the person lets agents write.
+    // The window's own runs and records are the person's. What an agent reports is kept only while
+    // the person lets agents maintain the inventory, and for no longer than that access lets it
+    // vouch; a check an agent runs, which leaves this computer, only while they let agents write.
     let writer = new.reporter.or(new.asked_by).unwrap_or(&Actor::Person);
-    let tx = inventory::begin_write(&mut db, writer)?;
+    let need = if new.reporter.is_some() {
+        "maintain"
+    } else {
+        "write"
+    };
+    let tx = inventory::begin_write_for(&mut db, writer, need)?;
+    if matches!(new.reporter, Some(Actor::Agent(_))) {
+        access::observation_validity(&access::mode(&tx)?, new.valid_for_minutes)?;
+    }
     ensure_subject(&tx, new.subject)?;
     let (application_id, resource_id) = new.subject.columns();
     // Removing a check cancels its run in flight. If the removal commits first, this write is

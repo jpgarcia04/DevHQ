@@ -463,7 +463,8 @@ describe('the agent gate in Settings', () => {
     for (const grants of [
       'add applications and resources and edit them, with their components and references',
       'is refused if someone changed the system after the agent read it',
-      'They cannot delete anything, record observations, incidents or events, set up or run checks, read local copies or back up.',
+      'They can read local copies and record what they observed, such as a review of an application, tagged as reported by them and valid for 7 days at most.',
+      'They cannot delete anything, record incidents or events, set up or run checks, or back up.',
     ])
       expect(maintain).toHaveAccessibleName(expect.stringContaining(grants))
     // Read and write is broad access, never presented as an approval of what is dangerous.

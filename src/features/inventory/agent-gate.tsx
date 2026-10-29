@@ -22,13 +22,13 @@ const modes: { value: AgentAccessMode; label: string; detail: string }[] = [
     value: 'maintain',
     label: 'Read and maintain',
     detail:
-      'Agents can also add applications and resources and edit them, with their components and references. An edit only changes what it names, and is refused if someone changed the system after the agent read it. They cannot delete anything, record observations, incidents or events, set up or run checks, read local copies or back up. Each change is tagged as theirs in Activity, with every field before and after.',
+      'Agents can also add applications and resources and edit them, with their components and references. An edit only changes what it names, and is refused if someone changed the system after the agent read it. They can read local copies and record what they observed, such as a review of an application, tagged as reported by them and valid for 7 days at most. They cannot delete anything, record incidents or events, set up or run checks, or back up. Each change is tagged as theirs in Activity, with every field before and after.',
   },
   {
     value: 'write',
     label: 'Read and write',
     detail:
-      'Agents can also do everything else you do here: record observations, incidents and events, set up and run checks, read local copies, delete what has no history and back up. This is broad access: DevHQ does not ask you before any of it. Each change is tagged as theirs.',
+      'Agents can also do everything else you do here: record incidents and events, record observations valid for up to 30 days, set up and run checks, delete what has no history and back up. This is broad access: DevHQ does not ask you before any of it. Each change is tagged as theirs.',
   },
 ]
 
