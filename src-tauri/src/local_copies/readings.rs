@@ -334,7 +334,8 @@ pub(crate) struct Target {
 /// Keeps what a reader read in `target`, inside one write transaction: only while the reference
 /// still points where it did when the reading began (a copy removed or moved meanwhile records
 /// nothing, as a check removed in flight), and, for an agent's request, only while the person lets
-/// agents write, checked with SQLite's write lock held (see `inventory::begin_write`).
+/// agents maintain the inventory, checked with SQLite's write lock held (see
+/// `inventory::begin_write_for`).
 pub(crate) fn store(
     path: &Path,
     target: &Target,
@@ -343,7 +344,7 @@ pub(crate) fn store(
     by: &Actor,
 ) -> Result<CopyReading, ApiError> {
     let mut db = open_current(path)?;
-    let tx = inventory::begin_write(&mut db, by)?;
+    let tx = inventory::begin_write_for(&mut db, by, "maintain")?;
     let (application_id, resource_id) = target.subject.columns();
     let unchanged: bool = tx
         .query_row(
@@ -1005,7 +1006,8 @@ mod tests {
         for moved in [&elsewhere, &other_machine] {
             assert_eq!(keep(moved, &Actor::Person).unwrap_err().code, "cancelled");
         }
-        // Asked by an agent while the person does not let agents write: nothing kept.
+        // Asked by an agent while the person does not let agents maintain the inventory: nothing
+        // kept.
         let agent = Actor::agent("Reader").unwrap();
         let refused = keep(&target, &agent);
         assert_eq!(refused.unwrap_err().code, "access_denied");

@@ -1,6 +1,7 @@
 //! What an agent changes through the gate, as far as the person lets agents: adding and editing
-//! applications and resources needs Read and maintain (`maintain`), anything else Read and write
-//! (`write`). Every tool goes through the window's own use cases, with their validation, limits and
+//! applications and resources, reading local copies and recording an observation that vouches for
+//! at most a week need Read and maintain (`maintain`), anything else Read and write (`write`).
+//! Every tool goes through the window's own use cases, with their validation, limits and
 //! transactions:
 //! - Records (observations, incidents, events) carry the agent as their source and name.
 //! - Configuration (applications, resources, components, HTTP checks) has no source, so the use
@@ -16,6 +17,7 @@
 //!   removed by leaving it out, only by naming it (`removeComponents`, `removeReferences`).
 
 use super::{pick, system_type, text, Session};
+use crate::access;
 use crate::backup;
 use crate::change_log;
 use crate::http_check::{self, HttpCheckInput};
@@ -744,6 +746,9 @@ impl Session {
                     "validForMinutes is required: how long the result vouches, 1 to 43200.",
                 )
             })?;
+        // Asked first through the look `allow` made, so that a validity the access does not allow
+        // opens nothing that can write; the transaction asks again, and that decides.
+        access::observation_validity(&self.read(|db| access::mode(db))?, valid_for_minutes)?;
         let observation = records::record_observation_by(
             &self.database,
             ObservationInput {
@@ -911,9 +916,16 @@ fn named(kind: &str) -> Value {
     })
 }
 
-/// The tools that add and edit applications and resources, which Read and maintain allows. Every
-/// other tool that changes something needs Read and write.
-pub(super) const MAINTAIN: [&str; 2] = ["save_application", "save_resource"];
+/// The tools Read and maintain allows: adding and editing applications and resources, reading
+/// local copies (DevHQ's own evidence, which changes no configuration and never leaves this
+/// computer) and recording what the agent observed, for at most a week. Every other tool that
+/// changes something needs Read and write.
+pub(super) const MAINTAIN: [&str; 4] = [
+    "save_application",
+    "save_resource",
+    "record_observation",
+    "read_copies",
+];
 
 /// The tools that change something, each description starting with the access it needs. Saving
 /// and deleting overwrite or remove configuration, so they are marked destructive; adding a record
@@ -999,7 +1011,7 @@ fn changing_tools() -> Vec<Value> {
         tool(
             "record_observation",
             "Record an observation",
-            "Records what the agent observed about a system, tagged as the agent's: a result, what it saw, and how long that vouches for the system (validForMinutes, 1 to 43200). observedAt (RFC 3339) defaults to now and cannot be in the future. Observations are immutable; record another to correct one.",
+            "Records what the agent observed about a system, tagged as the agent's: a result, what it saw, and how long that vouches for the system (validForMinutes, 1 to 43200; with Read and maintain, at most 10080, 7 days, so that a review nobody repeats expires and shows as a gap again). observedAt (RFC 3339) defaults to now and cannot be in the future. Observations are immutable; record another to correct one.",
             with_system(json!({
                 "result": { "type": "string", "enum": ["healthy", "degraded", "unhealthy"] },
                 "summary": { "type": "string", "description": "What was observed, up to 500 characters." },

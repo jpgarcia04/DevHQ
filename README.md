@@ -726,7 +726,7 @@ codex mcp add devhq -- "<ruta del ejecutable de DevHQ>" --mcp
 Codex pide aprobación antes de cada herramienta MCP que no se declara de solo lectura y, con
 `approval_policy = "never"`, no pregunta: la rechaza él mismo, sin que la llamada llegue a la puerta, y
 el agente solo recibe «MCP tool call requires approval, but approval policy is never». Para que lo que
-un agente puede escribir lo decida el acceso que eliges en DevHQ, aprueba en ese archivo solo las dos
+un agente puede escribir lo decida el acceso que eliges en DevHQ, aprueba en ese archivo solo las cuatro
 herramientas de Read and maintain:
 
 ```toml
@@ -734,6 +734,12 @@ herramientas de Read and maintain:
 approval_mode = "approve"
 
 [mcp_servers.devhq.tools.save_resource]
+approval_mode = "approve"
+
+[mcp_servers.devhq.tools.read_copies]
+approval_mode = "approve"
+
+[mcp_servers.devhq.tools.record_observation]
 approval_mode = "approve"
 ```
 
@@ -868,25 +874,30 @@ only:
 | `get_system`   | Una aplicación o recurso (por ID, por nombre exacto sin distinguir mayúsculas, o por ambos si son del mismo sistema) con sus referencias, sus observaciones, incidencias y eventos cargados, y desde cuándo su historial automático está completo                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `history`      | Los resultados automáticos anteriores de un sistema, o las lecturas de sus copias locales (`records: "readings"`), de 200 en 200, como la carga bajo demanda de la ventana                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 
-Con Read and maintain, el agente además da de alta y edita aplicaciones y recursos, pasando por los
-mismos casos de uso que la ventana, con sus validaciones, límites y transacciones:
+Con Read and maintain, el agente además da de alta y edita aplicaciones y recursos, hace que DevHQ lea
+las copias locales y deja lo que observó, como la revisión de una aplicación, pasando por los mismos
+casos de uso que la ventana, con sus validaciones, límites y transacciones. Así un agente puede revisar
+cada día todos tus sistemas sin que abras ninguno: refresca sus lecturas, revisa el código con sus
+propios permisos (DevHQ no ejecuta nada) y deja el resultado como evidencia que caduca:
 
-| Herramienta                         | Qué hace                                                                                                 |
-| ----------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `save_application`, `save_resource` | Dar de alta (nombre y lifecycle, o nombre y tipo) o editar por ID, con sus componentes y sus referencias |
+| Herramienta                         | Qué hace                                                                                                                                                                        |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `save_application`, `save_resource` | Dar de alta (nombre y lifecycle, o nombre y tipo) o editar por ID, con sus componentes y sus referencias                                                                        |
+| `read_copies`                       | Leer ahora, como Read, una copia local (por su referencia), las de un sistema o todas las de esta estación: la lectura es evidencia de DevHQ (`read`)                           |
+| `record_observation`                | Registrar una observación (resultado, qué vio, vigencia) como del agente (`source = agent`), que con este acceso avala el sistema 7 días como mucho (`validForMinutes` ≤ 10080) |
 
 Con Read and write, también hace todo lo demás que haces tú en la ventana. Es un acceso amplio, no una
 forma de aprobar lo que tiene riesgo: DevHQ no te pregunta antes de ninguna de estas operaciones.
 
-| Herramienta                                      | Qué hace                                                                                                                                              |
-| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `delete_application`, `delete_resource`          | Borrar lo que no tiene historial; lo demás se rechaza con el mismo motivo que en la ventana                                                           |
-| `record_observation`, `record_event`             | Registrar una observación (resultado, qué vio, vigencia) o un despliegue, respaldo, mantenimiento o nota                                              |
-| `open_incident`, `update_incident`               | Abrir una incidencia o cambiar su estado con una nota                                                                                                 |
-| `save_check`, `set_check_paused`, `remove_check` | Configurar la comprobación HTTP(S) de un sistema (200, 5 s y 60 min por defecto, como el formulario), pausar o reanudar su supervisión, o quitarla    |
-| `run_check`                                      | Ejecutarla ahora, como Run check: la observación es evidencia de DevHQ (`http`)                                                                       |
-| `backup`                                         | Back up now                                                                                                                                           |
-| `read_copies`                                    | Leer ahora, como Read, una copia local (por su referencia), las de un sistema o todas las de esta estación: la lectura es evidencia de DevHQ (`read`) |
+| Herramienta                                      | Qué hace                                                                                                                                           |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `delete_application`, `delete_resource`          | Borrar lo que no tiene historial; lo demás se rechaza con el mismo motivo que en la ventana                                                        |
+| `record_event`                                   | Registrar un despliegue, respaldo, mantenimiento o nota                                                                                            |
+| `record_observation`                             | Lo mismo que con Read and maintain, con una vigencia de hasta 30 días, como las tuyas                                                              |
+| `open_incident`, `update_incident`               | Abrir una incidencia o cambiar su estado con una nota                                                                                              |
+| `save_check`, `set_check_paused`, `remove_check` | Configurar la comprobación HTTP(S) de un sistema (200, 5 s y 60 min por defecto, como el formulario), pausar o reanudar su supervisión, o quitarla |
+| `run_check`                                      | Ejecutarla ahora, como Run check: la observación es evidencia de DevHQ (`http`)                                                                    |
+| `backup`                                         | Back up now                                                                                                                                        |
 
 Una edición es **parcial**: lo que el agente no manda se conserva, también los componentes y las
 referencias. Una lista que manda añade lo que no lleva `id` y cambia lo que nombra por su `id`,
@@ -932,9 +943,16 @@ el modelo, guiado por las descripciones de las herramientas, mandó como `basedO
 acababa de leer, editó enviando solo lo que cambiaba, nombró los recursos por su ID y, ante
 `changed_since_read`, volvió a leer y guardó su cambio sin deshacer el de la otra sesión.
 
-Lo que guarda un agente con Read and maintain es inventario declarado, nunca evidencia: no crea
-observaciones, incidencias ni eventos, un sistema que da de alta aparece como nunca observado, y el
-registro de cambios dice qué agente lo declaró. Un alta equivocada se corrige editándola (otro
+Lo que da de alta o edita un agente con Read and maintain es inventario declarado, nunca evidencia: un
+sistema que da de alta aparece como nunca observado, y el registro de cambios dice qué agente lo
+declaró. La evidencia que puede dejar con ese acceso es de dos clases, y ninguna se confunde con la
+tuya: lecturas de copias locales, que hace el lector de DevHQ y guardan qué agente las pidió, y
+observaciones del agente (`source = agent`, con su nombre), que avalan el sistema 7 días como mucho,
+para que una revisión que nadie repite caduque y vuelva a ser un hueco. Una observación más larga se
+rechaza (`access_denied`) sin guardar nada; la puerta lo mira antes de abrir nada que escriba y lo
+decide dentro de la transacción, con el lock de escritura de SQLite, como el acceso. Una observación
+del agente cuenta en «¿Qué necesita mi atención?» como una tuya, con su autor siempre a la vista. No
+crea incidencias ni eventos. Un alta equivocada se corrige editándola (otro
 nombre, otro lifecycle, Archived); Read and maintain no borra nada, y la borras tú en la ventana
 mientras no tenga historial. Una vez lo tiene (una observación, una incidencia, un evento o una
 lectura de una de sus copias), se conserva y solo se puede archivar. El registro de cambios guarda el
@@ -952,7 +970,7 @@ declaran destructivas (`destructiveHint`) y `run_check`, que sale de tu computad
 abierto (`openWorldHint`), así que el cliente pide confirmación según cómo lo tengas configurado.
 DevHQ no sabe si te la pidió: lo que impone es el nivel de acceso y las reglas de cada herramienta.
 
-**Leer una copia no es configurar DevHQ.** `read_copies` exige Read and write porque guarda
+**Leer una copia no es configurar DevHQ.** `read_copies` exige Read and maintain porque guarda
 evidencia, como `record_observation`: con Read only un agente ve las lecturas pero nunca provoca una.
 No cambia aplicaciones, recursos, referencias ni comprobaciones, así que no deja entrada en el registro
 de cambios; la propia lectura guarda qué agente la pidió, y la ventana y la puerta lo muestran, como
@@ -960,8 +978,8 @@ lleva su nombre una comprobación que un agente hizo salir de tu computadora. Se
 `readOnlyHint` (escribe evidencia), sin `destructiveHint` (no cambia nada que exista) y sin
 `openWorldHint` (nada sale del equipo). Lo que la hace posible sí deja rastro: declarar o mover una copia
 local es editar las referencias de un sistema. Qué estación es este equipo solo lo elige la ventana. Con
-Read and maintain, un agente puede declarar como copia local cualquier ruta absoluta de esta estación, y
-con Read and write, además, hacer que DevHQ la lea; DevHQ solo dirá si ahí hay una copia y los datos de una lectura, nunca nombres de
+Read and maintain, un agente puede declarar como copia local cualquier ruta absoluta de esta estación y
+hacer que DevHQ la lea; DevHQ solo dirá si ahí hay una copia y los datos de una lectura, nunca nombres de
 archivo, contenidos, autores ni mensajes, que un agente con terminal ya ve. Como el resto de la puerta,
 los modos son de intención, no una barrera de seguridad.
 
@@ -1644,8 +1662,10 @@ como entero) y con las que se aceptan (`30.0`, `id` y `name` del mismo sistema, 
 esquema lo admite, `_meta` y otros campos del protocolo en `params`). Read and maintain se prueba con sesiones
 nuevas que leen con Read only, sin ventana, todo lo que da la puerta sin cambiar nada; con altas y
 ediciones de aplicaciones y recursos con sus componentes y referencias, que quedan como cambios del
-agente y como sistemas nunca observados; con cada otra herramienta que cambia algo, rechazada sin
-escribir; con nombres repetidos en otras mayúsculas, un renombre al nombre de otro sistema y un
+agente y como sistemas nunca observados; con una observación del agente de 7 días, que deja de ser un
+hueco sin entrada en el registro de cambios, y una de un minuto más, rechazada tanto por la puerta como
+dentro de la transacción; con lecturas de copias locales que pide el agente; con cada otra herramienta
+que cambia algo, rechazada sin escribir; con nombres repetidos en otras mayúsculas, un renombre al nombre de otro sistema y un
 componente repetido; con una edición repetida después de confirmarse; con ediciones basadas en un
 estado que la persona u otra sesión cambiaron, con ocho sesiones a la vez sobre el mismo estado, de
 las que edita una, y con ocho que dan de alta la misma aplicación, de las que queda una; con listas
