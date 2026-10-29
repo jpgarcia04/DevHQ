@@ -2162,7 +2162,7 @@ pub(crate) mod tests {
 
     /// Where no file is yet.
     fn nothing() -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("devhq-test-{}.sqlite3", Uuid::new_v4()))
+        disposable(std::env::temp_dir().join(format!("devhq-test-{}.sqlite3", Uuid::new_v4())))
     }
 
     /// A new inventory, as the window creates one when it starts.
@@ -2913,13 +2913,242 @@ pub(crate) mod tests {
         PathBuf::from(plain(&std::fs::canonicalize(std::env::temp_dir()).unwrap()))
     }
 
+    /// Set, nothing a test made is removed and each path is named on stderr: to look at what a
+    /// failed test left.
+    const KEEP: &str = "DEVHQ_KEEP_TEST_FILES";
+
+    /// What the test running on this thread made in the temporary folder. libtest runs each test
+    /// on a thread of its own, named after it, and waits for the thread to end before it reports;
+    /// the thread's locals go as it ends, once the test returned or failed an assertion and its
+    /// connections and helper processes were dropped. Only a run stopped from outside leaves files.
+    struct Disposable(std::cell::RefCell<Vec<PathBuf>>);
+
+    thread_local! {
+        static DISPOSABLE: Disposable = const { Disposable(std::cell::RefCell::new(Vec::new())) };
+    }
+
+    impl Drop for Disposable {
+        fn drop(&mut self) {
+            use std::io::Write;
+            // Never panics: a panic here would abort every test still running.
+            let keep = std::env::var_os(KEEP).is_some();
+            for path in self.0.take().into_iter().rev() {
+                let left = if keep {
+                    Some(format!("kept ({KEEP} is set)"))
+                } else {
+                    remove_disposable(&path)
+                        .err()
+                        .map(|error| error.to_string())
+                };
+                if let Some(left) = left {
+                    let _ = writeln!(std::io::stderr(), "{}: {left}", path.display());
+                }
+            }
+        }
+    }
+
+    /// Marks `path` for removal when this test ends, passed or failed, and returns it. Only an
+    /// entry of the temporary folder itself whose name starts with `devhq-`, and only from the
+    /// test's own thread: a thread the test starts ends first, and would take the path with it.
+    pub(crate) fn disposable(path: PathBuf) -> PathBuf {
+        let parent = path.parent();
+        assert!(
+            (parent == Some(&std::env::temp_dir()) || parent == Some(&resolved_temp_dir()))
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("devhq-")),
+            "not a devhq- entry of the temporary folder: {}",
+            path.display()
+        );
+        let thread = std::thread::current();
+        assert!(
+            thread.name().is_some_and(|name| name.contains("::")),
+            "not on a test's own thread: {:?}",
+            thread.name()
+        );
+        DISPOSABLE.with(|made| made.0.borrow_mut().push(path.clone()));
+        path
+    }
+
+    /// How long a removal tries again while Windows refuses it (a sharing violation) because
+    /// something still holds a file: a process that just ended, or an antivirus scanning what the
+    /// test just wrote. Under the Windows workflow's real-time protection one held a test's file
+    /// past half a second.
+    const REMOVAL_PATIENCE: Duration = Duration::from_secs(10);
+
+    /// Removes `path`, a folder with everything in it, before the test goes on or ends: as
+    /// `std::fs::remove_dir_all` does, but trying again for `REMOVAL_PATIENCE` while the system
+    /// refuses, and failing the test only if it still cannot. What is gone already is fine. Only
+    /// `path`: unlike `remove_disposable`, nothing beside it whose name starts with its own.
+    pub(crate) fn remove_now(path: impl AsRef<Path>) {
+        let path = path.as_ref();
+        let deadline = std::time::Instant::now() + REMOVAL_PATIENCE;
+        loop {
+            match remove_entry(path) {
+                Ok(()) => return,
+                Err(_) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(error) => panic!("{} could not be removed: {error}", path.display()),
+            }
+        }
+    }
+
+    /// Removes `path` and every entry beside it whose name starts with its own: what SQLite keeps
+    /// beside an inventory, the window's lock, the name `create` builds under. Windows can refuse
+    /// for a while (see `REMOVAL_PATIENCE`), so it tries again.
+    fn remove_disposable(path: &Path) -> std::io::Result<()> {
+        let (Some(folder), Some(name)) = (path.parent(), path.file_name()) else {
+            return Ok(());
+        };
+        let deadline = std::time::Instant::now() + REMOVAL_PATIENCE;
+        loop {
+            let removed = std::fs::read_dir(folder).and_then(|entries| {
+                // An entry that fails to list is another test's, gone meanwhile.
+                for entry in entries.flatten() {
+                    if entry
+                        .file_name()
+                        .as_encoded_bytes()
+                        .starts_with(name.as_encoded_bytes())
+                    {
+                        remove_entry(&entry.path())?;
+                    }
+                }
+                Ok(())
+            });
+            match removed {
+                Err(_) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                removed => return removed,
+            }
+        }
+    }
+
+    /// A link as a link, never what it points to; a folder with what it holds; a file. What is
+    /// gone already is fine.
+    fn remove_entry(path: &Path) -> std::io::Result<()> {
+        let removed = std::fs::symlink_metadata(path).and_then(|found| {
+            if found.file_type().is_symlink() {
+                // Windows removes a junction, or a link to a folder, as a folder.
+                std::fs::remove_file(path).or_else(|error| {
+                    if cfg!(windows) {
+                        std::fs::remove_dir(path)
+                    } else {
+                        Err(error)
+                    }
+                })
+            } else if found.is_dir() {
+                std::fs::remove_dir_all(path)
+            } else {
+                std::fs::remove_file(path)
+            }
+        });
+        match removed {
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+            removed => removed,
+        }
+    }
+
+    /// A folder whose file something holds without sharing it, as an antivirus does while it scans
+    /// what a test just wrote, cannot be removed on Windows until it lets go: `remove_dir_all`
+    /// fails at once, and `remove_now` removes it once the file is released.
+    #[cfg(windows)]
+    #[test]
+    fn removes_a_folder_once_windows_lets_go_of_its_file() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let folder =
+            disposable(std::env::temp_dir().join(format!("devhq-held-{}", Uuid::new_v4())));
+        std::fs::create_dir(&folder).unwrap();
+        let file = folder.join("scanned.sqlite3");
+        std::fs::write(&file, "scanned").unwrap();
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&file)
+            .unwrap();
+        let refused = std::fs::remove_dir_all(&folder).unwrap_err();
+        assert_eq!(refused.raw_os_error(), Some(32), "{refused}");
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(500));
+            drop(held);
+        });
+        remove_now(&folder);
+        release.join().unwrap();
+        assert!(!folder.exists());
+    }
+
+    /// A test that fails leaves nothing in the temporary folder: what it made goes when its thread
+    /// ends, a file with what SQLite and the window keep beside it, a folder with what it holds,
+    /// and a link without what it points to.
+    #[test]
+    fn a_failed_test_leaves_nothing_behind() {
+        // The link is marked again by the failing test; the folder it points to is not.
+        let (real, link) = linked_folder();
+        std::fs::write(real.join("outside.txt"), "kept").unwrap();
+        let (sent, made) = std::sync::mpsc::channel();
+        let failed = std::thread::Builder::new()
+            .name(format!("{}::failing", module_path!()))
+            .spawn(move || {
+                let file = nothing();
+                start(&file).unwrap();
+                // Open as the test fails: dropped as it unwinds, before the files go.
+                let connection = Connection::open(&file).unwrap();
+                connection
+                    .execute_batch("BEGIN; CREATE TABLE t(x);")
+                    .unwrap();
+                for companion in ["-journal", ".window-lock", ".new-1"] {
+                    std::fs::write(beside(&file, companion), "").unwrap();
+                }
+                let folder = disposable(
+                    std::env::temp_dir().join(format!("devhq-disposable-{}", Uuid::new_v4())),
+                );
+                std::fs::create_dir_all(folder.join("backups")).unwrap();
+                std::fs::write(folder.join("backups").join("copy.sqlite3"), "").unwrap();
+                sent.send([file, folder, disposable(link)]).unwrap();
+                // Unwinds as a failed assertion does, without the panic message.
+                std::panic::resume_unwind(Box::new("failed"));
+            })
+            .unwrap()
+            .join();
+        assert!(failed.is_err());
+        let made = made.recv().unwrap();
+        let left: Vec<_> = std::fs::read_dir(std::env::temp_dir())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .filter(|name| {
+                made.iter().any(|path| {
+                    let made = path.file_name().unwrap().as_encoded_bytes();
+                    name.as_encoded_bytes().starts_with(made)
+                })
+            })
+            .collect();
+        assert_eq!(left, Vec::<std::ffi::OsString>::new());
+        let outside = std::fs::read_to_string(real.join("outside.txt")).unwrap();
+        assert_eq!(outside, "kept");
+        remove_now(real);
+        // Nothing outside the temporary folder, and nothing from a thread the test started.
+        for outside in [
+            std::env::current_dir().unwrap().join("devhq-test"),
+            std::env::temp_dir().join("devhq-a").join("devhq-b"),
+            std::env::temp_dir().join("other"),
+        ] {
+            assert!(std::panic::catch_unwind(|| disposable(outside)).is_err());
+        }
+        assert!(std::thread::spawn(nothing).join().is_err());
+    }
+
     /// A folder of its own and, beside it, a link to it: the data folder reached through the
     /// link stands for one that Windows redirects for a packaged app, which a test cannot set up.
     /// A junction on Windows, which needs no privilege; a symbolic link elsewhere.
     pub(crate) fn linked_folder() -> (PathBuf, PathBuf) {
         let base = resolved_temp_dir();
         let name = format!("devhq-linked-{}", Uuid::new_v4());
-        let (real, link) = (base.join(&name), base.join(format!("{name}-link")));
+        let (real, link) = (
+            disposable(base.join(&name)),
+            disposable(base.join(format!("{name}-link"))),
+        );
         std::fs::create_dir(&real).unwrap();
         #[cfg(windows)]
         assert!(std::process::Command::new("cmd")
@@ -2941,7 +3170,7 @@ pub(crate) mod tests {
         std::fs::remove_dir(&link).unwrap();
         #[cfg(unix)]
         std::fs::remove_file(&link).unwrap();
-        std::fs::remove_dir_all(real).unwrap();
+        remove_now(real);
     }
 
     #[test]
@@ -2971,7 +3200,8 @@ pub(crate) mod tests {
     /// one inventory, in this build's schema.
     #[test]
     fn concurrent_starts_create_one_inventory() {
-        let folder = std::env::temp_dir().join(format!("devhq-starts-{}", Uuid::new_v4()));
+        let folder =
+            disposable(std::env::temp_dir().join(format!("devhq-starts-{}", Uuid::new_v4())));
         let path = folder.join("inventory.sqlite3");
         let starts: Vec<_> = (0..4)
             .map(|_| {
@@ -3002,7 +3232,7 @@ pub(crate) mod tests {
         );
         start(&path).unwrap();
         assert_eq!(examine(&path, |_| Ok(())).0, Found::Current);
-        std::fs::remove_dir_all(folder).unwrap();
+        remove_now(folder);
     }
 
     fn host() -> ResourceInput {
@@ -3068,7 +3298,8 @@ pub(crate) mod tests {
             (SCHEMA_VERSION + 1, true, "schema_newer"),
         ] {
             let case = format!("v{version}, logged: {logged}");
-            let folder = std::env::temp_dir().join(format!("devhq-other-{}", Uuid::new_v4()));
+            let folder =
+                disposable(std::env::temp_dir().join(format!("devhq-other-{}", Uuid::new_v4())));
             std::fs::create_dir(&folder).unwrap();
             let path = folder.join("inventory.sqlite3");
             let db = database_at(&path, version.min(SCHEMA_VERSION));
@@ -3091,7 +3322,7 @@ pub(crate) mod tests {
             }
             assert_eq!(files_of(&path), before, "{case}");
             assert!(!folder.join("backups").exists(), "{case}: a backups folder");
-            std::fs::remove_dir_all(folder).unwrap();
+            remove_now(folder);
         }
     }
 
@@ -4818,7 +5049,8 @@ pub(crate) mod tests {
         } else {
             "a b#c%d?e é"
         };
-        let folder = std::env::temp_dir().join(format!("devhq-{name}-{}", Uuid::new_v4()));
+        let folder =
+            disposable(std::env::temp_dir().join(format!("devhq-{name}-{}", Uuid::new_v4())));
         std::fs::create_dir(&folder).unwrap();
         let path = folder.join("inventory.sqlite3");
         start(&path).unwrap();
@@ -4842,7 +5074,7 @@ pub(crate) mod tests {
             .map(|entry| entry.unwrap().file_name())
             .collect();
         assert_eq!(names, ["inventory.sqlite3"]);
-        std::fs::remove_dir_all(folder).unwrap();
+        remove_now(folder);
     }
 
     /// A snapshot read counts only if no writer changed the file meanwhile: one that did is read
@@ -4875,11 +5107,11 @@ pub(crate) mod tests {
     /// change is in the file and the log is empty; a write by the person still leaves it to SQLite.
     #[test]
     fn an_agents_write_leaves_no_changes_in_a_log_that_another_read_outlives() {
-        let folder = Scratch::new("outlived");
-        let path = folder.0.join("inventory.sqlite3");
+        let folder = scratch("outlived");
+        let path = folder.join("inventory.sqlite3");
         start(&path).unwrap();
         access::set_agent_access(&path, "write").unwrap();
-        let release = folder.0.join("release");
+        let release = folder.join("release");
         for (by, name) in [
             (Actor::agent("Claude Code").unwrap(), "Agent's box"),
             (Actor::Person, "Person's box"),
@@ -4928,12 +5160,12 @@ pub(crate) mod tests {
     /// the wait, the change stayed in a log nothing held once the reader closed after the writer.
     #[test]
     fn an_agents_write_waits_for_a_read_in_progress_and_then_empties_the_log() {
-        let folder = Scratch::new("read-ends");
-        let path = folder.0.join("inventory.sqlite3");
+        let folder = scratch("read-ends");
+        let path = folder.join("inventory.sqlite3");
         start(&path).unwrap();
         access::set_agent_access(&path, "write").unwrap();
         let agent = Actor::agent("Claude Code").unwrap();
-        let release = folder.0.join("release");
+        let release = folder.join("release");
         let mut db = open_current(&path).unwrap();
         let tx = begin_write(&mut db, &agent).unwrap();
         let reader = reader(&path, &release, "transaction");
@@ -4974,11 +5206,11 @@ pub(crate) mod tests {
     /// writes. The patience is shortened here to keep the test quick; the window recovers the same.
     #[test]
     fn a_read_that_outlasts_the_fold_blocks_no_write_and_leaves_the_log_to_the_window() {
-        let folder = Scratch::new("read-outlasts");
-        let path = folder.0.join("inventory.sqlite3");
+        let folder = scratch("read-outlasts");
+        let path = folder.join("inventory.sqlite3");
         start(&path).unwrap();
         access::set_agent_access(&path, "write").unwrap();
-        let release = folder.0.join("release");
+        let release = folder.join("release");
         let mut db = open_current(&path).unwrap();
         // The person's write, whose commit leaves the fold to this test, to try with less patience.
         let tx = begin_write(&mut db, &Actor::Person).unwrap();
@@ -5024,25 +5256,14 @@ pub(crate) mod tests {
         assert_eq!(list(&path).unwrap().resources.len(), 2);
     }
 
-    /// A folder of the temporary folder for one test, removed with everything in it when the test
-    /// ends, also when it fails. Declared before what uses it, so that the connections and helper
-    /// processes that hold its files are gone when it is removed.
-    /// `inventory::tests::disposable` (pull request #12) replaces it once that merges.
-    struct Scratch(PathBuf);
-
-    impl Scratch {
-        fn new(what: &str) -> Self {
-            let folder = std::env::temp_dir().join(format!("devhq-{what}-{}", Uuid::new_v4()));
-            std::fs::create_dir(&folder).unwrap();
-            Self(folder)
-        }
-    }
-
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            // Never panics: a panic while a failed test unwinds would abort every test running.
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
+    /// A new folder of the temporary folder for one test, removed with everything in it when the
+    /// test's thread ends, passed or failed (see `disposable`): after the connections and helper
+    /// processes that hold its files are gone.
+    fn scratch(what: &str) -> PathBuf {
+        let folder =
+            disposable(std::env::temp_dir().join(format!("devhq-{what}-{}", Uuid::new_v4())));
+        std::fs::create_dir(&folder).unwrap();
+        folder
     }
 
     /// Another agent's gate reading the inventory at `path` (see `reads_until_released`), started
@@ -5173,7 +5394,8 @@ pub(crate) mod tests {
     /// environment variable `variable` set to `spec` and, on a last line, a file it creates once it
     /// has done what it was started for; returns once the file is there.
     pub(crate) fn helper(test: &str, variable: &str, spec: &str) -> Writer {
-        let ready = std::env::temp_dir().join(format!("devhq-helper-{}", Uuid::new_v4()));
+        let ready =
+            disposable(std::env::temp_dir().join(format!("devhq-helper-{}", Uuid::new_v4())));
         let mut child = Writer(
             std::process::Command::new(std::env::current_exe().unwrap())
                 .args(["--ignored", "--exact", test, "--nocapture"])
@@ -5250,7 +5472,8 @@ pub(crate) mod tests {
     /// gate does to find out writes, rolls back or folds any of the files.
     #[test]
     fn never_recovers_what_a_killed_writer_left() {
-        let folder = std::env::temp_dir().join(format!("devhq-killed-{}", Uuid::new_v4()));
+        let folder =
+            disposable(std::env::temp_dir().join(format!("devhq-killed-{}", Uuid::new_v4())));
         std::fs::create_dir(&folder).unwrap();
         let path = folder.join("inventory.sqlite3");
         let files = || {
@@ -5300,7 +5523,7 @@ pub(crate) mod tests {
             Found::NeedsRecovery(Recovery::LogWithoutIndex)
         );
         assert_eq!(files(), before);
-        std::fs::remove_dir_all(&folder).unwrap();
+        remove_now(&folder);
 
         std::fs::create_dir(&folder).unwrap();
         drop(database_at(&path, 6));
@@ -5315,7 +5538,7 @@ pub(crate) mod tests {
             Found::NeedsRecovery(Recovery::Journal)
         );
         assert_eq!(files(), before);
-        std::fs::remove_dir_all(&folder).unwrap();
+        remove_now(&folder);
     }
 
     thread_local! {
@@ -5339,7 +5562,8 @@ pub(crate) mod tests {
     /// still refused after the wait, with every file as it was.
     #[test]
     fn tells_a_log_being_folded_from_one_left_behind() {
-        let folder = std::env::temp_dir().join(format!("devhq-settling-{}", Uuid::new_v4()));
+        let folder =
+            disposable(std::env::temp_dir().join(format!("devhq-settling-{}", Uuid::new_v4())));
         std::fs::create_dir(&folder).unwrap();
         let path = folder.join("inventory.sqlite3");
         start(&path).unwrap();
@@ -5393,7 +5617,7 @@ pub(crate) mod tests {
         assert_eq!(found, Found::Current);
         assert_eq!(read.unwrap().unwrap(), ["Host", "Live box"]);
         assert!(!beside(&path, "-wal").exists());
-        std::fs::remove_dir_all(&folder).unwrap();
+        remove_now(&folder);
     }
 
     /// What a writer killed in the middle left, as the window finds it when it starts: an
@@ -5401,7 +5625,8 @@ pub(crate) mod tests {
     /// found out on a recovered copy and refused, its files left exactly as they were.
     #[test]
     fn the_window_recovers_only_an_inventory_in_this_schema() {
-        let folder = std::env::temp_dir().join(format!("devhq-starting-{}", Uuid::new_v4()));
+        let folder =
+            disposable(std::env::temp_dir().join(format!("devhq-starting-{}", Uuid::new_v4())));
         let path = folder.join("inventory.sqlite3");
         let files = || {
             let mut found: Vec<_> = std::fs::read_dir(&folder)
@@ -5433,7 +5658,7 @@ pub(crate) mod tests {
             .collect();
         assert_eq!(names, ["Host", "Live box"], "what was committed is kept");
         assert_eq!(examine(&path, |_| Ok(())).0, Found::Current);
-        std::fs::remove_dir_all(&folder).unwrap();
+        remove_now(&folder);
 
         // Older and newer, each with a write that did not finish.
         for (version, code) in [(6, "schema_outdated"), (SCHEMA_VERSION + 1, "schema_newer")] {
@@ -5451,7 +5676,7 @@ pub(crate) mod tests {
                 refused.message
             );
             assert_eq!(files(), before, "v{version}: its files were changed");
-            std::fs::remove_dir_all(&folder).unwrap();
+            remove_now(&folder);
         }
     }
 
@@ -5525,7 +5750,8 @@ pub(crate) mod tests {
     fn never_creates_an_inventory_beside_another_ones_files() {
         for logged in [false, true] {
             let case = if logged { "log" } else { "journal" };
-            let folder = std::env::temp_dir().join(format!("devhq-left-{}", Uuid::new_v4()));
+            let folder =
+                disposable(std::env::temp_dir().join(format!("devhq-left-{}", Uuid::new_v4())));
             std::fs::create_dir(&folder).unwrap();
             let path = folder.join("inventory.sqlite3");
             if logged {
@@ -5561,7 +5787,7 @@ pub(crate) mod tests {
                 before
             };
             assert_eq!(resource_names(&path), expected, "{case}");
-            std::fs::remove_dir_all(&folder).unwrap();
+            remove_now(&folder);
         }
         // An index without its log, or anything else with one of those names, is refused too.
         let path = nothing();
@@ -5578,7 +5804,8 @@ pub(crate) mod tests {
     /// among them is refused with every file as it was put there.
     #[test]
     fn recovers_only_the_files_it_found_out_about() {
-        let root = std::env::temp_dir().join(format!("devhq-swapped-{}", Uuid::new_v4()));
+        let root =
+            disposable(std::env::temp_dir().join(format!("devhq-swapped-{}", Uuid::new_v4())));
         let folder = root.join("inventory");
         std::fs::create_dir_all(&folder).unwrap();
         let path = folder.join("inventory.sqlite3");
@@ -5697,6 +5924,6 @@ pub(crate) mod tests {
         assert_eq!(moments, [Moment::Copied, Moment::Opened]);
         assert_eq!(resource_names(&path), ["Renamed"]);
         assert_eq!(integrity(&path), "ok");
-        std::fs::remove_dir_all(&root).unwrap();
+        remove_now(&root);
     }
 }

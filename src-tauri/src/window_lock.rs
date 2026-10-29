@@ -67,13 +67,14 @@ mod tests {
 
     /// An inventory path in a folder of its own.
     fn database() -> PathBuf {
-        std::env::temp_dir()
-            .join(format!("devhq-window-lock-test-{}", uuid::Uuid::new_v4()))
-            .join("inventory.sqlite3")
+        crate::inventory::tests::disposable(
+            std::env::temp_dir().join(format!("devhq-window-lock-test-{}", uuid::Uuid::new_v4())),
+        )
+        .join("inventory.sqlite3")
     }
 
     fn remove(database: &Path) {
-        std::fs::remove_dir_all(database.parent().unwrap()).unwrap();
+        crate::inventory::tests::remove_now(database.parent().unwrap());
     }
 
     /// Asks until the answer is `expected`: the system may release a dead process's lock a moment

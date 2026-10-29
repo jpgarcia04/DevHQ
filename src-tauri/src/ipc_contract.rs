@@ -48,13 +48,15 @@ use tauri::{App, WebviewWindow, WebviewWindowBuilder};
 
 /// An inventory path in a folder of its own, which also holds its log and its backups.
 fn path() -> PathBuf {
-    let folder = std::env::temp_dir().join(format!("devhq-ipc-test-{}", uuid::Uuid::new_v4()));
+    let folder = crate::inventory::tests::disposable(
+        std::env::temp_dir().join(format!("devhq-ipc-test-{}", uuid::Uuid::new_v4())),
+    );
     std::fs::create_dir_all(&folder).unwrap();
     folder.join("inventory.sqlite3")
 }
 
 fn remove(path: &Path) {
-    std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    crate::inventory::tests::remove_now(path.parent().unwrap());
 }
 
 /// The computer the contract runs on: its local folder beside the inventory and a fingerprint of

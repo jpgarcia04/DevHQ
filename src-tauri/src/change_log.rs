@@ -745,8 +745,9 @@ mod tests {
     /// look as large as the whole log.
     #[test]
     fn the_latest_change_of_a_system_follows_an_index_in_rowid_order() {
-        let path =
-            std::env::temp_dir().join(format!("devhq-change-log-test-{}.sqlite3", Uuid::new_v4()));
+        let path = crate::inventory::tests::disposable(
+            std::env::temp_dir().join(format!("devhq-change-log-test-{}.sqlite3", Uuid::new_v4())),
+        );
         crate::inventory::start(&path).unwrap();
         let check = |db: &Connection, when: &str| {
             for (sql, index) in LATEST_OF.iter().zip([

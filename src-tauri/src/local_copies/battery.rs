@@ -794,7 +794,7 @@ fn reading_a_hostile_copy_runs_nothing_writes_nothing_and_reads_it_right() {
         "",
         "git status ran nothing, so the battery proves nothing"
     );
-    std::fs::remove_dir_all(&battery.root).unwrap();
+    crate::inventory::tests::remove_now(&battery.root);
 }
 
 /// The keys `git help --config` lists whose name says they may name a program. A family of
