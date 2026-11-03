@@ -225,7 +225,10 @@ jobs:
         env:
           DEVHQ_E2E_KEEP_DATA: '1'
         run: node --disable-warning=ExperimentalWarning e2e/native/main.ts
+      # It only asks Defender for its status, in seconds; on 3 Nov 2026 it hung for 40 minutes
+      # once, so a hang fails here, with the log, instead of holding the runner for six hours.
       - name: Real-time protection stayed on during the walk
+        timeout-minutes: 5
         run: ./.github/windows/defender.ps1 -Check
       - name: Keep the screenshots of each step
         if: always()
