@@ -84,7 +84,7 @@ pub(crate) fn refuse_to_create(
     };
     let redirected = previous.stored_at.as_ref().map_or_else(String::new, |kept| {
         format!(
-            " (the system keeps that file at {kept}: this DevHQ was started from a packaged app, which sees its own copy of AppData)"
+            " (the system keeps that file at {kept}: a link, a junction or, for a DevHQ started from a packaged app, that app's own copy of AppData leads there)"
         )
     });
     Err(ApiError {

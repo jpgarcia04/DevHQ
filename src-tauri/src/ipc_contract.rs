@@ -459,8 +459,14 @@ fn no_command_changes_an_inventory_the_window_does_not_serve() {
 /// the window serves it, and still says what the previous location holds.
 #[test]
 fn the_window_serves_nothing_while_the_inventory_waits_to_be_moved() {
-    let path = path();
-    let folder = path.parent().unwrap().to_owned();
+    // Under the temporary folder as the file system names it: on a Windows runner TMP is a short
+    // 8.3 name, which would make the system keep every file elsewhere than asked (`storedAt`).
+    let folder = crate::inventory::tests::disposable(
+        crate::inventory::tests::resolved_temp_dir()
+            .join(format!("devhq-ipc-test-{}", uuid::Uuid::new_v4())),
+    );
+    std::fs::create_dir_all(&folder).unwrap();
+    let path = folder.join("inventory.sqlite3");
     let previous = folder.join("previous").join("inventory.sqlite3");
     std::fs::create_dir_all(previous.parent().unwrap()).unwrap();
     crate::inventory::start(&previous).unwrap();

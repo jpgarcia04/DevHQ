@@ -353,7 +353,7 @@ impl Session {
                 previous.database
             )),
             Some(previous) => notes.push(format!(
-                "This process sees AppData redirected: DevHQ's previous location shows {}, which the system keeps at {}, a packaged app's own copy of AppData, not the person's inventory. DevHQ never opens it.",
+                "DevHQ's previous location shows {}, which the system keeps at {}: for a gate started from a packaged app, that app's own copy of AppData, not the person's folder. DevHQ never opens it, and it does not stop agents.",
                 previous.files.join(", "),
                 previous.stored_at.as_deref().unwrap_or_default()
             )),

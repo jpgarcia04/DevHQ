@@ -26,8 +26,9 @@ function PreviousInventory({ previous }: { previous: PreviousLocation }) {
       {previous.storedAt ? (
         <>
           The system keeps it at{' '}
-          <span className="break-all font-mono text-[11px]">{previous.storedAt}</span>, a packaged
-          app’s own copy of AppData: this DevHQ was started from that app. DevHQ never opens it.
+          <span className="break-all font-mono text-[11px]">{previous.storedAt}</span>: a link, a
+          junction or, when DevHQ is started from a packaged app, that app’s own copy of AppData
+          leads there. DevHQ never opens it.
         </>
       ) : (
         <>

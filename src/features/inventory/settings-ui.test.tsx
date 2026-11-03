@@ -202,7 +202,9 @@ describe('the database file in Settings', () => {
     )
     expect(
       await screen.findByText(
-        paragraph(/The system keeps it at .*LocalCache.*, a packaged app’s own copy of AppData/),
+        paragraph(
+          /The system keeps it at .*LocalCache.*: a link, a junction or, when DevHQ is started from a packaged app, that app’s own copy of AppData leads there\. DevHQ never opens it\./,
+        ),
       ),
     ).toBeInTheDocument()
     expect(screen.queryByText(/agents can read through the gate/)).not.toBeInTheDocument()
