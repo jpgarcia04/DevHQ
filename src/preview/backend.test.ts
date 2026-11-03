@@ -240,7 +240,7 @@ describe('the preview’s simulated native process', () => {
     const { backend } = preview()
     expect(() => backend('backup_inventory')).toThrow(expect.objectContaining(readOnly))
     const folder = backend('list_backups') as BackupFolder
-    expect(folder.directory).toBe('C:\\Users\\you\\AppData\\Roaming\\com.devhq.desktop\\backups')
+    expect(folder.directory).toBe('C:\\Users\\you\\DevHQ\\backups')
     // Named as the native process names them, newest first, with an interrupted one.
     expect(folder.files.map((file) => [file.name, file.partial])).toEqual([
       ['inventory-20260930T103000.000Z.sqlite3', false],

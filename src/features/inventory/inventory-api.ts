@@ -327,9 +327,28 @@ export interface DataLocation {
   /** The folder it is in, which also holds its write-ahead log while DevHQ has it open. */
   directory: string
   /**
-   * Where the file system really keeps the file, when that is not `database`: through a link, or
-   * because Windows redirects AppData for a DevHQ started from a packaged app (the Claude or
-   * Codex desktop app, say). Other programs, File Explorer included, find it only there.
+   * Where the file system really keeps the file, when that is not `database`: through a link or a
+   * junction, or because Windows redirects AppData for a DevHQ started from a packaged app (the
+   * Claude or Codex desktop app, say). Other programs, File Explorer included, find it only there,
+   * and agents cannot change it through the gate.
+   */
+  storedAt: string | null
+  /**
+   * What DevHQ's previous location, in AppData, still holds, when it holds an inventory: DevHQ
+   * never opens it. Null when it holds none.
+   */
+  previous: PreviousLocation | null
+}
+
+/** An inventory left where DevHQ kept it before its data moved out of AppData. */
+export interface PreviousLocation {
+  /** Its path there, as DevHQ asks for it. */
+  database: string
+  /** The files of the inventory found there, by name: the database, its log or its journal. */
+  files: string[]
+  /**
+   * Where the system really keeps the first of them, when that is another path: a packaged app's
+   * own copy of AppData, not the person's folder.
    */
   storedAt: string | null
 }

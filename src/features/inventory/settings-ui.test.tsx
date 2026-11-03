@@ -9,11 +9,15 @@ import { InventoryContext, type InventoryContextValue } from './inventory-contex
 import { RealSettingsPage } from './real-settings-page'
 import { inventoryContext } from './test-context'
 
-const folder = 'C:\\Users\\Ana Ruiz\\AppData\\Roaming\\com.devhq.desktop'
+const folder = 'C:\\Users\\Ana Ruiz\\DevHQ'
 const database = `${folder}\\inventory.sqlite3`
-// Where Windows keeps that folder's files for a DevHQ started from a packaged app.
+// Where the system keeps that folder's files when a link or a junction leads elsewhere.
+const elsewhere = 'D:\\Datos\\DevHQ'
+// Where DevHQ kept the inventory before its data left AppData.
+const previous = 'C:\\Users\\Ana Ruiz\\AppData\\Roaming\\com.devhq.desktop\\inventory.sqlite3'
+// Where Windows keeps a file of that folder for a DevHQ started from a packaged app.
 const packaged =
-  'C:\\Users\\Ana Ruiz\\AppData\\Local\\Packages\\Claude_pzs8sxrjxfjjc\\LocalCache\\Roaming\\com.devhq.desktop'
+  'C:\\Users\\Ana Ruiz\\AppData\\Local\\Packages\\Claude_pzs8sxrjxfjjc\\LocalCache\\Roaming\\com.devhq.desktop\\inventory.sqlite3'
 
 function renderSettings(value: InventoryContextValue) {
   return render(
@@ -25,7 +29,8 @@ function renderSettings(value: InventoryContextValue) {
   )
 }
 
-const located = () => vi.fn(async () => ({ database, directory: folder, storedAt: null }))
+const located = () =>
+  vi.fn(async () => ({ database, directory: folder, storedAt: null, previous: null }))
 
 // Matched on the whole paragraph, which file names in their own elements split.
 const paragraph = (text: RegExp) => (_: string, element: Element | null) =>
@@ -129,10 +134,15 @@ describe('the database file in Settings', () => {
     const user = userEvent.setup()
     const writeText = vi.fn().mockResolvedValue(undefined)
     vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } })
-    const kept = `${packaged}\\inventory.sqlite3`
+    const kept = `${elsewhere}\\inventory.sqlite3`
     renderSettings(
       inventoryContext({
-        dataLocation: vi.fn(async () => ({ database, directory: folder, storedAt: kept })),
+        dataLocation: vi.fn(async () => ({
+          database,
+          directory: folder,
+          storedAt: kept,
+          previous: null,
+        })),
       }),
     )
     // The path File Explorer and every other program open is the one shown and copied.
@@ -142,7 +152,7 @@ describe('the database file in Settings', () => {
     expect(
       screen.getByText(
         paragraph(
-          /^DevHQ asked for C:\\Users\\Ana Ruiz\\AppData\\Roaming\\com\.devhq\.desktop\\inventory\.sqlite3, but the file system keeps the file at the path above\. .*Claude or Codex desktop app.* DevHQ opened from the Start menu or File Explorer uses the other path, which holds another inventory or none\. Back up, copy and restore at the path above\.$/,
+          /^DevHQ asked for C:\\Users\\Ana Ruiz\\DevHQ\\inventory\.sqlite3, but the file system keeps the file at the path above\. A link or a junction can do that, .*Claude or Codex desktop app\. A DevHQ started another way may see another inventory there, so agents can read this one but not change it\. Back up, copy and restore at the path above\.$/,
         ),
       ),
     ).toBeInTheDocument()
@@ -152,6 +162,50 @@ describe('the database file in Settings', () => {
     renderSettings(inventoryContext({ dataLocation: located() }))
     expect(await screen.findByText(database)).toBeInTheDocument()
     expect(screen.queryByText(/the file system keeps/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/previous location/)).not.toBeInTheDocument()
+  })
+
+  it('says what the previous location still holds, and that agents change nothing meanwhile', async () => {
+    renderSettings(
+      inventoryContext({
+        dataLocation: vi.fn(async () => ({
+          database,
+          directory: folder,
+          storedAt: null,
+          previous: {
+            database: previous,
+            files: ['inventory.sqlite3', 'inventory.sqlite3-wal'],
+            storedAt: null,
+          },
+        })),
+      }),
+    )
+    expect(
+      await screen.findByText(
+        paragraph(
+          /^DevHQ’s previous location still holds an inventory: C:\\Users\\Ana Ruiz\\AppData\\Roaming\\com\.devhq\.desktop\\inventory\.sqlite3 \(inventory\.sqlite3, inventory\.sqlite3-wal\)\. DevHQ uses the file above and never opens that one\. Until you rename its folder, once you have checked this inventory, agents can read through the gate but change nothing/,
+        ),
+      ),
+    ).toBeInTheDocument()
+  })
+
+  it('says when the previous location is only a packaged app’s copy', async () => {
+    renderSettings(
+      inventoryContext({
+        dataLocation: vi.fn(async () => ({
+          database,
+          directory: folder,
+          storedAt: null,
+          previous: { database: previous, files: ['inventory.sqlite3'], storedAt: packaged },
+        })),
+      }),
+    )
+    expect(
+      await screen.findByText(
+        paragraph(/The system keeps it at .*LocalCache.*, a packaged app’s own copy of AppData/),
+      ),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/agents can read through the gate/)).not.toBeInTheDocument()
   })
 
   it('answers even when the inventory cannot be read', async () => {
@@ -333,7 +387,7 @@ describe('Back up now', () => {
 
   it('says where the file system really keeps a backup, when it is not in the folder', async () => {
     const user = userEvent.setup()
-    const kept = `${packaged}\\backups\\${backup.name}`
+    const kept = `${elsewhere}\\backups\\${backup.name}`
     const older = 'inventory-20260929T080000.000Z.sqlite3'
     const listBackups = vi.fn().mockResolvedValue({
       ...empty,

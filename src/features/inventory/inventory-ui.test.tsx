@@ -86,7 +86,7 @@ describe('real inventory UI', () => {
     const list = vi.spyOn(inventoryApi, 'list').mockRejectedValue({
       code: 'leftover_files',
       message:
-        'There is no DevHQ inventory at /home/you/.local/share/com.devhq.desktop/inventory.sqlite3, yet files SQLite keeps beside a database are there (/home/you/.local/share/com.devhq.desktop/inventory.sqlite3-journal).',
+        'There is no DevHQ inventory at /home/you/DevHQ/inventory.sqlite3, yet files SQLite keeps beside a database are there (/home/you/DevHQ/inventory.sqlite3-journal).',
     })
     render(
       <MemoryRouter>
@@ -109,13 +109,41 @@ describe('real inventory UI', () => {
     list.mockRestore()
   })
 
+  it('says the inventory waits at its previous location, never showing an empty one', async () => {
+    const user = userEvent.setup()
+    const list = vi.spyOn(inventoryApi, 'list').mockRejectedValue({
+      code: 'move_pending',
+      message:
+        'Your inventory has not been moved yet: it is still at C:\\Users\\you\\AppData\\Roaming\\com.devhq.desktop\\inventory.sqlite3, and DevHQ now keeps it at C:\\Users\\you\\DevHQ\\inventory.sqlite3. DevHQ starts no empty inventory there and does not open the previous one.',
+    })
+    render(
+      <MemoryRouter>
+        <InventoryProvider>
+          <SelectRealInventory />
+          <RealOverviewPage />
+        </InventoryProvider>
+      </MemoryRouter>,
+    )
+    await user.click(screen.getByRole('button', { name: 'Select real inventory' }))
+    expect(
+      await screen.findByRole('heading', { name: 'Inventory waiting to be moved' }),
+    ).toBeInTheDocument()
+    expect(screen.getByText(/has not been moved yet/)).toHaveTextContent(
+      /looks at both locations again the next time it starts/,
+    )
+    expect(screen.queryByText(/Nothing is registered yet/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument()
+    expect(list).toHaveBeenCalledTimes(1)
+    list.mockRestore()
+  })
+
   const outdatedRefusal = {
     code: 'schema_outdated',
     message:
-      '/home/you/.local/share/com.devhq.desktop/inventory.sqlite3: A DevHQ inventory that declares schema version 6, older than this DevHQ’s (12).',
+      '/home/you/DevHQ/inventory.sqlite3: A DevHQ inventory that declares schema version 6, older than this DevHQ’s (12).',
   }
   const outdated: UpgradeInspection = {
-    database: '/home/you/.local/share/com.devhq.desktop/inventory.sqlite3',
+    database: '/home/you/DevHQ/inventory.sqlite3',
     storedAt: null,
     state: 'outdated',
     storedVersion: 6,
@@ -128,14 +156,13 @@ describe('real inventory UI', () => {
       { table: 'resources', rows: 2 },
     ],
     fingerprint: 'f'.repeat(64),
-    backups: '/home/you/.local/share/com.devhq.desktop/backups',
+    backups: '/home/you/DevHQ/backups',
   }
   const backupMade: BeforeUpgrade = {
     name: 'inventory-20260930T120000.000Z-v6.sqlite3',
-    path: '/home/you/.local/share/com.devhq.desktop/backups/inventory-20260930T120000.000Z-v6.sqlite3',
+    path: '/home/you/DevHQ/backups/inventory-20260930T120000.000Z-v6.sqlite3',
     storedAt: null,
-    manifest:
-      '/home/you/.local/share/com.devhq.desktop/backups/inventory-20260930T120000.000Z-v6.sqlite3.json',
+    manifest: '/home/you/DevHQ/backups/inventory-20260930T120000.000Z-v6.sqlite3.json',
     takenAt: '2026-09-30T12:00:00.000Z',
     sizeBytes: 65_536,
     sha256: 'a'.repeat(64),

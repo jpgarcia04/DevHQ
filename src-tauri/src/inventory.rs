@@ -201,6 +201,9 @@ pub struct DataLocation {
     pub directory: String,
     /// Where the file system really keeps the file, when that is not `database` (see `stored_at`).
     pub stored_at: Option<String>,
+    /// What DevHQ's previous location, in AppData, still holds, when it holds an inventory (see
+    /// `location`). Only for the location DevHQ looks at by itself, never for `--database`.
+    pub previous: Option<crate::location::Previous>,
 }
 
 impl DataLocation {
@@ -212,6 +215,15 @@ impl DataLocation {
                 .map(|folder| folder.display().to_string())
                 .unwrap_or_default(),
             stored_at: stored_at(path),
+            previous: None,
+        }
+    }
+
+    /// The location of `path`, with what `previous`, DevHQ's previous location, holds.
+    pub fn with_previous(path: &Path, previous: Option<&Path>) -> Self {
+        Self {
+            previous: previous.and_then(crate::location::previous_at),
+            ..Self::of(path)
         }
     }
 }
@@ -2902,6 +2914,7 @@ pub(crate) mod tests {
                 directory: folder.display().to_string(),
                 // Not created yet, so there is nothing to resolve.
                 stored_at: None,
+                previous: None,
             }
         );
     }
@@ -3185,6 +3198,7 @@ pub(crate) mod tests {
                 database: asked.display().to_string(),
                 directory: link.display().to_string(),
                 stored_at: Some(kept.display().to_string()),
+                previous: None,
             }
         );
         // Asked for where it really is, it has nothing else to say.

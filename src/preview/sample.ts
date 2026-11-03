@@ -45,9 +45,9 @@ export interface PreviewDatabase {
 }
 
 /** Where the native process would keep this computer's association, on Windows. */
-const associationFile = 'C:\\Users\\you\\AppData\\Local\\com.devhq.desktop\\this-workstation.json'
+const associationFile = 'C:\\Users\\you\\DevHQ\\this-workstation.json'
 /** Where the native process would keep the inventory, on Windows. */
-const previewDatabasePath = 'C:\\Users\\you\\AppData\\Roaming\\com.devhq.desktop\\inventory.sqlite3'
+const previewDatabasePath = 'C:\\Users\\you\\DevHQ\\inventory.sqlite3'
 
 const notChosen: ThisWorkstation = {
   resourceId: null,

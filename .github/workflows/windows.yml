@@ -216,9 +216,10 @@ jobs:
           "DEVHQ_E2E_TLS_PASSPHRASE=$passphrase" >> $env:GITHUB_ENV
       # From here on Defender scans every file DevHQ, the installer and the uninstaller write, as
       # an antivirus does on a desktop: the backup's .partial, its hard link and the removal of
-      # the .partial included. The probe goes next to the data folder, which the walk must create.
+      # the .partial included. The probe goes next to the data folder in the home, which the walk
+      # must create.
       - name: Turn on Defender's real-time protection
-        run: ./.github/windows/defender.ps1 -On -Probe $env:APPDATA
+        run: ./.github/windows/defender.ps1 -On -Probe $env:USERPROFILE
       # The data stays for the steps below; a fresh runner has none of its own.
       - name: Native walk on WebView2, under real-time protection
         env:
@@ -235,17 +236,21 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
       # The walk drove a release executable the installer did not pack: it must have kept its data
-      # under the development identifier, and created nothing where the installed DevHQ keeps its
-      # own. Its agent gate, started as an MCP client starts it, must name the same inventory.
+      # in the development folder of the home, its WebView2 profile under the development
+      # identifier, and created nothing where the installed DevHQ keeps its own, nor in AppData's
+      # data folders. Its agent gate, started as an MCP client starts it, must name the same
+      # inventory.
       - name: The walked executable kept development data, apart from the installed DevHQ's
         run: |
-          $data = Join-Path $env:APPDATA 'com.devhq.desktop.dev'
+          $data = Join-Path $env:USERPROFILE 'DevHQ-desarrollo'
           $local = Join-Path $env:LOCALAPPDATA 'com.devhq.desktop.dev'
-          foreach ($folder in @((Join-Path $env:APPDATA 'com.devhq.desktop'), (Join-Path $env:LOCALAPPDATA 'com.devhq.desktop'))) {
+          foreach ($folder in @((Join-Path $env:USERPROFILE 'DevHQ'), (Join-Path $env:APPDATA 'com.devhq.desktop'),
+              (Join-Path $env:LOCALAPPDATA 'com.devhq.desktop'), (Join-Path $env:APPDATA 'com.devhq.desktop.dev'))) {
             if (Test-Path $folder) { throw "The walked executable created $folder" }
           }
           if (-not (Test-Path (Join-Path $data 'inventory.sqlite3'))) { throw "No inventory in $data" }
           if (-not (Get-ChildItem (Join-Path $data 'backups') -Filter 'inventory-*.sqlite3')) { throw "No backups in $data" }
+          if (-not (Test-Path (Join-Path $data 'this-workstation.json'))) { throw "No this-workstation.json in $data" }
           if (-not (Test-Path (Join-Path $local 'EBWebView'))) { throw "No WebView2 profile in $local" }
           $start = New-Object System.Diagnostics.ProcessStartInfo $env:DEVHQ_APP, '--mcp'
           $start.UseShellExecute = $false
@@ -263,11 +268,10 @@ jobs:
           if ($status.database.database -ne $expected) { throw "It opens $($status.database.database), not $expected" }
           if (-not ($status.notes -match 'development data')) { throw "Its status does not say it keeps development data: $out" }
       # Brought where the installed DevHQ keeps its data, as a person brings an inventory from
-      # another computer: the installed DevHQ opens it, and the uninstaller later keeps or deletes
-      # it with its backups.
+      # another computer: the installed DevHQ opens it, and no uninstall later deletes it.
       - name: Hand the walk's data to the installed DevHQ
         run: |
-          Move-Item (Join-Path $env:APPDATA 'com.devhq.desktop.dev') (Join-Path $env:APPDATA 'com.devhq.desktop')
+          Move-Item (Join-Path $env:USERPROFILE 'DevHQ-desarrollo') (Join-Path $env:USERPROFILE 'DevHQ')
           Move-Item (Join-Path $env:LOCALAPPDATA 'com.devhq.desktop.dev') (Join-Path $env:LOCALAPPDATA 'com.devhq.desktop')
       - name: Install DevHQ silently, as the current user
         run: |
@@ -283,7 +287,7 @@ jobs:
       # the plain title, and ends when its window is closed.
       - name: Open and close the installed DevHQ
         run: |
-          $data = Join-Path $env:APPDATA 'com.devhq.desktop'
+          $data = Join-Path $env:USERPROFILE 'DevHQ'
           # WebView2 recreates its profile when the window starts: proof that it did.
           $webviewProfile = Join-Path $env:LOCALAPPDATA 'com.devhq.desktop\EBWebView'
           Remove-Item -Recurse -Force $webviewProfile -ErrorAction SilentlyContinue
@@ -303,13 +307,14 @@ jobs:
           if (-not $process.WaitForExit(20000)) { throw 'The installed DevHQ did not end after its window closed' }
           "Exit code: $($process.ExitCode)"
           if (Test-Path (Join-Path $data 'inventory.sqlite3-wal')) { throw 'A write-ahead log was left behind' }
+          if (Test-Path (Join-Path $env:APPDATA 'com.devhq.desktop')) { throw 'The installed DevHQ created its previous data folder in AppData' }
       # The agent gate is the same executable, built for the windows subsystem (no console), so
       # this checks what Linux cannot: that it answers MCP over redirected stdin and stdout, as
       # Claude Code drives it, finds the inventory where the installed app keeps it, and ends
       # when its input closes.
       - name: Ask the installed DevHQ's agent gate, as an MCP client does
         run: |
-          $expected = Join-Path $env:APPDATA 'com.devhq.desktop\inventory.sqlite3'
+          $expected = Join-Path $env:USERPROFILE 'DevHQ\inventory.sqlite3'
           $start = New-Object System.Diagnostics.ProcessStartInfo $env:DEVHQ_INSTALLED, '--mcp'
           $start.UseShellExecute = $false
           $start.RedirectStandardInput = $true
@@ -331,6 +336,8 @@ jobs:
           $status = $replies[1].result.structuredContent
           "Gate opened $($status.database.database) (stored at: $($status.database.storedAt))"
           if ($status.database.database -ne $expected) { throw "The gate opened $($status.database.database), not $expected" }
+          if ($null -ne $status.database.storedAt) { throw "The system keeps it elsewhere: $($status.database.storedAt)" }
+          if ($null -ne $status.database.previous) { throw "The previous location holds data: $out" }
           if (-not $status.exists) { throw 'The gate found no inventory where the installed app keeps it' }
           # The installed DevHQ was closed in the step before: Windows released its window lock.
           if ($status.windowOpen -ne $false) { throw "windowOpen: $($status.windowOpen), with no DevHQ window open" }
@@ -339,14 +346,16 @@ jobs:
           if ($gate.ExitCode -ne 0) { throw 'The gate failed' }
           if ($status.notes -match 'development data') { throw "The installed DevHQ's gate says it keeps development data: $out" }
           # Neither the installed window nor its gate touched development data.
-          foreach ($folder in @((Join-Path $env:APPDATA 'com.devhq.desktop.dev'), (Join-Path $env:LOCALAPPDATA 'com.devhq.desktop.dev'))) {
+          foreach ($folder in @((Join-Path $env:USERPROFILE 'DevHQ-desarrollo'), (Join-Path $env:APPDATA 'com.devhq.desktop.dev'),
+              (Join-Path $env:LOCALAPPDATA 'com.devhq.desktop.dev'))) {
             if (Test-Path $folder) { throw "The installed DevHQ created $folder" }
           }
-      # The uninstaller deletes the data folder only when "Delete the application data" is
-      # ticked on its confirmation page, which a silent uninstall never shows.
+      # The uninstaller never names the folder of the home that holds the inventory, and deletes
+      # the folders in AppData only when "Delete the application data" is ticked on its
+      # confirmation page, which a silent uninstall never shows.
       - name: Uninstall silently and check what stays
         run: |
-          $data = Join-Path $env:APPDATA 'com.devhq.desktop'
+          $data = Join-Path $env:USERPROFILE 'DevHQ'
           $folder = Split-Path $env:DEVHQ_INSTALLED
           Start-Process -FilePath (Join-Path $folder 'uninstall.exe') -ArgumentList '/S' -Wait
           # The uninstaller runs from a copy of itself; wait until it has removed the app.
@@ -360,35 +369,57 @@ jobs:
           if (-not (Test-Path (Join-Path $data 'inventory.sqlite3'))) { throw 'The silent uninstall deleted the inventory' }
           if (-not (Get-ChildItem (Join-Path $data 'backups') -Filter 'inventory-*.sqlite3')) { throw 'The silent uninstall deleted the backups' }
           'The silent uninstall kept the inventory and its backups.'
-      # A second installation over the data the silent uninstall kept, then the uninstaller as a
-      # person runs it, with "Delete the application data" ticked (.github/windows/
-      # uninstall-deleting-data.ps1). It must delete the data folder, inventory and backups
-      # included, and the WebView2 profile.
-      - name: Install again, then uninstall with "Delete the application data" ticked
+      # A second installation, and the uninstaller as a person runs it, with "Delete the
+      # application data" ticked (.github/windows/uninstall-deleting-data.ps1), while the folder
+      # where an older DevHQ kept the inventory still holds one, waiting to be moved: the
+      # uninstaller ignores the box (src-tauri/windows/installer-hooks.nsh) and deletes no data.
+      - name: Install again, then uninstall with the box ticked while an inventory waits in AppData
         run: |
-          $data = Join-Path $env:APPDATA 'com.devhq.desktop'
+          $data = Join-Path $env:USERPROFILE 'DevHQ'
+          $previous = Join-Path $env:APPDATA 'com.devhq.desktop'
           $webviewProfile = Join-Path $env:LOCALAPPDATA 'com.devhq.desktop'
           $installer = Get-ChildItem src-tauri/target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
           Start-Process -FilePath $installer.FullName -ArgumentList '/S' -Wait
           if (-not (Test-Path $env:DEVHQ_INSTALLED)) { throw 'The second installation put no DevHQ executable in place' }
+          New-Item -ItemType Directory $previous | Out-Null
+          Copy-Item (Join-Path $data 'inventory.sqlite3') (Join-Path $previous 'inventory.sqlite3')
+          $kept = (Get-FileHash (Join-Path $previous 'inventory.sqlite3')).Hash
+          if (-not (Test-Path $webviewProfile)) { throw 'There is no WebView2 profile to delete' }
+          ./.github/windows/uninstall-deleting-data.ps1 -Uninstaller (Join-Path (Split-Path $env:DEVHQ_INSTALLED) 'uninstall.exe')
+          $deadline = (Get-Date).AddMinutes(1)
+          while ((Test-Path $env:DEVHQ_INSTALLED) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 1 }
+          if (Test-Path $env:DEVHQ_INSTALLED) { throw 'The uninstaller left the DevHQ executable' }
+          if ((Get-FileHash (Join-Path $previous 'inventory.sqlite3')).Hash -ne $kept) { throw 'The uninstaller deleted or changed the inventory waiting in AppData' }
+          if (-not (Test-Path $webviewProfile)) { throw 'The uninstaller deleted application data beside an inventory waiting in AppData' }
+          if (-not (Test-Path (Join-Path $data 'inventory.sqlite3'))) { throw 'The uninstaller deleted the inventory in the home' }
+          'With an inventory waiting in AppData, the uninstaller ignored "Delete the application data".'
+          # Renamed, as the person does once the moved inventory is checked: nothing then names it.
+          Rename-Item $previous 'com.devhq.desktop.trasladado'
+      # A third installation and the same uninstall, now that AppData holds no inventory: the box
+      # deletes the WebView2 profile, and nothing of the inventory, in the home or set aside.
+      - name: Install again, then uninstall with "Delete the application data" ticked
+        run: |
+          $data = Join-Path $env:USERPROFILE 'DevHQ'
+          $renamed = Join-Path $env:APPDATA 'com.devhq.desktop.trasladado'
+          $webviewProfile = Join-Path $env:LOCALAPPDATA 'com.devhq.desktop'
+          $installer = Get-ChildItem src-tauri/target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          Start-Process -FilePath $installer.FullName -ArgumentList '/S' -Wait
+          if (-not (Test-Path $env:DEVHQ_INSTALLED)) { throw 'The third installation put no DevHQ executable in place' }
           # What there is to delete: without it, a clean result would prove nothing.
-          if (-not (Test-Path (Join-Path $data 'inventory.sqlite3'))) { throw 'There is no inventory to delete' }
-          if (-not (Get-ChildItem (Join-Path $data 'backups') -Filter 'inventory-*.sqlite3')) { throw 'There are no backups to delete' }
           if (-not (Test-Path $webviewProfile)) { throw 'There is no WebView2 profile to delete' }
           if (-not (Test-Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\DevHQ')) { throw 'The installation has no uninstall entry' }
-          Get-ChildItem -Recurse -Force $data | Format-Table FullName, Length -AutoSize
+          $before = @(Get-ChildItem -Recurse -Force -File $data | ForEach-Object { "$($_.FullName) $((Get-FileHash $_.FullName).Hash)" })
           "WebView2 profile: $webviewProfile, $(@(Get-ChildItem -Recurse -Force $webviewProfile).Count) entries"
           ./.github/windows/uninstall-deleting-data.ps1 -Uninstaller (Join-Path (Split-Path $env:DEVHQ_INSTALLED) 'uninstall.exe')
           $deadline = (Get-Date).AddMinutes(1)
           while ((Test-Path $env:DEVHQ_INSTALLED) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 1 }
-          $left = @($env:DEVHQ_INSTALLED, $data, $webviewProfile,
+          $left = @($env:DEVHQ_INSTALLED, $webviewProfile,
             'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\DevHQ') | Where-Object { Test-Path $_ }
-          if ($left) {
-            $left | Where-Object { $_ -notlike 'HKCU:*' } | ForEach-Object { Get-ChildItem -Recurse -Force $_ } |
-              Format-Table FullName, Length -AutoSize
-            throw "The uninstaller left: $($left -join ', ')"
-          }
-          'With "Delete the application data" ticked, the uninstaller deleted the inventory, its backups and the WebView2 profile.'
+          if ($left) { throw "The uninstaller left: $($left -join ', ')" }
+          $after = @(Get-ChildItem -Recurse -Force -File $data | ForEach-Object { "$($_.FullName) $((Get-FileHash $_.FullName).Hash)" })
+          if (Compare-Object $before $after) { throw 'The uninstaller changed the folder of the home that holds the inventory' }
+          if (-not (Test-Path (Join-Path $renamed 'inventory.sqlite3'))) { throw 'The uninstaller deleted the renamed previous folder' }
+          'With "Delete the application data" ticked, the uninstaller deleted the WebView2 profile and kept every inventory and backup.'
       - name: Turn real-time protection off before the caches are saved
         if: always()
         run: ./.github/windows/defender.ps1 -Off

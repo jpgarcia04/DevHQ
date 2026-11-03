@@ -28,7 +28,7 @@ const laptop: ThisWorkstation = {
   chosenAt: minutesFromNow(-60 * 24),
   problem: null,
   message: null,
-  file: 'C:\\Users\\you\\AppData\\Local\\com.devhq.desktop\\this-workstation.json',
+  file: 'C:\\Users\\you\\DevHQ\\this-workstation.json',
   storedAt: null,
 }
 const notChosen: ThisWorkstation = {

@@ -325,10 +325,9 @@ read` («Automated · Local read»), el lector y su versión (`reader`, «libgit
   sistema se cargan de 200 en 200 (`older_readings`), por el índice de su sistema.
 
 **Esta estación de trabajo.** DevHQ solo lee copias de la estación de trabajo en la que corre, y eso no
-lo dice el inventario, que puede viajar a otro equipo: lo guarda `this-workstation.json`, en la carpeta
-local de DevHQ (`%LOCALAPPDATA%\com.devhq.desktop` en Windows, que no viaja con un perfil móvil;
-en Linux, junto al inventario, en `~/.local/share/com.devhq.desktop.dev`; una build de desarrollo
-usa `com.devhq.desktop.dev`, ver [Arquitectura](#arquitectura)). Back up now no lo copia. Guarda, por
+lo dice el inventario, que puede viajar a otro equipo: lo guarda `this-workstation.json`, junto al
+inventario en la carpeta de datos de DevHQ (`%USERPROFILE%\DevHQ` en Windows; una build de desarrollo
+usa `DevHQ-desarrollo`, ver [Arquitectura](#arquitectura)). Back up now no lo copia. Guarda, por
 equipo, el recurso elegido en cada inventario y cuándo; cada equipo se distingue por una huella, el
 SHA-256 de una etiqueta de DevHQ y del identificador del sistema (`MachineGuid` en Windows,
 `/etc/machine-id` en Linux), que nunca se guarda en bruto. Así, copiar el home a otro equipo, o
@@ -543,15 +542,21 @@ de ningún sistema.
   modificación y su tamaño, sin presentarlos como sanos: DevHQ verificó cada respaldo una vez, al
   hacerlo, y no ha vuelto a mirarlos. Un `.partial` se marca como incompleto, no como respaldo.
 - Los respaldos están en el mismo disco que el inventario y dentro de la carpeta de datos de
-  DevHQ, `%APPDATA%\com.devhq.desktop` en Windows; la ventana avisa de copiarlos a otro sitio. El
-  desinstalador solo borra esa carpeta si marcas «Delete the application data» en su página de
-  confirmación, una casilla que aparece desmarcada. Marcada, la borra entera, con el inventario y
-  `backups/`, y también `%LOCALAPPDATA%\com.devhq.desktop`, el perfil de WebView2.
-  Una desinstalación silenciosa (`/S`) o pasiva (`/P`) no muestra esa página y una actualización
-  no la aplica, así que ninguna borra datos. Así lo dice la plantilla NSIS de tauri-bundler que
-  trae `@tauri-apps/cli` 2.11.5, y el workflow de Windows lo comprueba en los dos sentidos: tras una
-  desinstalación silenciosa siguen el inventario y sus respaldos, y con la casilla marcada desaparecen
-  las dos carpetas.
+  DevHQ, `%USERPROFILE%\DevHQ` en Windows; la ventana avisa de copiarlos a otro sitio. El
+  desinstalador nunca nombra esa carpeta, así que ninguna desinstalación borra el inventario ni sus
+  respaldos: borrarlos es una operación aparte, que haces tú si alguna vez lo quieres. «Delete the
+  application data», una casilla que aparece desmarcada en la página de confirmación del
+  desinstalador, borra `%APPDATA%\com.devhq.desktop` y `%LOCALAPPDATA%\com.devhq.desktop`: el perfil
+  de WebView2 y la carpeta donde un DevHQ anterior guardaba el inventario. Si esa carpeta aún guarda
+  un inventario (`inventory.sqlite3`, su `-wal` o su `-journal`) o una carpeta `backups/`, el
+  desinstalador ignora la casilla y no borra ningún dato: lo decide un hook
+  (`src-tauri/windows/installer-hooks.nsh`) que corre antes de que la plantilla borre nada. Una
+  desinstalación silenciosa (`/S`) o pasiva (`/P`) no muestra esa página y una actualización no la
+  aplica. Así lo dice la plantilla NSIS de tauri-bundler que trae `@tauri-apps/cli` 2.11.5, y el
+  workflow de Windows lo comprueba: tras una desinstalación silenciosa siguen el inventario y sus
+  respaldos; con la casilla marcada y un inventario esperando en `%APPDATA%\com.devhq.desktop` no se
+  borra nada; y con la casilla marcada y esa carpeta ya renombrada desaparece el perfil de WebView2,
+  mientras el inventario, sus respaldos y la carpeta renombrada quedan como estaban.
 - Se restauran como cualquier copia (ver [Arquitectura](#arquitectura)). La preview rechaza el
   respaldo como toda escritura y muestra una carpeta de ejemplo.
 
@@ -705,6 +710,73 @@ que no tiene ninguna herramienta para ello. Lo implementa `src-tauri/src/upgrade
 
 La preview muestra el panel con `?scenario=outdated` y rechaza la actualización como toda escritura.
 
+### Trasladar el inventario fuera de AppData
+
+Hasta esta versión, DevHQ guardaba sus datos en `AppData`: el inventario, `backups/` y el lock de la
+ventana en `%APPDATA%\com.devhq.desktop`, y `this-workstation.json` en
+`%LOCALAPPDATA%\com.devhq.desktop`. Windows redirige `AppData` para la puerta que lanza una app
+empaquetada, como la app de escritorio de Claude, que así veía otro inventario que la ventana. Ahora
+los guarda en `%USERPROFILE%\DevHQ` (ver [Arquitectura](#arquitectura)). DevHQ no traslada nada por
+su cuenta, ni abre, cambia o borra lo que haya en la ubicación anterior: el traslado lo haces tú, una
+vez, copiando y verificando, nunca moviendo.
+
+**Mientras no lo trasladas.** Si `%USERPROFILE%\DevHQ` no guarda un inventario (`inventory.sqlite3`,
+su `-wal` o su `-journal`) y la ubicación anterior sí, la ventana no crea un inventario vacío ni abre
+el anterior: dice **Inventory waiting to be moved**, con las dos rutas (`move_pending`), no toma el
+lock, no crea la carpeta nueva, no supervisa nada y vuelve a mirar al arrancar otra vez. Si se lanzó
+desde una app empaquetada y solo ve la ubicación anterior a través de la redirección, también se
+detiene y dice dónde guarda el sistema ese archivo. La puerta nunca crea un inventario; `status` dice
+qué guarda la ubicación anterior (`database.previous`).
+
+**Con el inventario ya copiado y la carpeta anterior aún en su sitio.** La ventana sirve el de
+`%USERPROFILE%\DevHQ`, y Settings › Database file avisa de que la ubicación anterior aún guarda un
+inventario que DevHQ no abre. Los agentes pueden leer, pero ninguna herramienta que cambia algo se
+ejecuta (`move_pending`), sea cual sea el acceso: hasta que renombras esa carpeta hay dos archivos que
+parecen el tuyo, y el cambio de un agente debe caer en el que comprobaste. Una ubicación anterior que
+el proceso solo ve a través de la redirección de una app empaquetada (su `storedAt` no es nulo) es la
+copia de `AppData` de esa app, no tu carpeta: se nombra y no frena a los agentes.
+
+**El traslado** se hace con un script guiado, paso a paso, como las actualizaciones anteriores, y se
+detiene ante cualquier cosa que no sea la esperada:
+
+1. Cerrar la ventana de DevHQ y todo cliente que lance la puerta (las apps de escritorio de Claude y
+   Codex, VS Code, las terminales con Claude Code o Codex) y comprobar que no queda ningún
+   `devhq.exe` ni el lock de la ventana tomado. Si junto al inventario quedan `-wal`, `-shm` o
+   `-journal`, una escritura puede no estar entera en el archivo: el script para, se abre y se cierra
+   DevHQ (todavía la versión anterior) para que la recupere y la pliegue, y se empieza otra vez.
+2. Respaldar la carpeta anterior entera y `this-workstation.json` fuera de las dos ubicaciones, y en
+   otro disco, con el SHA-256 de cada archivo.
+3. Comprobar que `%USERPROFILE%\DevHQ` no existe: el traslado nunca escribe sobre nada.
+4. Instalar la versión nueva sin abrirla: abierta antes de copiar, solo diría que el inventario espera.
+5. Copiar, nunca mover, `inventory.sqlite3`, `backups/` y `this-workstation.json` a
+   `%USERPROFILE%\DevHQ`, y verificar: el mismo SHA-256 en cada archivo; `PRAGMA integrity_check` y
+   `PRAGMA foreign_key_check` de la copia, abierta en solo lectura; las mismas filas de cada tabla,
+   con su `rowid`; las mismas referencias, rutas y máquinas; `this-workstation.json` idéntico; y que
+   tu usuario puede leer y escribir la carpeta y sus archivos, ninguno de solo lectura.
+6. Abrir DevHQ: Settings debe mostrar `%USERPROFILE%\DevHQ\inventory.sqlite3` sin `storedAt`, el aviso
+   de la ubicación anterior y la estación elegida; y la puerta, lanzada desde la app de escritorio de
+   Claude y desde una terminal, debe dar en `status` esa misma ruta, `storedAt` nulo, los mismos
+   recuentos y la misma estación.
+7. Solo entonces renombrar `%APPDATA%\com.devhq.desktop` (por ejemplo,
+   `com.devhq.desktop.trasladado-AAAAMMDD`). El `this-workstation.json` que queda en
+   `%LOCALAPPDATA%\com.devhq.desktop`, junto al perfil de WebView2, ya no lo lee nadie. Nada se borra.
+   Desde ese momento los agentes vuelven a poder escribir.
+
+**Volver atrás** depende de si ya hay escrituras nuevas en `%USERPROFILE%\DevHQ`, de la ventana o de un
+agente:
+
+- Sin escrituras nuevas (antes del paso 7, o justo después): renombrar `%USERPROFILE%\DevHQ` (por
+  ejemplo, `DevHQ.descartado-AAAAMMDD`), devolver su nombre a la carpeta anterior si ya se renombró y
+  reinstalar la versión anterior. El inventario anterior está como estaba, y el respaldo del paso 2 lo
+  confirma por SHA-256.
+- Con escrituras nuevas, el inventario anterior ya no las tiene, y volver a él las perdería. Para
+  conservarlas, con DevHQ y los clientes cerrados y sin `-wal`, `-shm` ni `-journal` junto al
+  inventario nuevo (si los hay, abrir y cerrar DevHQ primero): renombrar la carpeta anterior si aún
+  tiene su nombre, crear una carpeta `%APPDATA%\com.devhq.desktop` nueva y vacía, copiar a ella
+  `inventory.sqlite3` y `backups/` desde `%USERPROFILE%\DevHQ` y verificarlos como en el paso 5,
+  renombrar `%USERPROFILE%\DevHQ` y reinstalar la versión anterior, que lee el mismo esquema. La
+  carpeta anterior original y la del home quedan apartadas, sin borrar.
+
 ### Puerta para agentes
 
 `devhq --mcp` arranca la puerta para agentes: el mismo ejecutable, sin ventana ni WebView, habla el
@@ -746,14 +818,15 @@ approval_mode = "approve"
 Las demás herramientas que cambian algo, las de Read and write, siguen necesitando la aprobación de
 Codex aunque abras ese acceso en Settings; `default_tools_approval_mode = "approve"` en
 `[mcp_servers.devhq]` las aprobaría todas. La app de escritorio de Codex, como la de Claude, está
-empaquetada, y la puerta que lanza ve `AppData` redirigido (ver más abajo).
+empaquetada: la puerta que lanza ve `AppData` redirigido, pero no la carpeta del home donde DevHQ
+guarda sus datos (ver más abajo).
 
 El instalador pone el ejecutable en `%LOCALAPPDATA%\DevHQ`. El cliente lanza la puerta al empezar una
 sesión y la termina al cerrarla (al cerrarse stdin): no abre ningún puerto, no acepta conexiones, no
 queda nada corriendo ni guarda credenciales. Abre el mismo `inventory.sqlite3` que la ventana del
-mismo ejecutable, en el directorio de datos que Tauri le da (`%APPDATA%\com.devhq.desktop` para el
-ejecutable instalado en Windows; un test lo compara con el que resuelve Tauri), o el que se le indique
-con `--database <ruta>`. Registrada con un ejecutable que no empaquetó el instalador, como el de
+mismo ejecutable, en la carpeta de datos del home (`%USERPROFILE%\DevHQ` para el ejecutable instalado
+en Windows), que `identity` decide para las dos y que no depende de qué app o terminal lanzó la
+puerta (ver [Arquitectura](#arquitectura)), o el que se le indique con `--database <ruta>`. Registrada con un ejecutable que no empaquetó el instalador, como el de
 `target/`, abre los datos de desarrollo (ver [Arquitectura](#arquitectura)), y `status` lo dice en
 sus notas. Si ahí no hay inventario, lo
 dice y no crea uno vacío donde tu DevHQ no lo encontraría.
@@ -866,13 +939,13 @@ ejecutable, para copiarlo; DevHQ nunca lo ejecuta ni toca la configuración de C
 Codex. Para leer basta Read
 only:
 
-| Herramienta    | Qué responde                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `status`       | Qué archivo abrió, dónde lo guarda de verdad el sistema (`storedAt`, como Settings), qué es ese archivo (`schema`: la versión de esquema que declara, también en `schemaVersion`, o `null` si no es un inventario o no se pudo leer; la que soporta este DevHQ; su estado: `current`, `mismatch`, `outdated`, `newer`, `not_an_inventory`, `needs_recovery`, `unreadable` o `missing`, con qué significa; si tiene la estructura del esquema de este DevHQ, `structure`: `matches`, `differs` o, para otra versión, `not_checked`; y su integridad, `integrity`, que la puerta nunca comprueba: `not_checked`), si hay una ventana de DevHQ abierta sobre él (`windowOpen`), cuántos sistemas tiene, qué estación de trabajo es este equipo (`thisWorkstation`, o por qué no se sabe), qué no puede saber y, si su ejecutable no lo empaquetó el instalador, que sin `--database` abre datos de desarrollo. El acceso, los recuentos y la estación solo se dan de un inventario `current`: de cualquier otro son `null` |
-| `attention`    | «¿Qué necesita mi atención?» con el mismo orden que Overview, la cobertura, lo nunca observado y lo que nada supervisa; el estado solo es `covered` si todo tiene evidencia vigente. Aparte, sin ordenar y diciendo que no es salud, `localCopies`: las copias cuya última lectura tenía trabajo que solo existía allí, las que no se encontraron y las de esta estación nunca leídas                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `list_systems` | Cada aplicación y recurso con su estado de evidencia y última observación, incidencias activas, comprobación HTTP, relaciones y referencias, con la máquina de cada ruta y qué otros sistemas declaran el mismo repositorio (`sameRepositoryAs`): un agente encuentra así su sistema por su carpeta o su repositorio. Cada copia local dice si es de esta estación, su última lectura y lo derivado, y cada sistema el commit más nuevo que encontraron (`localActivity`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| `get_system`   | Una aplicación o recurso (por ID, por nombre exacto sin distinguir mayúsculas, o por ambos si son del mismo sistema) con sus referencias, sus observaciones, incidencias y eventos cargados, y desde cuándo su historial automático está completo                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `history`      | Los resultados automáticos anteriores de un sistema, o las lecturas de sus copias locales (`records: "readings"`), de 200 en 200, como la carga bajo demanda de la ventana                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| Herramienta    | Qué responde                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `status`       | Qué archivo abrió, dónde lo guarda de verdad el sistema (`storedAt`, como Settings), qué guarda aún la ubicación anterior de DevHQ en `AppData` (`database.previous`, `null` si nada; ver [Trasladar el inventario fuera de AppData](#trasladar-el-inventario-fuera-de-appdata)), qué es ese archivo (`schema`: la versión de esquema que declara, también en `schemaVersion`, o `null` si no es un inventario o no se pudo leer; la que soporta este DevHQ; su estado: `current`, `mismatch`, `outdated`, `newer`, `not_an_inventory`, `needs_recovery`, `unreadable` o `missing`, con qué significa; si tiene la estructura del esquema de este DevHQ, `structure`: `matches`, `differs` o, para otra versión, `not_checked`; y su integridad, `integrity`, que la puerta nunca comprueba: `not_checked`), si hay una ventana de DevHQ abierta sobre él (`windowOpen`), cuántos sistemas tiene, qué estación de trabajo es este equipo (`thisWorkstation`, o por qué no se sabe), qué no puede saber y, si su ejecutable no lo empaquetó el instalador, que sin `--database` abre datos de desarrollo. El acceso, los recuentos y la estación solo se dan de un inventario `current`: de cualquier otro son `null` |
+| `attention`    | «¿Qué necesita mi atención?» con el mismo orden que Overview, la cobertura, lo nunca observado y lo que nada supervisa; el estado solo es `covered` si todo tiene evidencia vigente. Aparte, sin ordenar y diciendo que no es salud, `localCopies`: las copias cuya última lectura tenía trabajo que solo existía allí, las que no se encontraron y las de esta estación nunca leídas                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `list_systems` | Cada aplicación y recurso con su estado de evidencia y última observación, incidencias activas, comprobación HTTP, relaciones y referencias, con la máquina de cada ruta y qué otros sistemas declaran el mismo repositorio (`sameRepositoryAs`): un agente encuentra así su sistema por su carpeta o su repositorio. Cada copia local dice si es de esta estación, su última lectura y lo derivado, y cada sistema el commit más nuevo que encontraron (`localActivity`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `get_system`   | Una aplicación o recurso (por ID, por nombre exacto sin distinguir mayúsculas, o por ambos si son del mismo sistema) con sus referencias, sus observaciones, incidencias y eventos cargados, y desde cuándo su historial automático está completo                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `history`      | Los resultados automáticos anteriores de un sistema, o las lecturas de sus copias locales (`records: "readings"`), de 200 en 200, como la carga bajo demanda de la ventana                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 
 Con Read and maintain, el agente además da de alta y edita aplicaciones y recursos, hace que DevHQ lea
 las copias locales y deja lo que observó, como la revisión de una aplicación, pasando por los mismos
@@ -1053,13 +1126,21 @@ comprueban los argumentos de la herramienta: el resto de `params` (`_meta`, y lo
 revisiones posteriores del protocolo) es del protocolo, y la puerta no lo rechaza.
 
 En Windows, una puerta lanzada desde una app empaquetada (MSIX), como las apps de escritorio de Claude
-o de Codex, ve `AppData` redirigido (ver [Arquitectura](#arquitectura)) y podría leer y escribir otro
-inventario, o no encontrar ninguno: `status` lo dice con `storedAt`, y la puerta no se niega a escribir.
-Claude Code y Codex desde una terminal normal no están empaquetados. El workflow de
+o de Codex, ve `AppData` redirigido, aunque el proceso no tenga la identidad del paquete (ver
+[Arquitectura](#arquitectura)). La carpeta del home donde DevHQ guarda sus datos no se redirige, así que
+esa puerta, la de una terminal normal y la ventana abren el mismo archivo. **Ninguna herramienta que
+cambia algo se ejecuta donde el cambio podría caer en un inventario que no ves**, sea cual sea el
+acceso: si el sistema guarda el archivo en otra ruta que la pedida (`storedAt`: un enlace, un junction o
+una redirección), responde `location_redirected`; y mientras la ubicación anterior de DevHQ en `AppData`
+aún guarda un inventario tuyo (`database.previous` en `status`), `move_pending` (ver [Trasladar el
+inventario fuera de AppData](#trasladar-el-inventario-fuera-de-appdata)). En los dos casos no se hizo
+nada, las lecturas siguen y `status` lo explica en sus notas. Una ubicación anterior que el proceso solo
+ve a través de la redirección es la copia de `AppData` de la app empaquetada, no tu carpeta: `status` la
+nombra y no frena a los agentes. Con `--database` no hay ubicación anterior que mirar. El workflow de
 Windows instala DevHQ y habla con la puerta del ejecutable instalado como lo hace un cliente MCP:
 comprueba que responde por stdin y stdout aunque no tenga consola, que abre el inventario de
-`%APPDATA%`, que ve cerrada la ventana que acaba de cerrarse (Windows soltó su lock) y que termina al
-cerrarse su entrada.
+`%USERPROFILE%\DevHQ` sin `storedAt` ni ubicación anterior, que ve cerrada la ventana que acaba de
+cerrarse (Windows soltó su lock) y que termina al cerrarse su entrada.
 
 ## Ejecutar
 
@@ -1096,7 +1177,8 @@ test borra él mismo lo borra `inventory::tests::remove_now`, que vuelve a inten
 real de Defender, que examina lo que el test acaba de escribir, o un proceso que acaba de terminar).
 
 Todo ejecutable que no empaquetó el instalador, empezando por `npm run tauri dev`, guarda datos de
-desarrollo en `com.devhq.desktop.dev`, aparte del inventario de la DevHQ instalada, y su ventana se
+desarrollo en `%USERPROFILE%\DevHQ-desarrollo` (`~/DevHQ-desarrollo` en Linux), aparte del inventario
+de la DevHQ instalada, y su ventana se
 titula «DevHQ (development data)» (ver [Arquitectura](#arquitectura)).
 
 `preview.html` existe solo en desarrollo: carga la ventana real sobre un proceso nativo
@@ -1188,13 +1270,17 @@ datos de desarrollo: antes de lanzar nada o mirar ninguna carpeta lee el archivo
 exige la marca sin parchear exactamente una vez; sin ella (empaquetado, o un ejecutable cuya marca
 no conoce) o repetida, se niega. Vitest lo comprueba (`e2e/native/app.test.ts`) con ejecutables
 sintéticos y sustitutos que registran cada proceso y carpeta: ninguno se toca. En
-Linux, todas las carpetas XDG apuntan a una carpeta temporal y, si no hay pantalla, arranca su
-propio Xvfb. Windows resuelve sus carpetas con la API de carpetas conocidas, que ninguna variable
-de entorno redirige: allí solo corre si aún no existen las carpetas `com.devhq.desktop.dev` en
-`%APPDATA%` y `%LOCALAPPDATA%` (en un equipo con datos de desarrollo se niega) y al terminar borra
-las que creó; las de la DevHQ instalada no las mira. Antes de abrir la ventana pregunta a la puerta
-del ejecutable, sin `--database`, dónde guardará su inventario, y debe ser esa carpeta; al cerrarla
-comprueba que se titula «DevHQ (development data)». Con la versión síncrona de `watch_http_monitor`, este recorrido falla
+Linux, `HOME` y todas las carpetas XDG apuntan a una carpeta temporal y, si no hay pantalla, arranca
+su propio Xvfb. Windows resuelve el home y `AppData` con la API de carpetas conocidas, que ninguna
+variable de entorno redirige: allí solo corre si aún no existen `%USERPROFILE%\DevHQ-desarrollo`, la
+carpeta del perfil de WebView2 (`%LOCALAPPDATA%\com.devhq.desktop.dev`) ni la que un DevHQ anterior
+usaba para los datos de desarrollo (`%APPDATA%\com.devhq.desktop.dev`, que haría esperar a la
+ventana); en un equipo con datos de desarrollo se niega, y al terminar borra las que creó. Las de la
+DevHQ instalada no las mira. Antes de abrir la ventana pregunta a la puerta del ejecutable, sin
+`--database`, dónde guardará su inventario, y debe ser esa carpeta, sin datos en la ubicación anterior;
+al cerrarla comprueba que se titula «DevHQ (development data)». La puerta de los pasos de agente, con la
+ventana abierta, también se lanza sin `--database`, como la lanza Claude Code, y debe abrir el mismo
+archivo que la ventana, sin `storedAt` ni ubicación anterior. Con la versión síncrona de `watch_http_monitor`, este recorrido falla
 en su primer paso: en Linux el pánico no puede atravesar la llamada de WebKitGTK que entrega la
 petición, así que el proceso abortaba y la ventana se cerraba en cuanto abría Mi inventario.
 
@@ -1209,21 +1295,26 @@ ejecuta después el binario de tests directamente, desde la carpeta del paquete 
 con la protección en tiempo real de Microsoft Defender activa, como el recorrido. Construye
 la app de release y su instalador NSIS con `npm run tauri build` y guarda el instalador como
 artefacto. Compila después la misma app con el puerto de DevTools de la build de prueba y la
-recorre sobre WebView2. Ese ejecutable no lo empaquetó el instalador: sus datos, sus respaldos y su
-perfil de WebView2 deben estar en `com.devhq.desktop.dev`, nada en `com.devhq.desktop`, y su puerta,
-lanzada como la lanza un cliente MCP, debe abrir ese inventario y decir que son datos de desarrollo.
-Después lleva esos datos a `com.devhq.desktop`, como quien trae un inventario de otro equipo, instala
-el instalador en silencio para el usuario actual, abre la app instalada sobre ese inventario (debe
-mostrar su ventana titulada «DevHQ», arrancar WebView2 en `%LOCALAPPDATA%\com.devhq.desktop` y
-terminar al cerrarla sin dejar `-wal`), comprueba que su puerta abre `%APPDATA%\com.devhq.desktop`
-sin crear datos de desarrollo, y la desinstala en silencio: deben quedar el inventario y sus
-respaldos. Después la instala otra vez y la desinstala como una persona
+recorre sobre WebView2. Ese ejecutable no lo empaquetó el instalador: sus datos, sus respaldos y
+`this-workstation.json` deben estar en `%USERPROFILE%\DevHQ-desarrollo` y su perfil de WebView2 en
+`%LOCALAPPDATA%\com.devhq.desktop.dev`; nada en `%USERPROFILE%\DevHQ`, en las carpetas
+`com.devhq.desktop` ni en `%APPDATA%\com.devhq.desktop.dev`; y su puerta, lanzada como la lanza un
+cliente MCP, debe abrir ese inventario y decir que son datos de desarrollo. Después lleva esos datos a
+`%USERPROFILE%\DevHQ`, como quien trae un inventario de otro equipo, instala el instalador en silencio
+para el usuario actual, abre la app instalada sobre ese inventario (debe mostrar su ventana titulada
+«DevHQ», arrancar WebView2 en `%LOCALAPPDATA%\com.devhq.desktop`, terminar al cerrarla sin dejar `-wal`
+y no crear `%APPDATA%\com.devhq.desktop`), comprueba que su puerta abre `%USERPROFILE%\DevHQ` sin
+`storedAt` ni ubicación anterior y sin crear datos de desarrollo, y la desinstala en silencio: deben
+quedar el inventario y sus respaldos. Después la instala otra vez, pone una copia del inventario en
+`%APPDATA%\com.devhq.desktop`, como uno que espera a trasladarse, y la desinstala como una persona
 (`.github/windows/uninstall-deleting-data.ps1`): lanza `uninstall.exe` sin `/S`, comprueba que
 «Delete the application data» aparece desmarcada, la marca con `BM_SETCHECK` (la plantilla lee la
 casilla con `BM_GETCHECK` al dejar la página, así que es lo mismo que un clic) y pulsa Uninstall y,
-al terminar, Close con `WM_COMMAND`. Deben desaparecer `%APPDATA%\com.devhq.desktop`, con el
-inventario y `backups/`, `%LOCALAPPDATA%\com.devhq.desktop`, el ejecutable y la entrada de
-desinstalación.
+al terminar, Close con `WM_COMMAND`. Deben quedar esa copia, con el mismo SHA-256, el perfil de
+WebView2 y el inventario del home, y desaparecer el ejecutable. Por último renombra esa carpeta, como
+haces tú al terminar el traslado, instala por tercera vez y desinstala igual: deben desaparecer
+`%LOCALAPPDATA%\com.devhq.desktop`, el ejecutable y la entrada de desinstalación, y quedar intactas,
+con los mismos archivos y hashes, la carpeta del home y la renombrada.
 
 El runner trae Defender sin protección en tiempo real y con `C:\` y `D:\` excluidas del análisis.
 Antes de la tercera pasada de los tests de Rust y del recorrido, `.github/windows/defender.ps1` la
@@ -1286,11 +1377,12 @@ El instalador pide la carpeta (`%LOCALAPPDATA%\DevHQ`, sin permisos de administr
 ofrece abrir DevHQ y crear un acceso directo en el escritorio. Desinstalar con «Delete the
 application data» desmarcada conservó el inventario, los respaldos y el perfil de WebView2, y quitó
 el ejecutable, los accesos directos y la entrada de desinstalación; marcada, borró también
-`%APPDATA%\com.devhq.desktop` y `%LOCALAPPDATA%\com.devhq.desktop`. Lanzado desde la terminal de la
-app de escritorio de Claude, DevHQ guardaba sus datos en la carpeta del paquete de esa app (ver
-[Arquitectura](#arquitectura)). Con Build Tools en español, el enlazador escribe «Creando
-biblioteca…» y rustc lo muestra como aviso `linker_messages`, porque solo reconoce el texto en
-inglés; no afecta a nada.
+`%APPDATA%\com.devhq.desktop` y `%LOCALAPPDATA%\com.devhq.desktop`, que entonces guardaban el
+inventario: hoy está en el home y la casilla no lo alcanza (ver [Respaldo](#respaldo)). Lanzado desde
+la terminal de la app de escritorio de Claude, aquel DevHQ guardaba sus datos en la carpeta del
+paquete de esa app, porque estaban en `AppData` (ver [Arquitectura](#arquitectura)). Con Build
+Tools en español, el enlazador escribe «Creando biblioteca…» y rustc lo muestra como aviso
+`linker_messages`, porque solo reconoce el texto en inglés; no afecta a nada.
 
 Si DevHQ no termina tras cerrar su ventana, antes de matar el proceso ejecuta
 `powershell -NoProfile -File scripts/dump-stacks.ps1 -ProcessId <pid>`: vuelca la pila de
@@ -1471,38 +1563,45 @@ qué difieren, y señala cada respaldo que el sistema guarda fuera de la carpeta
 archivo por archivo porque Windows resuelve así: una carpeta que existe en los dos lados se resuelve
 a la real, aunque guarde archivos de las dos. Un junction en Windows y un enlace simbólico en Linux
 lo prueban, porque llegan a la carpeta de datos por otra ruta igual que la redirección, que un test
-no puede montar.
+no puede montar. Con `storedAt`, los agentes leen pero no cambian nada (`location_redirected`, ver
+[Puerta para agentes](#puerta-para-agentes)).
 
-Las carpetas de datos llevan el nombre del identificador de la app, y una sola decisión
-(`src-tauri/src/identity.rs`) lo elige para la ventana y para la puerta, así que todo lo que guarda
-DevHQ lo sigue: el inventario, sus respaldos y el lock de la ventana en la carpeta de datos, y
-`this-workstation.json` y el perfil de WebView2 en la local. Solo el ejecutable que empaquetó el
-instalador NSIS usa `com.devhq.desktop`, el de `tauri.conf.json`, que el instalador y su
-desinstalador conocen; cualquier otro usa `com.devhq.desktop.dev`, y su ventana se titula
-«DevHQ (development data)»:
+Los datos de DevHQ viven en una carpeta del home, fuera de `AppData`, y una sola decisión
+(`src-tauri/src/identity.rs`) la elige para la ventana y para la puerta: el inventario, sus respaldos,
+el lock de la ventana y `this-workstation.json`. Windows redirige `AppData` para todo proceso que lanza
+una app empaquetada (MSIX), como las apps de escritorio de Claude o Codex, incluso uno sin la identidad
+del paquete: la puerta que lanzaban abría la copia de `AppData` del paquete, nunca el inventario de la
+ventana. El home no se redirige, así que la ventana, la puerta lanzada desde una terminal y la lanzada
+desde una app empaquetada abren el mismo archivo. Solo el perfil de WebView2, que es del navegador y no
+tuyo, sigue en la carpeta local de Tauri, con el nombre del identificador de la app. Solo el ejecutable
+que empaquetó el instalador NSIS usa la carpeta `DevHQ` y el identificador `com.devhq.desktop`, el de
+`tauri.conf.json`, que el instalador conoce; cualquier otro usa `DevHQ-desarrollo` y
+`com.devhq.desktop.dev`, y su ventana se titula «DevHQ (development data)». La ubicación anterior, donde
+un DevHQ anterior guardaba el inventario, solo se mira (ver [Trasladar el inventario fuera de
+AppData](#trasladar-el-inventario-fuera-de-appdata)):
 
-| Ejecutable                                                               | Datos (inventario, `backups/`, lock)   | Carpeta local (estación, WebView2)     |
-| ------------------------------------------------------------------------ | -------------------------------------- | -------------------------------------- |
-| El que instaló el instalador NSIS (Windows)                              | `%APPDATA%\com.devhq.desktop`          | `%LOCALAPPDATA%\com.devhq.desktop`     |
-| `npm run tauri dev`, una build debug o el release de `target/` (Windows) | `%APPDATA%\com.devhq.desktop.dev`      | `%LOCALAPPDATA%\com.devhq.desktop.dev` |
-| Cualquier build en Linux (DevHQ no publica paquete)                      | `~/.local/share/com.devhq.desktop.dev` | la misma                               |
+| Ejecutable                                                               | Datos (inventario, `backups/`, lock, estación) | Perfil de WebView2                     | Ubicación anterior                     |
+| ------------------------------------------------------------------------ | ---------------------------------------------- | -------------------------------------- | -------------------------------------- |
+| El que instaló el instalador NSIS (Windows)                              | `%USERPROFILE%\DevHQ`                          | `%LOCALAPPDATA%\com.devhq.desktop`     | `%APPDATA%\com.devhq.desktop`          |
+| `npm run tauri dev`, una build debug o el release de `target/` (Windows) | `%USERPROFILE%\DevHQ-desarrollo`               | `%LOCALAPPDATA%\com.devhq.desktop.dev` | `%APPDATA%\com.devhq.desktop.dev`      |
+| Cualquier build en Linux (DevHQ no publica paquete)                      | `~/DevHQ-desarrollo`                           | `~/.local/share/com.devhq.desktop.dev` | `~/.local/share/com.devhq.desktop.dev` |
 
 Los distingue una marca que el bundler de Tauri parchea en el ejecutable justo antes de meterlo en
 el instalador (`tauri::utils::platform::bundle_type`); el de `target/` la conserva sin parchear.
 Solo dice cómo se construyó el archivo. No prueba que esté instalado en ningún sitio: una copia del
 ejecutable instalado, lanzada desde cualquier carpeta, usa los datos de la instalación. No decide
-dónde guarda el sistema los archivos: un DevHQ lanzado desde una app empaquetada (MSIX) ve `AppData`
-redirigido con cualquiera de los dos identificadores. Y `--database` sigue abriendo el archivo que
-nombre. Sirve para que una build de desarrollo no abra por defecto el inventario de cada día, ni lo
-migre a un esquema que ninguna versión publicada tiene; no es una barrera. Otros paquetes (deb, rpm,
-AppImage, msi) usan datos de desarrollo hasta que DevHQ los publique y compruebe la marca que dejan,
-y en macOS `bundle_type` responde `App` para todo ejecutable, empaquetado o no, así que allí no hay
-marca que leer. La instalación existente sigue en su carpeta: nada mueve, migra ni abre datos de un
-identificador a otro, y lo que una build de desarrollo guardó antes con `com.devhq.desktop` (también
-en la carpeta de un paquete MSIX) queda donde está. Un test comprueba que la ventana y la puerta
-resuelven las mismas carpetas con los dos identificadores, como Tauri; el recorrido nativo, que solo
-maneja ejecutables sin empaquetar, que sus datos acaban en `com.devhq.desktop.dev`; y el workflow de
-Windows, que el ejecutable instalado usa `com.devhq.desktop`.
+dónde guarda el sistema los archivos: un enlace o un junction pueden llevar la carpeta del home a otro
+sitio, y `storedAt` lo dice. Y `--database` sigue abriendo el archivo que nombre. Sirve para que una
+build de desarrollo no abra por defecto el inventario de cada día, ni lo migre a un esquema que ninguna
+versión publicada tiene; no es una barrera. Otros paquetes (deb, rpm, AppImage, msi) usan datos de
+desarrollo hasta que DevHQ los publique y compruebe la marca que dejan, y en macOS `bundle_type`
+responde `App` para todo ejecutable, empaquetado o no, así que allí no hay marca que leer. DevHQ nunca
+mueve, migra ni abre datos de una carpeta a otra: ni de un identificador al otro ni de `AppData` al
+home. Los tests de `identity` comprueban que cada identificador tiene su carpeta del home, fuera de las
+carpetas de datos del sistema, y que la ubicación anterior es la carpeta de datos que resuelve Tauri;
+el recorrido nativo, que solo maneja ejecutables sin empaquetar, que sus datos acaban en
+`DevHQ-desarrollo` y que su puerta, sin `--database`, abre el archivo de su ventana abierta; y el
+workflow de Windows, que el ejecutable instalado usa `%USERPROFILE%\DevHQ`.
 
 La v4 reconstruye `observations` y `events` (SQLite no cambia
 un CHECK con ALTER) conservando filas, IDs, `rowid` (desempate de orden), claves foráneas,
