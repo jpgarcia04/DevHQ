@@ -24,9 +24,10 @@ abierta. Lo que solo se ve en la laptop:
   `an_agents_write_waits_for_a_read_in_progress_and_then_empties_the_log` y
   `a_read_that_outlasts_the_fold_blocks_no_write_and_leaves_the_log_to_the_window`, y dos sesiones de
   Claude Code escribiendo a la vez con la ventana cerrada.
-- Una puerta lanzada desde la app de escritorio de Claude (MSIX): qué inventario abre, qué dice
-  `storedAt` y si `windowOpen` ve la ventana del DevHQ instalado. El lock está junto al inventario, y
-  Windows también redirige ese archivo.
+- Una puerta lanzada desde la app de escritorio de Claude (MSIX) con el ejecutable **instalado**, sobre
+  el inventario real ya trasladado a `%USERPROFILE%\DevHQ`: qué inventario abre, qué dice `storedAt` y
+  si `windowOpen` ve la ventana instalada. Con datos de desarrollo ya se vio el 3 de noviembre de 2026
+  (abajo); con el ejecutable instalado y el inventario real falta, y se hará en el traslado.
 
 ## Alrededor de la actualización explícita
 
@@ -130,9 +131,21 @@ Claude Code y Codex, lanzados desde un proceso sin paquete sobre inventarios sin
 consultar, dar de alta y editar con Read and maintain (README, «Puerta para agentes»), y ninguno mandó
 un argumento que la puerta estricta rechazara. Que Read and maintain también lea copias locales y
 registre observaciones de 7 días como mucho solo lo han probado los tests de la puerta: ningún cliente
-real ha hecho todavía una revisión diaria con esas dos herramientas. Desde las apps de escritorio de Claude y de Codex (MSIX),
-la puerta abre la copia del inventario que Windows redirige para ellas, y ningún agente ha escrito
-desde ellas.
+real ha hecho todavía una revisión diaria con esas dos herramientas.
+
+Las apps de escritorio de Claude y de Codex (MSIX) redirigen `AppData` para todo proceso que lanzan,
+también los de Claude Code, que no tienen la identidad del paquete: mientras DevHQ guardaba allí sus
+datos, su puerta abría la copia de `AppData` del paquete. Con los datos en el home, el 3 de noviembre
+de 2026 se vio con datos de desarrollo: la ventana real de desarrollo, lanzada fuera del paquete (WMI),
+y la puerta del mismo ejecutable lanzada sin `--database` desde un proceso hijo de Claude Code en la app
+de escritorio (cuyo `%APPDATA%` sí estaba redirigido) abrieron el mismo
+`%USERPROFILE%\DevHQ-desarrollo\inventory.sqlite3`, con `storedAt` y `previous` nulos y `windowOpen`
+verdadero; la puerta leyó el acceso Read and maintain y la estación que la ventana eligió (el mismo
+`this-workstation.json`), escribió un recurso, una aplicación y una observación que la ventana mostró
+sola, y listó un servidor que la persona añadió en la ventana; cerrada la ventana, una puerta lanzada
+dentro y otra fuera del paquete dieron las mismas respuestas y el archivo, sin `-wal`, el mismo SHA-256.
+Esa puerta la lanzó un proceso de la sesión con el mismo entorno que el servidor MCP de Claude Code, no
+el propio servidor MCP de la app, que sigue registrado con el ejecutable instalado.
 
 Otro cliente MCP por stdio debería funcionar igual (la puerta solo usa `initialize`, `ping`,
 `tools/list` y `tools/call`), pero nadie lo ha visto. Uno que mande claves que una herramienta no

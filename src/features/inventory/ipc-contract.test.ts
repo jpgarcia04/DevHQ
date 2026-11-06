@@ -218,7 +218,7 @@ const laptop: Answer<'thisWorkstation'> = {
   chosenAt: at('08:00'),
   problem: null,
   message: null,
-  file: 'C:\\Users\\Ana Ruiz\\AppData\\Local\\com.devhq.desktop\\this-workstation.json',
+  file: 'C:\\Users\\Ana Ruiz\\DevHQ\\this-workstation.json',
   storedAt: null,
 }
 
@@ -546,14 +546,20 @@ const olderEvents: Answer<'olderEvents'> = {
   more: false,
 }
 
-const folder = 'C:\\Users\\Ana Ruiz\\AppData\\Roaming\\com.devhq.desktop'
-// Where Windows keeps that folder's files for a DevHQ started from a packaged app.
-const packaged =
-  'C:\\Users\\Ana Ruiz\\AppData\\Local\\Packages\\Claude_pzs8sxrjxfjjc\\LocalCache\\Roaming\\com.devhq.desktop'
+const folder = 'C:\\Users\\Ana Ruiz\\DevHQ'
+// Where the system keeps that folder's files when a link or a junction leads elsewhere.
+const kept = 'D:\\Datos\\DevHQ'
+// Where DevHQ kept its data before it left AppData.
+const previous = 'C:\\Users\\Ana Ruiz\\AppData\\Roaming\\com.devhq.desktop'
 const dataLocation: Answer<'dataLocation'> = {
   database: `${folder}\\inventory.sqlite3`,
   directory: folder,
-  storedAt: `${packaged}\\inventory.sqlite3`,
+  storedAt: `${kept}\\inventory.sqlite3`,
+  previous: {
+    database: `${previous}\\inventory.sqlite3`,
+    files: ['inventory.sqlite3', 'inventory.sqlite3-wal'],
+    storedAt: null,
+  },
 }
 
 const agentAccess: Answer<'agentAccess'> = {
@@ -596,7 +602,7 @@ const backups: Answer<'listBackups'> = {
       sizeBytes: 1_048_576,
       modifiedAt: null,
       partial: true,
-      storedAt: `${packaged}\\backups\\inventory-20260101T090000.000Z.sqlite3.partial`,
+      storedAt: `${kept}\\backups\\inventory-20260101T090000.000Z.sqlite3.partial`,
     },
   ],
 }
@@ -653,7 +659,7 @@ const backedUp: UpgradeStep = {
   step: 'backedUp',
   backup: {
     ...beforeUpgrade,
-    storedAt: `${packaged}\\backups\\inventory-20260101T100500.123Z-v6.sqlite3`,
+    storedAt: `${kept}\\backups\\inventory-20260101T100500.123Z-v6.sqlite3`,
   },
 }
 

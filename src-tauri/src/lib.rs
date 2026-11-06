@@ -9,6 +9,7 @@ mod inventory;
 #[cfg(test)]
 mod ipc_contract;
 pub mod local_copies;
+mod location;
 mod monitor;
 mod records;
 mod references;
@@ -25,10 +26,11 @@ use tauri::ipc::Channel;
 use tauri::{Manager, RunEvent};
 use workstation::{Computer, ThisWorkstation};
 
-/// The inventory's path, and what the window found there when it started (`inventory::start`), or
-/// once the person upgraded it (`upgrade_inventory`).
+/// The inventory's path, where DevHQ kept it before its data left AppData, and what the window found
+/// there when it started (`inventory::start`), or once the person upgraded it (`upgrade_inventory`).
 struct InventoryPath {
     path: PathBuf,
+    previous: Option<PathBuf>,
     ready: Arc<RwLock<Result<(), inventory::ApiError>>>,
 }
 
@@ -66,7 +68,7 @@ fn list_inventory(
 /// Where the inventory file is, so that it can be backed up. It reads nothing from it.
 #[tauri::command]
 fn data_location(path: tauri::State<'_, InventoryPath>) -> inventory::DataLocation {
-    inventory::DataLocation::of(&path.path)
+    inventory::DataLocation::with_previous(&path.path, path.previous.as_deref())
 }
 
 /// Copies the inventory into its backups folder while DevHQ stays open, one backup at a time and
@@ -443,16 +445,21 @@ fn commands<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Sen
 /// The state the commands find, over the inventory at `path`, on `computer`, reading copies with
 /// `reader`, once the window has done what it does when it starts (`inventory::start`): creating a
 /// missing inventory, recovering a current one, and nothing to any other, which only the person's
-/// explicit upgrade changes (`upgrade_inventory`). The app and the IPC contract tests manage this
-/// same state. Returns supervision, whose loops are left to the caller, and whether the inventory
-/// is current, without which they must not run.
+/// explicit upgrade changes (`upgrade_inventory`). Nothing at all while `path` holds nothing and
+/// `previous`, where DevHQ kept the inventory before, still holds one (`location`): an empty
+/// inventory would stand in for the person's. The app and the IPC contract tests manage this same
+/// state. Returns supervision, whose loops are left to the caller, and whether the inventory is
+/// current, without which they must not run.
 fn manage<R: tauri::Runtime>(
     app: &impl Manager<R>,
     path: PathBuf,
+    previous: Option<PathBuf>,
     computer: Computer,
     reader: Reader,
 ) -> (Monitor, bool) {
-    let ready = inventory::start(&path);
+    let waiting = previous.as_deref().and_then(location::previous_at);
+    let ready =
+        location::refuse_to_create(&path, waiting.as_ref()).and_then(|()| inventory::start(&path));
     if let Err(error) = &ready {
         eprintln!(
             "DevHQ serves nothing from its inventory: {} ({})",
@@ -463,6 +470,7 @@ fn manage<R: tauri::Runtime>(
     let monitor = Monitor::new(path.clone());
     app.manage(InventoryPath {
         path,
+        previous,
         ready: Arc::new(RwLock::new(ready)),
     });
     app.manage(monitor.clone());
@@ -480,23 +488,33 @@ pub fn run() {
     identity::apply(context.config_mut());
     tauri::Builder::default()
         .setup(|app| {
-            let path = app.path().app_data_dir()?.join("inventory.sqlite3");
+            // The data folder in the home, which the agent gate opens too, wherever it was started
+            // from (see `identity`); the WebView2 profile alone stays in Tauri's local folder.
+            let folder = identity::data_folder()
+                .ok_or("The system names no home folder, where DevHQ keeps its data.")?;
+            let path = folder.join(identity::DATABASE_FILE);
+            let previous = identity::previous_database();
             // Tells the agent gate that a window is open on this inventory, for as long as this
-            // process lives. Without it the gate cannot know; the window works the same.
-            match window_lock::WindowLock::hold(&path) {
-                Ok(lock) => {
-                    app.manage(lock);
+            // process lives. Without it the gate cannot know; the window works the same. Not
+            // while the inventory waits at the previous location: nothing is made at the new one.
+            let waiting = previous.as_deref().and_then(location::previous_at);
+            if location::refuse_to_create(&path, waiting.as_ref()).is_ok() {
+                match window_lock::WindowLock::hold(&path) {
+                    Ok(lock) => {
+                        app.manage(lock);
+                    }
+                    Err(error) => eprintln!("DevHQ could not hold its window lock: {error}"),
                 }
-                Err(error) => eprintln!("DevHQ could not hold its window lock: {error}"),
             }
-            // Which workstation this computer is lives in the local data folder, outside the
-            // inventory, which a roaming profile or a copied inventory does not carry.
-            let computer = Computer::this_one(app.path().app_local_data_dir()?);
+            // Which workstation this computer is lives beside the inventory, outside it, keyed
+            // by this computer's fingerprint: a copy of the folder on another computer finds no
+            // choice of its own there.
+            let computer = Computer::this_one(folder);
             let reader = Reader::this_executable().map_err(|error| error.message)?;
             // Supervision, and noticing what other processes change, live only as long as this
             // process: no service, no system task. Only over an inventory the window serves: one
             // it refused is never opened again until DevHQ starts again.
-            let (monitor, current) = manage(app, path, computer, reader);
+            let (monitor, current) = manage(app, path, previous, computer, reader);
             if current {
                 supervise(&monitor);
             }

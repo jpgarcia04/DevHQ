@@ -139,29 +139,45 @@ to the DevTools port that only the build from `e2e/native/build.ts` opens, becau
 cannot launch a Tauri app on WebView2 150 or later. It finds elements by XPath on visible text and labels, so renaming a
 label, a button or a heading it uses means updating `main.ts`. It never touches a real
 inventory: it drives only an executable the installer did not pack (development data, see
-below); on Linux every XDG directory points into a temporary folder; on Windows it refuses
-to run while `%APPDATA%` or `%LOCALAPPDATA%` already hold `com.devhq.desktop.dev`. It closes the window
+below); on Linux HOME and every XDG directory point into a temporary folder; on Windows it refuses
+to run while `%USERPROFILE%\DevHQ-desarrollo`, `%LOCALAPPDATA%\com.devhq.desktop.dev` (the WebView2
+profile) or `%APPDATA%\com.devhq.desktop.dev` (the previous location) exists, and removes what it
+created. Its agent gate starts without `--database`, as Claude Code starts it, and must open the
+window's file. It closes the window
 through the system (X11 `WM_DELETE_WINDOW`, Win32 `WM_CLOSE`), never through WebDriver, whose
 Close Window only destroys the WebView. Screenshots of each step land in `test-results/native/`.
 
 ## Development data
 
-`src-tauri/src/identity.rs` names the data folders for the window and the gate alike: only the
-executable the NSIS installer packed (Tauri's bundle marker) keeps `com.devhq.desktop`, the
-person's inventory; `tauri dev`, debug builds, `target/release` and the tests keep
-`com.devhq.desktop.dev`, and the window title says «development data». The marker says how the
-file was built, not where it is installed, and it does not stop MSIX redirection or `--database`:
-never point a development build at the person's inventory. Anything that resolves a data path
-goes through `identity`.
+`src-tauri/src/identity.rs` names the data folder for the window and the gate alike, in the home,
+never in AppData: only the executable the NSIS installer packed (Tauri's bundle marker) keeps
+`%USERPROFILE%\DevHQ`, the person's inventory; `tauri dev`, debug builds, `target/release` and the
+tests keep `%USERPROFILE%\DevHQ-desarrollo` (`~/DevHQ-desarrollo` on Linux), and the window title says
+«development data». The folder holds the inventory, `backups/`, the window lock and
+`this-workstation.json`; only the WebView2 profile stays in Tauri's local folder, named after the
+identifier (`com.devhq.desktop` or `.dev`). The marker says how the file was built, not where it is
+installed, and it does not stop a link or `--database`: never point a development build at the
+person's inventory, and never run anything that writes `%USERPROFILE%\DevHQ` during development.
+Anything that resolves a data path goes through `identity`. `identity::previous_database` names where
+DevHQ kept the inventory in AppData before; `src-tauri/src/location.rs` only looks at it, never opens,
+moves or deletes it: the window starts no inventory while it holds one and the new folder none
+(`move_pending`), and the person moves it once, by copying and verifying (README «Trasladar el
+inventario fuera de AppData»). The uninstaller never names the home folder, and
+`src-tauri/windows/installer-hooks.nsh` keeps «Delete the application data» from deleting an
+inventory or backups still in the previous location.
 
 ## Local Windows sessions
 
 The Claude and Codex desktop apps are packaged (MSIX), and Windows redirects AppData for every
-process they start: `npm run tauri dev` and your own shell read and write the package's copy
-(`%LOCALAPPDATA%\Packages\<package>\LocalCache\Roaming\com.devhq.desktop.dev`), merged with the real
-`%APPDATA%`, while File Explorer and the installed DevHQ see only the real one. Settings shows
-the path the file really has (`storedAt`). To look at or change the real `%APPDATA%`, run the
-command outside the package, through WMI (`Invoke-CimMethod Win32_Process -MethodName Create`).
+process they start, even one without the package's identity (Claude Code's own processes and their
+shells answer 15700 to `GetCurrentPackageFullName` and are still redirected): they read and write the
+package's copy (`%LOCALAPPDATA%\Packages\<package>\LocalCache\...`), merged with the real AppData,
+while File Explorer and the installed DevHQ see only the real one. The home is not redirected, which
+is why DevHQ's data lives there: the window and a gate started from those apps open the same file.
+Never take a missing package identity as proof that a shell sees the real AppData; for real-data
+steps require a parent `explorer` (Win+R) or run outside the package through WMI
+(`Invoke-CimMethod Win32_Process -MethodName Create`). `storedAt` says where a file really is, and
+agents cannot write through the gate while it is not null.
 
 ## Windows workflow
 
@@ -190,7 +206,10 @@ progress, because a new push cancels it.
 
 `devhq --mcp` (`src-tauri/src/gate.rs`) serves the inventory to an MCP client over stdio: no
 window, no port, alive only while the client keeps stdin open. Every tool calls the same use cases
-as the window's commands; never give it a shortcut around their validation. Before a tool runs or
+as the window's commands; never give it a shortcut around their validation. No tool that is not
+`readOnlyHint` runs while the system keeps the file elsewhere (`storedAt`, `location_redirected`) or
+while the previous location still holds the person's inventory (`move_pending`): `location`
+decides it in `call`, before anything opens, whatever the access. Before a tool runs or
 anything opens, its arguments are checked against the `inputSchema` it publishes and the rules its
 description states (`gate/arguments.rs`): a schema keyword the check does not enforce fails a test,
 so never publish a rule the gate does not apply, and state every rule between arguments in the
@@ -262,8 +281,8 @@ log): a new libgit2 call, a new reader or library, and every libgit2 upgrade mus
 battery (`local_copies/battery.rs`) on Linux and Windows. What is not guaranteed, and stays written in
 the README: code that hostile data ran inside the reader has the person's rights, and nothing of the
 system stops the reader writing. Which workstation this computer is lives in `this-workstation.json`
-in the local data folder, keyed by a machine fingerprint, never in the inventory; only the window
-chooses it. Tests build repositories with the installed `git`, without the machine's config, and
+in the data folder, beside the inventory, keyed by a machine fingerprint, never in the inventory;
+only the window chooses it. Tests build repositories with the installed `git`, without the machine's config, and
 compile the battery's marker with the toolchain's `rustc`.
 
 ## Schema

@@ -1,32 +1,51 @@
-//! Which data a DevHQ executable keeps: the installed DevHQ's, or development data apart from it.
+//! Which data a DevHQ executable keeps, and where: the installed DevHQ's, or development data apart
+//! from it.
 //!
-//! Tauri names an app's data folders after its identifier: the inventory, its backups and the
-//! window lock in `app_data_dir`, this computer's workstation file and the WebView2 profile in
-//! `app_local_data_dir`. Every executable built from this repository used to have the same one,
-//! so a development build opened the inventory a person uses every day, and would have upgraded
-//! it to a schema no release has. Now one decision, made here, names those folders for the
-//! window and for the agent gate alike: only the executable DevHQ's installer packed keeps
-//! `com.devhq.desktop`; every other one (`tauri dev`, a debug build, the release executable left
-//! in `target/`) keeps `com.devhq.desktop.dev`.
+//! The data lives in a folder of the person's home, outside AppData: `DevHQ` for the installed
+//! DevHQ, `DevHQ-desarrollo` for development data. It holds the inventory, its backups, the window
+//! lock and `this-workstation.json`. Windows redirects AppData for every process a packaged app
+//! (MSIX) starts, such as the Claude or Codex desktop app, even one without the package's identity:
+//! a gate started there saw the package's own copy of AppData, never the inventory the window
+//! opened. The home folder is not redirected, so the window, a gate started from a terminal and a
+//! gate started from a packaged app open the same file. Only the WebView2 profile stays in Tauri's
+//! local data folder (`%LOCALAPPDATA%\<identifier>`): it is the browser's own, not the person's.
+//!
+//! One decision, made here, names those folders for the window and for the agent gate alike: only
+//! the executable DevHQ's installer packed keeps the installed DevHQ's data; every other one
+//! (`tauri dev`, a debug build, the release executable left in `target/`) keeps development data.
+//! A development build used to open the inventory a person uses every day, and would have upgraded
+//! it to a schema no release has.
 //!
 //! Tauri's bundler tells them apart: before it packs the executable into the NSIS installer it
 //! patches a marker in it, which `tauri::utils::platform::bundle_type` reads; the executable in
 //! `target/` keeps the marker unpatched. That marker says how the file was built, nothing more. It
 //! does not prove that the file is installed anywhere: a copy of the installed executable, run from
-//! any folder, keeps the installed DevHQ's data. And it does not choose where the system keeps the
-//! files: an executable started from a packaged app (MSIX), such as the Claude desktop app, sees
-//! AppData redirected whichever identifier it has. `--database` still opens whatever file it names.
-//! It keeps development builds away from the everyday inventory by default; it is not a barrier.
+//! any folder, keeps the installed DevHQ's data. `--database` still opens whatever file it names. It
+//! keeps development builds away from the everyday inventory by default; it is not a barrier.
+//!
+//! Before this, DevHQ kept its data in Tauri's data folders (`%APPDATA%\<identifier>` and
+//! `%LOCALAPPDATA%\<identifier>`). `previous_database` names where that inventory was, so that a
+//! DevHQ whose data has not been moved yet never starts an empty inventory in its place (see
+//! `location`). DevHQ never moves it: the person copies it, once, as the README says.
 
 use std::path::PathBuf;
 use tauri::utils::config::BundleType;
 
-/// The identifier of the installed DevHQ, as `tauri.conf.json` gives it to the installer, whose
-/// uninstaller removes the folders it names. Its data never moves.
+/// The identifier of the installed DevHQ, as `tauri.conf.json` gives it to the installer. It names
+/// the WebView2 profile's folder, and the folders where DevHQ used to keep its data.
 pub const INSTALLED: &str = "com.devhq.desktop";
 
 /// The identifier of every executable the installer did not pack.
 pub const DEVELOPMENT: &str = "com.devhq.desktop.dev";
+
+/// The folder of the person's home that holds the installed DevHQ's data.
+pub const INSTALLED_FOLDER: &str = "DevHQ";
+
+/// The folder of the person's home that holds development data.
+pub const DEVELOPMENT_FOLDER: &str = "DevHQ-desarrollo";
+
+/// The inventory's file name, in the data folder.
+pub const DATABASE_FILE: &str = "inventory.sqlite3";
 
 /// What a development build's window title adds, so that a person can tell the windows apart.
 pub const DEVELOPMENT_TITLE: &str = " (development data)";
@@ -61,24 +80,34 @@ pub fn apply(config: &mut tauri::Config) {
     }
 }
 
-/// The inventory the window opens: `inventory.sqlite3` in the system's data directory followed by
-/// the identifier (Tauri's `app_data_dir`). The agent gate opens it unless told `--database`.
+/// The folder that holds this executable's data: the inventory, its backups, the window lock and
+/// `this-workstation.json`. None when the system names no home folder.
+pub fn data_folder() -> Option<PathBuf> {
+    data_folder_of(identifier())
+}
+
+fn data_folder_of(identifier: &str) -> Option<PathBuf> {
+    let folder = if identifier == INSTALLED {
+        INSTALLED_FOLDER
+    } else {
+        DEVELOPMENT_FOLDER
+    };
+    dirs::home_dir().map(|home| home.join(folder))
+}
+
+/// The inventory the window opens, and the agent gate unless told `--database`.
 pub fn database() -> Option<PathBuf> {
-    database_of(identifier())
+    data_folder().map(|folder| folder.join(DATABASE_FILE))
 }
 
-fn database_of(identifier: &str) -> Option<PathBuf> {
-    dirs::data_dir().map(|dir| dir.join(identifier).join("inventory.sqlite3"))
+/// Where DevHQ kept the inventory before its data left AppData: `inventory.sqlite3` in the
+/// system's data directory followed by the identifier (Tauri's `app_data_dir`).
+pub fn previous_database() -> Option<PathBuf> {
+    previous_database_of(identifier())
 }
 
-/// The local data folder (Tauri's `app_local_data_dir`): where the window says which workstation
-/// this computer is, and where WebView2 keeps its profile.
-pub fn local_data() -> Option<PathBuf> {
-    local_data_of(identifier())
-}
-
-fn local_data_of(identifier: &str) -> Option<PathBuf> {
-    dirs::data_local_dir().map(|dir| dir.join(identifier))
+fn previous_database_of(identifier: &str) -> Option<PathBuf> {
+    dirs::data_dir().map(|dir| dir.join(identifier).join(DATABASE_FILE))
 }
 
 #[cfg(test)]
@@ -108,16 +137,31 @@ mod tests {
         assert_eq!(tauri::utils::platform::bundle_type(), None);
         assert_eq!(identifier(), DEVELOPMENT);
         assert!(development());
-        assert_eq!(
-            database().unwrap(),
-            dirs::data_dir()
-                .unwrap()
-                .join(DEVELOPMENT)
-                .join("inventory.sqlite3")
-        );
+        let folder = dirs::home_dir().unwrap().join("DevHQ-desarrollo");
+        assert_eq!(data_folder().unwrap(), folder);
+        assert_eq!(database().unwrap(), folder.join("inventory.sqlite3"));
     }
 
-    /// The installer and its uninstaller name the folders after `tauri.conf.json`; the native walk
+    /// Each kind of data has a folder of its own in the home, outside the folders the system (and,
+    /// on Windows, a packaged app's redirection) keeps for applications.
+    #[test]
+    fn each_kind_of_data_keeps_its_own_folder_of_the_home() {
+        let home = dirs::home_dir().unwrap();
+        assert_eq!(data_folder_of(INSTALLED).unwrap(), home.join("DevHQ"));
+        assert_eq!(
+            data_folder_of(DEVELOPMENT).unwrap(),
+            home.join("DevHQ-desarrollo")
+        );
+        let system = [dirs::data_dir(), dirs::data_local_dir()];
+        for identifier in [INSTALLED, DEVELOPMENT] {
+            let folder = data_folder_of(identifier).unwrap();
+            for system in system.iter().flatten() {
+                assert!(!folder.starts_with(system), "{folder:?} is in {system:?}");
+            }
+        }
+    }
+
+    /// The installer names the WebView2 profile's folder after `tauri.conf.json`; the native walk
     /// derives development's from it.
     #[test]
     fn the_installed_identifier_is_the_one_the_installer_gets() {
@@ -127,21 +171,17 @@ mod tests {
         assert_eq!(DEVELOPMENT, format!("{INSTALLED}.dev"));
     }
 
-    /// For either identifier, the gate opens the inventory the window opens, and knows the
-    /// window's local folder, as Tauri itself resolves them.
+    /// For either identifier, the previous location is where an older DevHQ's window kept its
+    /// inventory: Tauri's data folder, as Tauri itself resolves it.
     #[test]
-    fn the_window_and_the_gate_resolve_the_same_folders() {
+    fn the_previous_location_is_tauris_data_folder() {
         for identifier in [INSTALLED, DEVELOPMENT] {
             let mut context = tauri::test::mock_context(tauri::test::noop_assets());
             context.config_mut().identifier = identifier.into();
             let app = tauri::test::mock_builder().build(context).unwrap();
             assert_eq!(
-                database_of(identifier).unwrap(),
+                previous_database_of(identifier).unwrap(),
                 app.path().app_data_dir().unwrap().join("inventory.sqlite3")
-            );
-            assert_eq!(
-                local_data_of(identifier).unwrap(),
-                app.path().app_local_data_dir().unwrap()
             );
         }
     }

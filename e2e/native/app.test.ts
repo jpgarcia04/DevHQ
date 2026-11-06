@@ -8,7 +8,7 @@
  * that record each call.
  */
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -19,9 +19,10 @@ vi.mock('node:child_process', () => ({
   // The agent gate's answer to `status`, for the one executable allowed this far: the inventory
   // where the walk expects it, which does not exist.
   spawnSync: vi.fn((_binary: string, _args: string[], options: { env: NodeJS.ProcessEnv }) => {
-    const data = options.env.XDG_DATA_HOME ?? options.env.APPDATA!
-    const database = join(data, 'com.devhq.desktop.dev', 'inventory.sqlite3')
-    const status = { database: { database }, exists: false }
+    // The walk's own HOME on Linux; on Windows the home the system names, stubbed below.
+    const home = options.env.XDG_DATA_HOME ? options.env.HOME! : homedir()
+    const database = join(home, 'DevHQ-desarrollo', 'inventory.sqlite3')
+    const status = { database: { database, previous: null }, exists: false }
     return {
       status: 0,
       stdout: `${JSON.stringify({ id: 1, result: {} })}\n${JSON.stringify({ id: 2, result: { structuredContent: status } })}\n`,
@@ -70,6 +71,8 @@ for (const os of ['linux', 'win32'] as const) {
       // On Windows the walk looks for its folders under these; synthetic, never the real ones.
       vi.stubEnv('APPDATA', join(folder, os, 'Roaming'))
       vi.stubEnv('LOCALAPPDATA', join(folder, os, 'Local'))
+      vi.stubEnv('USERPROFILE', join(folder, os, 'home'))
+      vi.stubEnv('HOME', join(folder, os, 'home'))
       const app = await import('./app.ts')
       const processes = await import('node:child_process')
       const folders = await import('node:fs/promises')
@@ -103,7 +106,10 @@ for (const os of ['linux', 'win32'] as const) {
     it('goes on to its folders and the agent gate with an executable never packed', async () => {
       const { isolate, touched } = await load()
       const isolated = await isolate(unpacked)
-      expect(isolated.dataDirectory.endsWith('com.devhq.desktop.dev')).toBe(true)
+      expect(isolated.dataDirectory.endsWith('DevHQ-desarrollo')).toBe(true)
+      // In the walk's own folder: the stubbed home on Windows, its temporary folder on Linux.
+      const own = os === 'win32' ? folder : join(tmpdir(), 'devhq-native-')
+      expect(isolated.dataDirectory.startsWith(own)).toBe(true)
       const seen = touched()
       expect(seen.spawnSync).toBe(1)
       expect(os === 'win32' ? seen.existsSync : seen.mkdtemp).toBeGreaterThan(0)

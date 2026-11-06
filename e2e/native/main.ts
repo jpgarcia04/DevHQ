@@ -13,9 +13,10 @@
  * Run it with `npm run e2e:native`, which builds the debug app first. DEVHQ_APP points it at
  * another build. Screenshots of every step land in test-results/native/.
  *
- * It also starts the same executable as the agent gate (`--mcp --database <its inventory>`) and
- * speaks MCP with it as Claude Code does, to check that the open window shows by itself what an
- * agent changes.
+ * It also starts the same executable as the agent gate (`--mcp`, without `--database`, as Claude
+ * Code starts it from a terminal or from its desktop app) and speaks MCP with it, to check that the
+ * gate opens the very inventory the window opened, and that the open window shows by itself what
+ * an agent changes.
  */
 import assert from 'node:assert/strict'
 import { spawn, type ChildProcess } from 'node:child_process'
@@ -221,12 +222,13 @@ async function healthServer() {
 }
 
 /**
- * The agent gate of the executable under test, driven as an MCP client drives it: one JSON-RPC
- * message per line on its stdin and stdout. It names itself `native-walk`, so what it writes is
- * tagged «Agent · native-walk».
+ * The agent gate of the executable under test, started and driven as an MCP client does: no
+ * `--database`, so it opens where DevHQ keeps its data by itself, and one JSON-RPC message per line
+ * on its stdin and stdout. It names itself `native-walk`, so what it writes is tagged «Agent ·
+ * native-walk».
  */
-function agentGate(binary: string, database: string, env: NodeJS.ProcessEnv) {
-  const child = spawn(binary, ['--mcp', '--database', database], {
+function agentGate(binary: string, env: NodeJS.ProcessEnv) {
+  const child = spawn(binary, ['--mcp'], {
     env,
     stdio: ['pipe', 'pipe', 'inherit'],
   })
@@ -374,8 +376,7 @@ try {
   /**
    * The inventory's own files and its backups folder: everything beside the inventory that DevHQ
    * writes for it. The window's lock is left out, since the window holds it while it lives, and so
-   * is the rest of the folder, which on Linux is also the local data folder where WebKitGTK keeps
-   * its profile.
+   * is the rest of the folder, which also holds this-workstation.json.
    */
   const dataFiles = async () =>
     (await readdir(dataDirectory))
@@ -607,7 +608,7 @@ try {
     }
   })
 
-  const gate = agentGate(binary, database, env)
+  const gate = agentGate(binary, env)
 
   await step('An agent adds an application through the gate and the window shows it', async () => {
     await ui.go('Settings')
@@ -625,6 +626,18 @@ try {
       clientInfo: { name: 'native-walk', version: '1' },
     })
     const status = await gate.tool('status')
+    // The same file as the window, where the system keeps it, with nothing left at the location
+    // an older DevHQ used.
+    const location = status.database as {
+      database: string
+      storedAt: string | null
+      previous: unknown
+    }
+    // Windows compares names regardless of case.
+    const same = (path: string) => (process.platform === 'win32' ? path.toLowerCase() : path)
+    assert.equal(same(location.database), same(database), "the gate opens the window's inventory")
+    assert.equal(location.storedAt, null, 'the system keeps it where DevHQ asked')
+    assert.equal(location.previous, null)
     assert.equal(status.access, 'write')
     assert.equal(status.windowOpen, true, 'the gate sees the open window')
     // A relation names its resource by the id the agent read, never by its name.

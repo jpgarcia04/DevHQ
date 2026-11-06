@@ -26,6 +26,12 @@ const refusedUntilRestart: Record<string, { title: string; next: string }> = {
     title: 'Inventory unavailable',
     next: 'DevHQ looks at the folder again the next time it starts.',
   },
+  // The inventory is still where DevHQ kept it before its data left AppData: DevHQ starts no
+  // empty one in its place, and never opens it there (see src-tauri/src/location.rs).
+  move_pending: {
+    title: 'Inventory waiting to be moved',
+    next: 'DevHQ looks at both locations again the next time it starts.',
+  },
 }
 
 export function InventoryState({ children }: { children: React.ReactNode }) {

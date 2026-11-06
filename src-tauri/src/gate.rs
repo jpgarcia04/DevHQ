@@ -19,6 +19,7 @@ use crate::identity;
 use crate::inventory::{self, ApiError, Inventory};
 use crate::local_copies::readings::{self, LocalCopy};
 use crate::local_copies::Reader;
+use crate::location;
 use crate::records::{self, Subject};
 use crate::references::Reference;
 use crate::workstation::{Computer, ThisWorkstation};
@@ -47,17 +48,22 @@ pub fn main(args: impl IntoIterator<Item = String>) -> i32 {
         }
     }
     // What this executable's window opens: the installed DevHQ's inventory, or development data
-    // (see `identity`).
-    let Some(database) = database.or_else(identity::database) else {
-        return usage("the system has no data directory; pass --database");
+    // (see `identity`), and where DevHQ kept it before, which only matters for that location.
+    let previous = match database {
+        Some(_) => None,
+        None => identity::previous_database(),
     };
-    let Some(local) = identity::local_data() else {
-        return usage("the system has no local data directory");
+    let Some(database) = database.or_else(identity::database) else {
+        return usage("the system names no home folder; pass --database");
+    };
+    let Some(folder) = identity::data_folder() else {
+        return usage("the system names no home folder, where DevHQ keeps this-workstation.json");
     };
     let stdin = std::io::stdin();
     match serve(
         &database,
-        Computer::this_one(local),
+        previous.as_deref(),
+        Computer::this_one(folder),
         stdin.lock(),
         std::io::stdout().lock(),
     ) {
@@ -74,15 +80,18 @@ fn usage(problem: &str) -> i32 {
     2
 }
 
-/// Answers each message read from `input` on `output` until `input` ends, on `computer`.
+/// Answers each message read from `input` on `output` until `input` ends, on `computer`, over the
+/// inventory at `database`, where DevHQ kept it before at `previous` (None for `--database`).
 pub(crate) fn serve(
     database: &Path,
+    previous: Option<&Path>,
     computer: Computer,
     input: impl BufRead,
     mut output: impl Write,
 ) -> std::io::Result<()> {
     let mut session = Session {
         database: database.to_owned(),
+        previous: previous.map(Path::to_owned),
         computer,
         reader: None,
         client: None,
@@ -102,6 +111,9 @@ pub(crate) fn serve(
 
 struct Session {
     database: PathBuf,
+    /// Where DevHQ kept the inventory before its data left AppData, looked at on every call (see
+    /// `location`); None when the gate was told `--database`.
+    previous: Option<PathBuf>,
     /// This computer, as the window's DevHQ tells it apart: which workstation it is.
     computer: Computer,
     /// How copies are read; this executable unless a test says otherwise.
@@ -187,20 +199,23 @@ impl Session {
             Some(Value::Object(arguments)) => arguments,
             Some(_) => return Err((INVALID_PARAMS, "Tool arguments must be an object.".into())),
         };
-        let Some(schema) = tools()
-            .into_iter()
-            .find(|tool| tool["name"] == name)
-            .map(|tool| tool["inputSchema"].clone())
-        else {
+        let Some(tool) = tools().into_iter().find(|tool| tool["name"] == name) else {
             return Err((INVALID_PARAMS, format!("Unknown tool {name}.")));
         };
         // Before anything opens: a call that does not match what the tool declares does nothing.
-        let mut problems = arguments::problems(&schema, arguments);
+        let mut problems = arguments::problems(&tool["inputSchema"], arguments);
         if problems.is_empty() {
             problems = arguments::rules(name, arguments);
         }
         let outcome = if problems.is_empty() {
-            self.run(name, arguments)
+            // A tool that changes something never runs where its change could land in an
+            // inventory the person does not see (see `location`), whatever the access allows.
+            if tool["annotations"]["readOnlyHint"] == true {
+                self.run(name, arguments)
+            } else {
+                location::refuse_agent_write(&self.database, self.previous().as_ref())
+                    .and_then(|()| self.run(name, arguments))
+            }
         } else {
             Err(ApiError::invalid(format!(
                 "{name} was not run: {}",
@@ -287,6 +302,11 @@ impl Session {
         access::permitted(&self.read(|db| access::mode(db))?, need)
     }
 
+    /// What DevHQ's previous location holds now: the person may rename it while the gate runs.
+    fn previous(&self) -> Option<location::Previous> {
+        self.previous.as_deref().and_then(location::previous_at)
+    }
+
     fn inventory(&self) -> Result<Inventory, ApiError> {
         self.read(inventory::list_from)
     }
@@ -295,7 +315,8 @@ impl Session {
     /// found there, and, only for an inventory it serves, the access mode and, if the person lets
     /// agents in, what it holds. Nothing it could not read is presented as known.
     fn status(&self) -> Result<Value, ApiError> {
-        let location = inventory::DataLocation::of(&self.database);
+        let location =
+            inventory::DataLocation::with_previous(&self.database, self.previous.as_deref());
         let exists = self.database.is_file();
         let (found, served) = inventory::examine(&self.database, |db| self.served(db));
         let mut notes = Vec::new();
@@ -322,13 +343,27 @@ impl Session {
         ]);
         if let Some(stored_at) = &location.stored_at {
             notes.push(format!(
-                "The system keeps this file at {stored_at}, not where DevHQ asked for it. A DevHQ started another way (from the Start menu or File Explorer) may see a different inventory."
+                "The system keeps this file at {stored_at}, not where DevHQ asked for it. A DevHQ started another way (from the Start menu or File Explorer) may see a different inventory, so agents can read it but not change it."
             ));
+        }
+        match &location.previous {
+            Some(previous) if previous.stored_at.is_none() => notes.push(format!(
+                "DevHQ's previous location still holds an inventory ({} in {}), which DevHQ never opens. Until the person has moved it here and renamed that folder, as the README says, agents can read this inventory but not change it.",
+                previous.files.join(", "),
+                previous.database
+            )),
+            Some(previous) => notes.push(format!(
+                "DevHQ's previous location shows {}, which the system keeps at {}: for a gate started from a packaged app, that app's own copy of AppData, not the person's folder. DevHQ never opens it, and it does not stop agents.",
+                previous.files.join(", "),
+                previous.stored_at.as_deref().unwrap_or_default()
+            )),
+            None => {}
         }
         if identity::development() {
             notes.push(format!(
-                "This DevHQ executable was not packed by DevHQ's installer, so without --database it opens development data ({}), apart from the installed DevHQ's inventory.",
-                identity::DEVELOPMENT
+                "This DevHQ executable was not packed by DevHQ's installer, so without --database it opens development data (the {} folder of the home), apart from the installed DevHQ's inventory (the {} folder).",
+                identity::DEVELOPMENT_FOLDER,
+                identity::INSTALLED_FOLDER
             ));
         }
         Ok(json!({
@@ -564,7 +599,7 @@ impl Session {
     }
 }
 
-const INSTRUCTIONS: &str = "DevHQ is the person's local operations inventory: applications, the resources they run on, where each one is (its references: repository, local copies, documentation, logs, dashboard), and the evidence about them (observations, incidents, events, HTTP checks). Working in a folder, an agent can find its system by a local copy's path or by its repository's URL in `list_systems`. A local copy's readings say what it held when DevHQ read it, never what it holds now. Start with `attention` to answer «what needs my attention?». Never present a system without current evidence as healthy: unobserved and expired evidence are gaps, not health. Every record says who produced it (`source`: manual, http or agent) and when. Applications, resources, components and references are declared inventory, by the person or an agent (each change in `changes`, with who made it), never evidence that DevHQ observed. To edit a system, base the edit on its `latestChange` (`basedOn`): DevHQ refuses it if the system changed after you read it, and never removes a component or reference you leave out. A component's `runsOn` and a path's `machine` name a resource by its id, never by its name. Every call is checked against its tool's input schema and the rules its description states: an argument the tool does not declare, misspelled or of the wrong type, is refused (invalid_input) and nothing is done.";
+const INSTRUCTIONS: &str = "DevHQ is the person's local operations inventory: applications, the resources they run on, where each one is (its references: repository, local copies, documentation, logs, dashboard), and the evidence about them (observations, incidents, events, HTTP checks). Working in a folder, an agent can find its system by a local copy's path or by its repository's URL in `list_systems`. A local copy's readings say what it held when DevHQ read it, never what it holds now. Start with `attention` to answer «what needs my attention?». Never present a system without current evidence as healthy: unobserved and expired evidence are gaps, not health. Every record says who produced it (`source`: manual, http or agent) and when. Applications, resources, components and references are declared inventory, by the person or an agent (each change in `changes`, with who made it), never evidence that DevHQ observed. To edit a system, base the edit on its `latestChange` (`basedOn`): DevHQ refuses it if the system changed after you read it, and never removes a component or reference you leave out. A component's `runsOn` and a path's `machine` name a resource by its id, never by its name. Tools that change something refuse while the system keeps the inventory somewhere other than where DevHQ asked (`storedAt` in `status`, location_redirected) or while DevHQ's previous location in AppData still holds the person's inventory (move_pending): read, and tell the person. Every call is checked against its tool's input schema and the rules its description states: an argument the tool does not declare, misspelled or of the wrong type, is refused (invalid_input) and nothing is done.";
 
 /// Every application, then every resource, in the inventory's order.
 fn subjects(inventory: &Inventory) -> Vec<Subject> {
@@ -937,7 +972,7 @@ fn read_tools() -> Vec<Value> {
         read_only(
             "status",
             "DevHQ status",
-"Which inventory file the gate opened, where the system really keeps it, what the file is (`schema`: the version it declares, the one this DevHQ supports, its state: current, mismatch, outdated, newer, not_an_inventory, needs_recovery, unreadable or missing; whether it has the structure of this DevHQ's schema, compared table by table and column by column: matches, differs or not_checked for another version; its integrity, never checked by the gate: not_checked; `schemaVersion` is the declared one, null when unknown), how far the person lets agents go through the gate (`access`: off; read; maintain, which also adds and edits applications and resources, reads local copies and records observations that vouch for at most 7 days; or write, everything), which holds for every agent session until the person changes it, whether a DevHQ window is open on it (`windowOpen`; null when the system cannot say), how many systems it holds, which of its workstations this computer is (`thisWorkstation`, or why DevHQ does not know: only the window chooses it), and what the gate cannot know. Access, counts and workstation are null unless the inventory is current, which is the only kind the gate serves. An inventory left needing recovery (a write that did not finish, or a log no connection holds) is reported, never recovered: DevHQ's window recovers it when it starts, only if it is in this DevHQ's schema. Always answered, even with the gate off, and never writes to the inventory or changes what it holds; the one file it can create is an empty log (`-wal`), if the last connection to the inventory closes just as the gate opens it.",
+"Which inventory file the gate opened, where the system really keeps it (`database.storedAt`, null when where asked), what DevHQ's previous location in AppData still holds (`database.previous`, null when nothing), what the file is (`schema`: the version it declares, the one this DevHQ supports, its state: current, mismatch, outdated, newer, not_an_inventory, needs_recovery, unreadable or missing; whether it has the structure of this DevHQ's schema, compared table by table and column by column: matches, differs or not_checked for another version; its integrity, never checked by the gate: not_checked; `schemaVersion` is the declared one, null when unknown), how far the person lets agents go through the gate (`access`: off; read; maintain, which also adds and edits applications and resources, reads local copies and records observations that vouch for at most 7 days; or write, everything), which holds for every agent session until the person changes it, whether a DevHQ window is open on it (`windowOpen`; null when the system cannot say), how many systems it holds, which of its workstations this computer is (`thisWorkstation`, or why DevHQ does not know: only the window chooses it), and what the gate cannot know. Access, counts and workstation are null unless the inventory is current, which is the only kind the gate serves. An inventory left needing recovery (a write that did not finish, or a log no connection holds) is reported, never recovered: DevHQ's window recovers it when it starts, only if it is in this DevHQ's schema. No tool that changes something runs while the system keeps the file elsewhere (location_redirected) or while the previous location still holds an inventory of the person's (move_pending): reads go on. Always answered, even with the gate off, and never writes to the inventory or changes what it holds; the one file it can create is an empty log (`-wal`), if the last connection to the inventory closes just as the gate opens it.",
             json!({}),
             &[],
         ),
@@ -1130,7 +1165,14 @@ mod tests {
             .map(|message| format!("{message}\n"))
             .collect();
         let mut output = Vec::new();
-        serve(database, computer(database), input.as_bytes(), &mut output).unwrap();
+        serve(
+            database,
+            None,
+            computer(database),
+            input.as_bytes(),
+            &mut output,
+        )
+        .unwrap();
         String::from_utf8(output)
             .unwrap()
             .lines()
@@ -1264,6 +1306,7 @@ mod tests {
         let mut output = Vec::new();
         serve(
             &path,
+            None,
             computer(&path),
             "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"1999-01-01\"}}\nnot json\n\n".as_bytes(),
             &mut output,
@@ -1527,6 +1570,7 @@ mod tests {
         // A change in Settings applies to the very next call of a session already running.
         let mut session = Session {
             database: path.clone(),
+            previous: None,
             computer: computer(&path),
             reader: None,
             client: None,
@@ -1573,6 +1617,109 @@ mod tests {
                 .iter()
                 .any(|note| note.as_str().unwrap().contains("not where DevHQ asked")));
         }
+        remove(&path);
+    }
+
+    /// Reached through a link, as through a packaged app's redirection of AppData, the inventory is
+    /// somewhere else than the gate asked for it: agents read it, but change nothing, whatever the
+    /// access allows. Asked for where it really is, they can.
+    #[test]
+    fn agents_cannot_write_to_an_inventory_the_system_keeps_elsewhere() {
+        let (real, link) = crate::inventory::tests::linked_folder();
+        let kept = real.join("inventory.sqlite3");
+        seed(&kept);
+        crate::access::set_agent_access(&kept, "write").unwrap();
+        let asked = link.join("inventory.sqlite3");
+        let status = answer(&asked, "status", json!({}));
+        assert!(status["database"]["storedAt"].is_string(), "{status:#}");
+        assert!(status["notes"].as_array().unwrap().iter().any(|note| note
+            .as_str()
+            .unwrap()
+            .contains("agents can read it but not change it")));
+        assert_eq!(
+            answer(&asked, "list_systems", json!({}))["resources"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        let before = rows(&kept);
+        let app = json!({ "name": "Otra", "lifecycle": "development" });
+        for (tool, arguments) in [("save_application", app.clone()), ("backup", json!({}))] {
+            let refused = refusal(&asked, tool, arguments);
+            assert!(
+                refused.starts_with("Nothing was written")
+                    && refused.contains(&kept.display().to_string())
+                    && refused.ends_with("(location_redirected)"),
+                "{tool}: {refused}"
+            );
+        }
+        assert_eq!(rows(&kept), before);
+        assert!(!real.join("backups").exists());
+        assert_eq!(call(&kept, "save_application", app)["isError"], false);
+        crate::inventory::tests::remove_linked((real, link));
+    }
+
+    /// While DevHQ's previous location still holds an inventory of the person's, agents can read the
+    /// moved one but change neither, whatever the access allows: two files look like the person's.
+    /// Once the person renames the previous folder, the same session writes again.
+    #[test]
+    fn agents_cannot_write_while_the_previous_location_holds_an_inventory() {
+        let path = path();
+        seed(&path);
+        crate::access::set_agent_access(&path, "write").unwrap();
+        let previous = path
+            .parent()
+            .unwrap()
+            .join("com.devhq.desktop")
+            .join("inventory.sqlite3");
+        std::fs::create_dir_all(previous.parent().unwrap()).unwrap();
+        inventory::start(&previous).unwrap();
+        let previous_rows = rows(&previous);
+        let mut agent = Session {
+            previous: Some(previous.clone()),
+            ..session(&path, "claude-code")
+        };
+        let status = use_tool(&mut agent, "status", json!({})).unwrap();
+        assert_eq!(
+            status["database"]["previous"]["database"],
+            previous.display().to_string()
+        );
+        assert_eq!(status["database"]["previous"]["storedAt"], Value::Null);
+        assert!(status["notes"].as_array().unwrap().iter().any(|note| note
+            .as_str()
+            .unwrap()
+            .contains("agents can read this inventory but not change it")));
+        assert!(use_tool(&mut agent, "list_systems", json!({})).is_ok());
+        let before = rows(&path);
+        let app = json!({ "name": "Otra", "lifecycle": "development" });
+        for (tool, arguments) in [
+            ("save_application", app.clone()),
+            (
+                "record_observation",
+                json!({ "type": "resource", "name": "Web host", "result": "healthy", "summary": "Up", "validForMinutes": 60 }),
+            ),
+            ("backup", json!({})),
+        ] {
+            let refused = use_tool(&mut agent, tool, arguments).unwrap_err();
+            assert!(
+                refused.starts_with("Nothing was written") && refused.ends_with("(move_pending)"),
+                "{tool}: {refused}"
+            );
+        }
+        assert_eq!(rows(&path), before);
+        assert_eq!(rows(&previous), previous_rows);
+        assert!(!path.parent().unwrap().join("backups").exists());
+        // Renamed once the person has checked the moved inventory.
+        let folder = previous.parent().unwrap();
+        std::fs::rename(
+            folder,
+            folder.with_file_name("com.devhq.desktop.trasladado"),
+        )
+        .unwrap();
+        assert!(use_tool(&mut agent, "save_application", app).is_ok());
+        let status = use_tool(&mut agent, "status", json!({})).unwrap();
+        assert_eq!(status["database"]["previous"], Value::Null);
         remove(&path);
     }
 
@@ -1636,6 +1783,7 @@ mod tests {
     fn session(path: &Path, client: &str) -> Session {
         Session {
             database: path.to_owned(),
+            previous: None,
             computer: computer(path),
             reader: None,
             client: Some(client.to_owned()),
@@ -2409,6 +2557,7 @@ mod tests {
         crate::access::set_agent_access(&path, "write").unwrap();
         let mut agent = Session {
             database: path.clone(),
+            previous: None,
             computer: computer(&path),
             reader: None,
             client: None,
@@ -2433,7 +2582,7 @@ mod tests {
             status["notes"].as_array().unwrap().iter().any(|note| note
                 .as_str()
                 .unwrap()
-                .contains("development data (com.devhq.desktop.dev)")),
+                .contains("development data (the DevHQ-desarrollo folder of the home)")),
             "{status:#}"
         );
         remove(&path);

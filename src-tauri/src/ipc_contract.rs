@@ -72,6 +72,14 @@ fn computer(path: &Path) -> Computer {
 /// supervision's loop, reading copies with a confined reader of the test executable. The app must
 /// outlive its window.
 fn devhq(path: &Path) -> (App<MockRuntime>, WebviewWindow<MockRuntime>) {
+    devhq_after(path, None)
+}
+
+/// The same, with DevHQ's previous location at `previous`.
+fn devhq_after(
+    path: &Path,
+    previous: Option<&Path>,
+) -> (App<MockRuntime>, WebviewWindow<MockRuntime>) {
     let app = mock_builder()
         .invoke_handler(commands())
         .build(mock_context(noop_assets()))
@@ -79,6 +87,7 @@ fn devhq(path: &Path) -> (App<MockRuntime>, WebviewWindow<MockRuntime>) {
     manage(
         &app,
         path.to_path_buf(),
+        previous.map(Path::to_owned),
         computer(path),
         crate::local_copies::tests::test_reader("confined", &[]),
     );
@@ -444,6 +453,58 @@ fn no_command_changes_an_inventory_the_window_does_not_serve() {
     }
 }
 
+/// While DevHQ's previous location still holds the inventory and the new one holds none, the window
+/// starts nothing there: every command that would open the inventory refuses (`move_pending`), and
+/// no file at either location changes, appears or goes. Once the inventory is at the new location,
+/// the window serves it, and still says what the previous location holds.
+#[test]
+fn the_window_serves_nothing_while_the_inventory_waits_to_be_moved() {
+    // Under the temporary folder as the file system names it: on a Windows runner TMP is a short
+    // 8.3 name, which would make the system keep every file elsewhere than asked (`storedAt`).
+    let folder = crate::inventory::tests::disposable(
+        crate::inventory::tests::resolved_temp_dir()
+            .join(format!("devhq-ipc-test-{}", uuid::Uuid::new_v4())),
+    );
+    std::fs::create_dir_all(&folder).unwrap();
+    let path = folder.join("inventory.sqlite3");
+    let previous = folder.join("previous").join("inventory.sqlite3");
+    std::fs::create_dir_all(previous.parent().unwrap()).unwrap();
+    crate::inventory::start(&previous).unwrap();
+    let before = files(&folder);
+    let (app, window) = devhq_after(&path, Some(&previous));
+    for (command, args) in &fixtures("commands") {
+        let answer = invoke(&window, command, args.clone());
+        if OPEN_NOTHING.contains(&command.as_str()) {
+            assert!(answer.is_ok(), "{command}: {answer:?}");
+        } else {
+            let refusal = answer.expect_err(&format!("{command} was served"));
+            assert_eq!(refusal["code"], "move_pending", "{command}: {refusal}");
+        }
+    }
+    let location = invoke(&window, "data_location", json!({})).unwrap();
+    assert_eq!(location["database"], path.display().to_string());
+    assert_eq!(
+        location["previous"]["database"],
+        previous.display().to_string()
+    );
+    assert_eq!(location["previous"]["storedAt"], Value::Null);
+    drop((window, app));
+    assert_eq!(
+        files(&folder),
+        before,
+        "the files changed, appeared or went"
+    );
+
+    // Copied to the new location, as the person moves it: served, the previous one still said.
+    std::fs::copy(&previous, &path).unwrap();
+    let (app, window) = devhq_after(&path, Some(&previous));
+    assert!(invoke(&window, "list_inventory", json!({})).is_ok());
+    let location = invoke(&window, "data_location", json!({})).unwrap();
+    assert_eq!(location["previous"]["files"], json!(["inventory.sqlite3"]));
+    drop((window, app));
+    remove(&path);
+}
+
 /// A window started where there is no inventory creates a new one in this build's schema, and
 /// writes ahead; one whose inventory goes while it is open never creates another in its place.
 #[test]
@@ -618,7 +679,7 @@ fn every_answer_has_the_shape_the_window_expects() {
         chosen_at: Some(at("08:00")),
         problem: None,
         message: None,
-        file: r"C:\Users\Ana Ruiz\AppData\Local\com.devhq.desktop\this-workstation.json".into(),
+        file: r"C:\Users\Ana Ruiz\DevHQ\this-workstation.json".into(),
         stored_at: None,
     };
     let snapshot = Inventory {
@@ -891,9 +952,11 @@ fn every_answer_has_the_shape_the_window_expects() {
         recorded_at: at("10:00"),
         agent: None,
     };
-    let folder = r"C:\Users\Ana Ruiz\AppData\Roaming\com.devhq.desktop";
-    // Where Windows keeps that folder's files for a DevHQ started from a packaged app.
-    let packaged = r"C:\Users\Ana Ruiz\AppData\Local\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\com.devhq.desktop";
+    let folder = r"C:\Users\Ana Ruiz\DevHQ";
+    // Where the system keeps that folder's files when a link or a junction leads elsewhere.
+    let kept = r"D:\Datos\DevHQ";
+    // Where DevHQ kept its data before it left AppData.
+    let previous = r"C:\Users\Ana Ruiz\AppData\Roaming\com.devhq.desktop";
     let supervision = MonitorStatus {
         checks: vec![CheckStatus {
             subject: host(),
@@ -937,7 +1000,12 @@ fn every_answer_has_the_shape_the_window_expects() {
             value(&DataLocation {
                 database: format!(r"{folder}\inventory.sqlite3"),
                 directory: folder.into(),
-                stored_at: Some(format!(r"{packaged}\inventory.sqlite3")),
+                stored_at: Some(format!(r"{kept}\inventory.sqlite3")),
+                previous: Some(crate::location::Previous {
+                    database: format!(r"{previous}\inventory.sqlite3"),
+                    files: vec!["inventory.sqlite3".into(), "inventory.sqlite3-wal".into()],
+                    stored_at: None,
+                }),
             }),
         ),
         (
@@ -988,7 +1056,7 @@ fn every_answer_has_the_shape_the_window_expects() {
                         modified_at: None,
                         partial: true,
                         stored_at: Some(format!(
-                            r"{packaged}\backups\inventory-20260101T090000.000Z.sqlite3.partial"
+                            r"{kept}\backups\inventory-20260101T090000.000Z.sqlite3.partial"
                         )),
                     },
                 ],
@@ -1113,7 +1181,7 @@ fn every_answer_has_the_shape_the_window_expects() {
             value(&Step::BackedUp {
                 backup: Box::new(BeforeUpgrade {
                     stored_at: Some(format!(
-                        r"{packaged}\backups\inventory-20260101T100500.123Z-v6.sqlite3"
+                        r"{kept}\backups\inventory-20260101T100500.123Z-v6.sqlite3"
                     )),
                     ..before_upgrade
                 }),

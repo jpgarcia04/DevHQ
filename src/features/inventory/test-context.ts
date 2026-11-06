@@ -42,15 +42,16 @@ export function inventoryContext(
     now: testNow,
     reload: vi.fn(async () => true),
     dataLocation: vi.fn(async () => ({
-      database: '/home/you/.local/share/com.devhq.desktop/inventory.sqlite3',
-      directory: '/home/you/.local/share/com.devhq.desktop',
+      database: '/home/you/DevHQ/inventory.sqlite3',
+      directory: '/home/you/DevHQ',
       storedAt: null,
+      previous: null,
     })),
     backupInventory: vi.fn(async () => {
       throw new Error('backupInventory is not mocked in this test')
     }),
     listBackups: vi.fn(async () => ({
-      directory: '/home/you/.local/share/com.devhq.desktop/backups',
+      directory: '/home/you/DevHQ/backups',
       files: [],
     })),
     agentAccess: vi.fn(async () => ({
@@ -88,7 +89,7 @@ export function inventoryContext(
       problem: 'not_chosen',
       message:
         'No workstation has been chosen as this computer yet: choose one in Settings › This computer.',
-      file: '/home/you/.local/share/com.devhq.desktop/this-workstation.json',
+      file: '/home/you/DevHQ/this-workstation.json',
       storedAt: null,
     },
     workstationError: null,

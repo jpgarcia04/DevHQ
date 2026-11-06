@@ -24,7 +24,7 @@ import type { PreviewDatabase } from './sample'
 const limit = 200
 
 /** Where the native process would keep the inventory, on Windows. */
-const folder = 'C:\\Users\\you\\AppData\\Roaming\\com.devhq.desktop'
+const folder = 'C:\\Users\\you\\DevHQ'
 
 /** Answers every write: the preview has nothing to write to. */
 export const readOnly = {
@@ -340,6 +340,7 @@ export function previewBackend(database: PreviewDatabase) {
           database: `${folder}\\inventory.sqlite3`,
           directory: folder,
           storedAt: null,
+          previous: null,
         } satisfies DataLocation
       // Listing reads the folder, not the inventory. Backing up writes, so it is refused.
       case 'list_backups':

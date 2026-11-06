@@ -7,7 +7,7 @@ import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync, readlinkSync, realpathSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { createServer } from 'node:net'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ready, Session } from './webdriver.ts'
 
@@ -19,10 +19,12 @@ const config = JSON.parse(readFileSync(join(root, 'src-tauri', 'tauri.conf.json'
 const windows = process.platform === 'win32'
 
 /**
- * What every executable DevHQ's installer did not pack keeps its data under, and how its window
- * is titled (src-tauri/src/identity.rs): the walk drives only such executables.
+ * What every executable DevHQ's installer did not pack names its WebView2 profile and its previous
+ * data folder after, the folder of the home that holds its data, and how its window is titled
+ * (src-tauri/src/identity.rs): the walk drives only such executables.
  */
 const identifier = `${config.identifier}.dev`
+const dataFolder = 'DevHQ-desarrollo'
 const title = `${config.app.windows[0]!.title} (development data)`
 
 /**
@@ -66,13 +68,16 @@ export function appBinary() {
 
 /**
  * Where DevHQ keeps its data, isolated from any real inventory. The walk drives only an
- * executable DevHQ's installer did not pack, whose data is development data, apart from the
- * installed DevHQ's. Linux follows XDG, so the walk points every XDG directory into a new
- * temporary folder. Windows resolves its folders through the shell's known-folder API, which no
- * environment variable redirects: there the walk only runs when neither development folder
- * exists yet, and removes the ones it created. It never reads, writes or removes a data directory
- * it did not create. Then it asks the executable's agent gate where the window will keep its
- * inventory, which must be that folder.
+ * executable DevHQ's installer did not pack, whose data is development data
+ * (`~/DevHQ-desarrollo`), apart from the installed DevHQ's (`~/DevHQ`). On Linux the walk points
+ * HOME and every XDG directory into a new temporary folder. Windows resolves the home and AppData
+ * through the shell's known-folder API, which no environment variable redirects: there the walk
+ * only runs when the development data folder, the WebView2 profile's folder and the folder where
+ * an older DevHQ kept development data (which would hold the window back, see
+ * src-tauri/src/location.rs) do not exist yet, and removes the ones it created. It never reads,
+ * writes or removes a folder it did not create. Then it asks the executable's agent gate, started
+ * as an MCP client starts it, without `--database`, where the window will keep its inventory,
+ * which must be that folder.
  */
 export async function isolate(binary: string) {
   refusePacked(binary)
@@ -88,10 +93,12 @@ export async function isolate(binary: string) {
 async function isolateWindows() {
   const { APPDATA, LOCALAPPDATA } = process.env
   if (!APPDATA || !LOCALAPPDATA) throw new Error('APPDATA and LOCALAPPDATA must be set.')
-  const data = join(APPDATA, identifier)
+  const data = join(homedir(), dataFolder)
   // WebView2 keeps its own profile here.
   const local = join(LOCALAPPDATA, identifier)
-  for (const folder of [data, local])
+  // Where an older DevHQ kept development data: never created, only looked for.
+  const previous = join(APPDATA, identifier)
+  for (const folder of [data, local, previous])
     if (existsSync(folder))
       throw new Error(
         `${folder} already exists. The native walk would use it, so it refuses to run: it only ` +
@@ -110,20 +117,21 @@ async function isolateWindows() {
 
 async function isolateLinux() {
   if (process.platform !== 'linux') throw new Error('tauri-driver supports Linux and Windows only.')
-  const home = await mkdtemp(join(tmpdir(), 'devhq-native-'))
+  const root = await mkdtemp(join(tmpdir(), 'devhq-native-'))
   const env = {
     ...process.env,
-    XDG_DATA_HOME: join(home, 'data'),
-    XDG_CONFIG_HOME: join(home, 'config'),
-    XDG_CACHE_HOME: join(home, 'cache'),
-    XDG_STATE_HOME: join(home, 'state'),
+    HOME: join(root, 'home'),
+    XDG_DATA_HOME: join(root, 'data'),
+    XDG_CONFIG_HOME: join(root, 'config'),
+    XDG_CACHE_HOME: join(root, 'cache'),
+    XDG_STATE_HOME: join(root, 'state'),
   }
   return {
     env,
-    dataDirectory: join(env.XDG_DATA_HOME, identifier),
+    dataDirectory: join(env.HOME, dataFolder),
     cleanup: async () => {
       if (!process.env.DEVHQ_E2E_KEEP_DATA)
-        await rm(home, { recursive: true, force: true, maxRetries: 5 })
+        await rm(root, { recursive: true, force: true, maxRetries: 5 })
     },
   }
 }
@@ -153,11 +161,13 @@ async function databaseOf(binary: string, env: NodeJS.ProcessEnv) {
   const status = replies.find((reply) => reply.id === 2)?.result?.structuredContent
   if (!status) throw new Error(`The agent gate gave no status: ${result.stdout}`)
   if (status.exists) throw new Error(`${status.database.database} already holds an inventory.`)
+  if (status.database.previous)
+    throw new Error(`An older DevHQ's data is at ${status.database.previous.database}.`)
   return status.database.database
 }
 
 interface Status {
-  database: { database: string }
+  database: { database: string; previous: { database: string } | null }
   exists: boolean
 }
 

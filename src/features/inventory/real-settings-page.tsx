@@ -4,12 +4,41 @@ import { Button } from '@/components/ui/button'
 import { AgentGate } from './agent-gate'
 import { Backups } from './backups'
 import { useCopy } from './copy'
-import { inventoryError, type DataLocation } from './inventory-api'
+import { inventoryError, type DataLocation, type PreviousLocation } from './inventory-api'
 import { useInventory } from './inventory-context'
 import { ThisComputer } from './this-computer'
 
 function FileName({ children }: { children: string }) {
   return <span className="whitespace-nowrap font-mono">{children}</span>
+}
+
+/**
+ * What DevHQ's previous location, in AppData, still holds. DevHQ never opens it. While it holds an
+ * inventory of the person's, two files look like theirs, so agents change neither until the person
+ * renames that folder; seen only through a packaged app's redirection, it is that app's copy.
+ */
+function PreviousInventory({ previous }: { previous: PreviousLocation }) {
+  return (
+    <p className="mt-3 rounded-md border border-amber-400/20 bg-amber-300/5 px-3 py-2 text-xs leading-6 text-amber-200">
+      DevHQ’s previous location still holds an inventory:{' '}
+      <span className="break-all font-mono text-[11px]">{previous.database}</span> (
+      {previous.files.join(', ')}).{' '}
+      {previous.storedAt ? (
+        <>
+          The system keeps it at{' '}
+          <span className="break-all font-mono text-[11px]">{previous.storedAt}</span>: a link, a
+          junction or, when DevHQ is started from a packaged app, that app’s own copy of AppData
+          leads there. DevHQ never opens it.
+        </>
+      ) : (
+        <>
+          DevHQ uses the file above and never opens that one. Until you rename its folder, once you
+          have checked this inventory, agents can read through the gate but change nothing (README
+          «Trasladar el inventario fuera de AppData»).
+        </>
+      )}
+    </p>
+  )
 }
 
 /**
@@ -65,13 +94,14 @@ function DatabaseFile() {
             <p className="mt-3 rounded-md border border-amber-400/20 bg-amber-300/5 px-3 py-2 text-xs leading-6 text-amber-200">
               DevHQ asked for{' '}
               <span className="break-all font-mono text-[11px]">{location.database}</span>, but the
-              file system keeps the file at the path above. A link can do that, and so does Windows
-              when DevHQ is started from a packaged app, such as the Claude or Codex desktop app: it
-              keeps the files DevHQ writes in that app’s own folder. DevHQ opened from the Start
-              menu or File Explorer uses the other path, which holds another inventory or none. Back
-              up, copy and restore at the path above.
+              file system keeps the file at the path above. A link or a junction can do that, and so
+              does Windows for a file in AppData when DevHQ is started from a packaged app, such as
+              the Claude or Codex desktop app. A DevHQ started another way may see another inventory
+              there, so agents can read this one but not change it. Back up, copy and restore at the
+              path above.
             </p>
           )}
+          {location.previous && <PreviousInventory previous={location.previous} />}
         </>
       ) : error ? (
         <p role="alert" className="mt-4 text-xs text-rose-300">
