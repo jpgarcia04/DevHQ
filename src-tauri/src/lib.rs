@@ -5,6 +5,7 @@ mod change_log;
 pub mod gate;
 mod http_check;
 mod identity;
+pub mod installations;
 mod inventory;
 #[cfg(test)]
 mod ipc_contract;

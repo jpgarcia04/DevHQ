@@ -387,8 +387,79 @@ no la de su carpeta ni la de un acceso directo. Como una copia local, es inventa
 un agente, siempre en una máquina que es estación de trabajo, y la misma ruta en la misma máquina no
 se declara dos veces en un sistema. DevHQ no busca instalaciones: solo conoce las que el inventario
 nombra. El esquema ya guarda la tabla de sus lecturas (`installation_readings`, ver
-[Arquitectura](#arquitectura)), pero este DevHQ todavía no lee ninguna instalación: la referencia se
-muestra y se copia como las demás.
+[Arquitectura](#arquitectura)) y DevHQ ya tiene el lector que las hará, pero ninguna vista ni
+herramienta pide todavía una lectura: la referencia se muestra y se copia como las demás.
+
+**Observar no da poder a lo observado.** La ruta declarada, y el archivo que hay en ella, son datos no
+confiables, los haya declarado quien los haya declarado. Por eso DevHQ nunca ejecuta el programa (ni
+siquiera con `--version`), nunca lo carga como imagen y nunca pregunta su versión a las APIs de
+Windows, que lo cargan: lee los bytes del archivo. Lo hace en un proceso propio por archivo, `devhq
+--read-installation`, que antes de leer se impide a sí mismo arrancar programas igual que el lector de
+[copias locales](#copias-locales) (un Job Object en Windows, seccomp en Linux; en otros sistemas no
+lee y lo dice). El proceso tiene 30 s; si no termina, DevHQ lo mata y no guarda nada, y lo que
+devuelve se valida como dato no confiable, con las mismas reglas que imponen los CHECK del esquema,
+antes de aceptarlo. Así un cuelgue o un fallo del lector ante un archivo hostil termina con el
+lector, nunca con la ventana ni con la puerta.
+
+El lector abre ese archivo, una vez y para leer, y ningún otro: ni sus vecinos, ni su carpeta, ni el
+registro. Qué encuentra:
+
+| Dato                                                   | Qué es                                                                                                                                                                                                                                                                                                                                              |
+| ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `outcome`, `detail`                                    | `read`; `missing` (nada en esa ruta); `unreadable` (el sistema niega el acceso o no deja leerlo, como en `WindowsApps`, con el motivo del sistema); `not_an_executable` (una carpeta, algo que no es un archivo regular, o un archivo que no empieza como un ejecutable de Windows ni como un ELF). `detail` dice por qué                           |
+| `storedAt`                                             | Dónde guarda el sistema el archivo de verdad, cuando no es la ruta declarada: un enlace, un junction o la redirección de `AppData` para un proceso lanzado desde una app empaquetada. Se pregunta con la misma función que usa DevHQ para su inventario (`inventory::stored_at`, ver [Arquitectura](#arquitectura)), así que las dos dicen lo mismo |
+| `sha256`, `sizeBytes`, `modifiedAt`                    | El SHA-256 de todos los bytes del archivo, cuántos eran y su fecha de modificación según el sistema de archivos. El hash identifica la build aunque dos builds declaren la misma versión. Si un instalador lo estaba escribiendo, es el hash de lo que había                                                                                        |
+| `productVersion`, `fileVersion`, `productName`         | Lo que declara el recurso de versión del archivo, tal como lo dice el archivo, sin espacios alrededor: solo esos tres textos, de la primera tabla de cadenas, de 120 caracteres como mucho. Ninguno se deduce de otro ni de los números del recurso                                                                                                 |
+| `versionUnknown`                                       | En lugar de esos tres, por qué no se conocen: el archivo no tiene recursos o no tiene recurso de versión, el recurso está malformado, no declara ninguno de los tres, declara uno más largo de lo que DevHQ guarda o con caracteres de control (no se recorta: ya no sería lo que dice el archivo), o es un ELF, que no tiene recurso de versión    |
+| `processes`, `processesUnexamined`, `processesUnknown` | Cuántos procesos tenían ese archivo como ejecutable en ese momento, sin contar al propio lector, y cuántos procesos no dejó mirar el sistema (los de otro usuario, los protegidos), cualquiera de los cuales podría tenerlo; o, en lugar de los dos números, por qué el sistema no dio la lista                                                     |
+
+Para saber cuántos procesos corren desde el archivo, el lector mira la lista de procesos del sistema
+y, de cada uno, solo la ruta de su ejecutable, que el sistema da sin abrir su memoria ni su línea de
+comandos (`PROCESS_QUERY_LIMITED_INFORMATION` en Windows, el enlace `/proc/<pid>/exe` en Linux). Eso
+es leer el sistema, no solo lo que el inventario nombra, y por eso se dice aquí: de esa lista salen
+dos números y nada más, nunca un identificador de proceso, un nombre, una línea de comandos ni la
+ruta de otro programa. Un proceso cuenta si su ruta es la declarada o la que el sistema resuelve para
+ella, comparadas sin distinguir mayúsculas en Windows; uno lanzado por otro nombre del mismo archivo
+(una unidad de red asignada, un enlace duro) no se reconoce. «Hay N procesos» es todo lo que dice: qué
+significa depende del programa, y con la ventana de DevHQ cerrada puede haber varios procesos de
+DevHQ, las puertas que lanzan las sesiones de agentes. En un escritorio con Windows 11, sin
+privilegios de administrador, el sistema no dejó mirar más de la mitad de los procesos.
+
+El recurso de versión lo lee un lector propio (`src-tauri/src/installations/pe.rs`), sin `unsafe` y
+sin ninguna biblioteca nueva: la cabecera DOS, las cabeceras PE (PE32 y PE32+), la tabla de
+secciones, el directorio de recursos exactamente tres niveles hacia abajo (el tipo `RT_VERSION`, el
+primer nombre, el primer idioma) y, en los datos de versión, `VS_VERSIONINFO`, `StringFileInfo` y su
+primera tabla. No confía en ningún número que dé el archivo: cada desplazamiento y cada tamaño se
+comprueban contra el archivo y contra un límite antes de usarse (96 secciones, 4096 entradas por
+tabla, 256 KiB de datos de versión, 1024 hijos por nodo, 64 caracteres por clave), cada suma se
+comprueba contra el desbordamiento, y la profundidad fija hace que una tabla que apunta a sí misma se
+lea tres veces como mucho. Lo que el archivo tiene mal es una respuesta («su versión se desconoce,
+porque…»), nunca un fallo. Lee lo que dice el archivo, no lo que diría Windows: para sus propios
+ejecutables, Windows toma la versión de un archivo de idioma aparte (`.mui`) y sus APIs pueden dar
+otra.
+
+Una **batería de ejecutables hostiles** (`installations/battery.rs`), en las pruebas de Rust de Linux
+y de Windows, lo exige con archivos sintéticos y sin código: 35 que tienen mal una cosa cada uno
+(recursos que empiezan fuera del archivo o en ninguna sección, un directorio o una sección que dicen
+ocupar 4 GiB, 131 070 entradas en una tabla, tablas que apuntan a la primera, una tabla donde van los
+datos y datos donde va una tabla, una entrada que es sus propios datos, datos de versión de 4 GiB,
+más largos que su sección o de longitud cero, un hijo de longitud cero, que un lector descuidado
+leería para siempre, uno más largo que su padre, una clave que no termina, dos mil cadenas, una
+versión que no es texto o de treinta mil caracteres, un nombre con un salto de línea, 65 535
+secciones, cabeceras más largas que el archivo, y lo que no es un ejecutable: un archivo vacío, uno
+de texto, dos bytes, bytes al azar); un archivo bueno cortado en cada una de sus longitudes; y ese
+archivo con bytes sobrescritos al azar 30 000 veces, siempre las mismas. El lector debe responder a
+cada uno sin leer del archivo más de lo que permiten sus límites (512 KiB, mida lo que mida y diga lo
+que diga), y lo que acepte debe ser texto dentro de los suyos. Después los lee el lector de verdad,
+en su proceso, encerrado y sin encerrar: cada uno recibe su respuesta, con el SHA-256 de lo que
+contiene, y ningún archivo de la carpeta cambia, aparece ni desaparece (contenido y fecha de
+modificación).
+
+**Lo que no se garantiza.** Como en las copias locales: si un archivo hostil lograra ejecutar código
+dentro del lector, ese código tendría tus permisos, y ni el Job Object ni seccomp impiden que escriba
+o que pida a otro proceso arrancar un programa. Nada del sistema impide que el lector escriba: lo
+garantizan su código, que solo abre el archivo para leerlo, y la batería. Y la lista de procesos es
+la de un instante: un proceso que arranca o termina mientras se lee puede contarse o no.
 
 ### Comprobación HTTP(S)
 
@@ -1764,7 +1835,17 @@ conservan, el registro de cambios con el campo `references`, el repositorio comp
 exacta (en Rust, en la puerta y en la preview), el recurso que guarda copias locales de otros y no
 deja de ser estación de trabajo, el que es máquina de sus propias rutas y se borra con ellas pero no
 con las de otros, y la instalación: una ruta, nunca una URL, en una estación de trabajo que no deja de
-serlo mientras guarda la de otro sistema. Las copias locales se prueban con la batería hostil por el lector encerrado y sin
+serlo mientras guarda la de otro sistema. El lector de instalaciones se prueba con la batería de
+ejecutables hostiles, por el lector de recursos de versión y por el lector encerrado y sin encerrar;
+con imágenes PE32 y PE32+ sintéticas cuyo recurso declara textos conocidos, también fuera de ASCII y
+en dos idiomas; con lo que hay en una ruta que no es un ejecutable (nada, una ruta a través de un
+archivo, una carpeta) y una ruta relativa, que es un fallo de DevHQ; con el propio ejecutable de las
+pruebas, del que cuenta al menos el proceso que las corre y cuyo SHA-256 debe ser el del archivo; con
+un archivo alcanzado por un junction o un enlace, cuyo `storedAt` debe ser el que da
+`inventory::stored_at`, y nulo por su ruta real o escrita con la otra barra; y con un lector que no
+responde, termina sin decir nada, responde de más o responde algo que no se sostiene (un resultado
+desconocido, un hash que no lo es, un tamaño imposible, una versión vacía o con un salto de línea,
+una versión junto a su motivo, procesos a medias, un campo que no existe), que se rechaza entero. Las copias locales se prueban con la batería hostil por el lector encerrado y sin
 encerrar, que también comprueba que el `git` instalado sí ejecuta lo que nombran; con el lector frente al
 `git` instalado en gemelos benignos (ramas, HEAD suelto, sin commits, merge y rebase a medias, stashes,
 carpetas nuevas, un driver real y, en Windows, el `core.autocrlf` de la config del sistema); con un

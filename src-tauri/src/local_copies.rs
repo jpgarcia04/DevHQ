@@ -17,7 +17,7 @@
 
 #[cfg(test)]
 mod battery;
-mod confine;
+pub(crate) mod confine;
 mod reader;
 pub(crate) mod readings;
 pub(crate) mod remotes;
