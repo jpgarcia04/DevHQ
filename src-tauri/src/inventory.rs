@@ -263,11 +263,11 @@ pub(crate) fn plain(path: &Path) -> String {
     }
 }
 
-pub(crate) const SCHEMA_VERSION: i64 = 13;
+pub(crate) const SCHEMA_VERSION: i64 = 14;
 /// Each schema version with the migration that brings an inventory to it from the one before.
 /// They build a new inventory (`create`) and upgrade an older one (`upgrade.rs`), and are never
 /// edited once released: an inventory left at any version has the structure they give it there.
-pub(crate) const MIGRATIONS: [(i64, &str); 13] = [
+pub(crate) const MIGRATIONS: [(i64, &str); 14] = [
     (1, include_str!("../migrations/001_inventory.sql")),
     (2, include_str!("../migrations/002_inventory_details.sql")),
     (3, include_str!("../migrations/003_operational_records.sql")),
@@ -281,6 +281,7 @@ pub(crate) const MIGRATIONS: [(i64, &str); 13] = [
     (11, include_str!("../migrations/011_references.sql")),
     (12, include_str!("../migrations/012_copy_readings.sql")),
     (13, include_str!("../migrations/013_maintain_access.sql")),
+    (14, include_str!("../migrations/014_installations.sql")),
 ];
 
 // How DevHQ reaches its inventory. No opening changes its schema: an inventory in an older schema
@@ -1797,6 +1798,15 @@ pub(crate) fn save_resource_in(
             return Err(ApiError::invalid(format!(
                 "{name} holds local copies of other systems: {}. A local copy is on a workstation, so move them to another workstation, or remove them, before making {name} a {}.",
                 listed(&copies),
+                input.kind
+            )));
+        }
+        // And so would their installations, which DevHQ reads only on a workstation.
+        let installations = references::paths_on(tx, &id, Some("installation"))?;
+        if !installations.is_empty() {
+            return Err(ApiError::invalid(format!(
+                "{name} holds installations of other systems: {}. DevHQ reads an installation on a workstation, so move them to another workstation, or remove them, before making {name} a {}.",
+                listed(&installations),
                 input.kind
             )));
         }
@@ -3747,6 +3757,9 @@ pub(crate) mod tests {
                 "events_resource_id",
                 "incidents_application_id",
                 "incidents_resource_id",
+                "installation_readings_application_id",
+                "installation_readings_reference_id",
+                "installation_readings_resource_id",
                 "observations_application_id",
                 "observations_reported",
                 "observations_resource_id",
@@ -4773,6 +4786,20 @@ pub(crate) mod tests {
                 "a local copy URL",
             ),
             (
+                reference(
+                    shop,
+                    "installation",
+                    "https://shop.example/setup.exe",
+                    None,
+                    None,
+                ),
+                "an installation URL",
+            ),
+            (
+                reference(shop, "service", "/usr/bin/shop", None, Some("laptop")),
+                "an unknown kind",
+            ),
+            (
                 reference(shop, "logs", "/var/log/shop", None, Some("ghost")),
                 "a machine that is not there",
             ),
@@ -4785,6 +4812,13 @@ pub(crate) mod tests {
             (shop, "documentation", "HTTPS://Docs.example/shop", None),
             (shop, "local_copy", r"C:\src\shop", Some("laptop")),
             (shop, "local_copy", "c:/src/shop", Some("laptop")),
+            (
+                shop,
+                "installation",
+                r"C:\Program Files\Shop\shop.exe",
+                Some("laptop"),
+            ),
+            (shop, "installation", "/opt/shop/shop", Some("laptop")),
             (shop, "logs", r"\\nas\logs\shop", Some("host")),
             (
                 (None, Some("host")),
@@ -4906,6 +4940,211 @@ pub(crate) mod tests {
         std::fs::remove_file(path).unwrap();
     }
 
+    #[test]
+    fn upgrades_v13_for_installations_without_changing_any_row() {
+        let path = nothing();
+        let db = database_at(&path, 13);
+        db.execute_batch(
+            "INSERT INTO resources (id, name, kind, description, operating_system)
+               VALUES ('host', 'Host', 'server', '', 'Linux'), ('laptop', 'Laptop', 'workstation', '', 'Windows 11');
+             INSERT INTO applications (id, name, lifecycle, description, version) VALUES ('shop', 'Shop', 'production', 'Store', '2.0');
+             INSERT INTO components (id, application_id, name, kind, resource_id) VALUES ('api', 'shop', 'API', 'backend', 'host');
+             INSERT INTO observations (id, resource_id, result, summary, source, observed_at, valid_until, recorded_at, agent)
+               VALUES ('obs-agent', 'host', 'healthy', 'Looked fine', 'agent', 500, 900, 600, 'claude-code');
+             INSERT INTO events (id, resource_id, kind, outcome, title, detail, source, observation_id, occurred_at, recorded_at, agent)
+               VALUES ('evt-agent', 'host', 'observation', 'success', 'Observation: Healthy', 'Looked fine', 'agent', 'obs-agent', 500, 600, 'claude-code');
+             INSERT INTO incidents (id, application_id, title, description, severity, status, source, opened_at, updated_at)
+               VALUES ('inc', 'shop', 'Down', '', 'critical', 'open', 'manual', 700, 700);
+             INSERT INTO http_checks (resource_id, url, expected_status, timeout_seconds, valid_for_minutes, updated_at, monitor, monitor_interval_minutes)
+               VALUES ('host', 'http://host/health', 200, 5, 15, 800, 'active', 5);
+             INSERT INTO agent_access VALUES (1, 'maintain', 900);
+             INSERT INTO change_log (id, application_id, resource_id, subject_name, source, agent, action, summary, changes, occurred_at)
+               VALUES ('change-version', 'shop', NULL, 'Shop', 'manual', NULL, 'updated', 'Updated application «Shop»: version «1.9» → «2.0»',
+                       '[{\"field\":\"version\",\"before\":\"1.9\",\"after\":\"2.0\"}]', 1000);
+             INSERT INTO change_log_start VALUES (1, 300);
+             INSERT INTO system_references (id, application_id, resource_id, kind, target, label, machine_id)
+               VALUES ('removed', 'shop', NULL, 'dashboard', 'https://old.example/shop', NULL, NULL),
+                      ('shop-repo', 'shop', NULL, 'repository', 'https://github.com/me/shop', NULL, NULL),
+                      ('shop-copy', 'shop', NULL, 'local_copy', 'C:\\src\\shop', 'Work', 'laptop'),
+                      ('shop-docs', 'shop', NULL, 'documentation', 'https://docs.example/shop', 'Runbook', NULL),
+                      ('shop-panel', 'shop', NULL, 'dashboard', 'https://grafana.example/d/shop', NULL, NULL),
+                      ('host-logs', NULL, 'host', 'logs', '/var/log/syslog', NULL, 'host');
+             -- A gap in the rowids, which a rebuild that numbered the rows again would close.
+             DELETE FROM system_references WHERE id = 'removed';
+             INSERT INTO copy_readings (id, application_id, reference_id, machine_id, path, source, reader, observed_at, recorded_at, outcome, detail)
+               VALUES ('reading', 'shop', 'shop-copy', 'laptop', 'C:\\src\\shop', 'read', 'libgit2 1.9.7', 1000, 1000, 'missing', 'Nothing is at this path.');",
+        )
+        .unwrap();
+        // The kind does not exist before v14.
+        let installation = "INSERT INTO system_references (id, application_id, kind, target, machine_id)
+             VALUES ('shop-installed', 'shop', 'installation', 'C:\\Program Files\\Shop\\shop.exe', 'laptop')";
+        assert!(db.execute(installation, []).is_err());
+        let tables = [
+            "resources",
+            "applications",
+            "components",
+            "observations",
+            "incidents",
+            "events",
+            "http_checks",
+            "agent_access",
+            "change_log",
+            "change_log_start",
+            "system_references",
+            "copy_readings",
+        ];
+        let before: Vec<_> = tables.iter().map(|table| dump(&db, table)).collect();
+        assert!(
+            before[10][0].starts_with("Integer(2) | "),
+            "{:?}",
+            before[10]
+        );
+        drop(db);
+
+        upgrade(&path).unwrap();
+        let upgraded = list(&path).unwrap();
+        assert_eq!(upgraded.applications[0].references.len(), 4);
+        let db = Connection::open(&path).unwrap();
+        let version: i64 = db
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        // Every row, with its rowid and its values, the rebuilt table's included.
+        for (table, rows) in tables.iter().zip(&before) {
+            assert_eq!(&dump(&db, table), rows, "{table}");
+        }
+        assert!(dump(&db, "installation_readings").is_empty());
+        // The rebuilt table keeps its relationships and its indexes, under their names.
+        assert_eq!(
+            strings(
+                &db,
+                "SELECT \"from\" || ' → ' || \"table\" || ' ' || on_delete FROM pragma_foreign_key_list('system_references') ORDER BY 1"
+            ),
+            [
+                "application_id → applications CASCADE",
+                "machine_id → resources RESTRICT",
+                "resource_id → resources CASCADE",
+            ]
+        );
+        assert_eq!(
+            strings(&db, "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'system_references' AND name NOT LIKE 'sqlite_autoindex%' ORDER BY name"),
+            [
+                "system_references_application_id",
+                "system_references_machine_id",
+                "system_references_resource_id",
+            ]
+        );
+        assert!(strings(
+            &db,
+            "SELECT name FROM sqlite_master WHERE name LIKE '%v14%'"
+        )
+        .is_empty());
+        // A reading of an installation keeps its system (RESTRICT) and only copies what it read.
+        assert_eq!(
+            strings(
+                &db,
+                "SELECT \"from\" || ' → ' || \"table\" || ' ' || on_delete FROM pragma_foreign_key_list('installation_readings') ORDER BY 1"
+            ),
+            [
+                "application_id → applications RESTRICT",
+                "resource_id → resources RESTRICT",
+            ]
+        );
+        assert_eq!(
+            strings(&db, "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'installation_readings' AND name NOT LIKE 'sqlite_autoindex%' ORDER BY name"),
+            [
+                "installation_readings_application_id",
+                "installation_readings_reference_id",
+                "installation_readings_resource_id",
+            ]
+        );
+        drop(db);
+
+        let db = open(&path).unwrap();
+        // The new kind: a path on a machine, like a local copy.
+        db.execute(installation, []).unwrap();
+        assert!(db
+            .execute(
+                "INSERT INTO system_references (id, application_id, kind, target) VALUES ('nowhere', 'shop', 'installation', 'C:\\shop.exe')",
+                [],
+            )
+            .is_err());
+        let hash = "a".repeat(64);
+        let reading = |id: &str, values: &str| {
+            db.execute(
+                &format!(
+                    "INSERT INTO installation_readings (id, application_id, reference_id, machine_id, path, source, reader, observed_at, recorded_at,
+                         outcome, detail, stored_at, sha256, size_bytes, modified_at, product_version, file_version, product_name, version_unknown,
+                         processes, processes_unexamined, processes_unknown)
+                     VALUES ('{id}', 'shop', 'shop-installed', 'laptop', 'C:\\Program Files\\Shop\\shop.exe', 'read', 'DevHQ installation reader 1', 1000, 1000, {values})"
+                ),
+                [],
+            )
+        };
+        let accepted = [
+            // Read: its version as the file declares it, and its processes counted.
+            format!("'read', NULL, NULL, '{hash}', 10, 900, '2.0.0+3f9c2ab', '2.0.0.0', 'Shop', NULL, 2, 5, NULL"),
+            // Read, with a version resource DevHQ could not make out and processes it could not list.
+            format!("'read', NULL, 'D:\\real\\shop.exe', '{hash}', 0, NULL, NULL, NULL, NULL, 'No version resource.', NULL, NULL, 'The system did not list its processes.'"),
+            "'missing', 'Nothing is at this path.', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL".to_owned(),
+            "'unreadable', 'Access is denied.', 'D:\\real\\shop.exe', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL".to_owned(),
+            "'not_an_executable', 'This is a folder.', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL".to_owned(),
+        ];
+        for (index, values) in accepted.iter().enumerate() {
+            reading(&format!("ok-{index}"), values)
+                .unwrap_or_else(|error| panic!("{values}: {error}"));
+        }
+        let refused = [
+            ("an unknown outcome", format!("'opened', NULL, NULL, '{hash}', 10, 900, '2.0', NULL, NULL, NULL, 0, 0, NULL")),
+            ("a file not read without its reason", "'missing', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL".to_owned()),
+            ("a hash of a file not read", format!("'unreadable', 'Access is denied.', NULL, '{hash}', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL")),
+            ("processes of a file not read", "'missing', 'Nothing is at this path.', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 1, 0, NULL".to_owned()),
+            ("nothing kept somewhere else", "'missing', 'Nothing is at this path.', 'D:\\real\\shop.exe', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL".to_owned()),
+            ("a file read with a reason", format!("'read', 'Why', NULL, '{hash}', 10, 900, '2.0', NULL, NULL, NULL, 0, 0, NULL")),
+            ("a file read without its hash", "'read', NULL, NULL, NULL, 10, 900, '2.0', NULL, NULL, NULL, 0, 0, NULL".to_owned()),
+            ("a file read without its size", format!("'read', NULL, NULL, '{hash}', NULL, 900, '2.0', NULL, NULL, NULL, 0, 0, NULL")),
+            ("a hash that is none", "'read', NULL, NULL, 'ABCDEF', 10, 900, '2.0', NULL, NULL, NULL, 0, 0, NULL".to_owned()),
+            ("an uppercase hash", format!("'read', NULL, NULL, '{}', 10, 900, '2.0', NULL, NULL, NULL, 0, 0, NULL", "A".repeat(64))),
+            ("neither a version nor why not", format!("'read', NULL, NULL, '{hash}', 10, 900, NULL, NULL, NULL, NULL, 0, 0, NULL")),
+            ("a version and why it is unknown", format!("'read', NULL, NULL, '{hash}', 10, 900, '2.0', NULL, NULL, 'No version resource.', 0, 0, NULL")),
+            ("an empty version", format!("'read', NULL, NULL, '{hash}', 10, 900, '', NULL, NULL, NULL, 0, 0, NULL")),
+            ("neither processes nor why not", format!("'read', NULL, NULL, '{hash}', 10, 900, '2.0', NULL, NULL, NULL, NULL, NULL, NULL")),
+            ("processes and why they are unknown", format!("'read', NULL, NULL, '{hash}', 10, 900, '2.0', NULL, NULL, NULL, 0, 0, 'Unknown.'")),
+            ("processes half counted", format!("'read', NULL, NULL, '{hash}', 10, 900, '2.0', NULL, NULL, NULL, 1, NULL, NULL")),
+            ("a negative count", format!("'read', NULL, NULL, '{hash}', 10, 900, '2.0', NULL, NULL, NULL, -1, 0, NULL")),
+            ("a negative size", format!("'read', NULL, NULL, '{hash}', -1, 900, '2.0', NULL, NULL, NULL, 0, 0, NULL")),
+        ];
+        for (why, values) in &refused {
+            assert!(reading("refused", values).is_err(), "{why}");
+        }
+        for (why, sql) in [
+            ("another source", "INSERT INTO installation_readings (id, application_id, reference_id, machine_id, path, source, reader, observed_at, recorded_at, outcome, detail) VALUES ('x', 'shop', 'r', 'laptop', '/x', 'manual', 'reader', 1, 1, 'missing', 'Nothing.')"),
+            ("no system", "INSERT INTO installation_readings (id, reference_id, machine_id, path, source, reader, observed_at, recorded_at, outcome, detail) VALUES ('x', 'r', 'laptop', '/x', 'read', 'reader', 1, 1, 'missing', 'Nothing.')"),
+            ("two systems", "INSERT INTO installation_readings (id, application_id, resource_id, reference_id, machine_id, path, source, reader, observed_at, recorded_at, outcome, detail) VALUES ('x', 'shop', 'host', 'r', 'laptop', '/x', 'read', 'reader', 1, 1, 'missing', 'Nothing.')"),
+            ("a system that does not exist", "INSERT INTO installation_readings (id, application_id, reference_id, machine_id, path, source, reader, observed_at, recorded_at, outcome, detail) VALUES ('x', 'ghost', 'r', 'laptop', '/x', 'read', 'reader', 1, 1, 'missing', 'Nothing.')"),
+        ] {
+            assert!(db.execute(sql, []).is_err(), "{why}");
+        }
+        assert_eq!(dump(&db, "installation_readings").len(), accepted.len());
+        // Its reference can go, and its machine with it, without touching the readings; its system
+        // cannot.
+        db.execute("DELETE FROM copy_readings", []).unwrap();
+        db.execute(
+            "DELETE FROM system_references WHERE machine_id = 'laptop'",
+            [],
+        )
+        .unwrap();
+        db.execute("DELETE FROM resources WHERE id = 'laptop'", [])
+            .unwrap();
+        db.execute("DELETE FROM incidents", []).unwrap();
+        assert!(db
+            .execute("DELETE FROM applications WHERE id = 'shop'", [])
+            .is_err());
+        assert_eq!(dump(&db, "installation_readings").len(), accepted.len());
+        drop(db);
+        std::fs::remove_file(path).unwrap();
+    }
+
     /// The agent gate's reading connections never create a file and cannot write; its writing one
     /// writes only an inventory a reading look found current, and never converts it.
     #[test]
@@ -4987,13 +5226,13 @@ pub(crate) mod tests {
             found_after("DROP INDEX events_reported"),
             Found::Mismatch(vec!["no index events_reported".to_owned()])
         );
-        // Stamped 13 with only the two tables that tell a DevHQ inventory apart.
+        // Stamped 14 with only the two tables that tell a DevHQ inventory apart.
         let stamped = nothing();
         let db = Connection::open(&stamped).unwrap();
         db.execute_batch(
             "CREATE TABLE applications (id TEXT PRIMARY KEY);
              CREATE TABLE resources (id TEXT PRIMARY KEY);
-             PRAGMA user_version = 13;",
+             PRAGMA user_version = 14;",
         )
         .unwrap();
         drop(db);

@@ -3068,7 +3068,7 @@ mod tests {
         Option<&'static str>,
     );
 
-    /// A v13 inventory as `seed` leaves it (write-ahead logged, Read only), replaced by a backup
+    /// A v14 inventory as `seed` leaves it (write-ahead logged, Read only), replaced by a backup
     /// of itself: a rollback-journal file, as every DevHQ backup is.
     fn backup_copy(path: &Path) {
         seed(path);
@@ -3134,47 +3134,47 @@ mod tests {
                 Some("schema_outdated"),
             ),
             (
-                "v13 backup, rollback journal, Read only",
+                "v14 backup, rollback journal, Read only",
                 backup_copy,
                 true,
-                json!(13),
+                json!(14),
                 "current",
                 json!("read"),
                 counts.clone(),
                 None,
             ),
             (
-                "v13, write-ahead log, Read only",
+                "v14, write-ahead log, Read only",
                 |path| drop(seed(path)),
                 true,
-                json!(13),
+                json!(14),
                 "current",
                 json!("read"),
                 counts.clone(),
                 None,
             ),
             (
-                "v13, write-ahead log, Off",
+                "v14, write-ahead log, Off",
                 |path| {
                     seed(path);
                     crate::access::set_agent_access(path, "off").unwrap();
                 },
                 true,
-                json!(13),
+                json!(14),
                 "current",
                 json!("off"),
                 Value::Null,
                 Some("access_denied"),
             ),
             (
-                "v14",
+                "v15",
                 |path| {
-                    database_at(path, 13)
-                        .pragma_update(None, "user_version", 14)
+                    database_at(path, 14)
+                        .pragma_update(None, "user_version", 15)
                         .unwrap();
                 },
                 true,
-                json!(14),
+                json!(15),
                 "newer",
                 Value::Null,
                 Value::Null,
@@ -3206,11 +3206,11 @@ mod tests {
                 Some("not_an_inventory"),
             ),
             (
-                "a SQLite database stamped 13 without DevHQ's tables",
+                "a SQLite database stamped 14 without DevHQ's tables",
                 |path| {
                     sqlite(
                         path,
-                        "CREATE TABLE notes (body TEXT); PRAGMA user_version = 13;",
+                        "CREATE TABLE notes (body TEXT); PRAGMA user_version = 14;",
                     )
                 },
                 true,
@@ -3221,37 +3221,37 @@ mod tests {
                 Some("not_an_inventory"),
             ),
             (
-                "v13 stamped, with only the tables that tell an inventory apart",
+                "v14 stamped, with only the tables that tell an inventory apart",
                 |path| {
                     sqlite(
                         path,
                         "CREATE TABLE applications (id TEXT PRIMARY KEY);
                          CREATE TABLE resources (id TEXT PRIMARY KEY);
-                         PRAGMA user_version = 13;",
+                         PRAGMA user_version = 14;",
                     )
                 },
                 true,
-                json!(13),
+                json!(14),
                 "mismatch",
                 Value::Null,
                 Value::Null,
                 Some("schema_mismatch"),
             ),
             (
-                "v13 without agent_access",
+                "v14 without agent_access",
                 |path| {
                     seed(path);
                     sqlite(path, "DROP TABLE agent_access");
                 },
                 true,
-                json!(13),
+                json!(14),
                 "mismatch",
                 Value::Null,
                 Value::Null,
                 Some("schema_mismatch"),
             ),
             (
-                "v13, Off, its write-ahead log left by a writer that was killed",
+                "v14, Off, its write-ahead log left by a writer that was killed",
                 |path| {
                     seed(path);
                     crate::access::set_agent_access(path, "off").unwrap();
@@ -3265,7 +3265,7 @@ mod tests {
                 Some("needs_recovery"),
             ),
             (
-                "v13, Read only, its write-ahead log left without its index",
+                "v14, Read only, its write-ahead log left without its index",
                 |path| {
                     seed(path);
                     kill(writer(path, "log"), path);
@@ -3294,7 +3294,7 @@ mod tests {
                 Some("needs_recovery"),
             ),
             (
-                "v13 backup, Read only, rollback journal left by a write that was killed",
+                "v14 backup, Read only, rollback journal left by a write that was killed",
                 |path| {
                     backup_copy(path);
                     kill(writer(path, "journal"), path);

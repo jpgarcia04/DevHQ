@@ -1568,7 +1568,7 @@ line break', 'manual', 800, 800);",
             drop(db);
             let shown = fingerprint_of(&path);
             let upgraded = upgrade_to(&path, 12, &shown).unwrap();
-            assert_eq!((upgraded.from, upgraded.to), (12, 13));
+            assert_eq!((upgraded.from, upgraded.to), (12, SCHEMA_VERSION));
             let kept: Option<(String, i64)> = readonly(&path)
                 .query_row("SELECT mode, changed_at FROM agent_access", [], |row| {
                     Ok((row.get(0)?, row.get(1)?))
@@ -1588,6 +1588,61 @@ line break', 'manual', 800, 800);",
             );
             remove(&path);
         }
+    }
+
+    /// The upgrade to v14 rebuilds `system_references` for the `installation` kind: every reference
+    /// keeps its rowid, its ID and its values, and only an inventory in v14 takes an installation.
+    #[test]
+    fn the_upgrade_to_v14_keeps_every_reference_and_takes_installations() {
+        let path = path();
+        let db = database_at(&path, 13);
+        db.execute_batch(
+            "INSERT INTO resources (id, name, kind, description, operating_system)
+               VALUES ('laptop', 'Laptop', 'workstation', '', 'Windows 11');
+             INSERT INTO applications (id, name, lifecycle, description, version) VALUES ('notes', 'Atlas Notes', 'production', '', '1.4.0');
+             INSERT INTO system_references (id, application_id, kind, target, label, machine_id)
+               VALUES ('removed', 'notes', 'dashboard', 'https://old.example/notes', NULL, NULL),
+                      ('notes-repo', 'notes', 'repository', 'https://git.example/ana/atlas-notes', NULL, NULL),
+                      ('notes-copy', 'notes', 'local_copy', 'C:\\src\\atlas-notes', 'Work', 'laptop');
+             INSERT INTO system_references (id, resource_id, kind, target, machine_id)
+               VALUES ('laptop-logs', 'laptop', 'logs', 'C:\\logs', 'laptop');
+             -- A gap in the rowids, which a rebuild that numbered the rows again would close.
+             DELETE FROM system_references WHERE id = 'removed';",
+        )
+        .unwrap();
+        let installation = "INSERT INTO system_references (id, application_id, kind, target, machine_id)
+             VALUES ('notes-installed', 'notes', 'installation', 'C:\\Program Files\\Atlas Notes\\atlas-notes.exe', 'laptop')";
+        assert!(
+            db.execute(installation, []).is_err(),
+            "v13 took an installation"
+        );
+        let references = |db: &Connection| -> Vec<String> {
+            db.prepare("SELECT rowid || ' ' || id || ' ' || coalesce(application_id, '-') || ' ' || coalesce(resource_id, '-') || ' ' || kind || ' ' || target || ' ' || coalesce(label, '-') || ' ' || coalesce(machine_id, '-') FROM system_references ORDER BY rowid")
+                .unwrap()
+                .query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
+        };
+        let before = references(&db);
+        assert_eq!(before.len(), 3);
+        assert!(before[0].starts_with("2 notes-repo "), "{before:?}");
+        drop(db);
+        let shown = fingerprint_of(&path);
+        let upgraded = upgrade_to(&path, 13, &shown).unwrap();
+        assert_eq!((upgraded.from, upgraded.to), (13, 14));
+        assert_eq!((upgraded.tables_kept, upgraded.rows_kept), (12, 5));
+        assert_eq!(references(&readonly(&path)), before);
+        let db = Connection::open(&path).unwrap();
+        db.execute(installation, []).unwrap();
+        let readings: i64 = db
+            .query_row("SELECT count(*) FROM installation_readings", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(readings, 0);
+        drop(db);
+        remove(&path);
     }
 
     #[test]

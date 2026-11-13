@@ -170,7 +170,7 @@ el nombre que declaró su cliente, «Agent · _nombre_»).
 ### Referencias
 
 Una aplicación o un recurso dice dónde está en el mundo con sus **referencias**: su repositorio, sus
-copias locales en cada estación de trabajo, su documentación, sus logs y su panel. Responden «¿dónde
+copias locales y sus instalaciones en cada estación de trabajo, su documentación, sus logs y su panel. Responden «¿dónde
 están sus logs, su documentación, su repositorio?» y, para un agente que trabaja en una carpeta,
 «¿qué sistema es este?». Son inventario que declaras tú o un agente, no evidencia: no llevan
 `source`, su rastro es el [registro de cambios](#registro-de-cambios) y DevHQ no las abre ni
@@ -184,6 +184,7 @@ comprueba que existan o respondan, salvo la copia local que le pidas leer (ver
 | `documentation` | Documentation | URL http(s) o ruta absoluta                                               |
 | `logs`          | Logs          | URL http(s) o ruta absoluta                                               |
 | `dashboard`     | Dashboard     | URL http(s)                                                               |
+| `installation`  | Installation  | Ruta absoluta del ejecutable instalado, en un recurso `workstation`       |
 
 - El destino es una URL http(s) o una ruta absoluta, y se guarda tal como se escribió, sin espacios
   alrededor. La URL sigue las reglas de la comprobación HTTP(S): con host, sin usuario ni contraseña
@@ -196,7 +197,7 @@ comprueba que existan o respondan, salvo la copia local que le pidas leer (ver
   llegarán con una integración que los necesite.
 - **Toda ruta dice en qué máquina está** (`machine_id`, un recurso), porque el mismo proyecto vive en
   una carpeta distinta en cada equipo, y una URL no está en ninguna. La máquina de una copia local
-  es una estación de trabajo. Un recurso puede ser la máquina de sus propias rutas, como los logs de
+  o de una instalación es una estación de trabajo. Un recurso puede ser la máquina de sus propias rutas, como los logs de
   un servidor en `/var/log/…`; en la ventana se elige como «This resource» una vez guardado.
 - La **etiqueta**, opcional y de hasta 120 caracteres, es un nombre para personas que distingue dos
   referencias del mismo tipo (dos paneles, la documentación de la API y la de usuario). Nunca es un
@@ -216,8 +217,9 @@ comprueba que existan o respondan, salvo la copia local que le pidas leer (ver
   corre un componente: quitarlas cambiaría la configuración de otro sistema sin su entrada en el
   registro de cambios, y el esquema también lo impide (`RESTRICT`). Sus propias rutas no lo impiden:
   el borrado las quita primero, porque SQLite aplica el `RESTRICT` de la máquina en el acto, antes
-  de la cascada del sujeto. Por la misma razón, un recurso que guarda copias locales de otros
-  sistemas no puede dejar de ser estación de trabajo, y el rechazo dice de qué sistemas son.
+  de la cascada del sujeto. Por la misma razón, un recurso que guarda copias locales o
+  instalaciones de otros sistemas no puede dejar de ser estación de trabajo, y el rechazo dice de qué
+  sistemas son.
 - En la ventana, el Overview de cada aplicación y la tarjeta de cada recurso en Infrastructure
   muestran sus referencias, con la máquina de cada ruta y un botón **Copy** para el destino, como la
   ruta en Settings. Sin referencias dicen «No references yet»: no es atención ni hueco de cobertura,
@@ -376,6 +378,17 @@ aplicaciones archivadas. Applications, en cada tarjeta, y el Overview de cada ap
 última actividad: el commit más nuevo entre las últimas lecturas de sus copias, con la máquina y el
 momento de esa lectura, y cuántas copias nunca se leyeron; si ninguna se leyó, que la actividad se
 desconoce. Nunca dicen «inactiva».
+
+### Instalaciones
+
+Una referencia `installation` dice dónde está, en una estación de trabajo, el ejecutable instalado de
+un sistema: la ruta absoluta de ese archivo (`C:\Users\ana\AppData\Local\Atlas Notes\atlas-notes.exe`),
+no la de su carpeta ni la de un acceso directo. Como una copia local, es inventario que declaras tú o
+un agente, siempre en una máquina que es estación de trabajo, y la misma ruta en la misma máquina no
+se declara dos veces en un sistema. DevHQ no busca instalaciones: solo conoce las que el inventario
+nombra. El esquema ya guarda la tabla de sus lecturas (`installation_readings`, ver
+[Arquitectura](#arquitectura)), pero este DevHQ todavía no lee ninguna instalación: la referencia se
+muestra y se copia como las demás.
 
 ### Comprobación HTTP(S)
 
@@ -567,7 +580,7 @@ anterior solo lo actualiza la persona, desde la ventana, con **Back up and upgra
 hace: ni una consulta, ni la supervisión, ni un respaldo, ni la [puerta para agentes](#puerta-para-agentes),
 que no tiene ninguna herramienta para ello. Lo implementa `src-tauri/src/upgrade.rs`.
 
-- **Ver antes de decidir.** Una ventana que arranca sobre un inventario anterior a la v13 no lo sirve:
+- **Ver antes de decidir.** Una ventana que arranca sobre un inventario anterior a la v14 no lo sirve:
   cada página de Mi inventario muestra **Inventory needs a schema upgrade** con lo que es, leído sin
   cambiar ningún archivo y como lee la puerta, con una conexión que no puede escribir
   (`inspect_upgrade`). Dice la ruta, la versión que declara y la de este DevHQ, y cuántas filas tiene
@@ -600,7 +613,7 @@ que no tiene ninguna herramienta para ello. Lo implementa `src-tauri/src/upgrade
      y su manifiesto no se migra nada, ni cuando el sistema responde que no pudo hacer alguno de esos
      pasos.
   4. Aplica las migraciones en la misma transacción.
-  5. Antes de confirmar, comprueba el resultado: la versión 13 y su estructura, `integrity_check`,
+  5. Antes de confirmar, comprueba el resultado: la versión 14 y su estructura, `integrity_check`,
      `foreign_key_check`, y que cada fila de cada tabla sigue ahí con su `rowid` y los mismos valores
      en las columnas que ya tenía, comparados valor a valor y tipo a tipo. En cada columna nueva, cada
      fila debe tener el valor por defecto que declara la columna (`NULL` si no declara ninguno), que es
@@ -642,10 +655,10 @@ que no tiene ninguna herramienta para ello. Lo implementa `src-tauri/src/upgrade
     nada después. Pero el archivo queda con un journal o un log que hay que recuperar, y DevHQ no
     recupera por su cuenta un inventario de un esquema anterior: al arrancar lo rechaza sin tocar sus
     archivos (ver «Un inventario antiguo que necesita recuperación», abajo).
-  - Si termina después del commit, el inventario ya es v13: al arrancar, la ventana lo recupera como
+  - Si termina después del commit, el inventario ya es v14: al arrancar, la ventana lo recupera como
     cualquier inventario actual y lo sirve.
   - Dos actualizaciones a la vez, desde dos ventanas, las ordena el lock. La segunda, al obtenerlo,
-    encuentra el inventario ya en la v13, no hace otro respaldo y la ventana lo sirve (**Inventory
+    encuentra el inventario ya en la v14, no hace otro respaldo y la ventana lo sirve (**Inventory
     already upgraded**); si espera más de 5 s se rechaza con `upgrade_refused` y basta con reintentar.
 - **Los respaldos** van a la misma carpeta `backups/` que los de Back up now, en el mismo disco que el
   inventario: un disco que falla se los lleva, y desinstalar DevHQ con «Delete the application data»
@@ -702,7 +715,7 @@ que no tiene ninguna herramienta para ello. Lo implementa `src-tauri/src/upgrade
        Si no coinciden, o no hay respaldo, no pongas ninguno en su lugar y conserva los archivos como
        están: esta versión de DevHQ no ofrece otro camino.
 
-- **Volver a una versión anterior de DevHQ.** Un DevHQ anterior no lee la v13: volver es restaurar el
+- **Volver a una versión anterior de DevHQ.** Un DevHQ anterior no lee la v14: volver es restaurar el
   respaldo previo a la actualización, de su versión, como arriba, y lo escrito después se pierde. Los
   DevHQ anteriores a que ninguna apertura actualizara un inventario actualizan sin respaldo lo que
   abren, y convierten a WAL uno más nuevo antes de rechazarlo: no abras con ellos un inventario que
@@ -876,14 +889,14 @@ bloqueo, borra el índice y solo después vuelca y borra el log, y una mirada en
 que nadie mantiene. Si los archivos cambiaron, mira otra vez desde el principio; solo responde
 `needs_recovery` si siguieron igual, lo que retrasa esa respuesta unos 125 ms.
 
-La puerta solo sirve un inventario en el esquema de este DevHQ (v13) y con su estructura. Lo demás lo
+La puerta solo sirve un inventario en el esquema de este DevHQ (v14) y con su estructura. Lo demás lo
 rechaza sin leer ni cambiar nada, también con la puerta cerrada: un inventario más antiguo con
 `schema_outdated` (este DevHQ nunca actualiza un inventario al abrirlo; solo la persona lo actualiza,
 desde la ventana, con [Back up and upgrade](#actualizar-un-inventario-antiguo), y la puerta no tiene
 herramienta para ello), uno más nuevo con `schema_newer`, un archivo SQLite sin las tablas de DevHQ (vacío o de otro
 programa) con `not_an_inventory`, uno que habría que recuperar con `needs_recovery`, y lo que no se puede
 leer como SQLite (otro tipo de archivo, una carpeta, un archivo dañado o bloqueado) con
-`database_error`. Que un archivo declare la versión 13 no basta. La puerta compara sus tablas, columna
+`database_error`. Que un archivo declare la versión 14 no basta. La puerta compara sus tablas, columna
 por columna, y sus índices, por nombre, con el esquema que crean las migraciones de este DevHQ; si algo
 falta o difiere lo rechaza con `schema_mismatch` y dice qué. Las tablas e índices que el esquema no tiene
 no los juzga. Esa comparación no es una comprobación de integridad: la puerta nunca lee cada página y
@@ -1490,7 +1503,7 @@ pánico que en Linux abortaba el proceso al abrir Mi inventario (lo comprueba `n
   (`upgrade.rs`), cuando la persona pulsa Back up and upgrade en la ventana: con su propia conexión
   (`open_to_upgrade`), bajo el lock de escritura, después de un respaldo verificado y comprobando el
   resultado antes de confirmar (ver [Actualizar un inventario antiguo](#actualizar-un-inventario-antiguo)).
-  Las migraciones transaccionales v1→v13 (`PRAGMA user_version`) crean el esquema de un inventario
+  Las migraciones transaccionales v1→v14 (`PRAGMA user_version`) crean el esquema de un inventario
   nuevo y actualizan uno anterior; ninguna apertura, consulta, respaldo, supervisión ni herramienta MCP
   las aplica. Una versión más nueva se rechaza en vez de adivinarse.
 
@@ -1640,7 +1653,18 @@ también con el lock de escritura de una edición, en un paso de índice, cuando
 la v10 la obligaban a leer y ordenar todas las entradas del sistema (con 200 000 entradas sintéticas,
 la mitad de un sistema, de 58 ms a 0,004 ms; cada commit cuesta lo mismo a efectos prácticos y el
 archivo crece un 15 %). La consulta exige ese índice (`INDEXED BY`), porque las estadísticas que otra
-herramienta puede reunir (`ANALYZE`) llevan a SQLite a preferir el índice por hora y ordenar. Los
+herramienta puede reunir (`ANALYZE`) llevan a SQLite a preferir el índice por hora y ordenar. La
+v14 reconstruye `system_references`, como la v13 `agent_access`, para admitir un sexto tipo de
+referencia, `installation`: cada referencia conserva su `rowid`, su ID y sus valores, y sus tres
+índices se vuelven a crear con sus nombres; nada apunta a esa tabla (una lectura copia el ID de su
+referencia, sin clave foránea), así que ninguna otra cambia. También añade `installation_readings`,
+las lecturas de [instalaciones](#instalaciones), vacía, con sus índices por referencia y por sistema:
+su sistema es `ON DELETE RESTRICT`, y la referencia, la máquina y la ruta leídas se copian sin claves
+foráneas, como en `copy_readings`. Sus CHECK exigen que un archivo que no se leyó diga por qué y nada
+más (salvo dónde lo guarda el sistema, y eso nunca de una ruta donde no había nada), que uno leído
+tenga su SHA-256 y su tamaño, lo que declara su recurso de versión o por qué se desconoce (nunca
+ambos, nunca ninguno) y sus procesos contados o desconocidos con el motivo (nunca ambos, nunca a
+medias). Los
 registros usan dos columnas con clave foránea (`application_id`/`resource_id`) y un CHECK
 que exige exactamente una; las referencias de historial son `ON DELETE RESTRICT`, así que
 nada puede borrar un sujeto y dejar evidencia huérfana; los casos de uso de borrado lo
@@ -1708,12 +1732,12 @@ no una especificación ni un backlog: nada de lo que describe existe hasta que e
 Las pruebas cubren navegación, tabs/teclado, filtros, rutas desconocidas, relaciones
 compartidas, cronología de la demo, salud desconocida, persistencia tras reapertura,
 rechazo de referencias inválidas sin escrituras parciales, restricciones del esquema,
-migraciones v1/v2→v3, v3→v4, v4→v5, v5→v6, v6→v7, v7→v8, v8→v9, v9→v10, v10→v11, v11→v12 y v12→v13 (incluida la negativa a confirmar relaciones rotas), la actualización explícita (cada versión de la v1 a la v12, con journal de rollback y en WAL, actualizada con su consentimiento:
+migraciones v1/v2→v3, v3→v4, v4→v5, v5→v6, v6→v7, v7→v8, v8→v9, v9→v10, v10→v11, v11→v12, v12→v13 y v13→v14 (incluida la negativa a confirmar relaciones rotas), la actualización explícita (cada versión de la v1 a la v13, con journal de rollback y en WAL, actualizada con su consentimiento:
 cada fila conservada valor a valor, un respaldo idéntico al inventario anterior con su manifiesto, que
 restaurado vuelve a ser lo que se vio y se actualiza igual; ningún archivo cambia al mirarlo ni al
 rechazar otra versión, otro contenido o un archivo cambiado después de mirarlo; nada se actualiza sin
 la estructura exacta de su versión, con un índice que falta, una tabla o un trigger de más, una
-relación rota, páginas dañadas o una columna declarada de otra forma, ni siendo v14 o de otro
+relación rota, páginas dañadas o una columna declarada de otra forma, ni siendo v15 o de otro
 programa; ninguna migración se confirma sin un respaldo verificado, con una copia dañada, cambiada o con
 una fila de más, un nombre de respaldo o de manifiesto ocupado, unos nombres que el sistema no confirma
 en disco (el respaldo y su manifiesto se quedan) o una carpeta imposible; una migración
@@ -1738,8 +1762,9 @@ impide, la confirmación y que un resultado tardío de un sujeto borrado no se r
 referencias: cada destino que se rechaza y por qué, las máquinas, los duplicados, los ID que se
 conservan, el registro de cambios con el campo `references`, el repositorio compartido por igualdad
 exacta (en Rust, en la puerta y en la preview), el recurso que guarda copias locales de otros y no
-deja de ser estación de trabajo, y el que es máquina de sus propias rutas y se borra con ellas pero no
-con las de otros. Las copias locales se prueban con la batería hostil por el lector encerrado y sin
+deja de ser estación de trabajo, el que es máquina de sus propias rutas y se borra con ellas pero no
+con las de otros, y la instalación: una ruta, nunca una URL, en una estación de trabajo que no deja de
+serlo mientras guarda la de otro sistema. Las copias locales se prueban con la batería hostil por el lector encerrado y sin
 encerrar, que también comprueba que el `git` instalado sí ejecuta lo que nombran; con el lector frente al
 `git` instalado en gemelos benignos (ramas, HEAD suelto, sin commits, merge y rebase a medias, stashes,
 carpetas nuevas, un driver real y, en Windows, el `core.autocrlf` de la config del sistema); con un
@@ -1779,11 +1804,11 @@ las que edita una, y con ocho que dan de alta la misma aplicación, de las que q
 que dejan elementos fuera sin quitarlos y bajas de lo que no es del sistema, rechazadas enteras; con
 un alta equivocada que se corrige, se borra en la ventana o, con historial, se archiva; con el log
 que deja un escritor al que se mata, que la puerta rechaza sin tocar ningún archivo y que la ventana
-recupera con cada cambio una sola vez; y con la actualización a la v13, que conserva el modo elegido. Su apertura del inventario se
-prueba con inventarios v6 con journal de rollback y en WAL, v12 con Read only, v13 en WAL con Read only
-y con Off, la copia de un respaldo (rollback) con Read only, v14, un archivo vacío, una base SQLite de
-otro programa, otra marcada con la versión 13 sin las tablas de DevHQ, otra marcada con la versión 13
-con solo `applications` y `resources`, un v13 sin `agent_access`, un v13 con Off cuyo log dejó con
+recupera con cada cambio una sola vez; y con la actualización a la v13, que conserva el modo elegido. La actualización a la v14 se prueba con referencias de cada tipo y un hueco en sus `rowid`, que una reconstrucción que las renumerara cerraría: cada una conserva su `rowid` y sus valores, la tabla sus relaciones y sus índices, solo un inventario v14 admite una instalación, y cada CHECK de las lecturas rechaza lo que debe. Su apertura del inventario se
+prueba con inventarios v6 con journal de rollback y en WAL, v12 con Read only, v14 en WAL con Read only
+y con Off, la copia de un respaldo (rollback) con Read only, v15, un archivo vacío, una base SQLite de
+otro programa, otra marcada con la versión 14 sin las tablas de DevHQ, otra marcada con la versión 14
+con solo `applications` y `resources`, un v14 sin `agent_access`, un v14 con Off cuyo log dejó con
 cambios un escritor al que se mata (como lo deja un cierre brusco), ese mismo log sin su índice, un v6
 y la copia de un respaldo con el journal de rollback que deja una escritura a la que se mata a medias,
 un archivo de texto, una carpeta y nada: `status` dice qué es cada uno sin presentar como sabido lo que
@@ -1809,24 +1834,24 @@ sistema solo lo que devuelve de él y una fila más, y los planes de consulta, q
 completo ni buscan un evento automático por su observación, tampoco con estadísticas que otra
 herramienta haya calculado sobre el archivo. Que ninguna apertura cambia el esquema se prueba con
 cada comando de la ventana, por el manejador real de comandos, sobre un v6 en rollback y en WAL, un
-v11, un v14 en rollback y en WAL, un archivo vacío, una base de otro programa y una marcada con la
-versión 13 sin su estructura: cada comando que abriría el inventario se rechaza con su código y ningún
+v11, un v15 en rollback y en WAL, un archivo vacío, una base de otro programa y una marcada con la
+versión 14 sin su estructura: cada comando que abriría el inventario se rechaza con su código y ningún
 archivo de la carpeta cambia, aparece ni desaparece. También con casos de uso que abren de verdad un
-v6, un v11 en WAL y un v14 en rollback y en WAL y los rechazan sin cambiar un byte ni su modo de
+v6, un v11 en WAL y un v15 en rollback y en WAL y los rechazan sin cambiar un byte ni su modo de
 journal y sin crear `backups/`; con una conexión cuyo archivo pasa a la v11 después de abrirse, que
 rechaza leer y escribir sin actualizarlo; con un agente al que se le cierra la puerta después de abrir
 su conexión; con un inventario que desaparece con la ventana abierta y que nadie vuelve a crear; con un
 archivo vacío que nunca se inicializa, tampoco con un journal al lado; con la ventana que arranca donde
 no hay nada y crea un inventario en WAL; con arranques sobre escritores a los que se mata a medias: un
-v13 se recupera con lo confirmado, y un v6 y un v14 se rechazan sin cambiar ningún archivo; con el
+v14 se recupera con lo confirmado, y un v6 y un v15 se rechazan sin cambiar ningún archivo; con el
 journal de una escritura que reescribía doscientos recursos, y con el log de otra ya confirmada, que
 quedan sin su inventario: la ventana no crea ninguno (sin la protección, el journal dañaba el
 inventario nuevo, como dice `PRAGMA integrity_check`, y el log le metía los recursos del anterior),
 no cambia ningún byte de lo que quedó y, devuelto el inventario, lo recupera íntegro y con lo
-confirmado; y con archivos que se sustituyen mientras la ventana recupera un v13: todos, por un v14
-con una escritura sin terminar, después de que la copia resultara actual (el v14 se rechaza y queda
+confirmado; y con archivos que se sustituyen mientras la ventana recupera un v14: todos, por un v15
+con una escritura sin terminar, después de que la copia resultara actual (el v15 se rechaza y queda
 byte a byte como se puso; sin la protección SQLite reproducía su journal), y solo el log, por uno que
-lo hace v14, con la conexión que lo va a recuperar ya abierta (se rechaza igual; si se compara antes
+lo hace v15, con la conexión que lo va a recuperar ya abierta (se rechaza igual; si se compara antes
 de abrirla, SQLite volcaba ese log en el archivo). La concurrencia de SQLite se
 prueba sin esperas medidas: una lectura no espera a una escritura en curso, una escritura no espera a
 una lectura abierta (que conserva su estado), cuatro arranques simultáneos crean un único inventario
