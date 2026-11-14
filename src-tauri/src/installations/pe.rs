@@ -195,7 +195,9 @@ fn version<F: Read + Seek>(
         return unknown("The file's section table ends past its end.");
     };
     let sections: Vec<Section> = table
-        .chunks_exact(40)
+        .as_chunks::<40>()
+        .0
+        .iter()
         .filter_map(|entry| {
             Some(Section {
                 address: u32_at(entry, 12)?,
@@ -231,7 +233,9 @@ fn version<F: Read + Seek>(
             return malformed();
         };
         let mut pairs = list
-            .chunks_exact(8)
+            .as_chunks::<8>()
+            .0
+            .iter()
             .filter_map(|entry| Some((u32_at(entry, 0)?, u32_at(entry, 4)?)));
         let found = if level == 0 {
             pairs.find(|(name, _)| *name == RT_VERSION)
@@ -342,8 +346,10 @@ fn children(bytes: &[u8]) -> Option<Vec<Node<'_>>> {
 /// The text a string node holds: UTF-16 up to its first zero, or to the node's end.
 fn text(node: &Node) -> Option<String> {
     let units: Vec<u16> = node.bytes[node.after_key..]
-        .chunks_exact(2)
-        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| u16::from_le_bytes(*pair))
         .take_while(|unit| *unit != 0)
         .collect();
     String::from_utf16(&units).ok()
