@@ -302,6 +302,18 @@ processes running from the file it looks at the system's list of processes and k
 never a process identifier, a name, a command line or another program's path. Tests use synthetic
 images without code (`pe::tests::image`) and the test executable itself, never an installed program.
 
+## Version
+
+DevHQ's version is one number in `package.json`, `package-lock.json`, `src-tauri/Cargo.toml`,
+`src-tauri/Cargo.lock`, `src-tauri/tauri.conf.json` and `src/shared/version.ts`
+(`src/shared/version.test.ts` holds them together). Raise it when an installer is built to be
+installed, not with every pull request: what tells one build from another is the commit, which
+`src-tauri/build.rs` writes after the version in the Windows version resource
+(`0.2.0+<12 digits>`). It reads the commit from `.git` as files (`src-tauri/src/build_version.rs`,
+also where `.git` is a file: a linked worktree, a submodule) and never runs `git` or any other
+program. It says `.dirty` only when the builder sets `DEVHQ_BUILD_DIRTY=1`, because it cannot know
+without `git status`; and without a `.git` it understands, it adds no commit. Never make it guess.
+
 ## Schema
 
 A schema change is a new migration (`src-tauri/migrations/00N_*.sql`, next `user_version`)

@@ -1,6 +1,6 @@
 [package]
 name = "devhq"
-version = "0.1.0"
+version = "0.2.0"
 description = "The operations home for a personal software ecosystem"
 authors = ["DevHQ"]
 edition = "2021"
@@ -13,6 +13,9 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+# The build script merges the version with its commit into Tauri's configuration (TAURI_CONFIG),
+# which is JSON. Already built for the package itself; no new crate.
+serde_json = "1"
 
 [dependencies]
 tauri = { version = "2", features = [] }

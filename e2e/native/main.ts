@@ -766,6 +766,7 @@ try {
       processes: number
       storedAt: string | null
       productName: string | null
+      productVersion: string | null
     }[]
     assert.deepEqual(
       [reading!.agent, reading!.outcome, reading!.sha256, reading!.storedAt],
@@ -773,8 +774,18 @@ try {
     )
     // The window and the gate both run from it; the reader, which does too, does not count itself.
     assert.ok(reading!.processes >= 2, `${reading!.processes} processes`)
-    // A Windows build declares its product in its version resource; an ELF has none.
-    if (process.platform === 'win32') assert.equal(reading!.productName, 'DevHQ')
+    // A Windows build declares its product in its version resource, and its version with the
+    // commit it was built from, as DevHQ asks of the applications a person builds; an ELF has
+    // no version resource.
+    if (process.platform === 'win32') {
+      assert.equal(reading!.productName, 'DevHQ')
+      const { version } = JSON.parse(readFileSync('package.json', 'utf8')) as { version: string }
+      assert.ok(
+        reading!.productVersion?.startsWith(`${version}+`) &&
+          /\+[0-9a-f]{12}(\.dirty)?$/.test(reading!.productVersion),
+        `the build declares ${reading!.productVersion}`,
+      )
+    }
     // The window notices the gate's commit on its own.
     await ui.see('asked by native-walk')
   })

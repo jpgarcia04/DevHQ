@@ -542,6 +542,27 @@ leyeron: las mismas listas que da la puerta, sin las aplicaciones archivadas. Di
 salud, ni dice si la aplicación funciona. El formulario de una aplicación o un recurso ofrece
 Installation entre los tipos de referencia.
 
+**Qué build es: la versión y el commit.** El SHA-256 dice que dos lecturas encontraron builds
+distintas, pero no cuáles. Para las aplicaciones que construyes tú, lo más barato no está en DevHQ: que
+cada build declare su versión de verdad y escriba su commit en el recurso de versión, como metadatos de
+build de SemVer (`ProductVersion = 1.4.0+3f9c2ab01d4e`). La lectura lo guarda tal cual, y la
+comparación con la versión declarada ignora lo que sigue al `+`. DevHQ es el primero en cumplirlo: su
+script de build (`src-tauri/build.rs`) lee el commit de HEAD en el `.git` del checkout, como archivos y
+sin ejecutar `git` (un script de build que arranca programas ejecuta lo que haya primero en el `PATH`),
+y el ejecutable de Windows declara `0.2.0+` y los doce primeros dígitos de ese commit en
+`ProductVersion` y `FileVersion`. Lee `HEAD`, la referencia que nombra, suelta o en `packed-refs`, y,
+en un worktree enlazado o un submódulo, donde `.git` es un archivo (`gitdir: …`), la carpeta que ese
+archivo nombra y la del repositorio al que está enlazado (`commondir`). Lo que no puede saber no lo
+afirma: sin `.git` (un archivo de fuentes), o con uno que no entiende, la versión queda sin commit; y
+si el árbol tenía cambios sin confirmar no se puede saber sin comparar cada archivo con el índice, que
+es `git status`, así que la versión nombra el commit en el que estaba HEAD y no dice nada del árbol,
+salvo que quien compila lo diga con `DEVHQ_BUILD_DIRTY=1`, y entonces termina en `.dirty`. Solo el
+recurso de versión lleva el commit: la versión de la aplicación y la del instalador siguen siendo
+`0.2.0`. Ese número está escrito en `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`
+y `src/shared/version.ts`, de donde lo toma la ventana, y una prueba exige que coincidan; sube cuando
+se construye un instalador para instalarlo, no con cada cambio, porque lo que distingue una build de
+otra es el commit.
+
 ### Comprobación HTTP(S)
 
 Cada aplicación o recurso admite **como máximo un** endpoint: URL http/https, estado
@@ -1972,7 +1993,13 @@ cambió la build, el corte de la búsqueda hacia atrás, los procesos en pasado 
 sistema, `storedAt`, el motivo de una versión desconocida), que nada dice que la aplicación esté abierta,
 Read solo en esta estación y su fallo, el historial que no carga nada cerrado y marca una ruta que ya no
 se declara, y el panel de Overview con sus tres listas, sin las aplicaciones archivadas; la preview,
-contra las reglas de Rust; y con Playwright y axe, el panel, la referencia y el historial. Las copias locales se prueban con la batería hostil por el lector encerrado y sin
+contra las reglas de Rust; y con Playwright y axe, el panel, la referencia y el historial. El commit
+que declara una build se prueba con cada forma de un checkout (una rama con su referencia suelta, en
+`packed-refs` o en las dos, HEAD suelto, un worktree enlazado cuya rama está en el repositorio
+principal, un `.git` que nombra su carpeta con una ruta relativa) y con lo que no debe dar ninguno (sin
+`.git`, un HEAD vacío, una referencia que no está, que no guarda un commit o que sale del repositorio,
+un hash corto, un `.git` que no nombra nada); `.dirty` solo cuando se dice; y el recorrido nativo
+comprueba en Windows que el ejecutable declara la versión de `package.json` seguida de un commit. Las copias locales se prueban con la batería hostil por el lector encerrado y sin
 encerrar, que también comprueba que el `git` instalado sí ejecuta lo que nombran; con el lector frente al
 `git` instalado en gemelos benignos (ramas, HEAD suelto, sin commits, merge y rebase a medias, stashes,
 carpetas nuevas, un driver real y, en Windows, el `core.autocrlf` de la config del sistema); con un

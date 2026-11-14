@@ -1,6 +1,8 @@
 mod access;
 mod attention;
 mod backup;
+#[cfg(test)]
+mod build_version;
 mod change_log;
 pub mod gate;
 mod http_check;
