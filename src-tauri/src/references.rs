@@ -1,17 +1,19 @@
-//! Where each system is in the world: its repository, its local copies on each workstation, its
-//! documentation, its logs and its dashboard, so that a person or an agent who arrives at a system
-//! knows where to look, and an agent working in a folder can tell which system that folder is.
+//! Where each system is in the world: its repository, its local copies and its installations on
+//! each workstation, its documentation, its logs and its dashboard, so that a person or an agent who
+//! arrives at a system knows where to look, and an agent working in a folder can tell which system
+//! that folder is.
 //!
 //! References are inventory that the person or an agent declares, never evidence: they carry no
 //! `source`, and their trace is the change log, where they are one more field of their
-//! application's or resource's entries. DevHQ neither opens nor checks them; the window only copies
+//! application's or resource's entries. DevHQ neither opens nor checks them, but for the local copy
+//! or the installation it is asked to read (`local_copies`, `installations`); the window only copies
 //! them. They are edited with their system, as components are: a save gives the complete list,
 //! which replaces the stored one in the same transaction and keeps the IDs it names.
 //!
 //! A target is an http(s) URL or an absolute path. A path says which machine (a resource) it is on,
 //! since the same project sits in its own folder on each workstation; a URL is on none. A
-//! repository and a dashboard are URLs, a local copy is a path on a workstation, and documentation
-//! and logs can be either. Which systems declare the same repository (a monorepo) is derived at
+//! repository and a dashboard are URLs, a local copy is a folder on a workstation and an installation
+//! the installed executable's file on one, and documentation and logs can be either. Which systems declare the same repository (a monorepo) is derived at
 //! each read, by exact equality of its URL, and never stored.
 
 use crate::http_check;
@@ -23,12 +25,13 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 /// The kinds of reference: concepts, never providers.
-pub(crate) const KINDS: [&str; 5] = [
+pub(crate) const KINDS: [&str; 6] = [
     "repository",
     "local_copy",
     "documentation",
     "logs",
     "dashboard",
+    "installation",
 ];
 
 /// The longest path DevHQ keeps, as long as the longest URL.
@@ -38,7 +41,7 @@ const MAX_PATH: usize = 2048;
 #[serde(rename_all = "camelCase")]
 pub struct Reference {
     pub id: String,
-    /// repository, local_copy, documentation, logs or dashboard.
+    /// repository, local_copy, documentation, logs, dashboard or installation.
     pub kind: String,
     /// An http(s) URL or an absolute path, as it was typed, without surrounding whitespace.
     pub target: String,
@@ -183,6 +186,9 @@ fn target(kind: &str, value: &str) -> Result<(String, Place), ApiError> {
         ("local_copy", Place::Web) => Err(ApiError::invalid(
             "A local copy is a folder on a workstation: an absolute path, not a URL.",
         )),
+        ("installation", Place::Web) => Err(ApiError::invalid(
+            "An installation is the installed executable's file on a workstation: an absolute path, not a URL.",
+        )),
         _ => Ok((text.to_owned(), place)),
     }
 }
@@ -289,6 +295,11 @@ pub(crate) fn validated(
                 if input.kind == "local_copy" && kind != "workstation" {
                     return Err(ApiError::invalid(format!(
                         "{name} is a {kind}, not a workstation. A local copy is a working copy on a workstation."
+                    )));
+                }
+                if input.kind == "installation" && kind != "workstation" {
+                    return Err(ApiError::invalid(format!(
+                        "{name} is a {kind}, not a workstation. DevHQ reads an installation on a workstation."
                     )));
                 }
                 Some(id)
@@ -846,6 +857,83 @@ mod tests {
         )
         .unwrap();
         assert_eq!(server.kind, "server");
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn an_installation_is_an_executable_file_on_a_workstation() {
+        let path = path();
+        let laptop = machine(&path, "Laptop", "workstation");
+        let host = machine(&path, "Host", "server");
+        let installed = r"C:\Users\ana\AppData\Local\Atlas Notes\atlas-notes.exe";
+        let notes = save_application(
+            &path,
+            application(
+                "Atlas Notes",
+                vec![at("installation", installed, Some(&laptop.id))],
+            ),
+        )
+        .unwrap();
+        let stored = &notes.references[0];
+        assert_eq!(
+            (
+                stored.kind.as_str(),
+                stored.target.as_str(),
+                stored.machine_id.as_deref()
+            ),
+            ("installation", installed, Some(laptop.id.as_str()))
+        );
+        let before = list(&path).unwrap();
+        for (references, message) in [
+            (
+                vec![at("installation", "https://atlas.example/setup.exe", None)],
+                "An installation is the installed executable's file on a workstation",
+            ),
+            (
+                vec![at("installation", installed, None)],
+                "Say which machine",
+            ),
+            (
+                vec![at("installation", "/opt/atlas/atlas", Some(&host.id))],
+                "Host is a server, not a workstation. DevHQ reads an installation on a workstation.",
+            ),
+            (
+                vec![at("installation", "atlas-notes.exe", Some(&laptop.id))],
+                "is neither an http(s) URL nor an absolute path",
+            ),
+            (
+                vec![
+                    at("installation", installed, Some(&laptop.id)),
+                    at("installation", installed, Some(&laptop.id)),
+                ],
+                "The same installation",
+            ),
+        ] {
+            let error = save_application(&path, edited(&notes, references)).unwrap_err();
+            assert_eq!(error.code, "invalid_input");
+            assert!(error.message.contains(message), "{}", error.message);
+        }
+        assert_eq!(list(&path).unwrap().applications, before.applications);
+        // The machine that holds another system's installation stays a workstation.
+        let error = save_resource(
+            &path,
+            ResourceInput {
+                id: Some(laptop.id.clone()),
+                name: "Laptop".into(),
+                kind: "server".into(),
+                description: String::new(),
+                operating_system: String::new(),
+                references: vec![],
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.message,
+            r"Laptop holds installations of other systems: Atlas Notes (installation C:\Users\ana\AppData\Local\Atlas Notes\atlas-notes.exe). DevHQ reads an installation on a workstation, so move them to another workstation, or remove them, before making Laptop a server."
+        );
+        let kept = list(&path).unwrap().resources;
+        let kept = kept.iter().find(|item| item.id == laptop.id).unwrap();
+        assert_eq!(kept.kind, "workstation");
         std::fs::remove_file(path).unwrap();
     }
 

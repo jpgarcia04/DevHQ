@@ -736,6 +736,60 @@ try {
     assert.match(copy.gitStatusMarks(), /fsmonitor/, 'git status ran the fsmonitor it names')
   })
 
+  await step('Declare DevHQ itself as an installation and read its file as data', async () => {
+    await ui.go('Applications')
+    await ui.click("//main//a[@aria-label='Open Status page']")
+    await ui.click(button('Edit application', '//main//header'))
+    const applicationForm = form('Edit application')
+    await ui.click(button('Add reference', applicationForm))
+    // The third reference, after the repository and the local copy: the executable under test,
+    // which this very window is running from.
+    const third = (xpath: string) => `(${xpath})[3]`
+    await ui.choose(third(field('Reference kind', applicationForm)), 'Installation')
+    await ui.fill(third(field('URL or path', applicationForm)), binary)
+    await ui.choose(third(field('Machine', applicationForm)), `${workstation} · workstation`)
+    await ui.click(button('Save application', applicationForm))
+    await ui.see('Never read: DevHQ knows nothing of what is installed here.')
+    await ui.click(`//button[@aria-label=${literal(`Read ${binary}`)}]`)
+    await ui.see('Read and kept.')
+    // The file's own bytes, hashed by the confined reader, and the processes running from it:
+    // this window at least. Said in the past, never as «open».
+    const sha256 = createHash('sha256').update(readFileSync(binary)).digest('hex')
+    await ui.see(sha256)
+    await ui.see('running from it')
+    const read = await gate.tool('read_installations')
+    assert.deepEqual(read.failures, [])
+    const [reading] = read.readings as {
+      agent: string
+      outcome: string
+      sha256: string
+      processes: number
+      storedAt: string | null
+      productName: string | null
+      productVersion: string | null
+    }[]
+    assert.deepEqual(
+      [reading!.agent, reading!.outcome, reading!.sha256, reading!.storedAt],
+      ['native-walk', 'read', sha256, null],
+    )
+    // The window and the gate both run from it; the reader, which does too, does not count itself.
+    assert.ok(reading!.processes >= 2, `${reading!.processes} processes`)
+    // A Windows build declares its product in its version resource, and its version with the
+    // commit it was built from, as DevHQ asks of the applications a person builds; an ELF has
+    // no version resource.
+    if (process.platform === 'win32') {
+      assert.equal(reading!.productName, 'DevHQ')
+      const { version } = JSON.parse(readFileSync('package.json', 'utf8')) as { version: string }
+      assert.ok(
+        reading!.productVersion?.startsWith(`${version}+`) &&
+          /\+[0-9a-f]{12}(\.dirty)?$/.test(reading!.productVersion),
+        `the build declares ${reading!.productVersion}`,
+      )
+    }
+    // The window notices the gate's commit on its own.
+    await ui.see('asked by native-walk')
+  })
+
   await step('Closing the window ends DevHQ and leaves one complete file', async () => {
     closeWindow(pid!, env)
     await until('DevHQ to exit', () => !alive(pid!), 20_000)
@@ -770,6 +824,19 @@ try {
           [null, 'read', copy.path],
           [null, 'read', copy.path],
           ['native-walk', 'read', copy.path],
+        ],
+      )
+      // And two readings of the installation, the second asked for by the agent.
+      const installed = inventory
+        .prepare(
+          'SELECT r.agent, r.outcome, r.path FROM installation_readings r JOIN resources m ON m.id = r.machine_id WHERE m.name = ? ORDER BY r.observed_at',
+        )
+        .all(workstation)
+      assert.deepEqual(
+        installed.map((row) => [row.agent, row.outcome, row.path]),
+        [
+          [null, 'read', binary],
+          ['native-walk', 'read', binary],
         ],
       )
     } finally {

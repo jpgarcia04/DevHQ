@@ -16,6 +16,7 @@ use crate::attention::{self, AttentionItem};
 use crate::change_log;
 use crate::http_check::HttpCheck;
 use crate::identity;
+use crate::installations::readings::{self as installation_readings, Installation};
 use crate::inventory::{self, ApiError, Inventory};
 use crate::local_copies::readings::{self, LocalCopy};
 use crate::local_copies::Reader;
@@ -94,6 +95,7 @@ pub(crate) fn serve(
         previous: previous.map(Path::to_owned),
         computer,
         reader: None,
+        installation_reader: None,
         client: None,
     };
     for line in input.lines() {
@@ -118,6 +120,8 @@ struct Session {
     computer: Computer,
     /// How copies are read; this executable unless a test says otherwise.
     reader: Option<Reader>,
+    /// How installations are read; this executable unless a test says otherwise.
+    installation_reader: Option<crate::installations::Reader>,
     /// The name the client declared in `initialize`. Unverified: it is only ever shown as such.
     client: Option<String>,
 }
@@ -249,7 +253,7 @@ impl Session {
             // Configuration changes check the access inside their own transaction (adding and
             // editing applications and resources needs `maintain`, the rest `write`); records,
             // checks run, backups and readings check it first, and again inside theirs. Reading
-            // local copies and recording an observation need `maintain`; the other records, a
+            // local copies or installations and recording an observation need `maintain`; the other records, a
             // check run (which leaves this computer) and a backup need `write`.
             "save_application" => self.save_application(arguments),
             "save_resource" => self.save_resource(arguments),
@@ -279,6 +283,9 @@ impl Session {
             "read_copies" => self
                 .allow("maintain")
                 .and_then(|()| self.read_copies(arguments)),
+            "read_installations" => self
+                .allow("maintain")
+                .and_then(|()| self.read_installations(arguments)),
             // `tools` declares it, but nothing here runs it: a test calls every tool it declares.
             other => Err(ApiError::invalid(format!(
                 "DevHQ declares the tool {other} but cannot run it."
@@ -456,6 +463,7 @@ impl Session {
         }
         let this = self.this_workstation(&inventory);
         let local_copies = local_copies_overview(&inventory, &names, this.resource_id.as_deref());
+        let installations = installations_overview(&inventory, &names, this.resource_id.as_deref());
         let meaning = match attention.status {
             "empty" => "There are no applications or resources yet. That is not healthy: there is nothing to know about.",
             "attention" => "The items need attention, most urgent first.",
@@ -471,6 +479,7 @@ impl Session {
             "neverObserved": never_observed,
             "notSupervised": not_supervised,
             "localCopies": local_copies,
+            "installations": installations,
             "history": history_note(&inventory),
         }))
     }
@@ -591,15 +600,23 @@ impl Session {
                     let page = readings::older_readings_in(db, &subject, before)?;
                     Ok(json!({ "readings": page.readings, "more": page.more }))
                 }
+                Some("installation_readings") => {
+                    let before = match arguments.get("before") {
+                        None | Some(Value::Null) => None,
+                        Some(_) => Some(text(arguments, "before")?),
+                    };
+                    let page = installation_readings::older_readings_in(db, &subject, before)?;
+                    Ok(json!({ "readings": page.readings, "more": page.more }))
+                }
                 _ => Err(ApiError::invalid(
-                    "records must be \"observations\", \"events\" or \"readings\".",
+                    "records must be \"observations\", \"events\", \"readings\" or \"installation_readings\".",
                 )),
             }
         })
     }
 }
 
-const INSTRUCTIONS: &str = "DevHQ is the person's local operations inventory: applications, the resources they run on, where each one is (its references: repository, local copies, documentation, logs, dashboard), and the evidence about them (observations, incidents, events, HTTP checks). Working in a folder, an agent can find its system by a local copy's path or by its repository's URL in `list_systems`. A local copy's readings say what it held when DevHQ read it, never what it holds now. Start with `attention` to answer «what needs my attention?». Never present a system without current evidence as healthy: unobserved and expired evidence are gaps, not health. Every record says who produced it (`source`: manual, http or agent) and when. Applications, resources, components and references are declared inventory, by the person or an agent (each change in `changes`, with who made it), never evidence that DevHQ observed. To edit a system, base the edit on its `latestChange` (`basedOn`): DevHQ refuses it if the system changed after you read it, and never removes a component or reference you leave out. A component's `runsOn` and a path's `machine` name a resource by its id, never by its name. Tools that change something refuse while the system keeps the inventory somewhere other than where DevHQ asked (`storedAt` in `status`, location_redirected) or while DevHQ's previous location in AppData still holds the person's inventory (move_pending): read, and tell the person. Every call is checked against its tool's input schema and the rules its description states: an argument the tool does not declare, misspelled or of the wrong type, is refused (invalid_input) and nothing is done.";
+const INSTRUCTIONS: &str = "DevHQ is the person's local operations inventory: applications, the resources they run on, where each one is (its references: repository, local copies, installations, documentation, logs, dashboard), and the evidence about them (observations, incidents, events, HTTP checks). Working in a folder, an agent can find its system by a local copy's path or by its repository's URL in `list_systems`. A local copy's readings say what it held when DevHQ read it, never what it holds now; an installation's, what the installed executable's file was then (the version it declares, its hash, the processes running from it), never that the application is running or healthy. Start with `attention` to answer «what needs my attention?». Never present a system without current evidence as healthy: unobserved and expired evidence are gaps, not health. Every record says who produced it (`source`: manual, http or agent) and when. Applications, resources, components and references are declared inventory, by the person or an agent (each change in `changes`, with who made it), never evidence that DevHQ observed. To edit a system, base the edit on its `latestChange` (`basedOn`): DevHQ refuses it if the system changed after you read it, and never removes a component or reference you leave out. A component's `runsOn` and a path's `machine` name a resource by its id, never by its name. Tools that change something refuse while the system keeps the inventory somewhere other than where DevHQ asked (`storedAt` in `status`, location_redirected) or while DevHQ's previous location in AppData still holds the person's inventory (move_pending): read, and tell the person. Every call is checked against its tool's input schema and the rules its description states: an argument the tool does not declare, misspelled or of the wrong type, is refused (invalid_input) and nothing is done.";
 
 /// Every application, then every resource, in the inventory's order.
 fn subjects(inventory: &Inventory) -> Vec<Subject> {
@@ -690,6 +707,17 @@ fn reference_list(
                 value["movedSinceRead"] = json!(copy.moved_since_read);
                 value["repository"] = json!(copy.repository);
                 value["localWork"] = json!(copy.local_work);
+            }
+            if let Some(installation) = inventory
+                .installations
+                .iter()
+                .find(|installation| installation.reference_id == reference.id)
+            {
+                value["onThisWorkstation"] = json!(this == Some(installation.machine_id.as_str()));
+                value["latestReading"] = json!(installation.latest);
+                value["movedSinceRead"] = json!(installation.moved_since_read);
+                value["version"] = json!(installation.version);
+                value["build"] = json!(installation.build);
             }
             if reference.kind == "repository" {
                 let shared: Vec<Value> = inventory
@@ -842,6 +870,51 @@ fn local_copies_overview(inventory: &Inventory, names: &Names, this: Option<&str
     })
 }
 
+/// What the installations say beside «what needs my attention?», and never in its ranking: they are
+/// not health. Installations of archived applications are left out.
+fn installations_overview(inventory: &Inventory, names: &Names, this: Option<&str>) -> Value {
+    let archived = |subject: &Subject| match subject {
+        Subject::Application { id } => inventory
+            .applications
+            .iter()
+            .any(|item| &item.id == id && item.lifecycle == "archived"),
+        Subject::Resource { .. } => false,
+    };
+    let current: Vec<&Installation> = inventory
+        .installations
+        .iter()
+        .filter(|installation| !archived(&installation.subject))
+        .collect();
+    let described = |installation: &&Installation| {
+        json!({
+            "system": names.system(&installation.subject),
+            "path": installation.path,
+            "machine": names.system(&Subject::Resource { id: installation.machine_id.clone() }),
+            "reading": installation.latest,
+            "version": installation.version,
+            "build": installation.build,
+        })
+    };
+    json!({
+        "versionDiffers": current
+            .iter()
+            .filter(|installation| installation.version.as_deref() == Some("differs"))
+            .map(described)
+            .collect::<Vec<_>>(),
+        "notFound": current
+            .iter()
+            .filter(|installation| installation.latest.as_ref().is_some_and(|reading| reading.outcome != "read"))
+            .map(described)
+            .collect::<Vec<_>>(),
+        "neverReadOnThisWorkstation": current
+            .iter()
+            .filter(|installation| installation.latest.is_none() && this == Some(installation.machine_id.as_str()))
+            .map(described)
+            .collect::<Vec<_>>(),
+        "note": "Not health, and not ranked: what each installed executable's file was when it was read (`reading.observedAt`), which may no longer be so. `versionDiffers` declared, in the file's version resource (`reading.productVersion`), another version than its application declares in the inventory: one of the two is out of date. `notFound` were not where declared, not readable, or no executable. `build` says since which reading the file is the same build and, when an earlier reading found another, between which two readings it changed: never when it was installed. `reading.processes` counts the processes that were running from the file at that moment, which is neither health nor whether the application was in use. Only installations on this workstation can be read (`read_installations`), and only when asked.",
+    })
+}
+
 /// What the snapshot leaves out, so that an agent never takes a cut history for a short one.
 fn history_note(inventory: &Inventory) -> Value {
     json!({
@@ -979,14 +1052,14 @@ fn read_tools() -> Vec<Value> {
         read_only(
             "attention",
             "What needs attention",
-            "«What needs my attention?», ranked as DevHQ's Overview ranks it: active incidents and problem evidence, most urgent first, plus coverage (current, expired, never observed) and the systems nothing supervises. An empty list is only reassuring when status is `covered`. Beside it, unranked and not health, `localCopies`: the copies whose last reading held work that existed only there, the ones not found, and the ones on this workstation never read.",
+            "«What needs my attention?», ranked as DevHQ's Overview ranks it: active incidents and problem evidence, most urgent first, plus coverage (current, expired, never observed) and the systems nothing supervises. An empty list is only reassuring when status is `covered`. Beside it, unranked and not health, `localCopies`: the copies whose last reading held work that existed only there, the ones not found, and the ones on this workstation never read. And `installations`, unranked and not health either: the installed executables whose file declared another version than their application declares, the ones not found, and the ones on this workstation never read.",
             json!({}),
             &[],
         ),
         read_only(
             "list_systems",
             "List applications and resources",
-            "Every application and resource with its evidence state and latest observation, active incidents, HTTP check, relations (components and what they run on; what uses each resource) and references: where its repository, its local copies (each path with the machine it is on), its documentation, its logs and its dashboard are, and which other systems declare the same repository (`sameRepositoryAs`, by exact URL). References are declared inventory: DevHQ never opens or checks them. Each local copy also says whether it is on this workstation and its newest reading (`latestReading`, null if never read): what the copy held when DevHQ read it, at `observedAt`, which may no longer be so; `localActivity` gives the newest commit those readings found. Each system's `latestChange` (the last entry of its change log, null when it has none) is what an edit of it is based on (`basedOn`).",
+            "Every application and resource with its evidence state and latest observation, active incidents, HTTP check, relations (components and what they run on; what uses each resource) and references: where its repository, its local copies (each path with the machine it is on), its documentation, its logs and its dashboard are, and which other systems declare the same repository (`sameRepositoryAs`, by exact URL). References are declared inventory: DevHQ never opens or checks them. Each local copy also says whether it is on this workstation and its newest reading (`latestReading`, null if never read): what the copy held when DevHQ read it, at `observedAt`, which may no longer be so; `localActivity` gives the newest commit those readings found. Each installation (the installed executable's file) says the same of its own newest reading, with `version` (how the application's declared version compared with the file's ProductVersion: matches, differs, undeclared or unknown) and `build` (since which reading the file is the same build, and the earlier reading that found another, if any). Each system's `latestChange` (the last entry of its change log, null when it has none) is what an edit of it is based on (`basedOn`).",
             json!({}),
             &[],
         ),
@@ -1000,10 +1073,10 @@ fn read_tools() -> Vec<Value> {
         read_only(
             "history",
             "Older results and readings",
-            "Automated HTTP results (observations, or their events) older than one already shown, 200 at a time, for a system whose automated history get_system says is cut; or the readings of a system's local copies, newest first, 200 at a time (before optional: the first page starts from the newest).",
+            "Automated HTTP results (observations, or their events) older than one already shown, 200 at a time, for a system whose automated history get_system says is cut; or the readings of a system's local copies (`readings`) or of its installations (`installation_readings`), newest first, 200 at a time (before optional: the first page starts from the newest).",
             system_arguments(json!({
-                "records": { "type": "string", "enum": ["observations", "events", "readings"] },
-                "before": { "type": ["string", "null"], "description": "The id of the oldest observation, event or reading already shown. Required for observations and events; for readings, left out or null, the first page starts from the newest." },
+                "records": { "type": "string", "enum": ["observations", "events", "readings", "installation_readings"] },
+                "before": { "type": ["string", "null"], "description": "The id of the oldest observation, event or reading already shown. Required for observations and events; for readings and installation_readings, left out or null, the first page starts from the newest." },
             })),
             &["type", "records"],
         ),
@@ -1270,6 +1343,7 @@ mod tests {
                 "run_check",
                 "backup",
                 "read_copies",
+                "read_installations",
             ]
         );
         assert!(tools
@@ -1573,6 +1647,7 @@ mod tests {
             previous: None,
             computer: computer(&path),
             reader: None,
+            installation_reader: None,
             client: None,
         };
         let attention =
@@ -1786,6 +1861,7 @@ mod tests {
             previous: None,
             computer: computer(path),
             reader: None,
+            installation_reader: None,
             client: Some(client.to_owned()),
         }
     }
@@ -1868,6 +1944,7 @@ mod tests {
             ),
             ("backup", json!({})),
             ("read_copies", json!({})),
+            ("read_installations", json!({})),
         ];
         for (tool, arguments) in &attempts {
             let refused = use_tool(&mut agent, tool, arguments.clone()).unwrap_err();
@@ -2551,6 +2628,145 @@ mod tests {
     }
 
     #[test]
+    fn reads_installations_when_asked_and_keeps_which_agent_asked() {
+        let path = path();
+        seed(&path);
+        let folder = path.parent().unwrap().to_owned();
+        let installed = folder.join("shop.exe");
+        std::fs::write(
+            &installed,
+            crate::installations::tests::executable("2.1.0+3f9c2ab"),
+        )
+        .unwrap();
+        // Read and maintain is enough: a reading is DevHQ's own evidence and changes nothing.
+        crate::access::set_agent_access(&path, "maintain").unwrap();
+        let mut agent = session(&path, "claude-code");
+        agent.installation_reader = Some(crate::installations::tests::test_reader("confined"));
+        let laptop = use_tool(
+            &mut agent,
+            "save_resource",
+            json!({ "name": "Laptop", "kind": "workstation" }),
+        )
+        .unwrap()["resource"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let shop = inventory::list(&path).unwrap().applications[0].id.clone();
+        let read = based_on(&mut agent, "application", &shop);
+        use_tool(
+            &mut agent,
+            "save_application",
+            json!({ "name": "Shop", "id": shop, "basedOn": read, "version": "2.0",
+                    "references": [{ "kind": "installation", "target": installed.to_str().unwrap(), "machine": laptop }] }),
+        )
+        .unwrap();
+        let refused = use_tool(&mut agent, "read_installations", json!({})).unwrap_err();
+        assert!(
+            refused.contains("does not know which workstation"),
+            "{refused}"
+        );
+        // The person chooses it in the window.
+        computer(&path)
+            .choose(&inventory::list(&path).unwrap().resources, Some(&laptop))
+            .unwrap();
+        // Declared and never read: said apart, and not as a version that differs.
+        let attention = use_tool(&mut agent, "attention", json!({})).unwrap();
+        assert_eq!(
+            attention["installations"]["neverReadOnThisWorkstation"][0]["system"]["name"],
+            "Shop"
+        );
+        assert_eq!(attention["installations"]["versionDiffers"], json!([]));
+
+        let logged = changes(&path).len();
+        let read = use_tool(&mut agent, "read_installations", json!({})).unwrap();
+        assert_eq!(read["failures"], json!([]));
+        let reading = &read["readings"][0];
+        assert_eq!(reading["agent"], "claude-code");
+        assert_eq!(reading["source"], "read");
+        assert_eq!(
+            (
+                reading["outcome"].as_str(),
+                reading["productVersion"].as_str(),
+                reading["processes"].as_i64()
+            ),
+            (Some("read"), Some("2.1.0+3f9c2ab"), Some(0))
+        );
+        // Two numbers of the processes, and nothing that names one.
+        let keys: Vec<&String> = reading.as_object().unwrap().keys().collect();
+        assert!(
+            keys.iter().all(|key| !key.to_lowercase().contains("pid")
+                && !key.to_lowercase().contains("command")),
+            "{keys:?}"
+        );
+        // A reading is evidence, not a change to the configuration.
+        assert_eq!(changes(&path).len(), logged);
+        // By system, or by reference, as well.
+        use_tool(
+            &mut agent,
+            "read_installations",
+            json!({ "type": "application", "name": "Shop" }),
+        )
+        .unwrap();
+        let reference = reading["referenceId"].as_str().unwrap().to_owned();
+        use_tool(
+            &mut agent,
+            "read_installations",
+            json!({ "referenceId": reference }),
+        )
+        .unwrap();
+
+        let listed = use_tool(&mut agent, "list_systems", json!({})).unwrap();
+        let installation = listed["applications"][0]["references"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["kind"] == "installation")
+            .unwrap()
+            .clone();
+        assert_eq!(installation["onThisWorkstation"], true);
+        assert_eq!(installation["latestReading"]["agent"], "claude-code");
+        // The inventory says 2.0 and the file 2.1.0: derived, with the three readings of one build.
+        assert_eq!(installation["version"], "differs");
+        assert_eq!(installation["build"]["readings"], 3);
+        assert_eq!(installation["build"]["sameSince"], reading["observedAt"]);
+        assert_eq!(installation["build"]["previous"], Value::Null);
+        let attention = use_tool(&mut agent, "attention", json!({})).unwrap();
+        let differs = &attention["installations"]["versionDiffers"][0];
+        assert_eq!(differs["system"]["name"], "Shop");
+        assert_eq!(differs["reading"]["productVersion"], "2.1.0+3f9c2ab");
+        assert_eq!(
+            attention["installations"]["neverReadOnThisWorkstation"],
+            json!([])
+        );
+        // Not health: the ranked list and the status are what they were.
+        assert_eq!(attention["status"], "attention");
+        let history = use_tool(
+            &mut agent,
+            "history",
+            json!({ "type": "application", "name": "Shop", "records": "installation_readings" }),
+        )
+        .unwrap();
+        assert_eq!(history["readings"].as_array().unwrap().len(), 3);
+        assert_eq!(history["more"], false);
+        // The agent corrects the declared version: nothing differs any more, without a new reading.
+        let read = based_on(&mut agent, "application", &shop);
+        use_tool(
+            &mut agent,
+            "save_application",
+            json!({ "name": "Shop", "id": shop, "basedOn": read, "version": "2.1.0" }),
+        )
+        .unwrap();
+        let attention = use_tool(&mut agent, "attention", json!({})).unwrap();
+        assert_eq!(attention["installations"]["versionDiffers"], json!([]));
+        // Read only shows readings and never causes one.
+        crate::access::set_agent_access(&path, "read").unwrap();
+        assert!(use_tool(&mut agent, "read_installations", json!({}))
+            .unwrap_err()
+            .contains("reading only"));
+        remove(&path);
+    }
+
+    #[test]
     fn a_client_without_a_name_is_still_told_apart_from_the_person() {
         let path = path();
         seed(&path);
@@ -2560,6 +2776,7 @@ mod tests {
             previous: None,
             computer: computer(&path),
             reader: None,
+            installation_reader: None,
             client: None,
         };
         let saved = use_tool(
@@ -2662,6 +2879,7 @@ mod tests {
             ),
             ("backup", json!({})),
             ("read_copies", json!({})),
+            ("read_installations", json!({})),
         ]
     }
 
@@ -2839,6 +3057,22 @@ mod tests {
                 "read_copies",
                 json!({ "type": "application" }),
                 "Name the system by `id` or by `name`.",
+            ),
+            // The same rules for installations.
+            (
+                "read_installations",
+                json!({ "id": shop }),
+                "`id` and `name` name a system only with its `type`",
+            ),
+            (
+                "read_installations",
+                json!({ "referenceId": "r", "type": "application", "name": "Shop" }),
+                "not both",
+            ),
+            (
+                "read_installations",
+                json!({ "referenceIds": ["r"] }),
+                "`referenceIds` is not an argument",
             ),
             (
                 "record_observation",
@@ -3025,7 +3259,7 @@ mod tests {
         );
         assert_eq!(replies[1]["result"]["isError"], false, "{:#}", replies[1]);
         assert_eq!(replies[2]["result"]["isError"], false, "{:#}", replies[2]);
-        assert_eq!(replies[3]["result"]["tools"].as_array().unwrap().len(), 19);
+        assert_eq!(replies[3]["result"]["tools"].as_array().unwrap().len(), 20);
         assert_eq!(replies[4]["result"]["isError"], true);
         remove(&path);
     }
@@ -3068,7 +3302,7 @@ mod tests {
         Option<&'static str>,
     );
 
-    /// A v13 inventory as `seed` leaves it (write-ahead logged, Read only), replaced by a backup
+    /// A v14 inventory as `seed` leaves it (write-ahead logged, Read only), replaced by a backup
     /// of itself: a rollback-journal file, as every DevHQ backup is.
     fn backup_copy(path: &Path) {
         seed(path);
@@ -3134,47 +3368,47 @@ mod tests {
                 Some("schema_outdated"),
             ),
             (
-                "v13 backup, rollback journal, Read only",
+                "v14 backup, rollback journal, Read only",
                 backup_copy,
                 true,
-                json!(13),
+                json!(14),
                 "current",
                 json!("read"),
                 counts.clone(),
                 None,
             ),
             (
-                "v13, write-ahead log, Read only",
+                "v14, write-ahead log, Read only",
                 |path| drop(seed(path)),
                 true,
-                json!(13),
+                json!(14),
                 "current",
                 json!("read"),
                 counts.clone(),
                 None,
             ),
             (
-                "v13, write-ahead log, Off",
+                "v14, write-ahead log, Off",
                 |path| {
                     seed(path);
                     crate::access::set_agent_access(path, "off").unwrap();
                 },
                 true,
-                json!(13),
+                json!(14),
                 "current",
                 json!("off"),
                 Value::Null,
                 Some("access_denied"),
             ),
             (
-                "v14",
+                "v15",
                 |path| {
-                    database_at(path, 13)
-                        .pragma_update(None, "user_version", 14)
+                    database_at(path, 14)
+                        .pragma_update(None, "user_version", 15)
                         .unwrap();
                 },
                 true,
-                json!(14),
+                json!(15),
                 "newer",
                 Value::Null,
                 Value::Null,
@@ -3206,11 +3440,11 @@ mod tests {
                 Some("not_an_inventory"),
             ),
             (
-                "a SQLite database stamped 13 without DevHQ's tables",
+                "a SQLite database stamped 14 without DevHQ's tables",
                 |path| {
                     sqlite(
                         path,
-                        "CREATE TABLE notes (body TEXT); PRAGMA user_version = 13;",
+                        "CREATE TABLE notes (body TEXT); PRAGMA user_version = 14;",
                     )
                 },
                 true,
@@ -3221,37 +3455,37 @@ mod tests {
                 Some("not_an_inventory"),
             ),
             (
-                "v13 stamped, with only the tables that tell an inventory apart",
+                "v14 stamped, with only the tables that tell an inventory apart",
                 |path| {
                     sqlite(
                         path,
                         "CREATE TABLE applications (id TEXT PRIMARY KEY);
                          CREATE TABLE resources (id TEXT PRIMARY KEY);
-                         PRAGMA user_version = 13;",
+                         PRAGMA user_version = 14;",
                     )
                 },
                 true,
-                json!(13),
+                json!(14),
                 "mismatch",
                 Value::Null,
                 Value::Null,
                 Some("schema_mismatch"),
             ),
             (
-                "v13 without agent_access",
+                "v14 without agent_access",
                 |path| {
                     seed(path);
                     sqlite(path, "DROP TABLE agent_access");
                 },
                 true,
-                json!(13),
+                json!(14),
                 "mismatch",
                 Value::Null,
                 Value::Null,
                 Some("schema_mismatch"),
             ),
             (
-                "v13, Off, its write-ahead log left by a writer that was killed",
+                "v14, Off, its write-ahead log left by a writer that was killed",
                 |path| {
                     seed(path);
                     crate::access::set_agent_access(path, "off").unwrap();
@@ -3265,7 +3499,7 @@ mod tests {
                 Some("needs_recovery"),
             ),
             (
-                "v13, Read only, its write-ahead log left without its index",
+                "v14, Read only, its write-ahead log left without its index",
                 |path| {
                     seed(path);
                     kill(writer(path, "log"), path);
@@ -3294,7 +3528,7 @@ mod tests {
                 Some("needs_recovery"),
             ),
             (
-                "v13 backup, Read only, rollback journal left by a write that was killed",
+                "v14 backup, Read only, rollback journal left by a write that was killed",
                 |path| {
                     backup_copy(path);
                     kill(writer(path, "journal"), path);
@@ -3349,7 +3583,7 @@ mod tests {
                 json!({ "type": "resource", "name": "Web host", "records": "readings" }),
             ),
         ];
-        // None of these may write, the 14 tools that can: the gate is at most open for reading in
+        // None of these may write, the 15 tools that can: the gate is at most open for reading in
         // every case, and no file that is not a current inventory is ever opened to write.
         let writes = [
             (
@@ -3393,6 +3627,7 @@ mod tests {
             ),
             ("backup", json!({})),
             ("read_copies", json!({})),
+            ("read_installations", json!({})),
         ];
         assert_eq!(
             1 + reads.len() + writes.len(),

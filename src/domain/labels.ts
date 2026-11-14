@@ -57,4 +57,5 @@ export const referenceKindLabels: Record<ReferenceKind, string> = {
   documentation: 'Documentation',
   logs: 'Logs',
   dashboard: 'Dashboard',
+  installation: 'Installation',
 }

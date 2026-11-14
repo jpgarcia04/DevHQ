@@ -130,6 +130,7 @@ const snapshot: InventorySnapshot = {
   automatedHistory: { limit: 200, truncated: [{ subject: web, since }] },
   sharedRepositories: [],
   localCopies: [],
+  installations: [],
 }
 
 function renderWith(ui: ReactNode, value: InventoryContextValue, path = '/') {

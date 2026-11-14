@@ -17,6 +17,10 @@ use crate::access::AgentAccess;
 use crate::backup::{Backup, BackupCounts, BackupFile, BackupFolder};
 use crate::change_log::{Change, FieldChange};
 use crate::http_check::{HttpCheck, HttpCheckInput};
+use crate::installations::readings::{
+    Build, Installation, InstallationReading, InstallationReadingPage, InstallationsRead,
+    PreviousBuild,
+};
 use crate::inventory::{
     self, Application, ApplicationInput, Component, DataLocation, Inventory, Resource,
     ResourceInput,
@@ -90,6 +94,7 @@ fn devhq_after(
         previous.map(Path::to_owned),
         computer(path),
         crate::local_copies::tests::test_reader("confined", &[]),
+        crate::installations::tests::test_reader("confined"),
     );
     let window = WebviewWindowBuilder::new(&app, "main", Default::default())
         .build()
@@ -216,8 +221,10 @@ fn arguments(command: &str) -> Vec<(&'static str, Reader)> {
         "watch_http_monitor" => vec![("channel", text)],
         "this_workstation" => vec![],
         "set_this_workstation" => vec![("resourceId", read_completely::<Option<String>>)],
-        "read_copies" => vec![("referenceIds", read_completely::<Option<Vec<String>>>)],
-        "older_readings" => vec![
+        "read_copies" | "read_installations" => {
+            vec![("referenceIds", read_completely::<Option<Vec<String>>>)]
+        }
+        "older_readings" | "older_installation_readings" => vec![
             ("subject", subject),
             ("before", read_completely::<Option<String>>),
         ],
@@ -266,7 +273,12 @@ fn seeded() -> PathBuf {
              INSERT INTO system_references (id, application_id, kind, target, machine_id)
                VALUES ('shop-copy', 'shop', 'local_copy', '/devhq-contract/shop', 'laptop');
              INSERT INTO copy_readings (id, application_id, reference_id, machine_id, path, source, reader, observed_at, recorded_at, outcome, detail)
-               VALUES ('reading-1', 'shop', 'shop-copy', 'laptop', '/devhq-contract/shop', 'read', 'libgit2 1.9.7', 1767225600000, 1767225600000, 'missing', 'Nothing is at this path.');",
+               VALUES ('reading-1', 'shop', 'shop-copy', 'laptop', '/devhq-contract/shop', 'read', 'libgit2 1.9.7', 1767225600000, 1767225600000, 'missing', 'Nothing is at this path.');
+             -- And its installation there, also where nothing is, with an earlier reading.
+             INSERT INTO system_references (id, application_id, kind, target, machine_id)
+               VALUES ('shop-installed', 'shop', 'installation', '/devhq-contract/shop/shop.exe', 'laptop');
+             INSERT INTO installation_readings (id, application_id, reference_id, machine_id, path, source, reader, observed_at, recorded_at, outcome, detail)
+               VALUES ('installed-1', 'shop', 'shop-installed', 'laptop', '/devhq-contract/shop/shop.exe', 'read', 'DevHQ installation reader 1', 1767225600000, 1767225600000, 'missing', 'Nothing is at this path.');",
         )
         .unwrap();
     // This computer is the laptop.
@@ -379,19 +391,19 @@ fn no_command_changes_an_inventory_the_window_does_not_serve() {
             "schema_outdated",
         ),
         (
-            "v14, rollback journal",
+            "v15, rollback journal",
             |path| {
-                let db = database_at(path, 13);
+                let db = database_at(path, 14);
                 db.execute_batch(ROWS).unwrap();
-                db.pragma_update(None, "user_version", 14).unwrap();
+                db.pragma_update(None, "user_version", 15).unwrap();
             },
             "schema_newer",
         ),
         (
-            "v14, write-ahead log",
+            "v15, write-ahead log",
             |path| {
-                let db = database_at(path, 13);
-                db.pragma_update(None, "user_version", 14).unwrap();
+                let db = database_at(path, 14);
+                db.pragma_update(None, "user_version", 15).unwrap();
                 db.pragma_update(None, "journal_mode", "WAL").unwrap();
             },
             "schema_newer",
@@ -412,9 +424,9 @@ fn no_command_changes_an_inventory_the_window_does_not_serve() {
             "not_an_inventory",
         ),
         (
-            "stamped 13 without the schema's structure",
+            "stamped 14 without the schema's structure",
             |path| {
-                database_at(path, 13)
+                database_at(path, 14)
                     .execute_batch("DROP TABLE agent_access;")
                     .unwrap()
             },
@@ -580,7 +592,7 @@ fn serves_an_outdated_inventory_once_the_person_upgrades_it() {
     let upgraded = invoke(&window, "upgrade_inventory", consent.clone()).unwrap();
     assert_eq!(
         (&upgraded["from"], &upgraded["to"]),
-        (&json!(6), &json!(13))
+        (&json!(6), &json!(14))
     );
     let backup = PathBuf::from(upgraded["backup"]["path"].as_str().unwrap());
     assert!(
@@ -605,7 +617,7 @@ fn serves_an_outdated_inventory_once_the_person_upgrades_it() {
     let again = invoke(&window, "upgrade_inventory", consent).unwrap();
     assert_eq!(
         (&again["from"], &again["backup"]),
-        (&json!(13), &Value::Null)
+        (&json!(14), &Value::Null)
     );
     assert_eq!(
         std::fs::read_dir(backup.parent().unwrap()).unwrap().count(),
@@ -674,6 +686,32 @@ fn every_answer_has_the_shape_the_window_expects() {
         unverifiable: Some(0),
         worktree_unknown: None,
     };
+    // A reading of the shop's installation on the laptop: another version than the one declared.
+    let installed_on_laptop = InstallationReading {
+        id: "installed-2".into(),
+        subject: shop(),
+        reference_id: "shop-installed".into(),
+        machine_id: "laptop".into(),
+        path: r"C:\Program Files\Shop\shop.exe".into(),
+        source: "read".into(),
+        reader: "DevHQ installation reader 1".into(),
+        agent: None,
+        observed_at: at("10:00"),
+        recorded_at: at("10:00"),
+        outcome: "read".into(),
+        detail: None,
+        stored_at: None,
+        sha256: Some("5f2d9a1c".repeat(8)),
+        size_bytes: Some(23_620_096),
+        modified_at: Some(at("08:30")),
+        product_version: Some("2.1.0+3f9c2ab".into()),
+        file_version: Some("2.1.0.0".into()),
+        product_name: Some("Shop".into()),
+        version_unknown: None,
+        processes: Some(2),
+        processes_unexamined: Some(41),
+        processes_unknown: None,
+    };
     let laptop = || ThisWorkstation {
         resource_id: Some("laptop".into()),
         chosen_at: Some(at("08:00")),
@@ -725,6 +763,13 @@ fn every_answer_has_the_shape_the_window_expects() {
                     label: None,
                     machine_id: Some("laptop".into()),
                 },
+                Reference {
+                    id: "shop-installed".into(),
+                    kind: "installation".into(),
+                    target: r"C:\Program Files\Shop\shop.exe".into(),
+                    label: None,
+                    machine_id: Some("laptop".into()),
+                },
             ],
         }],
         resources: vec![
@@ -773,6 +818,25 @@ fn every_answer_has_the_shape_the_window_expects() {
             moved_since_read: false,
             repository: Some("matches".into()),
             local_work: true,
+        }],
+        installations: vec![Installation {
+            reference_id: "shop-installed".into(),
+            subject: shop(),
+            machine_id: "laptop".into(),
+            path: r"C:\Program Files\Shop\shop.exe".into(),
+            latest: Some(installed_on_laptop.clone()),
+            moved_since_read: false,
+            version: Some("differs".into()),
+            build: Some(Build {
+                same_since: at("09:00"),
+                readings: 2,
+                previous: Some(PreviousBuild {
+                    observed_at: at("07:00"),
+                    sha256: "a81c04e7".repeat(8),
+                    product_version: Some("2.0.0+11d2e4f".into()),
+                }),
+                complete: true,
+            }),
         }],
         observations: vec![
             Observation {
@@ -1075,6 +1139,61 @@ fn every_answer_has_the_shape_the_window_expects() {
                     message: r"Reading C:\src\infra took longer than 30 s, so DevHQ stopped it. Nothing was kept.".into(),
                 }],
                 this_workstation: laptop(),
+            }),
+        ),
+        (
+            "read_installations".to_owned(),
+            value(&InstallationsRead {
+                readings: vec![installed_on_laptop.clone()],
+                failures: vec![ReadFailure {
+                    reference_id: "host-agent".into(),
+                    subject: host(),
+                    path: r"C:\Program Files\Agent\agent.exe".into(),
+                    message: r"Reading C:\Program Files\Agent\agent.exe took longer than 30 s, so DevHQ stopped it. Nothing was kept.".into(),
+                }],
+                this_workstation: laptop(),
+            }),
+        ),
+        (
+            "older_installation_readings".to_owned(),
+            value(&InstallationReadingPage {
+                readings: vec![
+                    InstallationReading {
+                        id: "installed-1".into(),
+                        agent: Some("claude-code".into()),
+                        observed_at: at("07:00"),
+                        recorded_at: at("07:00"),
+                        sha256: Some("a81c04e7".repeat(8)),
+                        modified_at: None,
+                        product_version: Some("2.0.0+11d2e4f".into()),
+                        file_version: Some("2.0.0.0".into()),
+                        processes: None,
+                        processes_unexamined: None,
+                        processes_unknown: Some(
+                            "Windows did not list its processes: Access is denied. (os error 5)"
+                                .into(),
+                        ),
+                        ..installed_on_laptop.clone()
+                    },
+                    InstallationReading {
+                        id: "installed-0".into(),
+                        observed_at: at("06:00"),
+                        recorded_at: at("06:00"),
+                        outcome: "unreadable".into(),
+                        detail: Some("Access is denied. (os error 5)".into()),
+                        stored_at: Some(r"D:\Apps\Shop\shop.exe".into()),
+                        sha256: None,
+                        size_bytes: None,
+                        modified_at: None,
+                        product_version: None,
+                        file_version: None,
+                        product_name: None,
+                        processes: None,
+                        processes_unexamined: None,
+                        ..installed_on_laptop.clone()
+                    },
+                ],
+                more: true,
             }),
         ),
         (

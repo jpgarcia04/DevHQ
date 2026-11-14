@@ -16,6 +16,8 @@ import type {
   MonitorStatus,
   ObservationInput,
   ObservationPage,
+  InstallationReadingPage,
+  InstallationsRead,
   ReadingPage,
   ReadOutcome,
   ResourceInput,
@@ -90,6 +92,18 @@ export interface InventoryContextValue {
   readingCopies: string[]
   /** Reads a system's readings, a page at a time; it writes nothing. */
   olderReadings: (subject: EntityRef, before: string | null) => Promise<ReadingPage>
+  /**
+   * Reads, now, the installations named, or (null) every one of this workstation but those of
+   * archived applications; resolves once the reloaded inventory shows what was kept.
+   */
+  readInstallations: (referenceIds: string[] | null) => Promise<InstallationsRead>
+  /** Reference ids of the installations this window asked to read and that are being read. */
+  readingInstallations: string[]
+  /** Reads a system's readings of its installations, a page at a time; it writes nothing. */
+  olderInstallationReadings: (
+    subject: EntityRef,
+    before: string | null,
+  ) => Promise<InstallationReadingPage>
   /** Looks at the inventory the window refused as outdated; it changes none of its files. */
   inspectUpgrade: () => Promise<UpgradeInspection>
   /**

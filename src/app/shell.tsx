@@ -6,6 +6,7 @@ import { applications, incidents, scenario } from '@/data/mock/scenario'
 import { activeIncidents } from '@/domain/selectors'
 import { cn } from '@/shared/utils'
 import { formatTime } from '@/shared/time'
+import { devhqVersion } from '@/shared/version'
 import { useInventory } from '@/features/inventory/inventory-context'
 
 export function Shell() {
@@ -64,7 +65,7 @@ export function Shell() {
             DevHQ<span className="text-primary">.</span>
           </span>
           <span className="ml-1 rounded border px-1 py-0.5 font-mono text-[9px] text-muted-foreground">
-            0.1
+            {devhqVersion.split('.').slice(0, 2).join('.')}
           </span>
         </Link>
         <div className="mx-4 mb-7 rounded-lg border bg-background/30 px-3 py-3">

@@ -1,0 +1,7 @@
+{
+  "subject": {
+    "type": "application",
+    "id": "shop"
+  },
+  "before": "installed-1"
+}

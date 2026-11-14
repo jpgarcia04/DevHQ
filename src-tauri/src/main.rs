@@ -6,6 +6,11 @@ fn main() {
     if std::env::args().nth(1).as_deref() == Some("--read-copy") {
         std::process::exit(devhq_lib::local_copies::read_copy_main());
     }
+    // `devhq --read-installation` reads one installed executable's file the same way: a request on
+    // stdin, the reading on stdout, in a process that cannot start programs.
+    if std::env::args().nth(1).as_deref() == Some("--read-installation") {
+        std::process::exit(devhq_lib::installations::read_installation_main());
+    }
     // `devhq --mcp` is the agent gate: no window, only MCP over stdin and stdout.
     if std::env::args().skip(1).any(|arg| arg == "--mcp") {
         std::process::exit(devhq_lib::gate::main(std::env::args().skip(1)));

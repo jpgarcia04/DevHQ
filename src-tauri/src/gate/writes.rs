@@ -850,6 +850,36 @@ impl Session {
         )?;
         Ok(json!(outcome))
     }
+
+    /// Reads installations of this workstation in confined readers, as Read does in the window:
+    /// one reference, the installations of one system, or all of them. Like a reading of a local
+    /// copy, each is DevHQ's own evidence and keeps the agent that asked, changes no configuration
+    /// and is kept only while the person still lets agents write, checked inside its transaction.
+    pub(super) fn read_installations(
+        &self,
+        arguments: &Map<String, Value>,
+    ) -> Result<Value, ApiError> {
+        // The rules already refused a reference with a system, and a system without its type.
+        let which = if let Some(reference) = optional_text(arguments, "referenceId")? {
+            Which::References(vec![reference.to_owned()])
+        } else if arguments.contains_key("type") {
+            Which::System(super::find_system(&self.inventory()?, arguments)?)
+        } else {
+            Which::ThisWorkstation
+        };
+        let reader = match &self.installation_reader {
+            Some(reader) => reader.clone(),
+            None => crate::installations::Reader::this_executable()?,
+        };
+        let outcome = crate::installations::readings::read_installations(
+            &self.database,
+            &self.computer,
+            &reader,
+            &which,
+            &self.actor()?,
+        )?;
+        Ok(json!(outcome))
+    }
 }
 
 fn tool(
@@ -884,7 +914,7 @@ fn references_schema() -> Value {
         "description": "Where the system is: inventory the agent declares, which DevHQ never opens or checks. An item without id adds a reference (kind and target required); an item with an existing reference's id changes it, keeping the fields the item leaves out. In an edit, references not named are kept: leaving one out never removes it (removeReferences does). The same kind, target and machine cannot appear twice.",
         "items": { "type": "object", "properties": {
             "id": { "type": "string", "description": "An existing reference's id (from get_system), to change it. Leave it out for a new reference." },
-            "kind": { "type": "string", "enum": ["repository", "local_copy", "documentation", "logs", "dashboard"], "description": "Required for a new reference. repository and dashboard take an http(s) URL; local_copy an absolute path on a workstation; documentation and logs either." },
+            "kind": { "type": "string", "enum": ["repository", "local_copy", "documentation", "logs", "dashboard", "installation"], "description": "Required for a new reference. repository and dashboard take an http(s) URL; local_copy the absolute path of a working copy's folder on a workstation; installation the absolute path of the installed executable's file on a workstation; documentation and logs either." },
             "target": { "type": "string", "description": "Required for a new reference. An http(s) URL without user name or password, or an absolute path (C:\\…, \\\\server\\share\\… or /…), as it should be shown and copied. A repository is the code's canonical web address, never a local remote or an SSH URL." },
             "label": { "type": ["string", "null"], "description": "An optional name for people that tells two references of one kind apart. Never a locator. null clears it." },
             "machine": { "type": ["string", "null"], "description": "For a path, required: the id of the resource it is on, as list_systems or get_system gives it, never its name (in save_resource, the resource being saved can also be named by its own name). For a URL, leave it out, or null to clear it." },
@@ -917,14 +947,15 @@ fn named(kind: &str) -> Value {
 }
 
 /// The tools Read and maintain allows: adding and editing applications and resources, reading
-/// local copies (DevHQ's own evidence, which changes no configuration and never leaves this
-/// computer) and recording what the agent observed, for at most a week. Every other tool that
+/// local copies and installations (DevHQ's own evidence, which changes no configuration and never
+/// leaves this computer) and recording what the agent observed, for at most a week. Every other tool that
 /// changes something needs Read and write.
-pub(super) const MAINTAIN: [&str; 4] = [
+pub(super) const MAINTAIN: [&str; 5] = [
     "save_application",
     "save_resource",
     "record_observation",
     "read_copies",
+    "read_installations",
 ];
 
 /// The tools that change something, each description starting with the access it needs. Saving
@@ -978,7 +1009,7 @@ fn changing_tools() -> Vec<Value> {
         tool(
             "save_resource",
             "Add or edit a resource",
-            "Adds a resource (name and kind required), or edits the one with the given id, keeping what the edit leaves out. Adding is refused when a resource already has that name, ignoring case; a new resource's references take no id. An edit needs `basedOn` (its latestChange from list_systems or get_system) and is refused if the resource changed since. `references` adds and changes what it names and keeps the rest; `removeReferences` removes the ones it names (see the item's description). A path's `machine` is a resource's id, never its name; the resource being saved can be the machine of its own paths, named by its id or by its own name. One that holds other systems' local copies cannot stop being a workstation. No text may hold control characters or invisible formatting ones (line breaks only in description). What it saves is declared inventory, never evidence, logged as the agent's change with each field before and after.",
+            "Adds a resource (name and kind required), or edits the one with the given id, keeping what the edit leaves out. Adding is refused when a resource already has that name, ignoring case; a new resource's references take no id. An edit needs `basedOn` (its latestChange from list_systems or get_system) and is refused if the resource changed since. `references` adds and changes what it names and keeps the rest; `removeReferences` removes the ones it names (see the item's description). A path's `machine` is a resource's id, never its name; the resource being saved can be the machine of its own paths, named by its id or by its own name. One that holds other systems' local copies or installations cannot stop being a workstation. No text may hold control characters or invisible formatting ones (line breaks only in description). What it saves is declared inventory, never evidence, logged as the agent's change with each field before and after.",
             json!({
                 "id": { "type": "string", "description": "The resource to edit; leave out to add one." },
                 "basedOn": based_on_schema(),
@@ -1112,6 +1143,19 @@ fn changing_tools() -> Vec<Value> {
             json!({
                 "referenceId": { "type": "string", "description": "One local copy's reference id, from list_systems. Never with type, id or name." },
                 "type": { "type": "string", "enum": ["application", "resource"], "description": "With id or name: the system whose copies to read." },
+                "id": { "type": "string", "description": "The system's id, from list_systems; only with type." },
+                "name": { "type": "string", "description": "Or its exact name, ignoring case; only with type. Given with id, it must be that system's name, or nothing is done." },
+            }),
+            &[],
+            json!({ "destructiveHint": false, "idempotentHint": false, "openWorldHint": false }),
+        ),
+        tool(
+            "read_installations",
+            "Read installations",
+            "Reads, now, the installations declared on this workstation (status: thisWorkstation), as Read does in DevHQ: one reference (referenceId), the installations of one system (type and id or name), or, with neither, every one but those of archived applications. Each reading is kept as DevHQ's own evidence (source read) with this agent as who asked, and says what the installed executable's file was at that moment: whether it was there, where the system really keeps it when that is another path (storedAt), its SHA-256, size and modification time, the ProductVersion, FileVersion and ProductName its version resource declares (or why they are unknown), and how many processes were running from it, with how many processes the system did not let DevHQ look at. Never a process identifier, a name, a command line, or anything else the file holds. A count of processes is not health, and not whether the application was in use. DevHQ reads the file as data, with a reader of its own, in a process that cannot start programs: it never runs or loads the executable and writes nothing; code that a hostile file managed to run inside that reader would still have the person's rights. To count processes it reads the system's list of processes and keeps only those two numbers. Nothing leaves this computer, and no configuration changes. Installations on other machines are read by DevHQ there.",
+            json!({
+                "referenceId": { "type": "string", "description": "One installation's reference id, from list_systems. Never with type, id or name." },
+                "type": { "type": "string", "enum": ["application", "resource"], "description": "With id or name: the system whose installations to read." },
                 "id": { "type": "string", "description": "The system's id, from list_systems; only with type." },
                 "name": { "type": "string", "description": "Or its exact name, ignoring case; only with type. Given with id, it must be that system's name, or nothing is done." },
             }),

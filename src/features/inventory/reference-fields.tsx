@@ -13,6 +13,7 @@ const placeholders: Record<ReferenceKind, string> = {
   documentation: 'https://…, C:\\… or /…',
   logs: 'https://…, C:\\… or /…',
   dashboard: 'https://…',
+  installation: 'C:\\…\\app.exe or /…/app',
 }
 
 /**
@@ -54,8 +55,8 @@ export function ReferenceFields({
       </div>
       {references.length === 0 && (
         <p className="text-xs text-muted-foreground">
-          Add where its repository, local copies, documentation, logs or dashboard are. DevHQ keeps
-          and copies them; it opens none.
+          Add where its repository, local copies, installations, documentation, logs or dashboard
+          are. DevHQ keeps and copies them; it opens none but the ones you ask it to read.
         </p>
       )}
       {references.map((reference, index) => {

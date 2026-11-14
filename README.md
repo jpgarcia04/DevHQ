@@ -11,8 +11,8 @@ recordar eventos, relacionar infraestructura y verificar resultados de automatiz
 DevHQ no reemplaza VS Code, una terminal, GitHub Desktop, Docker Desktop, Codex ni
 Claude Code. Conserva inventario local, la evidencia que registras a mano, la de
 comprobaciones HTTP(S) que lanzas tú o que supervisa **solo mientras su ventana está
-abierta**, y lo que lee, cuando se lo pides, en las copias locales de esta estación de trabajo,
-sin ejecutar nada de lo que nombran. **No funciona en segundo plano ni opera sistemas.**
+abierta**, y lo que lee, cuando se lo pides, en las copias locales y en las instalaciones de esta
+estación de trabajo, sin ejecutar nada de lo que nombran. **No funciona en segundo plano ni opera sistemas.**
 
 ## Qué incluye
 
@@ -38,6 +38,10 @@ sin ejecutar nada de lo que nombran. **No funciona en segundo plano ni opera sis
   Read all on this computer, sin ejecutar nada de lo que nombran: cada copia con su última lectura,
   sus lecturas anteriores bajo demanda, un panel Local copies en Overview y la última actividad de
   cada aplicación. Settings › This computer dice qué estación de trabajo es este equipo.
+- En Mi inventario, las instalaciones de esta estación de trabajo: el ejecutable instalado de cada
+  sistema, leído como datos cuando pulsas Read o Read all on this computer, sin ejecutarlo: la versión
+  que declara el archivo frente a la que declara el inventario, entre qué dos lecturas cambió la build
+  y cuántos procesos corrían desde él, con un panel Installations en Overview.
 - Una comprobación HTTP(S) de solo lectura por aplicación o recurso, que se ejecuta a
   petición o, si activas su supervisión, cada 5–60 min mientras DevHQ está abierto, y
   registra una observación automática con su evidencia técnica.
@@ -95,9 +99,9 @@ origen (`source`), siempre visible:
 | `agent`  | Agent · _nombre_       | Un agente al que le pediste actuar por la puerta para agentes   |
 
 Solo las observaciones (y el evento que las acompaña) pueden ser `http`; el esquema lo
-impone con CHECK. Lo que DevHQ lee en una copia local no es ninguno de estos registros: es una
-lectura, con su propio `source` (`read`), que nunca dice nada de la salud (ver
-[Copias locales](#copias-locales)). Una observación automática sigue exactamente la misma semántica de
+impone con CHECK. Lo que DevHQ lee en una copia local o en una instalación no es ninguno de estos
+registros: es una lectura, con su propio `source` (`read`), que nunca dice nada de la salud (ver
+[Copias locales](#copias-locales) e [Instalaciones](#instalaciones)). Una observación automática sigue exactamente la misma semántica de
 vigencia, sustitución y atención que una manual. Un registro `agent` guarda además, en
 `agent`, el nombre que el cliente del agente declaró (por ejemplo `claude-code`); DevHQ no
 puede verificarlo y la etiqueta lo dice al pasar el cursor. Se presenta mezclado con lo tuyo en
@@ -170,7 +174,7 @@ el nombre que declaró su cliente, «Agent · _nombre_»).
 ### Referencias
 
 Una aplicación o un recurso dice dónde está en el mundo con sus **referencias**: su repositorio, sus
-copias locales en cada estación de trabajo, su documentación, sus logs y su panel. Responden «¿dónde
+copias locales y sus instalaciones en cada estación de trabajo, su documentación, sus logs y su panel. Responden «¿dónde
 están sus logs, su documentación, su repositorio?» y, para un agente que trabaja en una carpeta,
 «¿qué sistema es este?». Son inventario que declaras tú o un agente, no evidencia: no llevan
 `source`, su rastro es el [registro de cambios](#registro-de-cambios) y DevHQ no las abre ni
@@ -184,6 +188,7 @@ comprueba que existan o respondan, salvo la copia local que le pidas leer (ver
 | `documentation` | Documentation | URL http(s) o ruta absoluta                                               |
 | `logs`          | Logs          | URL http(s) o ruta absoluta                                               |
 | `dashboard`     | Dashboard     | URL http(s)                                                               |
+| `installation`  | Installation  | Ruta absoluta del ejecutable instalado, en un recurso `workstation`       |
 
 - El destino es una URL http(s) o una ruta absoluta, y se guarda tal como se escribió, sin espacios
   alrededor. La URL sigue las reglas de la comprobación HTTP(S): con host, sin usuario ni contraseña
@@ -196,7 +201,7 @@ comprueba que existan o respondan, salvo la copia local que le pidas leer (ver
   llegarán con una integración que los necesite.
 - **Toda ruta dice en qué máquina está** (`machine_id`, un recurso), porque el mismo proyecto vive en
   una carpeta distinta en cada equipo, y una URL no está en ninguna. La máquina de una copia local
-  es una estación de trabajo. Un recurso puede ser la máquina de sus propias rutas, como los logs de
+  o de una instalación es una estación de trabajo. Un recurso puede ser la máquina de sus propias rutas, como los logs de
   un servidor en `/var/log/…`; en la ventana se elige como «This resource» una vez guardado.
 - La **etiqueta**, opcional y de hasta 120 caracteres, es un nombre para personas que distingue dos
   referencias del mismo tipo (dos paneles, la documentación de la API y la de usuario). Nunca es un
@@ -216,8 +221,9 @@ comprueba que existan o respondan, salvo la copia local que le pidas leer (ver
   corre un componente: quitarlas cambiaría la configuración de otro sistema sin su entrada en el
   registro de cambios, y el esquema también lo impide (`RESTRICT`). Sus propias rutas no lo impiden:
   el borrado las quita primero, porque SQLite aplica el `RESTRICT` de la máquina en el acto, antes
-  de la cascada del sujeto. Por la misma razón, un recurso que guarda copias locales de otros
-  sistemas no puede dejar de ser estación de trabajo, y el rechazo dice de qué sistemas son.
+  de la cascada del sujeto. Por la misma razón, un recurso que guarda copias locales o
+  instalaciones de otros sistemas no puede dejar de ser estación de trabajo, y el rechazo dice de qué
+  sistemas son.
 - En la ventana, el Overview de cada aplicación y la tarjeta de cada recurso en Infrastructure
   muestran sus referencias, con la máquina de cada ruta y un botón **Copy** para el destino, como la
   ruta en Settings. Sin referencias dicen «No references yet»: no es atención ni hueco de cobertura,
@@ -376,6 +382,186 @@ aplicaciones archivadas. Applications, en cada tarjeta, y el Overview de cada ap
 última actividad: el commit más nuevo entre las últimas lecturas de sus copias, con la máquina y el
 momento de esa lectura, y cuántas copias nunca se leyeron; si ninguna se leyó, que la actividad se
 desconoce. Nunca dicen «inactiva».
+
+### Instalaciones
+
+Una referencia `installation` dice dónde está, en una estación de trabajo, el ejecutable instalado de
+un sistema: la ruta absoluta de ese archivo (`C:\Users\ana\AppData\Local\Atlas Notes\atlas-notes.exe`),
+no la de su carpeta ni la de un acceso directo. Como una copia local, es inventario que declaras tú o
+un agente, siempre en una máquina que es estación de trabajo, y la misma ruta en la misma máquina no
+se declara dos veces en un sistema. DevHQ no busca instalaciones: solo conoce las que el inventario
+nombra. Cuando se lo pides, DevHQ **lee** ese archivo y guarda lo que encontró como una **lectura**:
+evidencia propia, nunca salud. Responde «¿qué versión tengo instalada, y desde cuándo?» para un sistema
+al que ninguna comprobación HTTP(S) puede preguntar, como una aplicación que solo corre cuando la abres
+o una de escritorio sin servidor: la versión declarada es texto que alguien escribió y se queda vieja;
+lo que dice el archivo se observa. La pides tú en la ventana, con Read, o un agente por la
+[puerta](#puerta-para-agentes) (`read_installations`).
+
+**Observar no da poder a lo observado.** La ruta declarada, y el archivo que hay en ella, son datos no
+confiables, los haya declarado quien los haya declarado. Por eso DevHQ nunca ejecuta el programa (ni
+siquiera con `--version`), nunca lo carga como imagen y nunca pregunta su versión a las APIs de
+Windows, que lo cargan: lee los bytes del archivo. Lo hace en un proceso propio por archivo, `devhq
+--read-installation`, que antes de leer se impide a sí mismo arrancar programas igual que el lector de
+[copias locales](#copias-locales) (un Job Object en Windows, seccomp en Linux; en otros sistemas no
+lee y lo dice). El proceso tiene 30 s; si no termina, DevHQ lo mata y no guarda nada, y lo que
+devuelve se valida como dato no confiable, con las mismas reglas que imponen los CHECK del esquema,
+antes de aceptarlo. Así un cuelgue o un fallo del lector ante un archivo hostil termina con el
+lector, nunca con la ventana ni con la puerta.
+
+El lector abre ese archivo, una vez y para leer, y ningún otro: ni sus vecinos, ni su carpeta, ni el
+registro. Qué encuentra:
+
+| Dato                                                   | Qué es                                                                                                                                                                                                                                                                                                                                              |
+| ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `outcome`, `detail`                                    | `read`; `missing` (nada en esa ruta); `unreadable` (el sistema niega el acceso o no deja leerlo, como en `WindowsApps`, con el motivo del sistema); `not_an_executable` (una carpeta, algo que no es un archivo regular, o un archivo que no empieza como un ejecutable de Windows ni como un ELF). `detail` dice por qué                           |
+| `storedAt`                                             | Dónde guarda el sistema el archivo de verdad, cuando no es la ruta declarada: un enlace, un junction o la redirección de `AppData` para un proceso lanzado desde una app empaquetada. Se pregunta con la misma función que usa DevHQ para su inventario (`inventory::stored_at`, ver [Arquitectura](#arquitectura)), así que las dos dicen lo mismo |
+| `sha256`, `sizeBytes`, `modifiedAt`                    | El SHA-256 de todos los bytes del archivo, cuántos eran y su fecha de modificación según el sistema de archivos. El hash identifica la build aunque dos builds declaren la misma versión. Si un instalador lo estaba escribiendo, es el hash de lo que había                                                                                        |
+| `productVersion`, `fileVersion`, `productName`         | Lo que declara el recurso de versión del archivo, tal como lo dice el archivo, sin espacios alrededor: solo esos tres textos, de la primera tabla de cadenas, de 120 caracteres como mucho. Ninguno se deduce de otro ni de los números del recurso                                                                                                 |
+| `versionUnknown`                                       | En lugar de esos tres, por qué no se conocen: el archivo no tiene recursos o no tiene recurso de versión, el recurso está malformado, no declara ninguno de los tres, declara uno más largo de lo que DevHQ guarda o con caracteres de control (no se recorta: ya no sería lo que dice el archivo), o es un ELF, que no tiene recurso de versión    |
+| `processes`, `processesUnexamined`, `processesUnknown` | Cuántos procesos tenían ese archivo como ejecutable en ese momento, sin contar al propio lector, y cuántos procesos no dejó mirar el sistema (los de otro usuario, los protegidos), cualquiera de los cuales podría tenerlo; o, en lugar de los dos números, por qué el sistema no dio la lista                                                     |
+
+Para saber cuántos procesos corren desde el archivo, el lector mira la lista de procesos del sistema
+y, de cada uno, solo la ruta de su ejecutable, que el sistema da sin abrir su memoria ni su línea de
+comandos (`PROCESS_QUERY_LIMITED_INFORMATION` en Windows, el enlace `/proc/<pid>/exe` en Linux). Eso
+es leer el sistema, no solo lo que el inventario nombra, y por eso se dice aquí: de esa lista salen
+dos números y nada más, nunca un identificador de proceso, un nombre, una línea de comandos ni la
+ruta de otro programa. Un proceso cuenta si su ruta es la declarada o la que el sistema resuelve para
+ella, comparadas sin distinguir mayúsculas en Windows; uno lanzado por otro nombre del mismo archivo
+(una unidad de red asignada, un enlace duro) no se reconoce. «Hay N procesos» es todo lo que dice: qué
+significa depende del programa, y con la ventana de DevHQ cerrada puede haber varios procesos de
+DevHQ, las puertas que lanzan las sesiones de agentes. En un escritorio con Windows 11, sin
+privilegios de administrador, el sistema no dejó mirar más de la mitad de los procesos.
+
+El recurso de versión lo lee un lector propio (`src-tauri/src/installations/pe.rs`), sin `unsafe` y
+sin ninguna biblioteca nueva: la cabecera DOS, las cabeceras PE (PE32 y PE32+), la tabla de
+secciones, el directorio de recursos exactamente tres niveles hacia abajo (el tipo `RT_VERSION`, el
+primer nombre, el primer idioma) y, en los datos de versión, `VS_VERSIONINFO`, `StringFileInfo` y su
+primera tabla. No confía en ningún número que dé el archivo: cada desplazamiento y cada tamaño se
+comprueban contra el archivo y contra un límite antes de usarse (96 secciones, 4096 entradas por
+tabla, 256 KiB de datos de versión, 1024 hijos por nodo, 64 caracteres por clave), cada suma se
+comprueba contra el desbordamiento, y la profundidad fija hace que una tabla que apunta a sí misma se
+lea tres veces como mucho. Lo que el archivo tiene mal es una respuesta («su versión se desconoce,
+porque…»), nunca un fallo. Lee lo que dice el archivo, no lo que diría Windows: para sus propios
+ejecutables, Windows toma la versión de un archivo de idioma aparte (`.mui`) y sus APIs pueden dar
+otra.
+
+Una **batería de ejecutables hostiles** (`installations/battery.rs`), en las pruebas de Rust de Linux
+y de Windows, lo exige con archivos sintéticos y sin código: 35 que tienen mal una cosa cada uno
+(recursos que empiezan fuera del archivo o en ninguna sección, un directorio o una sección que dicen
+ocupar 4 GiB, 131 070 entradas en una tabla, tablas que apuntan a la primera, una tabla donde van los
+datos y datos donde va una tabla, una entrada que es sus propios datos, datos de versión de 4 GiB,
+más largos que su sección o de longitud cero, un hijo de longitud cero, que un lector descuidado
+leería para siempre, uno más largo que su padre, una clave que no termina, dos mil cadenas, una
+versión que no es texto o de treinta mil caracteres, un nombre con un salto de línea, 65 535
+secciones, cabeceras más largas que el archivo, y lo que no es un ejecutable: un archivo vacío, uno
+de texto, dos bytes, bytes al azar); un archivo bueno cortado en cada una de sus longitudes; y ese
+archivo con bytes sobrescritos al azar 30 000 veces, siempre las mismas. El lector debe responder a
+cada uno sin leer del archivo más de lo que permiten sus límites (512 KiB, mida lo que mida y diga lo
+que diga), y lo que acepte debe ser texto dentro de los suyos. Después los lee el lector de verdad,
+en su proceso, encerrado y sin encerrar: cada uno recibe su respuesta, con el SHA-256 de lo que
+contiene, y ningún archivo de la carpeta cambia, aparece ni desaparece (contenido y fecha de
+modificación).
+
+**Lo que no se garantiza.** Como en las copias locales: si un archivo hostil lograra ejecutar código
+dentro del lector, ese código tendría tus permisos, y ni el Job Object ni seccomp impiden que escriba
+o que pida a otro proceso arrancar un programa. Nada del sistema impide que el lector escriba: lo
+garantizan su código, que solo abre el archivo para leerlo, y la batería. Y la lista de procesos es
+la de un instante: un proceso que arranca o termina mientras se lee puede contarse o no.
+
+- **Evidencia sin vigencia.** Cada lectura se guarda en `installation_readings`, inmutable, con
+  `source = read`, el lector y su versión (`reader`, «DevHQ installation reader 1»), el momento
+  observado y el registrado, y el agente que la pidió por la puerta, o nada si la pediste tú. No es
+  healthy ni unhealthy, no entra en la atención ni en la cobertura de salud, no escribe eventos ni sale
+  en Activity, y no caduca, porque nunca afirmó seguir siendo cierta: dice lo que el archivo era cuando
+  se leyó. «Había dos procesos corriendo desde él», nunca «está abierta»: nada la presenta como actual,
+  ni como que la aplicación funciona.
+- **Copia lo que leyó**: la referencia, la máquina y la ruta, sin claves foráneas, como una lectura de
+  una copia local. Editar o quitar la referencia nunca reescribe una lectura. Si la referencia
+  desaparece, cambia de ruta o de máquina, o deja de ser una instalación mientras se lee, no se guarda
+  nada.
+- **Es historia**: un sistema con lecturas no se puede borrar, como uno con observaciones; el rechazo
+  dice que tiene lecturas de sus instalaciones. Una aplicación que ya no se usa pasa a Archived: sus
+  instalaciones dejan de leerse al pedir todas, y sus lecturas se conservan.
+- **Lo derivado**, en Rust y en cada lectura del inventario (`installations`), nunca guardado: cada
+  instalación declarada con su última lectura, por un índice, y
+  - **si la lectura se hizo en otra ruta o máquina** de las que declara hoy la referencia
+    (`movedSinceRead`);
+  - **si la versión declarada es la instalada** (`version`): la versión que declara la aplicación en el
+    inventario frente al `ProductVersion` que declaraba su archivo en la última lectura. `matches`,
+    `differs`, `undeclared` (la aplicación no declara ninguna) o `unknown` (el archivo no declara
+    `ProductVersion`, o no se pudo saber). Nada, si el archivo no se leyó o el sistema es un recurso,
+    que no declara versión. Se comparan sin espacios alrededor, sin una `v` inicial ante un dígito, sin
+    lo que sigue a un `+` (los metadatos de build, donde una build escribe su commit) y sin distinguir
+    mayúsculas; y, si las dos son números y puntos, sin los ceros finales. Así «1.4.0» es «v1.4.0»,
+    «1.4.0+3f9c2ab» y «1.4.0.0», y no es «1.4.1» ni «1.4.0-beta». Corregir la versión declarada cambia
+    el resultado sin leer otra vez; instalar otra build no lo cambia hasta la siguiente lectura;
+  - **desde cuándo es la misma build** (`build`): DevHQ conoce una build solo en los momentos en que
+    leyó el archivo, así que no sabe cuándo se instaló. Dice la lectura más antigua que encontró el
+    mismo SHA-256 sin otra build entre medias, en la misma ruta y máquina (`sameSince`), cuántas
+    lecturas lo encontraron (`readings`) y, si la anterior encontró otra build, cuál y cuándo
+    (`previous`): la build cambió **entre esos dos momentos**, y DevHQ da los dos, nunca una fecha
+    propia. Una lectura que no leyó el archivo (no estaba, no se pudo leer) no encontró ninguna build,
+    ni esta ni otra, y una hecha en otra ruta era de otro archivo: lo anterior a ella no cuenta. Para
+    que el coste de leer el inventario no crezca con el historial, mira como mucho las 200 lecturas
+    anteriores a la última; si todas son de la misma build y quedan más, lo dice (`complete: false`):
+    la build es la misma al menos desde `sameSince`, y desde cuándo no se sabe.
+
+  Las lecturas anteriores de un sistema se cargan de 200 en 200 (`older_installation_readings`), por
+  el índice de su sistema.
+
+**Solo a petición.** `read_installations` lee las instalaciones que se nombran o, sin nombrar ninguna,
+todas las de esta estación salvo las de aplicaciones archivadas, una tras otra: nunca al abrir DevHQ,
+nunca con un temporizador ni con la supervisión, nunca con la ventana cerrada. Las de otra máquina las
+lee DevHQ en esa máquina, y sin saber qué estación de trabajo es este equipo (ver
+[Copias locales](#copias-locales)) no lee ninguna y dice por qué. Un fallo de DevHQ al leer (el lector
+no arranca, no responde en su plazo o responde algo que no se sostiene) se devuelve y no guarda nada.
+
+**En la ventana.** En las referencias de cada aplicación y recurso, cada instalación muestra su última
+lectura en pasado: el resultado (Read, Not found, Not readable, Not an executable), el momento, la
+máquina, la etiqueta «Automated · Local read» con el agente que la pidió, si fue uno, y lo que encontró:
+la versión que declaraba el archivo, o por qué se desconoce; el SHA-256 entero; el tamaño y la fecha de
+modificación; y los procesos, como «2 processes were running from it; the system did not let DevHQ look
+at 41 other processes», nunca como que la aplicación está abierta. Debajo dice dónde guardaba el sistema
+el archivo si no era la ruta declarada (`storedAt`) y que un DevHQ lanzado de otra forma puede encontrar
+otro archivo o ninguno; si la lectura se hizo en otra ruta o máquina de las declaradas hoy; la versión
+declarada frente a la del archivo, con las dos y sin decir cuál está al día («One of the two is out of
+date.»), destacada solo cuando difieren; y desde cuándo es la misma build: «it changed between those two
+readings. DevHQ does not know when.», o que la misma build está en todas las lecturas, o en las últimas
+201 «since at least» una fecha cuando DevHQ no miró más atrás. Read aparece solo en las instalaciones de
+esta estación y se desactiva mientras esa instalación se lee; en las de otra máquina, la ventana dice
+que las lee DevHQ allí, y sin estación conocida, por qué no lee ninguna y dónde elegirla. «Show every
+installation reading» carga, solo al abrirlo, las lecturas de las instalaciones del sistema, las más
+nuevas primero y de 200 en 200, en una línea cada una, dice cuándo están todas y cuáles son de rutas
+que el sistema ya no declara, y mientras está abierto vuelve a cargar la primera página cuando el
+inventario trae una lectura más nueva; cerrarlo olvida lo cargado. Overview tiene un panel
+**Installations**, junto a Local copies y fuera de «Needs attention»: cuántas instalaciones tiene esta
+estación y Read all on this computer, que las lee en serie y dice cuántas leyó y cuáles no pudo; las
+instalaciones cuyo archivo declaraba otra versión que el inventario, con las dos versiones; las que no
+se encontraron donde se declaran; las de esta estación nunca leídas y cuántas de otros equipos nunca se
+leyeron: las mismas listas que da la puerta, sin las aplicaciones archivadas. Dice que nada de eso es
+salud, ni dice si la aplicación funciona. El formulario de una aplicación o un recurso ofrece
+Installation entre los tipos de referencia.
+
+**Qué build es: la versión y el commit.** El SHA-256 dice que dos lecturas encontraron builds
+distintas, pero no cuáles. Para las aplicaciones que construyes tú, lo más barato no está en DevHQ: que
+cada build declare su versión de verdad y escriba su commit en el recurso de versión, como metadatos de
+build de SemVer (`ProductVersion = 1.4.0+3f9c2ab01d4e`). La lectura lo guarda tal cual, y la
+comparación con la versión declarada ignora lo que sigue al `+`. DevHQ es el primero en cumplirlo: su
+script de build (`src-tauri/build.rs`) lee el commit de HEAD en el `.git` del checkout, como archivos y
+sin ejecutar `git` (un script de build que arranca programas ejecuta lo que haya primero en el `PATH`),
+y el ejecutable de Windows declara `0.2.0+` y los doce primeros dígitos de ese commit en
+`ProductVersion` y `FileVersion`. Lee `HEAD`, la referencia que nombra, suelta o en `packed-refs`, y,
+en un worktree enlazado o un submódulo, donde `.git` es un archivo (`gitdir: …`), la carpeta que ese
+archivo nombra y la del repositorio al que está enlazado (`commondir`). Lo que no puede saber no lo
+afirma: sin `.git` (un archivo de fuentes), o con uno que no entiende, la versión queda sin commit; y
+si el árbol tenía cambios sin confirmar no se puede saber sin comparar cada archivo con el índice, que
+es `git status`, así que la versión nombra el commit en el que estaba HEAD y no dice nada del árbol,
+salvo que quien compila lo diga con `DEVHQ_BUILD_DIRTY=1`, y entonces termina en `.dirty`. Solo el
+recurso de versión lleva el commit: la versión de la aplicación y la del instalador siguen siendo
+`0.2.0`. Ese número está escrito en `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`
+y `src/shared/version.ts`, de donde lo toma la ventana, y una prueba exige que coincidan; sube cuando
+se construye un instalador para instalarlo, no con cada cambio, porque lo que distingue una build de
+otra es el commit.
 
 ### Comprobación HTTP(S)
 
@@ -567,7 +753,7 @@ anterior solo lo actualiza la persona, desde la ventana, con **Back up and upgra
 hace: ni una consulta, ni la supervisión, ni un respaldo, ni la [puerta para agentes](#puerta-para-agentes),
 que no tiene ninguna herramienta para ello. Lo implementa `src-tauri/src/upgrade.rs`.
 
-- **Ver antes de decidir.** Una ventana que arranca sobre un inventario anterior a la v13 no lo sirve:
+- **Ver antes de decidir.** Una ventana que arranca sobre un inventario anterior a la v14 no lo sirve:
   cada página de Mi inventario muestra **Inventory needs a schema upgrade** con lo que es, leído sin
   cambiar ningún archivo y como lee la puerta, con una conexión que no puede escribir
   (`inspect_upgrade`). Dice la ruta, la versión que declara y la de este DevHQ, y cuántas filas tiene
@@ -600,7 +786,7 @@ que no tiene ninguna herramienta para ello. Lo implementa `src-tauri/src/upgrade
      y su manifiesto no se migra nada, ni cuando el sistema responde que no pudo hacer alguno de esos
      pasos.
   4. Aplica las migraciones en la misma transacción.
-  5. Antes de confirmar, comprueba el resultado: la versión 13 y su estructura, `integrity_check`,
+  5. Antes de confirmar, comprueba el resultado: la versión 14 y su estructura, `integrity_check`,
      `foreign_key_check`, y que cada fila de cada tabla sigue ahí con su `rowid` y los mismos valores
      en las columnas que ya tenía, comparados valor a valor y tipo a tipo. En cada columna nueva, cada
      fila debe tener el valor por defecto que declara la columna (`NULL` si no declara ninguno), que es
@@ -642,10 +828,10 @@ que no tiene ninguna herramienta para ello. Lo implementa `src-tauri/src/upgrade
     nada después. Pero el archivo queda con un journal o un log que hay que recuperar, y DevHQ no
     recupera por su cuenta un inventario de un esquema anterior: al arrancar lo rechaza sin tocar sus
     archivos (ver «Un inventario antiguo que necesita recuperación», abajo).
-  - Si termina después del commit, el inventario ya es v13: al arrancar, la ventana lo recupera como
+  - Si termina después del commit, el inventario ya es v14: al arrancar, la ventana lo recupera como
     cualquier inventario actual y lo sirve.
   - Dos actualizaciones a la vez, desde dos ventanas, las ordena el lock. La segunda, al obtenerlo,
-    encuentra el inventario ya en la v13, no hace otro respaldo y la ventana lo sirve (**Inventory
+    encuentra el inventario ya en la v14, no hace otro respaldo y la ventana lo sirve (**Inventory
     already upgraded**); si espera más de 5 s se rechaza con `upgrade_refused` y basta con reintentar.
 - **Los respaldos** van a la misma carpeta `backups/` que los de Back up now, en el mismo disco que el
   inventario: un disco que falla se los lleva, y desinstalar DevHQ con «Delete the application data»
@@ -702,7 +888,7 @@ que no tiene ninguna herramienta para ello. Lo implementa `src-tauri/src/upgrade
        Si no coinciden, o no hay respaldo, no pongas ninguno en su lugar y conserva los archivos como
        están: esta versión de DevHQ no ofrece otro camino.
 
-- **Volver a una versión anterior de DevHQ.** Un DevHQ anterior no lee la v13: volver es restaurar el
+- **Volver a una versión anterior de DevHQ.** Un DevHQ anterior no lee la v14: volver es restaurar el
   respaldo previo a la actualización, de su versión, como arriba, y lo escrito después se pierde. Los
   DevHQ anteriores a que ninguna apertura actualizara un inventario actualizan sin respaldo lo que
   abren, y convierten a WAL uno más nuevo antes de rechazarlo: no abras con ellos un inventario que
@@ -798,7 +984,7 @@ codex mcp add devhq -- "<ruta del ejecutable de DevHQ>" --mcp
 Codex pide aprobación antes de cada herramienta MCP que no se declara de solo lectura y, con
 `approval_policy = "never"`, no pregunta: la rechaza él mismo, sin que la llamada llegue a la puerta, y
 el agente solo recibe «MCP tool call requires approval, but approval policy is never». Para que lo que
-un agente puede escribir lo decida el acceso que eliges en DevHQ, aprueba en ese archivo solo las cuatro
+un agente puede escribir lo decida el acceso que eliges en DevHQ, aprueba en ese archivo solo las cinco
 herramientas de Read and maintain:
 
 ```toml
@@ -809,6 +995,9 @@ approval_mode = "approve"
 approval_mode = "approve"
 
 [mcp_servers.devhq.tools.read_copies]
+approval_mode = "approve"
+
+[mcp_servers.devhq.tools.read_installations]
 approval_mode = "approve"
 
 [mcp_servers.devhq.tools.record_observation]
@@ -876,14 +1065,14 @@ bloqueo, borra el índice y solo después vuelca y borra el log, y una mirada en
 que nadie mantiene. Si los archivos cambiaron, mira otra vez desde el principio; solo responde
 `needs_recovery` si siguieron igual, lo que retrasa esa respuesta unos 125 ms.
 
-La puerta solo sirve un inventario en el esquema de este DevHQ (v13) y con su estructura. Lo demás lo
+La puerta solo sirve un inventario en el esquema de este DevHQ (v14) y con su estructura. Lo demás lo
 rechaza sin leer ni cambiar nada, también con la puerta cerrada: un inventario más antiguo con
 `schema_outdated` (este DevHQ nunca actualiza un inventario al abrirlo; solo la persona lo actualiza,
 desde la ventana, con [Back up and upgrade](#actualizar-un-inventario-antiguo), y la puerta no tiene
 herramienta para ello), uno más nuevo con `schema_newer`, un archivo SQLite sin las tablas de DevHQ (vacío o de otro
 programa) con `not_an_inventory`, uno que habría que recuperar con `needs_recovery`, y lo que no se puede
 leer como SQLite (otro tipo de archivo, una carpeta, un archivo dañado o bloqueado) con
-`database_error`. Que un archivo declare la versión 13 no basta. La puerta compara sus tablas, columna
+`database_error`. Que un archivo declare la versión 14 no basta. La puerta compara sus tablas, columna
 por columna, y sus índices, por nombre, con el esquema que crean las migraciones de este DevHQ; si algo
 falta o difiere lo rechaza con `schema_mismatch` y dice qué. Las tablas e índices que el esquema no tiene
 no los juzga. Esa comparación no es una comprobación de integridad: la puerta nunca lee cada página y
@@ -942,22 +1131,23 @@ only:
 | Herramienta    | Qué responde                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `status`       | Qué archivo abrió, dónde lo guarda de verdad el sistema (`storedAt`, como Settings), qué guarda aún la ubicación anterior de DevHQ en `AppData` (`database.previous`, `null` si nada; ver [Trasladar el inventario fuera de AppData](#trasladar-el-inventario-fuera-de-appdata)), qué es ese archivo (`schema`: la versión de esquema que declara, también en `schemaVersion`, o `null` si no es un inventario o no se pudo leer; la que soporta este DevHQ; su estado: `current`, `mismatch`, `outdated`, `newer`, `not_an_inventory`, `needs_recovery`, `unreadable` o `missing`, con qué significa; si tiene la estructura del esquema de este DevHQ, `structure`: `matches`, `differs` o, para otra versión, `not_checked`; y su integridad, `integrity`, que la puerta nunca comprueba: `not_checked`), si hay una ventana de DevHQ abierta sobre él (`windowOpen`), cuántos sistemas tiene, qué estación de trabajo es este equipo (`thisWorkstation`, o por qué no se sabe), qué no puede saber y, si su ejecutable no lo empaquetó el instalador, que sin `--database` abre datos de desarrollo. El acceso, los recuentos y la estación solo se dan de un inventario `current`: de cualquier otro son `null` |
-| `attention`    | «¿Qué necesita mi atención?» con el mismo orden que Overview, la cobertura, lo nunca observado y lo que nada supervisa; el estado solo es `covered` si todo tiene evidencia vigente. Aparte, sin ordenar y diciendo que no es salud, `localCopies`: las copias cuya última lectura tenía trabajo que solo existía allí, las que no se encontraron y las de esta estación nunca leídas                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `list_systems` | Cada aplicación y recurso con su estado de evidencia y última observación, incidencias activas, comprobación HTTP, relaciones y referencias, con la máquina de cada ruta y qué otros sistemas declaran el mismo repositorio (`sameRepositoryAs`): un agente encuentra así su sistema por su carpeta o su repositorio. Cada copia local dice si es de esta estación, su última lectura y lo derivado, y cada sistema el commit más nuevo que encontraron (`localActivity`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `attention`    | «¿Qué necesita mi atención?» con el mismo orden que Overview, la cobertura, lo nunca observado y lo que nada supervisa; el estado solo es `covered` si todo tiene evidencia vigente. Aparte, sin ordenar y diciendo que no es salud, `localCopies`: las copias cuya última lectura tenía trabajo que solo existía allí, las que no se encontraron y las de esta estación nunca leídas. Y `installations`, igual de aparte: las instalaciones cuyo archivo declaraba otra versión que la que declara su aplicación, las que no se encontraron y las de esta estación nunca leídas                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `list_systems` | Cada aplicación y recurso con su estado de evidencia y última observación, incidencias activas, comprobación HTTP, relaciones y referencias, con la máquina de cada ruta y qué otros sistemas declaran el mismo repositorio (`sameRepositoryAs`): un agente encuentra así su sistema por su carpeta o su repositorio. Cada copia local dice si es de esta estación, su última lectura y lo derivado, y cada sistema el commit más nuevo que encontraron (`localActivity`). Cada instalación dice lo mismo de su última lectura, con `version` (la versión declarada frente a la del archivo) y `build` (desde qué lectura es la misma build y, si la hubo, la lectura anterior que encontró otra)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `get_system`   | Una aplicación o recurso (por ID, por nombre exacto sin distinguir mayúsculas, o por ambos si son del mismo sistema) con sus referencias, sus observaciones, incidencias y eventos cargados, y desde cuándo su historial automático está completo                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `history`      | Los resultados automáticos anteriores de un sistema, o las lecturas de sus copias locales (`records: "readings"`), de 200 en 200, como la carga bajo demanda de la ventana                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `history`      | Los resultados automáticos anteriores de un sistema, o las lecturas de sus copias locales (`records: "readings"`), de 200 en 200, como la carga bajo demanda de la ventana; con `records: "installation_readings"`, las lecturas de sus instalaciones                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 
 Con Read and maintain, el agente además da de alta y edita aplicaciones y recursos, hace que DevHQ lea
-las copias locales y deja lo que observó, como la revisión de una aplicación, pasando por los mismos
+las copias locales y las instalaciones y deja lo que observó, como la revisión de una aplicación, pasando por los mismos
 casos de uso que la ventana, con sus validaciones, límites y transacciones. Así un agente puede revisar
 cada día todos tus sistemas sin que abras ninguno: refresca sus lecturas, revisa el código con sus
 propios permisos (DevHQ no ejecuta nada) y deja el resultado como evidencia que caduca:
 
-| Herramienta                         | Qué hace                                                                                                                                                                        |
-| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `save_application`, `save_resource` | Dar de alta (nombre y lifecycle, o nombre y tipo) o editar por ID, con sus componentes y sus referencias                                                                        |
-| `read_copies`                       | Leer ahora, como Read, una copia local (por su referencia), las de un sistema o todas las de esta estación: la lectura es evidencia de DevHQ (`read`)                           |
-| `record_observation`                | Registrar una observación (resultado, qué vio, vigencia) como del agente (`source = agent`), que con este acceso avala el sistema 7 días como mucho (`validForMinutes` ≤ 10080) |
+| Herramienta                         | Qué hace                                                                                                                                                                                                                                  |
+| ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `save_application`, `save_resource` | Dar de alta (nombre y lifecycle, o nombre y tipo) o editar por ID, con sus componentes y sus referencias                                                                                                                                  |
+| `read_copies`                       | Leer ahora, como Read, una copia local (por su referencia), las de un sistema o todas las de esta estación: la lectura es evidencia de DevHQ (`read`)                                                                                     |
+| `read_installations`                | Leer ahora, como Read, una instalación (por su referencia), las de un sistema o todas las de esta estación: la lectura es evidencia de DevHQ (`read`) y dice qué era el archivo del ejecutable instalado, nunca si la aplicación funciona |
+| `record_observation`                | Registrar una observación (resultado, qué vio, vigencia) como del agente (`source = agent`), que con este acceso avala el sistema 7 días como mucho (`validForMinutes` ≤ 10080)                                                           |
 
 Con Read and write, también hace todo lo demás que haces tú en la ventana. Es un acceso amplio, no una
 forma de aprobar lo que tiene riesgo: DevHQ no te pregunta antes de ninguna de estas operaciones.
@@ -1043,7 +1233,12 @@ declaran destructivas (`destructiveHint`) y `run_check`, que sale de tu computad
 abierto (`openWorldHint`), así que el cliente pide confirmación según cómo lo tengas configurado.
 DevHQ no sabe si te la pidió: lo que impone es el nivel de acceso y las reglas de cada herramienta.
 
-**Leer una copia no es configurar DevHQ.** `read_copies` exige Read and maintain porque guarda
+**Leer una copia o una instalación no es configurar DevHQ.** Lo que sigue vale igual para
+`read_installations`, que además no devuelve nada del archivo salvo los datos de una lectura (ver
+[Instalaciones](#instalaciones)): un agente puede declarar como instalación cualquier ruta absoluta de
+esta estación y hacer que DevHQ la lea, y sabrá si ahí hay un archivo, su tamaño, su fecha, su SHA-256,
+lo que declara su recurso de versión y cuántos procesos corrían desde él, que un agente con terminal ya
+puede ver. `read_copies` exige Read and maintain porque guarda
 evidencia, como `record_observation`: con Read only un agente ve las lecturas pero nunca provoca una.
 No cambia aplicaciones, recursos, referencias ni comprobaciones, así que no deja entrada en el registro
 de cambios; la propia lectura guarda qué agente la pidió, y la ventana y la puerta lo muestran, como
@@ -1192,7 +1387,10 @@ publicar, otra leída en otra estación con HEAD suelto, un rebase a medias, má
 publicar, el working tree desconocido y un remoto que no es el repositorio declarado, una nunca leída,
 una movida desde su última lectura que entonces no se encontró, con 205 lecturas (más de una página),
 una lectura `not_a_copy` en el historial y la copia de una aplicación archivada; Read y Read all se
-rechazan como toda escritura. `?scenario=empty`, `?scenario=unavailable` y `?scenario=outdated`
+rechazan como toda escritura. Sus instalaciones cubren una leída tres veces, la última por un agente
+y con otra build, que declara una versión distinta de la del inventario, y otra que no se encontró
+donde se declara; lo derivado sigue las reglas de Rust (la comparación de versiones y desde cuándo es
+la misma build) y leerlas se rechaza igual. `?scenario=empty`, `?scenario=unavailable` y `?scenario=outdated`
 muestran un inventario vacío, uno ilegible y uno de un esquema anterior, con el panel que ofrece
 respaldarlo y actualizarlo; la preview rechaza la actualización como toda escritura (lo prueba
 `e2e/upgrade.spec.ts`). El bundle de producción se construye desde `index.html` y no contiene nada de
@@ -1252,13 +1450,20 @@ commit sin publicar, «1 changed file · 1 new entry · 1 file DevHQ could not v
 coincide con el repositorio declarado) y, sola, la lectura que pidió el agente; tras cada lectura,
 ningún marcador puede haber corrido y ningún archivo de la copia puede haber cambiado, aparecido o
 desaparecido (contenido, tamaño y fecha de modificación, `.git` incluido). Al final, `git status`
-sobre la misma copia sí ejecuta el fsmonitor: la copia es hostil de verdad. Por último cierra la ventana como
+sobre la misma copia sí ejecuta el fsmonitor: la copia es hostil de verdad. Después declara como
+instalación de esa aplicación el propio ejecutable que recorre, del que esa ventana está corriendo, y
+lo lee con Read: la ventana debe mostrar el SHA-256 del archivo, que el recorrido calcula por su
+cuenta, y procesos corriendo desde él. Lo lee otra vez con `read_installations` desde la puerta: misma
+huella, sin `storedAt`, al menos dos procesos (la ventana y la puerta; el lector, que también corre
+desde ese archivo, no se cuenta a sí mismo) y, en Windows, `ProductName` «DevHQ», leído del recurso de
+versión; y la ventana debe mostrar sola la lectura que pidió el agente. Por último cierra la ventana como
 lo hace su botón, nunca por WebDriver: con `WM_DELETE_WINDOW` en X11 (un script de Python que llama
 a libX11, porque bajo Xvfb no hay gestor de ventanas que lo envíe) o con `WM_CLOSE` en Windows. El
 proceso debe terminar, sin dejar `inventory.sqlite3-wal`, y el archivo debe seguir en WAL; la
 puerta, que sigue abierta, debe ver la ventana cerrada en menos de 10 s (el recorrido anota cuánto
 tardó) y terminar al cerrarse su entrada. En la base deben quedar las tres lecturas, en la estación elegida y
-con la ruta declarada, y solo la última con el agente. El inventario actualizado al principio debe
+con la ruta declarada, y solo la última con el agente, y las dos lecturas de la instalación, la segunda
+con el agente. El inventario actualizado al principio debe
 estar en la versión actual, con integridad correcta y las filas del v6 original, y su respaldo debe
 seguir teniendo exactamente las del v6.
 Antes de hacer clic espera a que el elemento deje de moverse, porque el contenido que llega tarde
@@ -1423,13 +1628,14 @@ artificial. Los selectores de dominio no dependen de React ni de los mocks. Las 
 consumen explícitamente el escenario durante esta etapa.
 
 Rust expone `list_inventory` (una lectura consistente de inventario con sus referencias, registros,
-`httpChecks` y la última lectura de cada copia local), `data_location`, `backup_inventory`, `list_backups`, `save_application`, `save_resource`, `delete_application`,
+`httpChecks`, la última lectura de cada copia local y la de cada instalación con lo derivado de ella), `data_location`, `backup_inventory`, `list_backups`, `save_application`, `save_resource`, `delete_application`,
 `delete_resource`, `record_observation`, `older_observations`, `older_events`, `open_incident`,
 `update_incident_status`, `record_event`, `save_http_check`, `set_http_check_paused`,
 `remove_http_check`, `run_http_check`, `watch_http_monitor`, `this_workstation`,
-`set_this_workstation`, `read_copies`, `older_readings`, `inspect_upgrade` y `upgrade_inventory`.
-`read_copies` es asíncrono y espera a sus lectores en un hilo aparte, porque cada copia puede tardar
-hasta su plazo; `inspect_upgrade` y `upgrade_inventory` también, porque leen el archivo entero, y se
+`set_this_workstation`, `read_copies`, `older_readings`, `read_installations`,
+`older_installation_readings`, `inspect_upgrade` y `upgrade_inventory`.
+`read_copies` y `read_installations` son asíncronos y esperan a sus lectores en un hilo aparte, porque
+cada lectura puede tardar hasta su plazo; `inspect_upgrade` y `upgrade_inventory` también, porque leen el archivo entero, y se
 turnan entre sí. Los comandos de
 comprobaciones y de borrado son asíncronos y avisan a la supervisión antes de responder, así
 que pausar, reanudar, quitar o borrar surten efecto de inmediato; `run_http_check` pasa por la supervisión para
@@ -1490,7 +1696,7 @@ pánico que en Linux abortaba el proceso al abrir Mi inventario (lo comprueba `n
   (`upgrade.rs`), cuando la persona pulsa Back up and upgrade en la ventana: con su propia conexión
   (`open_to_upgrade`), bajo el lock de escritura, después de un respaldo verificado y comprobando el
   resultado antes de confirmar (ver [Actualizar un inventario antiguo](#actualizar-un-inventario-antiguo)).
-  Las migraciones transaccionales v1→v13 (`PRAGMA user_version`) crean el esquema de un inventario
+  Las migraciones transaccionales v1→v14 (`PRAGMA user_version`) crean el esquema de un inventario
   nuevo y actualizan uno anterior; ninguna apertura, consulta, respaldo, supervisión ni herramienta MCP
   las aplica. Una versión más nueva se rechaza en vez de adivinarse.
 
@@ -1640,7 +1846,18 @@ también con el lock de escritura de una edición, en un paso de índice, cuando
 la v10 la obligaban a leer y ordenar todas las entradas del sistema (con 200 000 entradas sintéticas,
 la mitad de un sistema, de 58 ms a 0,004 ms; cada commit cuesta lo mismo a efectos prácticos y el
 archivo crece un 15 %). La consulta exige ese índice (`INDEXED BY`), porque las estadísticas que otra
-herramienta puede reunir (`ANALYZE`) llevan a SQLite a preferir el índice por hora y ordenar. Los
+herramienta puede reunir (`ANALYZE`) llevan a SQLite a preferir el índice por hora y ordenar. La
+v14 reconstruye `system_references`, como la v13 `agent_access`, para admitir un sexto tipo de
+referencia, `installation`: cada referencia conserva su `rowid`, su ID y sus valores, y sus tres
+índices se vuelven a crear con sus nombres; nada apunta a esa tabla (una lectura copia el ID de su
+referencia, sin clave foránea), así que ninguna otra cambia. También añade `installation_readings`,
+las lecturas de [instalaciones](#instalaciones), vacía, con sus índices por referencia y por sistema:
+su sistema es `ON DELETE RESTRICT`, y la referencia, la máquina y la ruta leídas se copian sin claves
+foráneas, como en `copy_readings`. Sus CHECK exigen que un archivo que no se leyó diga por qué y nada
+más (salvo dónde lo guarda el sistema, y eso nunca de una ruta donde no había nada), que uno leído
+tenga su SHA-256 y su tamaño, lo que declara su recurso de versión o por qué se desconoce (nunca
+ambos, nunca ninguno) y sus procesos contados o desconocidos con el motivo (nunca ambos, nunca a
+medias). Los
 registros usan dos columnas con clave foránea (`application_id`/`resource_id`) y un CHECK
 que exige exactamente una; las referencias de historial son `ON DELETE RESTRICT`, así que
 nada puede borrar un sujeto y dejar evidencia huérfana; los casos de uso de borrado lo
@@ -1666,10 +1883,12 @@ que la ventana. Se conserva la barra nativa de ventana. La CSP limita recursos y
 capabilities no conceden permisos adicionales. No se implementan autenticación,
 cuentas, cloud, sync, telemetría, automation engine, Runner ni background service. DevHQ no busca
 qué observar: nunca recorre discos, carpetas ni redes en busca de repositorios o servicios. Lee solo
-lo que el inventario nombra (la URL de una comprobación, la ruta de una copia local de esta estación de
-trabajo), cuando se le pide o, si es una comprobación supervisada, mientras la ventana está abierta. Leer
+lo que el inventario nombra (la URL de una comprobación, la ruta de una copia local o de una
+instalación de esta estación de trabajo), cuando se le pide o, si es una comprobación supervisada, mientras la ventana está abierta. Leer
 nunca ejecuta un programa que nombre lo leído ni escribe en ello: la ruta y lo que contiene son datos no
-confiables, aunque los hayas declarado tú.
+confiables, aunque los hayas declarado tú. Una sola lectura mira algo que el inventario no nombra: la
+de una instalación mira la lista de procesos del sistema para contar los que corren desde ese archivo,
+y de ella guarda dos números y nada más (ver [Instalaciones](#instalaciones)).
 
 ## Evolución prevista
 
@@ -1690,9 +1909,14 @@ confiables, aunque los hayas declarado tú.
    [copias locales](#copias-locales) de esta estación de trabajo sin ejecutar nada de lo que nombran,
    como evidencia propia: actividad, trabajo que solo existe en una máquina y el commit de HEAD que
    comparará la etapa de despliegues.
-7. Después, automatizaciones con resultado e historial, y seguridad con almacén nativo de
+7. Hecho en Windows, con la ventana; en Linux faltan sus pruebas en CI: leer, cuando se lo pides, las [instalaciones](#instalaciones) de esta estación de trabajo sin
+   ejecutarlas, como evidencia propia: qué versión está instalada, entre qué dos lecturas cambió la
+   build y cuántos procesos corrían desde el archivo. Es el primer paso de
+   [docs/observar-apps-locales.md](docs/observar-apps-locales.md); los siguientes (aplicaciones bajo
+   demanda, servicios de Windows) siguen siendo una propuesta.
+8. Después, automatizaciones con resultado e historial, y seguridad con almacén nativo de
    credenciales y evidencias contextualizadas.
-8. A largo plazo, una supervisión que siga con la ventana cerrada y avise de lo que necesita
+9. A largo plazo, una supervisión que siga con la ventana cerrada y avise de lo que necesita
    atención, hecha por DevHQ mismo y no por un agente. Contradice que DevHQ no funcione en segundo plano, así que exige revisar esa regla y
    cuidar lo que consume.
 
@@ -1708,12 +1932,12 @@ no una especificación ni un backlog: nada de lo que describe existe hasta que e
 Las pruebas cubren navegación, tabs/teclado, filtros, rutas desconocidas, relaciones
 compartidas, cronología de la demo, salud desconocida, persistencia tras reapertura,
 rechazo de referencias inválidas sin escrituras parciales, restricciones del esquema,
-migraciones v1/v2→v3, v3→v4, v4→v5, v5→v6, v6→v7, v7→v8, v8→v9, v9→v10, v10→v11, v11→v12 y v12→v13 (incluida la negativa a confirmar relaciones rotas), la actualización explícita (cada versión de la v1 a la v12, con journal de rollback y en WAL, actualizada con su consentimiento:
+migraciones v1/v2→v3, v3→v4, v4→v5, v5→v6, v6→v7, v7→v8, v8→v9, v9→v10, v10→v11, v11→v12, v12→v13 y v13→v14 (incluida la negativa a confirmar relaciones rotas), la actualización explícita (cada versión de la v1 a la v13, con journal de rollback y en WAL, actualizada con su consentimiento:
 cada fila conservada valor a valor, un respaldo idéntico al inventario anterior con su manifiesto, que
 restaurado vuelve a ser lo que se vio y se actualiza igual; ningún archivo cambia al mirarlo ni al
 rechazar otra versión, otro contenido o un archivo cambiado después de mirarlo; nada se actualiza sin
 la estructura exacta de su versión, con un índice que falta, una tabla o un trigger de más, una
-relación rota, páginas dañadas o una columna declarada de otra forma, ni siendo v14 o de otro
+relación rota, páginas dañadas o una columna declarada de otra forma, ni siendo v15 o de otro
 programa; ninguna migración se confirma sin un respaldo verificado, con una copia dañada, cambiada o con
 una fila de más, un nombre de respaldo o de manifiesto ocupado, unos nombres que el sistema no confirma
 en disco (el respaldo y su manifiesto se quedan) o una carpeta imposible; una migración
@@ -1738,8 +1962,44 @@ impide, la confirmación y que un resultado tardío de un sujeto borrado no se r
 referencias: cada destino que se rechaza y por qué, las máquinas, los duplicados, los ID que se
 conservan, el registro de cambios con el campo `references`, el repositorio compartido por igualdad
 exacta (en Rust, en la puerta y en la preview), el recurso que guarda copias locales de otros y no
-deja de ser estación de trabajo, y el que es máquina de sus propias rutas y se borra con ellas pero no
-con las de otros. Las copias locales se prueban con la batería hostil por el lector encerrado y sin
+deja de ser estación de trabajo, el que es máquina de sus propias rutas y se borra con ellas pero no
+con las de otros, y la instalación: una ruta, nunca una URL, en una estación de trabajo que no deja de
+serlo mientras guarda la de otro sistema. El lector de instalaciones se prueba con la batería de
+ejecutables hostiles, por el lector de recursos de versión y por el lector encerrado y sin encerrar;
+con imágenes PE32 y PE32+ sintéticas cuyo recurso declara textos conocidos, también fuera de ASCII y
+en dos idiomas; con lo que hay en una ruta que no es un ejecutable (nada, una ruta a través de un
+archivo, una carpeta) y una ruta relativa, que es un fallo de DevHQ; con el propio ejecutable de las
+pruebas, del que cuenta al menos el proceso que las corre y cuyo SHA-256 debe ser el del archivo; con
+un archivo alcanzado por un junction o un enlace, cuyo `storedAt` debe ser el que da
+`inventory::stored_at`, y nulo por su ruta real o escrita con la otra barra; y con un lector que no
+responde, termina sin decir nada, responde de más o responde algo que no se sostiene (un resultado
+desconocido, un hash que no lo es, un tamaño imposible, una versión vacía o con un salto de línea,
+una versión junto a su motivo, procesos a medias, un campo que no existe), que se rechaza entero. Las
+lecturas de instalaciones se prueban con ejecutables sintéticos que declaran una versión: la primera
+lectura dice que la versión declarada difiere; una build nueva, entre qué dos lecturas cambió; un
+archivo desinstalado y vuelto a instalar, que la lectura que no leyó nada no encontró otra build; una
+referencia movida, que lo leído en la ruta anterior no cuenta; una aplicación sin versión, un recurso y
+un archivo que no declara ninguna; cada forma de escribir una misma versión y las que no lo son; el
+límite de 200 lecturas hacia atrás, por su borde exacto; solo las instalaciones de esta estación, sin
+las de aplicaciones archivadas, y por qué no las demás; una instalación quitada, movida o convertida en
+copia local mientras se leía, y un agente al que se cierra la puerta, que no guardan nada; la
+paginación sin huecos ni repetidos; los planes de consulta, también con estadísticas que otra
+herramienta haya calculado, que nunca recorren la tabla ni ordenan todo lo que da el índice; la
+historia que impide borrar; y la puerta, que lee como agente con Read and maintain sin tocar el
+registro de cambios, da la versión que difiere en `attention`, deja de darla cuando el agente corrige
+la versión declarada y, con Read only, enseña las lecturas sin provocar ninguna. En la ventana se
+prueba lo que dice de una instalación (las dos versiones sin decir cuál vale, entre qué dos lecturas
+cambió la build, el corte de la búsqueda hacia atrás, los procesos en pasado y lo que no dejó mirar el
+sistema, `storedAt`, el motivo de una versión desconocida), que nada dice que la aplicación esté abierta,
+Read solo en esta estación y su fallo, el historial que no carga nada cerrado y marca una ruta que ya no
+se declara, y el panel de Overview con sus tres listas, sin las aplicaciones archivadas; la preview,
+contra las reglas de Rust; y con Playwright y axe, el panel, la referencia y el historial. El commit
+que declara una build se prueba con cada forma de un checkout (una rama con su referencia suelta, en
+`packed-refs` o en las dos, HEAD suelto, un worktree enlazado cuya rama está en el repositorio
+principal, un `.git` que nombra su carpeta con una ruta relativa) y con lo que no debe dar ninguno (sin
+`.git`, un HEAD vacío, una referencia que no está, que no guarda un commit o que sale del repositorio,
+un hash corto, un `.git` que no nombra nada); `.dirty` solo cuando se dice; y el recorrido nativo
+comprueba en Windows que el ejecutable declara la versión de `package.json` seguida de un commit. Las copias locales se prueban con la batería hostil por el lector encerrado y sin
 encerrar, que también comprueba que el `git` instalado sí ejecuta lo que nombran; con el lector frente al
 `git` instalado en gemelos benignos (ramas, HEAD suelto, sin commits, merge y rebase a medias, stashes,
 carpetas nuevas, un driver real y, en Windows, el `core.autocrlf` de la config del sistema); con un
@@ -1761,7 +2021,7 @@ sistema cuando se mata el proceso que lo tenía; y, con peticiones
 reales a un servidor local, que la evidencia programada es idéntica a la manual; y, a través del manejador real de comandos sobre el
 runtime simulado de Tauri y desde un hilo sin runtime asíncrono como el principal, que la ventana puede
 abrir el `Channel` de estado. Los argumentos de la puerta se prueban con una llamada a cada una de
-sus 19 herramientas con un argumento que no declara, rechazada sin buscar siquiera el inventario y,
+sus 20 herramientas con un argumento que no declara, rechazada sin buscar siquiera el inventario y,
 con la puerta abierta para escribir, sin cambiar una fila; con las llamadas que antes se aceptaban en
 silencio (un campo mal escrito o en otra capitalización, `null` donde no cabe, un componente con
 `runOn`, un `type` de más y un `id` que contradice al `name` en un borrado, un `id` numérico, `30.5`
@@ -1779,15 +2039,15 @@ las que edita una, y con ocho que dan de alta la misma aplicación, de las que q
 que dejan elementos fuera sin quitarlos y bajas de lo que no es del sistema, rechazadas enteras; con
 un alta equivocada que se corrige, se borra en la ventana o, con historial, se archiva; con el log
 que deja un escritor al que se mata, que la puerta rechaza sin tocar ningún archivo y que la ventana
-recupera con cada cambio una sola vez; y con la actualización a la v13, que conserva el modo elegido. Su apertura del inventario se
-prueba con inventarios v6 con journal de rollback y en WAL, v12 con Read only, v13 en WAL con Read only
-y con Off, la copia de un respaldo (rollback) con Read only, v14, un archivo vacío, una base SQLite de
-otro programa, otra marcada con la versión 13 sin las tablas de DevHQ, otra marcada con la versión 13
-con solo `applications` y `resources`, un v13 sin `agent_access`, un v13 con Off cuyo log dejó con
+recupera con cada cambio una sola vez; y con la actualización a la v13, que conserva el modo elegido. La actualización a la v14 se prueba con referencias de cada tipo y un hueco en sus `rowid`, que una reconstrucción que las renumerara cerraría: cada una conserva su `rowid` y sus valores, la tabla sus relaciones y sus índices, solo un inventario v14 admite una instalación, y cada CHECK de las lecturas rechaza lo que debe. Su apertura del inventario se
+prueba con inventarios v6 con journal de rollback y en WAL, v12 con Read only, v14 en WAL con Read only
+y con Off, la copia de un respaldo (rollback) con Read only, v15, un archivo vacío, una base SQLite de
+otro programa, otra marcada con la versión 14 sin las tablas de DevHQ, otra marcada con la versión 14
+con solo `applications` y `resources`, un v14 sin `agent_access`, un v14 con Off cuyo log dejó con
 cambios un escritor al que se mata (como lo deja un cierre brusco), ese mismo log sin su índice, un v6
 y la copia de un respaldo con el journal de rollback que deja una escritura a la que se mata a medias,
 un archivo de texto, una carpeta y nada: `status` dice qué es cada uno sin presentar como sabido lo que
-no pudo leer, cada una de las 19 herramientas responde o se rechaza con su código, y la carpeta queda
+no pudo leer, cada una de las 20 herramientas responde o se rechaza con su código, y la carpeta queda
 igual byte a byte y con las mismas fechas de modificación. Por MCP también se prueba la carrera de una
 escritura: mientras `run_check` espera a un sistema que aún no responde, el inventario se sustituye por
 un v11, se borra o la persona cierra la puerta, y la escritura se rechaza, el v11 queda igual, no se
@@ -1809,24 +2069,24 @@ sistema solo lo que devuelve de él y una fila más, y los planes de consulta, q
 completo ni buscan un evento automático por su observación, tampoco con estadísticas que otra
 herramienta haya calculado sobre el archivo. Que ninguna apertura cambia el esquema se prueba con
 cada comando de la ventana, por el manejador real de comandos, sobre un v6 en rollback y en WAL, un
-v11, un v14 en rollback y en WAL, un archivo vacío, una base de otro programa y una marcada con la
-versión 13 sin su estructura: cada comando que abriría el inventario se rechaza con su código y ningún
+v11, un v15 en rollback y en WAL, un archivo vacío, una base de otro programa y una marcada con la
+versión 14 sin su estructura: cada comando que abriría el inventario se rechaza con su código y ningún
 archivo de la carpeta cambia, aparece ni desaparece. También con casos de uso que abren de verdad un
-v6, un v11 en WAL y un v14 en rollback y en WAL y los rechazan sin cambiar un byte ni su modo de
+v6, un v11 en WAL y un v15 en rollback y en WAL y los rechazan sin cambiar un byte ni su modo de
 journal y sin crear `backups/`; con una conexión cuyo archivo pasa a la v11 después de abrirse, que
 rechaza leer y escribir sin actualizarlo; con un agente al que se le cierra la puerta después de abrir
 su conexión; con un inventario que desaparece con la ventana abierta y que nadie vuelve a crear; con un
 archivo vacío que nunca se inicializa, tampoco con un journal al lado; con la ventana que arranca donde
 no hay nada y crea un inventario en WAL; con arranques sobre escritores a los que se mata a medias: un
-v13 se recupera con lo confirmado, y un v6 y un v14 se rechazan sin cambiar ningún archivo; con el
+v14 se recupera con lo confirmado, y un v6 y un v15 se rechazan sin cambiar ningún archivo; con el
 journal de una escritura que reescribía doscientos recursos, y con el log de otra ya confirmada, que
 quedan sin su inventario: la ventana no crea ninguno (sin la protección, el journal dañaba el
 inventario nuevo, como dice `PRAGMA integrity_check`, y el log le metía los recursos del anterior),
 no cambia ningún byte de lo que quedó y, devuelto el inventario, lo recupera íntegro y con lo
-confirmado; y con archivos que se sustituyen mientras la ventana recupera un v13: todos, por un v14
-con una escritura sin terminar, después de que la copia resultara actual (el v14 se rechaza y queda
+confirmado; y con archivos que se sustituyen mientras la ventana recupera un v14: todos, por un v15
+con una escritura sin terminar, después de que la copia resultara actual (el v15 se rechaza y queda
 byte a byte como se puso; sin la protección SQLite reproducía su journal), y solo el log, por uno que
-lo hace v14, con la conexión que lo va a recuperar ya abierta (se rechaza igual; si se compara antes
+lo hace v15, con la conexión que lo va a recuperar ya abierta (se rechaza igual; si se compara antes
 de abrirla, SQLite volcaba ese log en el archivo). La concurrencia de SQLite se
 prueba sin esperas medidas: una lectura no espera a una escritura en curso, una escritura no espera a
 una lectura abierta (que conserva su estado), cuatro arranques simultáneos crean un único inventario

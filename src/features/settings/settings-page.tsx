@@ -1,6 +1,7 @@
 import { PageHeader } from '@/components/page-header'
 import { scenario } from '@/data/mock/scenario'
 import { formatDate, formatTime } from '@/shared/time'
+import { devhqVersion } from '@/shared/version'
 
 export function SettingsPage() {
   return (
@@ -45,7 +46,9 @@ export function SettingsPage() {
           This preview validates navigation, relationships and operational context. Preferences,
           credential storage and integrations will be introduced when they support real workflows.
         </p>
-        <p className="mt-5 font-mono text-[10px] text-muted-foreground">DEVHQ / FOUNDATION 0.1.0</p>
+        <p className="mt-5 font-mono text-[10px] text-muted-foreground">
+          DEVHQ / FOUNDATION {devhqVersion}
+        </p>
       </section>
     </div>
   )
