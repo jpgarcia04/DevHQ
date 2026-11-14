@@ -129,6 +129,8 @@ const calls: Record<keyof typeof inventoryApi, () => Promise<unknown>> = {
   setThisWorkstation: () => inventoryApi.setThisWorkstation('spare'),
   readCopies: () => inventoryApi.readCopies(['shop-copy']),
   olderReadings: () => inventoryApi.olderReadings(shop, 'reading-1'),
+  readInstallations: () => inventoryApi.readInstallations(['shop-installed']),
+  olderInstallationReadings: () => inventoryApi.olderInstallationReadings(shop, 'installed-1'),
   inspectUpgrade: () => inventoryApi.inspectUpgrade(),
   upgradeInventory: () =>
     inventoryApi.upgradeInventory(
@@ -222,6 +224,84 @@ const laptop: Answer<'thisWorkstation'> = {
   storedAt: null,
 }
 
+/** A reading of the shop's installation on the laptop: another version than the one declared. */
+const installedOnLaptop: Answer<'readInstallations'>['readings'][number] = {
+  id: 'installed-2',
+  subject: shop,
+  referenceId: 'shop-installed',
+  machineId: 'laptop',
+  path: 'C:\\Program Files\\Shop\\shop.exe',
+  source: 'read',
+  reader: 'DevHQ installation reader 1',
+  agent: null,
+  observedAt: at('10:00'),
+  recordedAt: at('10:00'),
+  outcome: 'read',
+  detail: null,
+  storedAt: null,
+  sha256: '5f2d9a1c'.repeat(8),
+  sizeBytes: 23620096,
+  modifiedAt: at('08:30'),
+  productVersion: '2.1.0+3f9c2ab',
+  fileVersion: '2.1.0.0',
+  productName: 'Shop',
+  versionUnknown: null,
+  processes: 2,
+  processesUnexamined: 41,
+  processesUnknown: null,
+}
+
+const readInstallations: Answer<'readInstallations'> = {
+  readings: [installedOnLaptop],
+  failures: [
+    {
+      referenceId: 'host-agent',
+      subject: host,
+      path: 'C:\\Program Files\\Agent\\agent.exe',
+      message:
+        'Reading C:\\Program Files\\Agent\\agent.exe took longer than 30 s, so DevHQ stopped it. Nothing was kept.',
+    },
+  ],
+  thisWorkstation: laptop,
+}
+
+const olderInstallationReadings: Answer<'olderInstallationReadings'> = {
+  readings: [
+    {
+      ...installedOnLaptop,
+      id: 'installed-1',
+      agent: 'claude-code',
+      observedAt: at('07:00'),
+      recordedAt: at('07:00'),
+      sha256: 'a81c04e7'.repeat(8),
+      modifiedAt: null,
+      productVersion: '2.0.0+11d2e4f',
+      fileVersion: '2.0.0.0',
+      processes: null,
+      processesUnexamined: null,
+      processesUnknown: 'Windows did not list its processes: Access is denied. (os error 5)',
+    },
+    {
+      ...installedOnLaptop,
+      id: 'installed-0',
+      observedAt: at('06:00'),
+      recordedAt: at('06:00'),
+      outcome: 'unreadable',
+      detail: 'Access is denied. (os error 5)',
+      storedAt: 'D:\\Apps\\Shop\\shop.exe',
+      sha256: null,
+      sizeBytes: null,
+      modifiedAt: null,
+      productVersion: null,
+      fileVersion: null,
+      productName: null,
+      processes: null,
+      processesUnexamined: null,
+    },
+  ],
+  more: true,
+}
+
 const readCopies: Answer<'readCopies'> = {
   readings: [readOnLaptop],
   failures: [
@@ -308,6 +388,13 @@ const snapshot: Answer<'list'> = {
           label: null,
           machineId: 'laptop',
         },
+        {
+          id: 'shop-installed',
+          kind: 'installation',
+          target: 'C:\\Program Files\\Shop\\shop.exe',
+          label: null,
+          machineId: 'laptop',
+        },
       ],
     },
   ],
@@ -355,6 +442,27 @@ const snapshot: Answer<'list'> = {
       movedSinceRead: false,
       repository: 'matches',
       localWork: true,
+    },
+  ],
+  installations: [
+    {
+      referenceId: 'shop-installed',
+      subject: shop,
+      machineId: 'laptop',
+      path: 'C:\\Program Files\\Shop\\shop.exe',
+      latest: installedOnLaptop,
+      movedSinceRead: false,
+      version: 'differs',
+      build: {
+        sameSince: at('09:00'),
+        readings: 2,
+        previous: {
+          observedAt: at('07:00'),
+          sha256: 'a81c04e7'.repeat(8),
+          productVersion: '2.0.0+11d2e4f',
+        },
+        complete: true,
+      },
     },
   ],
   observations: [
@@ -691,6 +799,8 @@ const answers: Record<string, unknown> = {
   this_workstation: laptop,
   read_copies: readCopies,
   older_readings: olderReadings,
+  read_installations: readInstallations,
+  older_installation_readings: olderInstallationReadings,
   inspect_upgrade: inspection,
   upgrade_inventory: upgraded,
   upgrade_step: backedUp,

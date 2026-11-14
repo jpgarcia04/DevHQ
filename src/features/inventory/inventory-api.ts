@@ -140,6 +140,90 @@ export interface LocalCopy {
   localWork: boolean
 }
 
+/**
+ * What DevHQ read of an installed executable's file, when someone asked: evidence of its own,
+ * never health, with no validity. It says what the file was at `observedAt`, which may no longer
+ * be so. It copies the reference, machine and path it read, so it outlives them. Facts only with
+ * outcome `read`.
+ */
+export interface InstallationReading {
+  id: string
+  subject: EntityRef
+  referenceId: string
+  machineId: string
+  path: string
+  source: 'read'
+  /** DevHQ's reader and its version («DevHQ installation reader 1»). */
+  reader: string
+  /** The agent that asked for it through the gate; null when the person asked. */
+  agent: string | null
+  observedAt: string
+  recordedAt: string
+  outcome: 'read' | 'missing' | 'unreadable' | 'not_an_executable'
+  /** Why it was not read; only then. */
+  detail: string | null
+  /** Where the system really kept the file, when that was not the path declared. */
+  storedAt: string | null
+  /** SHA-256 of the file's bytes, which tells one build from another, and how many they were. */
+  sha256: string | null
+  sizeBytes: number | null
+  modifiedAt: string | null
+  /** What the file's version resource declared, as the file said it… */
+  productVersion: string | null
+  fileVersion: string | null
+  productName: string | null
+  /** …or why that is unknown. */
+  versionUnknown: string | null
+  /** The processes running from the file then, and the ones the system did not let DevHQ look at… */
+  processes: number | null
+  processesUnexamined: number | null
+  /** …or why they are unknown. */
+  processesUnknown: string | null
+}
+
+/**
+ * Since when the file is the build its newest reading found, as far as the readings say. DevHQ
+ * knows a build only at the moments it read the file: a change happened between `previous` and
+ * `sameSince`, and neither is when it was installed.
+ */
+export interface InstallationBuild {
+  /** The oldest of the readings that found this same build without another in between. */
+  sameSince: string
+  /** How many readings found it, that one and the newest included. */
+  readings: number
+  /** The reading before them, which found another build; null when none looked at did. */
+  previous: { observedAt: string; sha256: string; productVersion: string | null } | null
+  /** False when DevHQ stopped looking back with every reading still of this build. */
+  complete: boolean
+}
+
+/**
+ * An installation a system declares now, with its newest reading and what the native process
+ * derives from it at each read of the inventory. Never stored.
+ */
+export interface Installation {
+  referenceId: string
+  subject: EntityRef
+  machineId: string
+  path: string
+  latest: InstallationReading | null
+  /** The newest reading was made at another path or machine than declared now. */
+  movedSinceRead: boolean
+  /**
+   * How the version the application declares compared with the ProductVersion its file declared;
+   * null for a resource, or when the file was not read.
+   */
+  version: 'matches' | 'differs' | 'undeclared' | 'unknown' | null
+  /** Since when the file is the same build; null when it was not read. */
+  build: InstallationBuild | null
+}
+
+/** A system's readings of its installations, a page at a time, newest first. */
+export interface InstallationReadingPage {
+  readings: InstallationReading[]
+  more: boolean
+}
+
 /** A system's readings, a page at a time, newest first. */
 export interface ReadingPage {
   readings: CopyReading[]
@@ -171,6 +255,12 @@ export interface ReadFailure {
 
 export interface ReadOutcome {
   readings: CopyReading[]
+  failures: ReadFailure[]
+  thisWorkstation: ThisWorkstation
+}
+
+export interface InstallationsRead {
+  readings: InstallationReading[]
   failures: ReadFailure[]
   thisWorkstation: ThisWorkstation
 }
@@ -254,6 +344,8 @@ export interface InventorySnapshot {
   sharedRepositories: SharedRepository[]
   /** Each local copy the systems declare, with its newest reading; older ones are paged. */
   localCopies: LocalCopy[]
+  /** Each installation the systems declare, with its newest reading; older ones are paged. */
+  installations: Installation[]
   observations: Observation[]
   incidents: RecordedIncident[]
   events: RecordedEvent[]
@@ -582,6 +674,16 @@ export const inventoryApi = {
   /** A system's readings older than `before`, one already shown, or its newest with null. */
   olderReadings: (subject: EntityRef, before: string | null) =>
     invoke<ReadingPage>('older_readings', { subject, before }),
+  /**
+   * Reads, now, the installations named or (null) every one of this workstation but those of
+   * archived applications, each in a confined reader; resolves with what was kept and what DevHQ
+   * could not read.
+   */
+  readInstallations: (referenceIds: string[] | null) =>
+    invoke<InstallationsRead>('read_installations', { referenceIds }),
+  /** A system's installation readings older than `before`, or its newest with null. */
+  olderInstallationReadings: (subject: EntityRef, before: string | null) =>
+    invoke<InstallationReadingPage>('older_installation_readings', { subject, before }),
   /** Looks at the inventory the window does not serve, without changing any of its files. */
   inspectUpgrade: () => invoke<UpgradeInspection>('inspect_upgrade'),
   /**

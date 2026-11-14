@@ -7,8 +7,18 @@
       "lifecycle": "production",
       "version": "2.0",
       "components": [
-        { "id": "api", "name": "API", "kind": "backend", "resourceId": "host" },
-        { "id": "db", "name": "Database", "kind": "database", "resourceId": null }
+        {
+          "id": "api",
+          "name": "API",
+          "kind": "backend",
+          "resourceId": "host"
+        },
+        {
+          "id": "db",
+          "name": "Database",
+          "kind": "database",
+          "resourceId": null
+        }
       ],
       "references": [
         {
@@ -29,6 +39,13 @@
           "id": "shop-copy",
           "kind": "local_copy",
           "target": "C:\\src\\platform",
+          "label": null,
+          "machineId": "laptop"
+        },
+        {
+          "id": "shop-installed",
+          "kind": "installation",
+          "target": "C:\\Program Files\\Shop\\shop.exe",
           "label": null,
           "machineId": "laptop"
         }
@@ -72,20 +89,32 @@
     {
       "target": "https://github.com/me/platform",
       "systems": [
-        { "type": "application", "id": "shop" },
-        { "type": "resource", "id": "host" }
+        {
+          "type": "application",
+          "id": "shop"
+        },
+        {
+          "type": "resource",
+          "id": "host"
+        }
       ]
     }
   ],
   "localCopies": [
     {
       "referenceId": "shop-copy",
-      "subject": { "type": "application", "id": "shop" },
+      "subject": {
+        "type": "application",
+        "id": "shop"
+      },
       "machineId": "laptop",
       "path": "C:\\src\\platform",
       "latest": {
         "id": "reading-2",
-        "subject": { "type": "application", "id": "shop" },
+        "subject": {
+          "type": "application",
+          "id": "shop"
+        },
         "referenceId": "shop-copy",
         "machineId": "laptop",
         "path": "C:\\src\\platform",
@@ -104,8 +133,14 @@
         "stashes": 1,
         "syncedAt": "2026-01-01T08:00:00Z",
         "remotes": [
-          { "name": "mirror", "url": null },
-          { "name": "origin", "url": "git@github.com:me/platform.git" }
+          {
+            "name": "mirror",
+            "url": null
+          },
+          {
+            "name": "origin",
+            "url": "git@github.com:me/platform.git"
+          }
         ],
         "operation": null,
         "changed": 3,
@@ -118,10 +153,64 @@
       "localWork": true
     }
   ],
+  "installations": [
+    {
+      "referenceId": "shop-installed",
+      "subject": {
+        "type": "application",
+        "id": "shop"
+      },
+      "machineId": "laptop",
+      "path": "C:\\Program Files\\Shop\\shop.exe",
+      "latest": {
+        "id": "installed-2",
+        "subject": {
+          "type": "application",
+          "id": "shop"
+        },
+        "referenceId": "shop-installed",
+        "machineId": "laptop",
+        "path": "C:\\Program Files\\Shop\\shop.exe",
+        "source": "read",
+        "reader": "DevHQ installation reader 1",
+        "agent": null,
+        "observedAt": "2026-01-01T10:00:00Z",
+        "recordedAt": "2026-01-01T10:00:00Z",
+        "outcome": "read",
+        "detail": null,
+        "storedAt": null,
+        "sha256": "5f2d9a1c5f2d9a1c5f2d9a1c5f2d9a1c5f2d9a1c5f2d9a1c5f2d9a1c5f2d9a1c",
+        "sizeBytes": 23620096,
+        "modifiedAt": "2026-01-01T08:30:00Z",
+        "productVersion": "2.1.0+3f9c2ab",
+        "fileVersion": "2.1.0.0",
+        "productName": "Shop",
+        "versionUnknown": null,
+        "processes": 2,
+        "processesUnexamined": 41,
+        "processesUnknown": null
+      },
+      "movedSinceRead": false,
+      "version": "differs",
+      "build": {
+        "sameSince": "2026-01-01T09:00:00Z",
+        "readings": 2,
+        "previous": {
+          "observedAt": "2026-01-01T07:00:00Z",
+          "sha256": "a81c04e7a81c04e7a81c04e7a81c04e7a81c04e7a81c04e7a81c04e7a81c04e7",
+          "productVersion": "2.0.0+11d2e4f"
+        },
+        "complete": true
+      }
+    }
+  ],
   "observations": [
     {
       "id": "obs-http",
-      "subject": { "type": "resource", "id": "host" },
+      "subject": {
+        "type": "resource",
+        "id": "host"
+      },
       "result": "healthy",
       "summary": "HTTP 200 as expected, in 42 ms",
       "source": "http",
@@ -134,13 +223,21 @@
         "status": 200,
         "latencyMs": 42,
         "error": null,
-        "redirects": [{ "status": 301, "location": "https://host.example/health" }]
+        "redirects": [
+          {
+            "status": 301,
+            "location": "https://host.example/health"
+          }
+        ]
       },
       "agent": null
     },
     {
       "id": "obs-manual",
-      "subject": { "type": "application", "id": "shop" },
+      "subject": {
+        "type": "application",
+        "id": "shop"
+      },
       "result": "degraded",
       "summary": "Checkout is slow",
       "source": "manual",
@@ -154,7 +251,10 @@
   "incidents": [
     {
       "id": "incident-1",
-      "subject": { "type": "application", "id": "shop" },
+      "subject": {
+        "type": "application",
+        "id": "shop"
+      },
       "title": "Checkout fails",
       "description": "Payments time out",
       "severity": "critical",
@@ -169,7 +269,10 @@
   "events": [
     {
       "id": "evt-http",
-      "subject": { "type": "resource", "id": "host" },
+      "subject": {
+        "type": "resource",
+        "id": "host"
+      },
       "kind": "observation",
       "outcome": "success",
       "title": "HTTP check: Healthy",
@@ -183,7 +286,10 @@
     },
     {
       "id": "evt-incident",
-      "subject": { "type": "application", "id": "shop" },
+      "subject": {
+        "type": "application",
+        "id": "shop"
+      },
       "kind": "incident",
       "outcome": "success",
       "title": "Incident resolved: Checkout fails",
@@ -197,7 +303,10 @@
     },
     {
       "id": "evt-agent",
-      "subject": { "type": "application", "id": "shop" },
+      "subject": {
+        "type": "application",
+        "id": "shop"
+      },
       "kind": "deployment",
       "outcome": "success",
       "title": "Deployed 2.4.1",
@@ -212,7 +321,10 @@
   ],
   "httpChecks": [
     {
-      "subject": { "type": "resource", "id": "host" },
+      "subject": {
+        "type": "resource",
+        "id": "host"
+      },
       "url": "http://host.example/health",
       "expectedStatus": 200,
       "timeoutSeconds": 5,
@@ -225,29 +337,50 @@
   "changes": [
     {
       "id": "change-2",
-      "subject": { "type": "application", "id": "shop" },
+      "subject": {
+        "type": "application",
+        "id": "shop"
+      },
       "subjectName": "Shop",
       "source": "agent",
       "agent": "claude-code",
       "action": "updated",
       "summary": "Updated application «Shop»: version «1.9» → «2.0»",
-      "changes": [{ "field": "version", "before": "1.9", "after": "2.0" }],
+      "changes": [
+        {
+          "field": "version",
+          "before": "1.9",
+          "after": "2.0"
+        }
+      ],
       "occurredAt": "2026-01-01T09:35:00Z"
     },
     {
       "id": "change-1",
-      "subject": { "type": "resource", "id": "host" },
+      "subject": {
+        "type": "resource",
+        "id": "host"
+      },
       "subjectName": "Host",
       "source": "manual",
       "agent": null,
       "action": "check_removed",
       "summary": "Removed the HTTP check of «Host» (http://host.example/old); the evidence it recorded stays",
-      "changes": [{ "field": "url", "before": "http://host.example/old", "after": null }],
+      "changes": [
+        {
+          "field": "url",
+          "before": "http://host.example/old",
+          "after": null
+        }
+      ],
       "occurredAt": "2026-01-01T08:45:00Z"
     },
     {
       "id": "change-0",
-      "subject": { "type": "application", "id": "shop" },
+      "subject": {
+        "type": "application",
+        "id": "shop"
+      },
       "subjectName": "Shop",
       "source": "agent",
       "agent": "codex",
@@ -261,7 +394,13 @@
   "automatedHistory": {
     "limit": 200,
     "truncated": [
-      { "subject": { "type": "resource", "id": "host" }, "since": "2026-01-01T10:05:00Z" }
+      {
+        "subject": {
+          "type": "resource",
+          "id": "host"
+        },
+        "since": "2026-01-01T10:05:00Z"
+      }
     ]
   }
 }

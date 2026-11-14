@@ -18,6 +18,7 @@ mod upgrade;
 mod window_lock;
 mod workstation;
 
+use installations::readings::{InstallationReadingPage, InstallationsRead};
 use local_copies::readings::{self, ReadOutcome, ReadingPage, Which};
 use local_copies::Reader;
 use monitor::{Monitor, MonitorStatus};
@@ -318,6 +319,48 @@ fn older_readings(
     readings::older_readings(path.current()?, &subject, before.as_deref())
 }
 
+/// Reads installations of this workstation, the ones named or (null) all but those of archived
+/// applications, each in a confined reader of its own, as `read_copies` reads local copies. Async,
+/// and waiting on a thread of its own: one file can take up to its deadline.
+#[tauri::command]
+async fn read_installations(
+    path: tauri::State<'_, InventoryPath>,
+    computer: tauri::State<'_, Computer>,
+    reader: tauri::State<'_, installations::Reader>,
+    reference_ids: Option<Vec<String>>,
+) -> Result<InstallationsRead, inventory::ApiError> {
+    let which = reference_ids.map_or(Which::ThisWorkstation, Which::References);
+    let (path, computer, reader) = (
+        path.current()?.to_owned(),
+        computer.inner().clone(),
+        reader.inner().clone(),
+    );
+    tauri::async_runtime::spawn_blocking(move || {
+        installations::readings::read_installations(
+            &path,
+            &computer,
+            &reader,
+            &which,
+            &records::Actor::Person,
+        )
+    })
+    .await
+    .map_err(|error| {
+        inventory::ApiError::read(format!("DevHQ could not wait for its readers: {error}"))
+    })?
+}
+
+/// A system's readings of its installations older than one shown (or its newest), a page at a
+/// time.
+#[tauri::command]
+fn older_installation_readings(
+    path: tauri::State<'_, InventoryPath>,
+    subject: records::Subject,
+    before: Option<String>,
+) -> Result<InstallationReadingPage, inventory::ApiError> {
+    installations::readings::older_readings(path.current()?, &subject, before.as_deref())
+}
+
 /// What the inventory the window does not serve is, read without changing any of its files, and
 /// whether DevHQ offers to upgrade it. Async, and on a thread of its own: it reads the whole file.
 #[tauri::command]
@@ -438,13 +481,15 @@ fn commands<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Sen
         set_this_workstation,
         read_copies,
         older_readings,
+        read_installations,
+        older_installation_readings,
         inspect_upgrade,
         upgrade_inventory
     ]
 }
 
 /// The state the commands find, over the inventory at `path`, on `computer`, reading copies with
-/// `reader`, once the window has done what it does when it starts (`inventory::start`): creating a
+/// `reader` and installations with `installation_reader`, once the window has done what it does when it starts (`inventory::start`): creating a
 /// missing inventory, recovering a current one, and nothing to any other, which only the person's
 /// explicit upgrade changes (`upgrade_inventory`). Nothing at all while `path` holds nothing and
 /// `previous`, where DevHQ kept the inventory before, still holds one (`location`): an empty
@@ -457,6 +502,7 @@ fn manage<R: tauri::Runtime>(
     previous: Option<PathBuf>,
     computer: Computer,
     reader: Reader,
+    installation_reader: installations::Reader,
 ) -> (Monitor, bool) {
     let waiting = previous.as_deref().and_then(location::previous_at);
     let ready =
@@ -479,6 +525,7 @@ fn manage<R: tauri::Runtime>(
     app.manage(Upgrades::default());
     app.manage(computer);
     app.manage(reader);
+    app.manage(installation_reader);
     (monitor, current)
 }
 
@@ -512,10 +559,13 @@ pub fn run() {
             // choice of its own there.
             let computer = Computer::this_one(folder);
             let reader = Reader::this_executable().map_err(|error| error.message)?;
+            let installation_reader =
+                installations::Reader::this_executable().map_err(|error| error.message)?;
             // Supervision, and noticing what other processes change, live only as long as this
             // process: no service, no system task. Only over an inventory the window serves: one
             // it refused is never opened again until DevHQ starts again.
-            let (monitor, current) = manage(app, path, previous, computer, reader);
+            let (monitor, current) =
+                manage(app, path, previous, computer, reader, installation_reader);
             if current {
                 supervise(&monitor);
             }

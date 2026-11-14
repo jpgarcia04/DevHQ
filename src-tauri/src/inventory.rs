@@ -1,3 +1,4 @@
+use crate::installations::readings::{self as installation_readings, Installation};
 use crate::local_copies::readings::{self, LocalCopy};
 use crate::records::{Actor, Subject};
 use crate::references::{self, Reference, ReferenceInput, SharedRepository};
@@ -178,6 +179,10 @@ pub struct Inventory {
     /// Each local copy the systems declare, with its newest reading and what DevHQ derives from it
     /// at this read. Older readings are paged per system.
     pub local_copies: Vec<LocalCopy>,
+    /// Each installation the systems declare, with its newest reading and what DevHQ derives from
+    /// it at this read: whether the declared version is the installed one, and since when the
+    /// build is the same. Older readings are paged per system.
+    pub installations: Vec<Installation>,
     pub observations: Vec<records::Observation>,
     pub incidents: Vec<records::Incident>,
     pub events: Vec<records::Event>,
@@ -1710,6 +1715,7 @@ pub(crate) fn list_in(tx: &Transaction) -> Result<Inventory, ApiError> {
     }
     let shared_repositories = references::shared_repositories(&applications, &resources);
     let local_copies = readings::local_copies(tx, &applications, &resources)?;
+    let installations = installation_readings::installations(tx, &applications, &resources)?;
     let subjects: Vec<_> = applications
         .iter()
         .map(|app| records::Subject::Application { id: app.id.clone() })
@@ -1731,6 +1737,7 @@ pub(crate) fn list_in(tx: &Transaction) -> Result<Inventory, ApiError> {
         resources,
         shared_repositories,
         local_copies,
+        installations,
         observations,
         incidents,
         events,
@@ -2055,6 +2062,7 @@ fn history_of(tx: &Transaction, column: &str, id: &str) -> Result<Vec<String>, A
         ("incidents", "incidents"),
         ("events", "events"),
         ("copy_readings", "readings of its local copies"),
+        ("installation_readings", "readings of its installations"),
     ] {
         // EXISTS stops at the first one: a long supervised history costs no more than one.
         let exists: bool = tx

@@ -1,0 +1,51 @@
+{
+  "readings": [
+    {
+      "id": "installed-2",
+      "subject": {
+        "type": "application",
+        "id": "shop"
+      },
+      "referenceId": "shop-installed",
+      "machineId": "laptop",
+      "path": "C:\\Program Files\\Shop\\shop.exe",
+      "source": "read",
+      "reader": "DevHQ installation reader 1",
+      "agent": null,
+      "observedAt": "2026-01-01T10:00:00Z",
+      "recordedAt": "2026-01-01T10:00:00Z",
+      "outcome": "read",
+      "detail": null,
+      "storedAt": null,
+      "sha256": "5f2d9a1c5f2d9a1c5f2d9a1c5f2d9a1c5f2d9a1c5f2d9a1c5f2d9a1c5f2d9a1c",
+      "sizeBytes": 23620096,
+      "modifiedAt": "2026-01-01T08:30:00Z",
+      "productVersion": "2.1.0+3f9c2ab",
+      "fileVersion": "2.1.0.0",
+      "productName": "Shop",
+      "versionUnknown": null,
+      "processes": 2,
+      "processesUnexamined": 41,
+      "processesUnknown": null
+    }
+  ],
+  "failures": [
+    {
+      "referenceId": "host-agent",
+      "subject": {
+        "type": "resource",
+        "id": "host"
+      },
+      "path": "C:\\Program Files\\Agent\\agent.exe",
+      "message": "Reading C:\\Program Files\\Agent\\agent.exe took longer than 30 s, so DevHQ stopped it. Nothing was kept."
+    }
+  ],
+  "thisWorkstation": {
+    "resourceId": "laptop",
+    "chosenAt": "2026-01-01T08:00:00Z",
+    "problem": null,
+    "message": null,
+    "file": "C:\\Users\\Ana Ruiz\\DevHQ\\this-workstation.json",
+    "storedAt": null
+  }
+}

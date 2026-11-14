@@ -5,6 +5,7 @@ import type {
   AgentAccess,
   BackupFolder,
   CopyReading,
+  InstallationReadingPage,
   DataLocation,
   EventPage,
   InventoryApplication,
@@ -233,6 +234,7 @@ export function previewBackend(database: PreviewDatabase) {
       resources,
       sharedRepositories: sharedRepositories(applications, resources),
       localCopies: localCopies(applications, resources, readings),
+      installations: [],
       observations: observations.filter((item) => !automated(item) || kept.has(item.id)),
       incidents: [...database.incidents].sort(
         (a, b) => Date.parse(b.openedAt) - Date.parse(a.openedAt),
@@ -365,6 +367,8 @@ export function previewBackend(database: PreviewDatabase) {
         return database.thisWorkstation satisfies ThisWorkstation
       case 'older_readings':
         return olderReadings(args.subject as EntityRef, (args.before as string | null) ?? null)
+      case 'older_installation_readings':
+        return { readings: [], more: false } satisfies InstallationReadingPage
       // Looking changes nothing; upgrading writes, so it is refused like every write.
       case 'inspect_upgrade':
         return inspectUpgrade()

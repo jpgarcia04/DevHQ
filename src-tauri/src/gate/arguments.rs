@@ -253,7 +253,7 @@ pub(super) fn rules(tool: &str, arguments: &Map<String, Value>) -> Vec<String> {
         found.push("Name the system by `id` or by `name`.".to_owned());
     }
     match tool {
-        "read_copies" => {
+        "read_copies" | "read_installations" => {
             let system = given("type") || given("id") || given("name");
             if given("referenceId") && system {
                 found.push("Name either one reference (`referenceId`) or one system (`type` and `id` or `name`), not both.".to_owned());
@@ -533,7 +533,7 @@ mod tests {
             }
         }
         let tools = super::super::tools();
-        assert_eq!(tools.len(), 19);
+        assert_eq!(tools.len(), 20);
         for tool in &tools {
             let name = tool["name"].as_str().unwrap();
             assert_eq!(tool["inputSchema"]["type"], "object", "{name}");

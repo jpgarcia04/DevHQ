@@ -1,0 +1,61 @@
+{
+  "readings": [
+    {
+      "id": "installed-1",
+      "subject": {
+        "type": "application",
+        "id": "shop"
+      },
+      "referenceId": "shop-installed",
+      "machineId": "laptop",
+      "path": "C:\\Program Files\\Shop\\shop.exe",
+      "source": "read",
+      "reader": "DevHQ installation reader 1",
+      "agent": "claude-code",
+      "observedAt": "2026-01-01T07:00:00Z",
+      "recordedAt": "2026-01-01T07:00:00Z",
+      "outcome": "read",
+      "detail": null,
+      "storedAt": null,
+      "sha256": "a81c04e7a81c04e7a81c04e7a81c04e7a81c04e7a81c04e7a81c04e7a81c04e7",
+      "sizeBytes": 23620096,
+      "modifiedAt": null,
+      "productVersion": "2.0.0+11d2e4f",
+      "fileVersion": "2.0.0.0",
+      "productName": "Shop",
+      "versionUnknown": null,
+      "processes": null,
+      "processesUnexamined": null,
+      "processesUnknown": "Windows did not list its processes: Access is denied. (os error 5)"
+    },
+    {
+      "id": "installed-0",
+      "subject": {
+        "type": "application",
+        "id": "shop"
+      },
+      "referenceId": "shop-installed",
+      "machineId": "laptop",
+      "path": "C:\\Program Files\\Shop\\shop.exe",
+      "source": "read",
+      "reader": "DevHQ installation reader 1",
+      "agent": null,
+      "observedAt": "2026-01-01T06:00:00Z",
+      "recordedAt": "2026-01-01T06:00:00Z",
+      "outcome": "unreadable",
+      "detail": "Access is denied. (os error 5)",
+      "storedAt": "D:\\Apps\\Shop\\shop.exe",
+      "sha256": null,
+      "sizeBytes": null,
+      "modifiedAt": null,
+      "productVersion": null,
+      "fileVersion": null,
+      "productName": null,
+      "versionUnknown": null,
+      "processes": null,
+      "processesUnexamined": null,
+      "processesUnknown": null
+    }
+  ],
+  "more": true
+}

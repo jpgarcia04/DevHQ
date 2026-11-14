@@ -850,6 +850,36 @@ impl Session {
         )?;
         Ok(json!(outcome))
     }
+
+    /// Reads installations of this workstation in confined readers, as Read does in the window:
+    /// one reference, the installations of one system, or all of them. Like a reading of a local
+    /// copy, each is DevHQ's own evidence and keeps the agent that asked, changes no configuration
+    /// and is kept only while the person still lets agents write, checked inside its transaction.
+    pub(super) fn read_installations(
+        &self,
+        arguments: &Map<String, Value>,
+    ) -> Result<Value, ApiError> {
+        // The rules already refused a reference with a system, and a system without its type.
+        let which = if let Some(reference) = optional_text(arguments, "referenceId")? {
+            Which::References(vec![reference.to_owned()])
+        } else if arguments.contains_key("type") {
+            Which::System(super::find_system(&self.inventory()?, arguments)?)
+        } else {
+            Which::ThisWorkstation
+        };
+        let reader = match &self.installation_reader {
+            Some(reader) => reader.clone(),
+            None => crate::installations::Reader::this_executable()?,
+        };
+        let outcome = crate::installations::readings::read_installations(
+            &self.database,
+            &self.computer,
+            &reader,
+            &which,
+            &self.actor()?,
+        )?;
+        Ok(json!(outcome))
+    }
 }
 
 fn tool(
@@ -917,14 +947,15 @@ fn named(kind: &str) -> Value {
 }
 
 /// The tools Read and maintain allows: adding and editing applications and resources, reading
-/// local copies (DevHQ's own evidence, which changes no configuration and never leaves this
-/// computer) and recording what the agent observed, for at most a week. Every other tool that
+/// local copies and installations (DevHQ's own evidence, which changes no configuration and never
+/// leaves this computer) and recording what the agent observed, for at most a week. Every other tool that
 /// changes something needs Read and write.
-pub(super) const MAINTAIN: [&str; 4] = [
+pub(super) const MAINTAIN: [&str; 5] = [
     "save_application",
     "save_resource",
     "record_observation",
     "read_copies",
+    "read_installations",
 ];
 
 /// The tools that change something, each description starting with the access it needs. Saving
@@ -1112,6 +1143,19 @@ fn changing_tools() -> Vec<Value> {
             json!({
                 "referenceId": { "type": "string", "description": "One local copy's reference id, from list_systems. Never with type, id or name." },
                 "type": { "type": "string", "enum": ["application", "resource"], "description": "With id or name: the system whose copies to read." },
+                "id": { "type": "string", "description": "The system's id, from list_systems; only with type." },
+                "name": { "type": "string", "description": "Or its exact name, ignoring case; only with type. Given with id, it must be that system's name, or nothing is done." },
+            }),
+            &[],
+            json!({ "destructiveHint": false, "idempotentHint": false, "openWorldHint": false }),
+        ),
+        tool(
+            "read_installations",
+            "Read installations",
+            "Reads, now, the installations declared on this workstation (status: thisWorkstation), as Read does in DevHQ: one reference (referenceId), the installations of one system (type and id or name), or, with neither, every one but those of archived applications. Each reading is kept as DevHQ's own evidence (source read) with this agent as who asked, and says what the installed executable's file was at that moment: whether it was there, where the system really keeps it when that is another path (storedAt), its SHA-256, size and modification time, the ProductVersion, FileVersion and ProductName its version resource declares (or why they are unknown), and how many processes were running from it, with how many processes the system did not let DevHQ look at. Never a process identifier, a name, a command line, or anything else the file holds. A count of processes is not health, and not whether the application was in use. DevHQ reads the file as data, with a reader of its own, in a process that cannot start programs: it never runs or loads the executable and writes nothing; code that a hostile file managed to run inside that reader would still have the person's rights. To count processes it reads the system's list of processes and keeps only those two numbers. Nothing leaves this computer, and no configuration changes. Installations on other machines are read by DevHQ there.",
+            json!({
+                "referenceId": { "type": "string", "description": "One installation's reference id, from list_systems. Never with type, id or name." },
+                "type": { "type": "string", "enum": ["application", "resource"], "description": "With id or name: the system whose installations to read." },
                 "id": { "type": "string", "description": "The system's id, from list_systems; only with type." },
                 "name": { "type": "string", "description": "Or its exact name, ignoring case; only with type. Given with id, it must be that system's name, or nothing is done." },
             }),

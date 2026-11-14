@@ -22,15 +22,12 @@
 //! the person's rights; nothing of the system stops the reader writing, only its code, which
 //! opens the file to read and nothing else, and the hostile battery (`battery`) do.
 
-// Nothing asks for a reading yet: the use case that starts this reader, and keeps what it read,
-// comes with the readings. Until then only the tests start one.
-#![allow(dead_code)]
-
 #[cfg(test)]
 mod battery;
 mod pe;
 mod processes;
 mod reader;
+pub(crate) mod readings;
 
 use crate::inventory::ApiError;
 use serde::{Deserialize, Serialize};
@@ -426,6 +423,16 @@ pub(crate) mod tests {
         );
         std::fs::create_dir_all(&folder).unwrap();
         folder
+    }
+
+    /// A synthetic executable, without code, whose version resource declares `version` as its
+    /// ProductVersion: what tests elsewhere install where they need an installation.
+    pub(crate) fn executable(version: &str) -> Vec<u8> {
+        pe::tests::image(
+            &pe::tests::version_data(&[("ProductVersion", version), ("ProductName", "Shop")]),
+            true,
+        )
+        .0
     }
 
     pub(crate) fn path_text(path: &Path) -> String {
