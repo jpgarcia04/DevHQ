@@ -1,8 +1,11 @@
-# Observar aplicaciones locales (propuesta de diseño)
+# Observar aplicaciones locales (diseño)
 
-Estado: **propuesta para revisión, 12 nov 2026**. No hay código y nada de esto cambia la especificación:
-el [README](../README.md) la sigue siendo, y cada regla que se cite sigue vigente hasta que un cambio la
-reescriba allí. Los sistemas y rutas de los ejemplos son inventados.
+Estado: **el paso 1 está implementado (14 nov 2026, esquema v14)**; los pasos 2 y 3 siguen siendo una
+propuesta, sin código. Este documento explica por qué y recoge lo que se decidió; la especificación de
+lo que existe es el [README](../README.md) («Instalaciones»), y cada regla que se cite sigue vigente
+hasta que un cambio la reescriba allí. Lo que el paso 1 terminó siendo, y en qué se apartó de lo que
+se propone abajo, está en [«Lo decidido al implementar el paso 1»](#lo-decidido-al-implementar-el-paso-1).
+Los sistemas y rutas de los ejemplos son inventados.
 
 ## El problema
 
@@ -184,7 +187,59 @@ la pauta: que su build declare la versión de verdad y el commit.
 
 ## Preguntas abiertas
 
-- ¿Basta «hay N procesos con esa ruta», o una app como DevHQ debe poder decir qué cuenta como abierta?
-- ¿Leer las instalaciones al abrir la ventana se considera «a petición»? Hoy las copias no se leen solas.
-- ¿El desfase entre versión declarada e instalada debe entrar en «Needs attention», o solo mostrarse en
-  la ficha?
+Las tres del paso 1 se respondieron antes de escribirlo (12 nov 2026):
+
+- **¿Basta «hay N procesos con esa ruta», o una app como DevHQ debe poder decir qué cuenta como
+  abierta?** Basta, dicho tal cual: la lectura guarda cuántos procesos corrían desde el archivo y
+  cuántos no dejó mirar el sistema, y la ventana y la puerta lo dicen así, nunca como «abierta». Qué
+  cuenta como abierta se decide con el paso 2, que es el que lo necesita para condicionar la
+  comprobación HTTP.
+- **¿Leer las instalaciones al abrir la ventana se considera «a petición»?** No. Solo Read, Read all on
+  this computer y `read_installations`, como las copias. Leerlas solas sigue siendo una decisión aparte.
+- **¿El desfase entre versión declarada e instalada debe entrar en «Needs attention»?** No: va en la
+  referencia, en un panel Installations de Overview junto a Local copies y, en la puerta, en
+  `attention` como lista aparte y sin ordenar. No es salud, así que no toca las reglas de atención ni
+  `contract/attention/`.
+
+Quedan para el paso 2:
+
+- Cómo declara una aplicación qué proceso cuenta como «abierta», cuando su ejecutable también corre sin
+  ventana (las puertas `--mcp` de DevHQ).
+- Si la comprobación condicionada debe leer la instalación ella misma, o basarse en la última lectura,
+  que puede ser vieja.
+
+## Lo decidido al implementar el paso 1
+
+Lo que existe está en el README; aquí, lo que se decidió por el camino y por qué.
+
+- **Qué guarda una lectura.** Además de lo propuesto: por qué no se conoce la versión
+  (`versionUnknown`), en vez de dejar los tres textos vacíos, porque nada desconocido debe parecer un
+  dato; y, con el número de procesos, cuántos no dejó mirar el sistema (`processesUnexamined`). Sin
+  privilegios de administrador son muchos, así que «ninguno» siempre va con esa cifra. Solo se guardan
+  `ProductVersion`, `FileVersion` y `ProductName`, de la primera tabla de cadenas: ningún número del
+  recurso se convierte en versión.
+- **El lector no se cuenta.** Cuando DevHQ lee su propia instalación, el lector es un proceso de ese
+  mismo archivo. Es el instrumento, no un uso del programa, y se excluye; la ventana o la puerta que lo
+  lanzó sí cuentan.
+- **Lo que dice el archivo, no lo que diría Windows.** Para los ejecutables del propio sistema, las
+  APIs de versión de Windows leen un archivo de idioma aparte (`.mui`) y pueden dar otra versión que la
+  del recurso del ejecutable. DevHQ lee el recurso, y lo dice.
+- **Cuándo cambió la build.** Para que leer el inventario no cueste más con los años, la búsqueda
+  hacia atrás se detiene en 200 lecturas y lo dice («la misma build al menos desde…»). Una lectura que
+  no leyó el archivo no cuenta como otra build, y una hecha en otra ruta corta la búsqueda.
+- **La comparación de versiones** ignora una `v` inicial, lo que sigue a un `+` y los ceros finales:
+  «1.4.0» es «v1.4.0», «1.4.0+3f9c2ab» y «1.4.0.0». Así la pauta del commit no hace diferir a nadie.
+- **La pauta en DevHQ.** Su build lee el commit de `.git` como archivos, también en un worktree, y sin
+  ejecutar `git`; por eso no puede saber si el árbol tenía cambios sin confirmar y no lo afirma:
+  `.dirty` solo aparece cuando quien compila lo dice. La versión pasó a 0.2.0 y sube cuando se
+  construye un instalador para instalarlo, no en cada cambio.
+- **Sin capa común todavía.** El lector de instalaciones reutiliza el encierro del de copias locales
+  (`confine`) y `inventory::stored_at`, pero repite el arranque del proceso, el plazo y la validación
+  de la respuesta, que son cortos y distintos en cada uno (una línea frente a dos fases). Una tercera
+  fuente dirá qué tienen de verdad en común.
+- **Linux.** El lector lee un ELF (hash, tamaño, fecha, procesos por `/proc`) y dice que no declara
+  versión. Sus pruebas se escribieron para los dos sistemas, pero solo se ejecutaron en Windows: en
+  Linux las ejecuta el CI.
+- **Lo que queda fuera.** Contar los commits de la rama principal que faltan por instalar (exige una
+  API más de libgit2 en el lector de copias, con su paso por la batería hostil), y cualquier lectura
+  que no se pida.
