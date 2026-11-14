@@ -1,4 +1,5 @@
 import { counted } from '@/shared/count'
+import { formatBytes } from '@/shared/size'
 import { formatDateTime } from '@/shared/time'
 import type {
   Installation,
@@ -128,15 +129,7 @@ export function processesText(reading: InstallationReading) {
 /** A file's size as people read it, with the exact count: «22.5 MB (23,620,096 bytes)». */
 export function sizeText(bytes: number) {
   const exact = counted(bytes, 'byte')
-  if (bytes < 1024) return exact
-  const units = ['KB', 'MB', 'GB', 'TB']
-  let value = bytes / 1024
-  let unit = 0
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024
-    unit += 1
-  }
-  return `${value.toLocaleString('en-GB', { maximumFractionDigits: 1 })} ${units[unit]} (${exact})`
+  return bytes < 1024 ? exact : `${formatBytes(bytes)} (${exact})`
 }
 
 /** What a reading found, in one line, for a list of many: the history of a system. */
