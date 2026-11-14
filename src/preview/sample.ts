@@ -10,6 +10,7 @@ import type {
   ConfigurationChange,
   BackupFile,
   CopyReading,
+  InstallationReading,
   HttpCheck,
   InventoryApplication,
   InventoryResource,
@@ -33,6 +34,8 @@ export interface PreviewDatabase {
   changesSince: string | null
   /** Every reading of a local copy, in the order they were recorded. */
   copyReadings: CopyReading[]
+  /** Every reading of an installation, in the order they were recorded. */
+  installationReadings: InstallationReading[]
   /** Which workstation this computer is, from the local association beside the inventory. */
   thisWorkstation: ThisWorkstation
   /** The files in the backups folder, newest first. */
@@ -95,6 +98,7 @@ function nothing(): PreviewDatabase {
     changes: [],
     changesSince: null,
     copyReadings: [],
+    installationReadings: [],
     thisWorkstation: notChosen,
     backups: [],
     unavailable: null,
@@ -117,6 +121,75 @@ export const dotfilesReadings = 205
  *   there the last time: more readings than a page holds.
  * - the archived Old site's clone, with a stash: kept, but out of Read all and of Overview.
  */
+/**
+ * Readings of the sample's installations, in the order they were recorded:
+ * - the Shop's on the laptop: three days ago and yesterday, the build that declared the version
+ *   the inventory declares; two hours ago, asked by an agent, another build, which declares a
+ *   newer one, with two processes running from it;
+ * - the laptop's backup agent: read once, and not found where it is declared.
+ * The Blog's, also on the laptop, was never read.
+ */
+function sampleInstallationReadings(now: number): InstallationReading[] {
+  const reading = (
+    id: string,
+    minutesAgo: number,
+    facts: Partial<InstallationReading>,
+  ): InstallationReading => ({
+    id,
+    subject: shop,
+    referenceId: 'shop-installed',
+    machineId: 'laptop',
+    path: 'C:\\Users\\you\\AppData\\Local\\Shop\\shop.exe',
+    source: 'read',
+    reader: 'DevHQ installation reader 1',
+    agent: null,
+    observedAt: at(now, minutesAgo),
+    recordedAt: at(now, minutesAgo),
+    outcome: 'read',
+    detail: null,
+    storedAt: null,
+    sha256: '3b7e02a9'.repeat(8),
+    sizeBytes: 18_734_080,
+    modifiedAt: at(now, 9 * 24 * 60),
+    productVersion: '2.4.1+9d0c3aa',
+    fileVersion: '2.4.1.0',
+    productName: 'Shop',
+    versionUnknown: null,
+    processes: 0,
+    processesUnexamined: 187,
+    processesUnknown: null,
+    ...facts,
+  })
+  return [
+    reading('installed-first', 3 * 24 * 60, {}),
+    reading('installed-same', 26 * 60, { processes: 1 }),
+    reading('agent-not-found', 5 * 60, {
+      subject: { type: 'resource', id: 'laptop' },
+      referenceId: 'laptop-agent',
+      path: 'C:\\Tools\\backup-agent\\agent.exe',
+      outcome: 'missing',
+      detail: 'Nothing is at this path.',
+      sha256: null,
+      sizeBytes: null,
+      modifiedAt: null,
+      productVersion: null,
+      fileVersion: null,
+      productName: null,
+      processes: null,
+      processesUnexamined: null,
+    }),
+    reading('installed-new', 120, {
+      agent: 'claude-code',
+      sha256: 'c41f8d56'.repeat(8),
+      sizeBytes: 18_901_504,
+      modifiedAt: at(now, 20 * 60),
+      productVersion: '2.5.0+7c1e9d2',
+      fileVersion: '2.5.0.0',
+      processes: 2,
+    }),
+  ]
+}
+
 function sampleReadings(now: number): CopyReading[] {
   const reading = (id: string, minutesAgo: number, facts: Partial<CopyReading>): CopyReading => ({
     id,
@@ -508,6 +581,13 @@ export function sampleDatabase(scenario: Scenario, now: number): PreviewDatabase
             machineId: 'laptop',
           },
           {
+            id: 'shop-installed',
+            kind: 'installation',
+            target: 'C:\\Users\\you\\AppData\\Local\\Shop\\shop.exe',
+            label: null,
+            machineId: 'laptop',
+          },
+          {
             id: 'shop-runbook',
             kind: 'documentation',
             target: 'https://docs.example/shop/runbook',
@@ -611,6 +691,14 @@ export function sampleDatabase(scenario: Scenario, now: number): PreviewDatabase
             label: 'Dotfiles',
             machineId: 'laptop',
           },
+          // Its backup agent, not found where it is declared.
+          {
+            id: 'laptop-agent',
+            kind: 'installation',
+            target: 'C:\\Tools\\backup-agent\\agent.exe',
+            label: 'Backup agent',
+            machineId: 'laptop',
+          },
         ],
       },
       {
@@ -699,6 +787,7 @@ export function sampleDatabase(scenario: Scenario, now: number): PreviewDatabase
       },
     ],
     copyReadings: sampleReadings(now),
+    installationReadings: sampleInstallationReadings(now),
     // This computer is the laptop, chosen a week ago.
     thisWorkstation: {
       resourceId: 'laptop',

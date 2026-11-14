@@ -5,6 +5,9 @@ import type {
   AgentAccess,
   BackupFolder,
   CopyReading,
+  Installation,
+  InstallationBuild,
+  InstallationReading,
   InstallationReadingPage,
   DataLocation,
   EventPage,
@@ -132,6 +135,120 @@ function holdsLocalWork(reading: CopyReading) {
   )
 }
 
+/** A version as the native process compares it (`installations::readings::comparable`). */
+function comparableVersion(version: string) {
+  const text = version.trim().split('+')[0]!.trim()
+  return /^[vV]\d/.test(text) ? text.slice(1) : text
+}
+
+/** Numbers and dots without the zeros at the end, or null for any other text. */
+function versionNumbers(version: string) {
+  if (!/^\d+(\.\d+)*$/.test(version)) return null
+  const parts = version.split('.').map(Number)
+  while (parts.at(-1) === 0) parts.pop()
+  return parts.join('.')
+}
+
+/** Whether two versions are the same one, as the native process decides (`same_version`). */
+export function sameVersion(declared: string, installed: string) {
+  const [a, b] = [comparableVersion(declared), comparableVersion(installed)]
+  const [numbersA, numbersB] = [versionNumbers(a), versionNumbers(b)]
+  return a.toLowerCase() === b.toLowerCase() || (numbersA !== null && numbersA === numbersB)
+}
+
+/** How many readings before the newest the native process looks at (`LOOK_BACK`). */
+export const lookBack = 200
+
+/** Since when the file is the build `newest` found, as the native process derives it. */
+function buildSince(
+  newest: InstallationReading,
+  earlier: InstallationReading[],
+): InstallationBuild {
+  const looked = earlier.slice(0, lookBack)
+  const build: InstallationBuild = {
+    sameSince: newest.observedAt,
+    readings: 1,
+    previous: null,
+    complete: earlier.length <= lookBack,
+  }
+  for (const reading of looked) {
+    if (reading.path !== newest.path || reading.machineId !== newest.machineId) {
+      build.complete = true
+      break
+    }
+    if (reading.sha256 === null) continue
+    if (reading.sha256 === newest.sha256) {
+      build.sameSince = reading.observedAt
+      build.readings += 1
+    } else {
+      build.previous = {
+        observedAt: reading.observedAt,
+        sha256: reading.sha256,
+        productVersion: reading.productVersion,
+      }
+      build.complete = true
+      break
+    }
+  }
+  return build
+}
+
+/**
+ * Each installation the systems declare, with its newest reading and what the native process
+ * derives from it, in the snapshot's order. `readings` are newest first.
+ */
+export function installations(
+  applications: InventoryApplication[],
+  resources: InventoryResource[],
+  readings: InstallationReading[],
+): Installation[] {
+  const systems = [
+    ...applications.map((system) => ({
+      subject: { type: 'application' as const, id: system.id },
+      references: system.references,
+      declares: true,
+      version: system.version,
+    })),
+    ...resources.map((system) => ({
+      subject: { type: 'resource' as const, id: system.id },
+      references: system.references,
+      declares: false,
+      version: null,
+    })),
+  ]
+  return systems.flatMap(({ subject, references, declares, version }) =>
+    references
+      .filter((reference) => reference.kind === 'installation' && reference.machineId)
+      .map((reference) => {
+        const own = readings.filter((reading) => reading.referenceId === reference.id)
+        const latest = own[0] ?? null
+        const read = latest?.outcome === 'read' ? latest : null
+        const compared =
+          !declares || !read
+            ? null
+            : read.productVersion === null
+              ? ('unknown' as const)
+              : version === null
+                ? ('undeclared' as const)
+                : sameVersion(version, read.productVersion)
+                  ? ('matches' as const)
+                  : ('differs' as const)
+        return {
+          referenceId: reference.id,
+          subject,
+          machineId: reference.machineId!,
+          path: reference.target,
+          latest,
+          movedSinceRead:
+            !!latest &&
+            (latest.path !== reference.target || latest.machineId !== reference.machineId),
+          version: compared,
+          build: read ? buildSince(read, own.slice(1)) : null,
+        }
+      }),
+  )
+}
+
 /**
  * Each local copy the systems declare, with its newest reading and what the native process
  * derives from it, in the snapshot's order: applications, then resources, each in the order of its
@@ -209,6 +326,11 @@ export function previewBackend(database: PreviewDatabase) {
     (item) => item.observedAt,
     (item) => item.recordedAt,
   )
+  const installationReadings = newestFirst(
+    database.installationReadings,
+    (item) => item.observedAt,
+    (item) => item.recordedAt,
+  )
   const exists = (subject: EntityRef) =>
     subjectsOf(database).some((item) => sameSubject(item, subject))
   const automated = (item: Observation | RecordedEvent) => item.source === 'http'
@@ -234,7 +356,7 @@ export function previewBackend(database: PreviewDatabase) {
       resources,
       sharedRepositories: sharedRepositories(applications, resources),
       localCopies: localCopies(applications, resources, readings),
-      installations: [],
+      installations: installations(applications, resources, installationReadings),
       observations: observations.filter((item) => !automated(item) || kept.has(item.id)),
       incidents: [...database.incidents].sort(
         (a, b) => Date.parse(b.openedAt) - Date.parse(a.openedAt),
@@ -275,6 +397,19 @@ export function previewBackend(database: PreviewDatabase) {
   function olderReadings(subject: EntityRef, before: string | null): ReadingPage {
     if (!exists(subject)) throw invalid(`The ${subject.type} ${subject.id} does not exist.`)
     const own = readings.filter((item) => sameSubject(item.subject, subject))
+    const anchor = before === null ? -1 : own.findIndex((item) => item.id === before)
+    if (before !== null && anchor === -1)
+      throw invalid(`Reading ${before} is not one of this ${subject.type}'s.`)
+    const older = own.slice(anchor + 1)
+    return { readings: older.slice(0, limit), more: older.length > limit }
+  }
+
+  function olderInstallationReadings(
+    subject: EntityRef,
+    before: string | null,
+  ): InstallationReadingPage {
+    if (!exists(subject)) throw invalid(`The ${subject.type} ${subject.id} does not exist.`)
+    const own = installationReadings.filter((item) => sameSubject(item.subject, subject))
     const anchor = before === null ? -1 : own.findIndex((item) => item.id === before)
     if (before !== null && anchor === -1)
       throw invalid(`Reading ${before} is not one of this ${subject.type}'s.`)
@@ -368,7 +503,10 @@ export function previewBackend(database: PreviewDatabase) {
       case 'older_readings':
         return olderReadings(args.subject as EntityRef, (args.before as string | null) ?? null)
       case 'older_installation_readings':
-        return { readings: [], more: false } satisfies InstallationReadingPage
+        return olderInstallationReadings(
+          args.subject as EntityRef,
+          (args.before as string | null) ?? null,
+        )
       // Looking changes nothing; upgrading writes, so it is refused like every write.
       case 'inspect_upgrade':
         return inspectUpgrade()

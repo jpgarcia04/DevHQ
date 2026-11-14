@@ -7,10 +7,17 @@ import type {
   InventorySnapshot,
   MonitorStatus,
   ObservationPage,
+  InstallationReadingPage,
   ReadingPage,
   ThisWorkstation,
 } from '@/features/inventory/inventory-api'
-import { previewBackend, readOnly, remoteLocation, sharedRepositories } from './backend'
+import {
+  previewBackend,
+  readOnly,
+  remoteLocation,
+  sameVersion,
+  sharedRepositories,
+} from './backend'
 import { dotfilesReadings, sampleDatabase } from './sample'
 
 const now = Date.parse('2026-09-30T12:00:00Z')
@@ -129,6 +136,69 @@ describe('the preview’s simulated native process', () => {
         ],
       },
     ])
+  })
+
+  it('carries each declared installation with what the native process derives from its readings', () => {
+    const { backend, snapshot } = preview()
+    expect(
+      snapshot.installations.map((item) => [
+        item.referenceId,
+        item.latest?.id ?? null,
+        item.version,
+        item.build?.readings ?? null,
+        item.build?.previous?.productVersion ?? null,
+      ]),
+    ).toEqual([
+      // The Shop declares 2.4.1 and its file, at the newest reading, 2.5.0: another build than the
+      // one the two readings before it found.
+      ['shop-installed', 'installed-new', 'differs', 1, '2.4.1+9d0c3aa'],
+      // The laptop's backup agent was not found: nothing is derived from a file not read, and a
+      // resource declares no version.
+      ['laptop-agent', 'agent-not-found', null, null, null],
+    ])
+    const [shopInstalled] = snapshot.installations
+    expect(shopInstalled!.build).toMatchObject({ complete: true })
+    expect(shopInstalled!.build!.sameSince).toBe(shopInstalled!.latest!.observedAt)
+    // The comparison the native process makes (`same_version`).
+    for (const [declared, installed] of [
+      ['1.4.0', '1.4.0+3f9c2ab'],
+      ['v1.4.0', '1.4.0'],
+      ['1.4', '1.4.0.0'],
+      ['1.4.0-RC1', '1.4.0-rc1'],
+    ])
+      expect(sameVersion(declared!, installed!), `${declared} / ${installed}`).toBe(true)
+    for (const [declared, installed] of [
+      ['1.4.0', '1.4.1'],
+      ['1.4.0', '1.4.0-beta'],
+      ['1.4', '1.40'],
+      ['1.4.0', ''],
+    ])
+      expect(sameVersion(declared!, installed!), `${declared} / ${installed}`).toBe(false)
+    // A system's readings, newest first, from the newest or from one already shown.
+    const shop: EntityRef = { type: 'application', id: 'shop' }
+    const page = backend('older_installation_readings', {
+      subject: shop,
+      before: null,
+    }) as InstallationReadingPage
+    expect([ids(page.readings), page.more]).toEqual([
+      ['installed-new', 'installed-same', 'installed-first'],
+      false,
+    ])
+    expect(
+      ids(
+        (
+          backend('older_installation_readings', {
+            subject: shop,
+            before: 'installed-same',
+          }) as InstallationReadingPage
+        ).readings,
+      ),
+    ).toEqual(['installed-first'])
+    expect(() =>
+      backend('older_installation_readings', { subject: web, before: 'installed-new' }),
+    ).toThrow()
+    // Reading an installation writes: refused.
+    expect(() => backend('read_installations', {})).toThrow(expect.objectContaining(readOnly))
   })
 
   it('carries each declared local copy with its newest reading, as the native process derives it', () => {

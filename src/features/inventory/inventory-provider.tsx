@@ -6,6 +6,7 @@ import {
   inventoryApi,
   inventoryError,
   inventoryErrorCode,
+  type InstallationsRead,
   type InventorySnapshot,
   type MonitorStatus,
   type ReadOutcome,
@@ -14,6 +15,7 @@ import {
   type Upgraded,
 } from './inventory-api'
 import { InventoryContext, type LoadState, type Mode } from './inventory-context'
+import { readAllInstallations } from './installations'
 import { readAllTargets } from './local-copies'
 
 const nativeAvailable = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
@@ -34,6 +36,7 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
   const [thisWorkstation, setThisWorkstation] = useState<ThisWorkstation | null>(null)
   const [workstationError, setWorkstationError] = useState<string | null>(null)
   const [readingCopies, setReadingCopies] = useState<string[]>([])
+  const [readingInstallations, setReadingInstallations] = useState<string[]>([])
   const [upgraded, setUpgraded] = useState<Upgraded | null>(null)
   // What the last status said, to tell when the inventory may have changed since.
   const seen = useRef<{ recorded: number; changes: number } | null>(null)
@@ -199,6 +202,46 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  // Each installation's file is read as data in a confined process of its own, one after another,
+  // up to 30 s each; the window stays usable meanwhile.
+  const readInstallations = async (referenceIds: string[] | null) => {
+    const ids =
+      referenceIds ??
+      (snapshot
+        ? readAllInstallations(snapshot, thisWorkstation).map((item) => item.referenceId)
+        : [])
+    setReadingInstallations((current) => [...current, ...ids])
+    try {
+      let outcome: InstallationsRead
+      try {
+        outcome = await inventoryApi.readInstallations(referenceIds)
+      } catch (cause) {
+        // As with copies: a rejected call read nothing; a file DevHQ could not read once it
+        // started is in the outcome's failures.
+        const message = inventoryError(cause)
+        const sentence = /[.!?]$/.test(message) ? message : `${message}.`
+        throw new Error(`${sentence} Nothing was read.`, { cause })
+      }
+      setThisWorkstation(outcome.thisWorkstation)
+      setWorkstationError(null)
+      if (!(await reload()))
+        throw new Error(
+          'The readings were kept, but the inventory could not be reloaded. Retry loading it.',
+        )
+      return outcome
+    } finally {
+      setReadingInstallations((current) => {
+        const left = [...current]
+        // One entry per request: an installation asked for twice stays marked until both are done.
+        for (const id of ids) {
+          const index = left.indexOf(id)
+          if (index >= 0) left.splice(index, 1)
+        }
+        return left
+      })
+    }
+  }
+
   // Once committed, the native process serves the inventory: reading it again shows it, with what
   // the upgrade did above it, which supervision's first reloads must not take away.
   const upgradeInventory = async (
@@ -264,6 +307,9 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
         readCopies,
         readingCopies,
         olderReadings: inventoryApi.olderReadings,
+        readInstallations,
+        readingInstallations,
+        olderInstallationReadings: inventoryApi.olderInstallationReadings,
         inspectUpgrade: inventoryApi.inspectUpgrade,
         upgradeInventory,
         upgraded,

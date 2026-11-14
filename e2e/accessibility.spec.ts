@@ -55,6 +55,17 @@ const pages: { name: string; path: string; open?: string }[] = [
   },
   // The preview refuses to read: the panel shows the refusal.
   { name: 'read all refused', path: '/preview.html#/', open: 'Read all on this computer' },
+  // An installation whose file declared another version, with its readings open.
+  {
+    name: 'readings of an installation',
+    path: '/preview.html#/applications/shop',
+    open: 'Show every installation reading',
+  },
+  {
+    name: 'read all installations refused',
+    path: '/preview.html#/',
+    open: 'Read all installations on this computer',
+  },
   { name: 'incidents', path: '/preview.html#/incidents?incident=inc-disk' },
   { name: 'activity', path: '/preview.html#/activity' },
   { name: 'settings', path: '/preview.html#/settings' },

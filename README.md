@@ -38,6 +38,10 @@ estación de trabajo, sin ejecutar nada de lo que nombran. **No funciona en segu
   Read all on this computer, sin ejecutar nada de lo que nombran: cada copia con su última lectura,
   sus lecturas anteriores bajo demanda, un panel Local copies en Overview y la última actividad de
   cada aplicación. Settings › This computer dice qué estación de trabajo es este equipo.
+- En Mi inventario, las instalaciones de esta estación de trabajo: el ejecutable instalado de cada
+  sistema, leído como datos cuando pulsas Read o Read all on this computer, sin ejecutarlo: la versión
+  que declara el archivo frente a la que declara el inventario, entre qué dos lecturas cambió la build
+  y cuántos procesos corrían desde él, con un panel Installations en Overview.
 - Una comprobación HTTP(S) de solo lectura por aplicación o recurso, que se ejecuta a
   petición o, si activas su supervisión, cada 5–60 min mientras DevHQ está abierto, y
   registra una observación automática con su evidencia técnica.
@@ -390,9 +394,8 @@ nombra. Cuando se lo pides, DevHQ **lee** ese archivo y guarda lo que encontró 
 evidencia propia, nunca salud. Responde «¿qué versión tengo instalada, y desde cuándo?» para un sistema
 al que ninguna comprobación HTTP(S) puede preguntar, como una aplicación que solo corre cuando la abres
 o una de escritorio sin servidor: la versión declarada es texto que alguien escribió y se queda vieja;
-lo que dice el archivo se observa. Hoy la pide la [puerta para agentes](#puerta-para-agentes)
-(`read_installations`) y la ventana tiene sus comandos, pero ninguna vista de la ventana muestra todavía
-las lecturas: allí la referencia se ve y se copia como las demás.
+lo que dice el archivo se observa. La pides tú en la ventana, con Read, o un agente por la
+[puerta](#puerta-para-agentes) (`read_installations`).
 
 **Observar no da poder a lo observado.** La ruta declarada, y el archivo que hay en ella, son datos no
 confiables, los haya declarado quien los haya declarado. Por eso DevHQ nunca ejecuta el programa (ni
@@ -512,6 +515,32 @@ nunca con un temporizador ni con la supervisión, nunca con la ventana cerrada. 
 lee DevHQ en esa máquina, y sin saber qué estación de trabajo es este equipo (ver
 [Copias locales](#copias-locales)) no lee ninguna y dice por qué. Un fallo de DevHQ al leer (el lector
 no arranca, no responde en su plazo o responde algo que no se sostiene) se devuelve y no guarda nada.
+
+**En la ventana.** En las referencias de cada aplicación y recurso, cada instalación muestra su última
+lectura en pasado: el resultado (Read, Not found, Not readable, Not an executable), el momento, la
+máquina, la etiqueta «Automated · Local read» con el agente que la pidió, si fue uno, y lo que encontró:
+la versión que declaraba el archivo, o por qué se desconoce; el SHA-256 entero; el tamaño y la fecha de
+modificación; y los procesos, como «2 processes were running from it; the system did not let DevHQ look
+at 41 other processes», nunca como que la aplicación está abierta. Debajo dice dónde guardaba el sistema
+el archivo si no era la ruta declarada (`storedAt`) y que un DevHQ lanzado de otra forma puede encontrar
+otro archivo o ninguno; si la lectura se hizo en otra ruta o máquina de las declaradas hoy; la versión
+declarada frente a la del archivo, con las dos y sin decir cuál está al día («One of the two is out of
+date.»), destacada solo cuando difieren; y desde cuándo es la misma build: «it changed between those two
+readings. DevHQ does not know when.», o que la misma build está en todas las lecturas, o en las últimas
+201 «since at least» una fecha cuando DevHQ no miró más atrás. Read aparece solo en las instalaciones de
+esta estación y se desactiva mientras esa instalación se lee; en las de otra máquina, la ventana dice
+que las lee DevHQ allí, y sin estación conocida, por qué no lee ninguna y dónde elegirla. «Show every
+installation reading» carga, solo al abrirlo, las lecturas de las instalaciones del sistema, las más
+nuevas primero y de 200 en 200, en una línea cada una, dice cuándo están todas y cuáles son de rutas
+que el sistema ya no declara, y mientras está abierto vuelve a cargar la primera página cuando el
+inventario trae una lectura más nueva; cerrarlo olvida lo cargado. Overview tiene un panel
+**Installations**, junto a Local copies y fuera de «Needs attention»: cuántas instalaciones tiene esta
+estación y Read all on this computer, que las lee en serie y dice cuántas leyó y cuáles no pudo; las
+instalaciones cuyo archivo declaraba otra versión que el inventario, con las dos versiones; las que no
+se encontraron donde se declaran; las de esta estación nunca leídas y cuántas de otros equipos nunca se
+leyeron: las mismas listas que da la puerta, sin las aplicaciones archivadas. Dice que nada de eso es
+salud, ni dice si la aplicación funciona. El formulario de una aplicación o un recurso ofrece
+Installation entre los tipos de referencia.
 
 ### Comprobación HTTP(S)
 
@@ -1337,7 +1366,10 @@ publicar, otra leída en otra estación con HEAD suelto, un rebase a medias, má
 publicar, el working tree desconocido y un remoto que no es el repositorio declarado, una nunca leída,
 una movida desde su última lectura que entonces no se encontró, con 205 lecturas (más de una página),
 una lectura `not_a_copy` en el historial y la copia de una aplicación archivada; Read y Read all se
-rechazan como toda escritura. `?scenario=empty`, `?scenario=unavailable` y `?scenario=outdated`
+rechazan como toda escritura. Sus instalaciones cubren una leída tres veces, la última por un agente
+y con otra build, que declara una versión distinta de la del inventario, y otra que no se encontró
+donde se declara; lo derivado sigue las reglas de Rust (la comparación de versiones y desde cuándo es
+la misma build) y leerlas se rechaza igual. `?scenario=empty`, `?scenario=unavailable` y `?scenario=outdated`
 muestran un inventario vacío, uno ilegible y uno de un esquema anterior, con el panel que ofrece
 respaldarlo y actualizarlo; la preview rechaza la actualización como toda escritura (lo prueba
 `e2e/upgrade.spec.ts`). El bundle de producción se construye desde `index.html` y no contiene nada de
@@ -1397,13 +1429,20 @@ commit sin publicar, «1 changed file · 1 new entry · 1 file DevHQ could not v
 coincide con el repositorio declarado) y, sola, la lectura que pidió el agente; tras cada lectura,
 ningún marcador puede haber corrido y ningún archivo de la copia puede haber cambiado, aparecido o
 desaparecido (contenido, tamaño y fecha de modificación, `.git` incluido). Al final, `git status`
-sobre la misma copia sí ejecuta el fsmonitor: la copia es hostil de verdad. Por último cierra la ventana como
+sobre la misma copia sí ejecuta el fsmonitor: la copia es hostil de verdad. Después declara como
+instalación de esa aplicación el propio ejecutable que recorre, del que esa ventana está corriendo, y
+lo lee con Read: la ventana debe mostrar el SHA-256 del archivo, que el recorrido calcula por su
+cuenta, y procesos corriendo desde él. Lo lee otra vez con `read_installations` desde la puerta: misma
+huella, sin `storedAt`, al menos dos procesos (la ventana y la puerta; el lector, que también corre
+desde ese archivo, no se cuenta a sí mismo) y, en Windows, `ProductName` «DevHQ», leído del recurso de
+versión; y la ventana debe mostrar sola la lectura que pidió el agente. Por último cierra la ventana como
 lo hace su botón, nunca por WebDriver: con `WM_DELETE_WINDOW` en X11 (un script de Python que llama
 a libX11, porque bajo Xvfb no hay gestor de ventanas que lo envíe) o con `WM_CLOSE` en Windows. El
 proceso debe terminar, sin dejar `inventory.sqlite3-wal`, y el archivo debe seguir en WAL; la
 puerta, que sigue abierta, debe ver la ventana cerrada en menos de 10 s (el recorrido anota cuánto
 tardó) y terminar al cerrarse su entrada. En la base deben quedar las tres lecturas, en la estación elegida y
-con la ruta declarada, y solo la última con el agente. El inventario actualizado al principio debe
+con la ruta declarada, y solo la última con el agente, y las dos lecturas de la instalación, la segunda
+con el agente. El inventario actualizado al principio debe
 estar en la versión actual, con integridad correcta y las filas del v6 original, y su respaldo debe
 seguir teniendo exactamente las del v6.
 Antes de hacer clic espera a que el elemento deje de moverse, porque el contenido que llega tarde
@@ -1849,8 +1888,7 @@ y de ella guarda dos números y nada más (ver [Instalaciones](#instalaciones)).
    [copias locales](#copias-locales) de esta estación de trabajo sin ejecutar nada de lo que nombran,
    como evidencia propia: actividad, trabajo que solo existe en una máquina y el commit de HEAD que
    comparará la etapa de despliegues.
-7. Hecho el lector, las lecturas y la puerta, en Windows; falta la ventana, y en Linux, las pruebas en
-   CI: leer, cuando se lo pides, las [instalaciones](#instalaciones) de esta estación de trabajo sin
+7. Hecho en Windows, con la ventana; en Linux faltan sus pruebas en CI: leer, cuando se lo pides, las [instalaciones](#instalaciones) de esta estación de trabajo sin
    ejecutarlas, como evidencia propia: qué versión está instalada, entre qué dos lecturas cambió la
    build y cuántos procesos corrían desde el archivo. Es el primer paso de
    [docs/observar-apps-locales.md](docs/observar-apps-locales.md); los siguientes (aplicaciones bajo
@@ -1928,7 +1966,13 @@ paginación sin huecos ni repetidos; los planes de consulta, también con estad�
 herramienta haya calculado, que nunca recorren la tabla ni ordenan todo lo que da el índice; la
 historia que impide borrar; y la puerta, que lee como agente con Read and maintain sin tocar el
 registro de cambios, da la versión que difiere en `attention`, deja de darla cuando el agente corrige
-la versión declarada y, con Read only, enseña las lecturas sin provocar ninguna. Las copias locales se prueban con la batería hostil por el lector encerrado y sin
+la versión declarada y, con Read only, enseña las lecturas sin provocar ninguna. En la ventana se
+prueba lo que dice de una instalación (las dos versiones sin decir cuál vale, entre qué dos lecturas
+cambió la build, el corte de la búsqueda hacia atrás, los procesos en pasado y lo que no dejó mirar el
+sistema, `storedAt`, el motivo de una versión desconocida), que nada dice que la aplicación esté abierta,
+Read solo en esta estación y su fallo, el historial que no carga nada cerrado y marca una ruta que ya no
+se declara, y el panel de Overview con sus tres listas, sin las aplicaciones archivadas; la preview,
+contra las reglas de Rust; y con Playwright y axe, el panel, la referencia y el historial. Las copias locales se prueban con la batería hostil por el lector encerrado y sin
 encerrar, que también comprueba que el `git` instalado sí ejecuta lo que nombran; con el lector frente al
 `git` instalado en gemelos benignos (ramas, HEAD suelto, sin commits, merge y rebase a medias, stashes,
 carpetas nuevas, un driver real y, en Windows, el `core.autocrlf` de la config del sistema); con un

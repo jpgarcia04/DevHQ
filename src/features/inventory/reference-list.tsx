@@ -4,14 +4,15 @@ import type { EntityRef } from '@/domain/models'
 import { useCopy } from './copy'
 import { LocalCopyReading, ReadingHistoryToggle } from './copy-readings'
 import { SubjectLink } from './evidence'
+import { InstallationHistoryToggle, InstallationReadingView } from './installation-readings'
 import type { InventoryReference } from './inventory-api'
 import { useInventory } from './inventory-context'
 import { sameRepositoryAs } from './references'
 
 /**
  * Where a system is: each reference with the machine a path is on, and a button that copies its
- * URL or path. DevHQ opens and checks none of them, but reads a local copy when asked: each one
- * shows its newest reading, and the system's earlier readings load on demand. A system without
+ * URL or path. DevHQ opens and checks none of them, but reads a local copy or an installation
+ * when asked: each one shows its newest reading, and the system's earlier readings load on demand. A system without
  * references is not a problem to solve, nor a gap in what DevHQ observes: it says so plainly.
  */
 export function ReferenceList({
@@ -28,6 +29,7 @@ export function ReferenceList({
     subject.type === 'application' ? snapshot?.applications : snapshot?.resources
   )?.find((item) => item.id === subject.id)?.name
   const copies = snapshot?.localCopies ?? []
+  const installations = snapshot?.installations ?? []
   return (
     <>
       <ul className="divide-y" aria-label="References">
@@ -36,6 +38,10 @@ export function ReferenceList({
           const localCopy =
             reference.kind === 'local_copy'
               ? copies.find((item) => item.referenceId === reference.id)
+              : undefined
+          const installation =
+            reference.kind === 'installation'
+              ? installations.find((item) => item.referenceId === reference.id)
               : undefined
           return (
             <li
@@ -69,6 +75,7 @@ export function ReferenceList({
                   </p>
                 )}
                 {localCopy && <LocalCopyReading copy={localCopy} />}
+                {installation && <InstallationReadingView installation={installation} />}
               </div>
               <div className="flex shrink-0 flex-wrap items-center gap-3">
                 <p role="status" className="text-[11px] text-muted-foreground">
@@ -94,6 +101,11 @@ export function ReferenceList({
       {references.some((reference) => reference.kind === 'local_copy') && (
         <div className="mt-3 border-t pt-3">
           <ReadingHistoryToggle subject={subject} name={name ?? 'this system'} />
+        </div>
+      )}
+      {references.some((reference) => reference.kind === 'installation') && (
+        <div className="mt-3 border-t pt-3">
+          <InstallationHistoryToggle subject={subject} name={name ?? 'this system'} />
         </div>
       )}
     </>
