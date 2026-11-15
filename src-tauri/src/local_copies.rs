@@ -639,7 +639,51 @@ pub(crate) mod tests {
                 "No repository starts at this folder",
             ),
             (bare, "not_a_copy", "A bare repository"),
+            // Off this computer: refused by the path alone, before the system is asked
+            // anything, since looking at a share makes Windows connect to it with the person's
+            // credentials.
+            (
+                PathBuf::from(r"\\nas.invalid\src\shop"),
+                "unreadable",
+                "A network path",
+            ),
+            (
+                PathBuf::from("//nas.invalid/src/shop"),
+                "unreadable",
+                "A network path",
+            ),
+            (
+                PathBuf::from(r"\\?\UNC\nas.invalid\src\shop"),
+                "unreadable",
+                "A network path",
+            ),
+            (
+                PathBuf::from(r"\\.\PhysicalDrive0"),
+                "unreadable",
+                "A device path",
+            ),
+            // A folder here whose repository is there: libgit2 would follow it.
+            (
+                pointing(&folder, "gitdir", r"gitdir: \\nas.invalid\src\shop\.git"),
+                "unreadable",
+                "This copy's .git file names a repository elsewhere. A network path",
+            ),
+            (
+                pointing(
+                    &folder,
+                    "gitdir-slashed",
+                    "gitdir: //nas.invalid/src/shop/.git",
+                ),
+                "unreadable",
+                "This copy's .git file names a repository elsewhere. A network path",
+            ),
+            (
+                common_elsewhere(&folder, r"\\nas.invalid\src\shop\.git"),
+                "unreadable",
+                "This copy's repository names its common folder elsewhere. A network path",
+            ),
         ] {
+            let started = Instant::now();
             let read = reader.read(&path_text(&path), DEADLINE).unwrap();
             assert_eq!(read.refs.outcome, outcome, "{}", path.display());
             assert!(
@@ -647,8 +691,83 @@ pub(crate) mod tests {
                 "{read:?}"
             );
             assert_eq!(read.worktree, None);
+            if outcome == "unreadable" {
+                assert!(
+                    read.refs
+                        .detail
+                        .as_deref()
+                        .unwrap()
+                        .ends_with("nothing left this computer."),
+                    "{read:?}"
+                );
+                // A name the system had to resolve would take longer than this.
+                assert!(
+                    started.elapsed() < Duration::from_secs(2),
+                    "{}: the reader asked the system about it",
+                    path.display()
+                );
+            }
+        }
+        #[cfg(windows)]
+        {
+            let away = folder.join("away");
+            crate::this_computer::tests::junction_to_share(&away, r"\\nas.invalid\src");
+            let read = reader
+                .read(&path_text(&away.join("shop")), DEADLINE)
+                .unwrap();
+            assert_eq!(read.refs.outcome, "unreadable", "{read:?}");
+            assert!(
+                read.refs
+                    .detail
+                    .as_deref()
+                    .unwrap()
+                    .starts_with("A link on the way leads off this computer."),
+                "{read:?}"
+            );
+            std::fs::remove_dir(&away).unwrap();
+            // A folder here whose `.git` is a junction to a share: the folder is this
+            // computer's, its repository is not, and nothing inside `.git` may be opened.
+            let linked = folder.join("git-away");
+            std::fs::create_dir(&linked).unwrap();
+            crate::this_computer::tests::junction_to_share(
+                &linked.join(".git"),
+                r"\\nas.invalid\src\shop\.git",
+            );
+            let started = Instant::now();
+            let read = reader.read(&path_text(&linked), DEADLINE).unwrap();
+            assert_eq!(read.refs.outcome, "unreadable", "{read:?}");
+            assert!(
+                read.refs
+                    .detail
+                    .as_deref()
+                    .unwrap()
+                    .starts_with("A link on the way leads off this computer. A network path"),
+                "{read:?}"
+            );
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "the reader asked the system about the share"
+            );
+            std::fs::remove_dir(linked.join(".git")).unwrap();
         }
         crate::inventory::tests::remove_now(folder);
+    }
+
+    /// A folder under `folder` whose `.git` is a file holding `line`, as a linked worktree's is.
+    fn pointing(folder: &Path, name: &str, line: &str) -> PathBuf {
+        let copy = folder.join(name);
+        std::fs::create_dir(&copy).unwrap();
+        std::fs::write(copy.join(".git"), format!("{line}\n")).unwrap();
+        copy
+    }
+
+    /// A repository under `folder` whose `commondir` names `common`, as a linked worktree's
+    /// repository folder does.
+    fn common_elsewhere(folder: &Path, common: &str) -> PathBuf {
+        let copy = folder.join("common-elsewhere");
+        std::fs::create_dir_all(copy.join(".git")).unwrap();
+        std::fs::write(copy.join(".git").join("commondir"), format!("{common}\n")).unwrap();
+        copy
     }
 
     /// What the installed `git` says of the copy at `dir`, as the reader would count it.

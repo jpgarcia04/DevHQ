@@ -16,6 +16,8 @@ use super::pe::{examine, Declared, Image};
 use super::tests::{folder, path_text, sha256_of, test_reader};
 use super::DEADLINE;
 use std::io::{Cursor, Read, Seek, SeekFrom};
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 /// What the reader must say of a file.
 #[derive(Debug, Clone, Copy)]
@@ -525,7 +527,30 @@ fn says_what_is_at_a_path_and_counts_the_processes_running_from_a_real_executabl
             "Nothing is at this path.",
         ),
         (empty, "not_an_executable", "This is a folder."),
+        // Off this computer: refused by the path alone, before the system is asked anything,
+        // since looking at a share makes Windows connect to it with the person's credentials.
+        (
+            PathBuf::from(r"\\nas.invalid\apps\shop.exe"),
+            "unreadable",
+            "A network path",
+        ),
+        (
+            PathBuf::from("//nas.invalid/apps/shop.exe"),
+            "unreadable",
+            "A network path",
+        ),
+        (
+            PathBuf::from(r"\\?\UNC\nas.invalid\apps\shop.exe"),
+            "unreadable",
+            "A network path",
+        ),
+        (
+            PathBuf::from(r"\\.\PhysicalDrive0"),
+            "unreadable",
+            "A device path",
+        ),
     ] {
+        let started = Instant::now();
         let read = reader.read(&path_text(&path), DEADLINE).unwrap();
         assert_eq!(read.outcome, outcome, "{}", path.display());
         assert!(read.detail.as_deref().unwrap().contains(detail), "{read:?}");
@@ -533,6 +558,39 @@ fn says_what_is_at_a_path_and_counts_the_processes_running_from_a_real_executabl
             (&read.sha256, read.processes, &read.version_unknown),
             (&None, None, &None)
         );
+        if outcome == "unreadable" {
+            assert!(
+                read.detail
+                    .as_deref()
+                    .unwrap()
+                    .ends_with("nothing left this computer."),
+                "{read:?}"
+            );
+            assert_eq!(read.stored_at, None, "{read:?}");
+            // A name the system had to resolve would take longer than this.
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "{}: the reader asked the system about it",
+                path.display()
+            );
+        }
+    }
+    #[cfg(windows)]
+    {
+        let away = folder.join("away");
+        crate::this_computer::tests::junction_to_share(&away, r"\\nas.invalid\apps");
+        let read = reader
+            .read(&path_text(&away.join("shop.exe")), DEADLINE)
+            .unwrap();
+        assert_eq!(read.outcome, "unreadable", "{read:?}");
+        assert!(
+            read.detail
+                .as_deref()
+                .unwrap()
+                .starts_with("A link on the way leads off this computer."),
+            "{read:?}"
+        );
+        std::fs::remove_dir(&away).unwrap();
     }
     // A relative path is DevHQ's failure, kept nowhere: it names no file.
     let error = reader.read("atlas-notes.exe", DEADLINE).unwrap_err();

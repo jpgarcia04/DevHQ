@@ -48,9 +48,13 @@ windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_System_Diagnostics_ToolHelp",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
     "Win32_System_JobObjects",
     "Win32_System_Registry",
     "Win32_System_Threading",
+    "Win32_System_WindowsProgramming",
 ] }
 
 # A seccomp filter on Linux; on every Unix, whether a connection holds an inventory's write-ahead

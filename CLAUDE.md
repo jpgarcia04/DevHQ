@@ -276,11 +276,19 @@ makes it.
 `git` program, which runs what a repository names. Each copy is read in `devhq --read-copy`, a process
 that first forbids itself to start programs (a Job Object on Windows, seccomp on `execve` on Linux;
 elsewhere it refuses to read) and that the caller kills at its deadline; its answer is checked as
-untrusted. Not every libgit2 API that sounds like reading only reads (the reflog API creates a missing
+untrusted. Before anything opens a declared path, `this_computer::refusal` decides from the path's
+text, the drive's type and the links on the way whether it leads off this computer's disks (a share,
+a network drive, a device): then the reading is `unreadable` and nothing is opened, because looking
+at a share makes Windows connect to it and authenticate the person there. The copy reader also checks
+`.git` (a link) and reads `.git` (`gitdir:`) and `commondir` as text before libgit2 opens the copy.
+Never open a declared path,
+or a path a copy names, without that check, and never add a reader that does. Not every libgit2 API
+that sounds like reading only reads (the reflog API creates a missing
 log): a new libgit2 call, a new reader or library, and every libgit2 upgrade must pass the hostile
 battery (`local_copies/battery.rs`) on Linux and Windows. What is not guaranteed, and stays written in
-the README: code that hostile data ran inside the reader has the person's rights, and nothing of the
-system stops the reader writing. Which workstation this computer is lives in `this-workstation.json`
+the README: code that hostile data ran inside the reader has the person's rights, nothing of the
+system stops the reader writing, and a path a repository names for libgit2 to open (`alternates`, an
+`include.path`) is not checked. Which workstation this computer is lives in `this-workstation.json`
 in the data folder, beside the inventory, keyed by a machine fingerprint, never in the inventory;
 only the window chooses it. Tests build repositories with the installed `git`, without the machine's config, and
 compile the battery's marker with the toolchain's `rustc`.
@@ -296,7 +304,8 @@ CHECKs. The version resource is read by `installations/pe.rs`, DevHQ's own reade
 and without a crate: it trusts no number the file gives, walks the resource directory to a fixed
 depth and bounds every loop. Any change to it, and any new structure it reads, must pass the hostile
 battery (`installations/battery.rs`) on Linux and Windows, which also holds it to reading no more of
-a file than its limits allow. The reader opens the declared file to read and nothing else, and where
+a file than its limits allow. The reader asks `this_computer::refusal` first, as the copy reader
+does, then opens the declared file to read and nothing else, and where
 the system really keeps it is asked with `inventory::stored_at`, never another way. To count the
 processes running from the file it looks at the system's list of processes and keeps two numbers:
 never a process identifier, a name, a command line or another program's path. Tests use synthetic
