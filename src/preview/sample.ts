@@ -156,7 +156,7 @@ function sampleInstallationReadings(now: number): InstallationReading[] {
     productName: 'Shop',
     versionUnknown: null,
     processes: 0,
-    processesUnexamined: 187,
+    processesUnexamined: 0,
     processesUnknown: null,
     ...facts,
   })

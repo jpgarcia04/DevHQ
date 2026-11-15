@@ -307,8 +307,9 @@ battery (`installations/battery.rs`) on Linux and Windows, which also holds it t
 a file than its limits allow. The reader asks `this_computer::refusal` first, as the copy reader
 does, then opens the declared file to read and nothing else, and where
 the system really keeps it is asked with `inventory::stored_at`, never another way. To count the
-processes running from the file it looks at the system's list of processes and keeps two numbers:
-never a process identifier, a name, a command line or another program's path. Tests use synthetic
+processes running from the file it looks at the system's list of processes and keeps two numbers,
+the second counting only the processes the system hid whose listed name is the file's: never a
+process identifier, a name, a command line or another program's path. Tests use synthetic
 images without code (`pe::tests::image`) and the test executable itself, never an installed program.
 
 ## Version

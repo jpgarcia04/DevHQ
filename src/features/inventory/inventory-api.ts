@@ -153,7 +153,7 @@ export interface InstallationReading {
   machineId: string
   path: string
   source: 'read'
-  /** DevHQ's reader and its version («DevHQ installation reader 1»). */
+  /** DevHQ's reader and its version («DevHQ installation reader 2»). */
   reader: string
   /** The agent that asked for it through the gate; null when the person asked. */
   agent: string | null
@@ -174,7 +174,7 @@ export interface InstallationReading {
   productName: string | null
   /** …or why that is unknown. */
   versionUnknown: string | null
-  /** The processes running from the file then, and the ones the system did not let DevHQ look at… */
+  /** The processes running from the file then, and the ones named like it the system did not let DevHQ look at… */
   processes: number | null
   processesUnexamined: number | null
   /** …or why they are unknown. */

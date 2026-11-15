@@ -453,7 +453,7 @@ registro. Qué encuentra:
 | `sha256`, `sizeBytes`, `modifiedAt`                    | El SHA-256 de todos los bytes del archivo, cuántos eran y su fecha de modificación según el sistema de archivos. El hash identifica la build aunque dos builds declaren la misma versión. Si un instalador lo estaba escribiendo, es el hash de lo que había                                                                                                                                |
 | `productVersion`, `fileVersion`, `productName`         | Lo que declara el recurso de versión del archivo, tal como lo dice el archivo, sin espacios alrededor: solo esos tres textos, de la primera tabla de cadenas, de 120 caracteres como mucho. Ninguno se deduce de otro ni de los números del recurso                                                                                                                                         |
 | `versionUnknown`                                       | En lugar de esos tres, por qué no se conocen: el archivo no tiene recursos o no tiene recurso de versión, el recurso está malformado, no declara ninguno de los tres, declara uno más largo de lo que DevHQ guarda o con caracteres de control (no se recorta: ya no sería lo que dice el archivo), o es un ELF, que no tiene recurso de versión                                            |
-| `processes`, `processesUnexamined`, `processesUnknown` | Cuántos procesos tenían ese archivo como ejecutable en ese momento, sin contar al propio lector, y cuántos procesos no dejó mirar el sistema (los de otro usuario, los protegidos), cualquiera de los cuales podría tenerlo; o, en lugar de los dos números, por qué el sistema no dio la lista                                                                                             |
+| `processes`, `processesUnexamined`, `processesUnknown` | Cuántos procesos tenían ese archivo como ejecutable en ese momento, sin contar al propio lector, y cuántos procesos con el nombre de ese archivo no dejó mirar el sistema (los de otro usuario, los protegidos), cualquiera de los cuales podría tenerlo; o, en lugar de los dos números, por qué el sistema no dio la lista                                                                |
 
 Para saber cuántos procesos corren desde el archivo, el lector mira la lista de procesos del sistema
 y, de cada uno, solo la ruta de su ejecutable, que el sistema da sin abrir su memoria ni su línea de
@@ -464,8 +464,14 @@ ruta de otro programa. Un proceso cuenta si su ruta es la declarada o la que el 
 ella, comparadas sin distinguir mayúsculas en Windows; uno lanzado por otro nombre del mismo archivo
 (una unidad de red asignada, un enlace duro) no se reconoce. «Hay N procesos» es todo lo que dice: qué
 significa depende del programa, y con la ventana de DevHQ cerrada puede haber varios procesos de
-DevHQ, las puertas que lanzan las sesiones de agentes. En un escritorio con Windows 11, sin
-privilegios de administrador, el sistema no dejó mirar más de la mitad de los procesos.
+DevHQ, las puertas que lanzan las sesiones de agentes. De los procesos que el sistema no deja mirar
+solo cuentan los que se llaman como el archivo, por el nombre de ejecutable que el sistema da de cada
+proceso sin abrirlo (la entrada de la instantánea en Windows; en Linux `/proc/<pid>/comm`, que guarda
+los primeros 15 bytes del nombre, y por ellos se compara; uno cuyo nombre tampoco deja leer cuenta
+siempre): en un escritorio con Windows 11, sin privilegios de administrador, el sistema no deja
+mirar más de la mitad de los procesos, todos servicios y procesos del sistema, y contarlos todos
+haría dudar de un «ninguno» que es fiable. Ese cambio hizo del lector «DevHQ installation reader 2»;
+las lecturas del 1 contaban todos.
 
 El recurso de versión lo lee un lector propio (`src-tauri/src/installations/pe.rs`), sin `unsafe` y
 sin ninguna biblioteca nueva: la cabecera DOS, las cabeceras PE (PE32 y PE32+), la tabla de
@@ -504,7 +510,7 @@ garantizan su código, que solo abre el archivo para leerlo, y la batería. Y la
 la de un instante: un proceso que arranca o termina mientras se lee puede contarse o no.
 
 - **Evidencia sin vigencia.** Cada lectura se guarda en `installation_readings`, inmutable, con
-  `source = read`, el lector y su versión (`reader`, «DevHQ installation reader 1»), el momento
+  `source = read`, el lector y su versión (`reader`, «DevHQ installation reader 2»), el momento
   observado y el registrado, y el agente que la pidió por la puerta, o nada si la pediste tú. No es
   healthy ni unhealthy, no entra en la atención ni en la cobertura de salud, no escribe eventos ni sale
   en Activity, y no caduca, porque nunca afirmó seguir siendo cierta: dice lo que el archivo era cuando
@@ -556,7 +562,7 @@ lectura en pasado: el resultado (Read, Not found, Not readable, Not an executabl
 máquina, la etiqueta «Automated · Local read» con el agente que la pidió, si fue uno, y lo que encontró:
 la versión que declaraba el archivo, o por qué se desconoce; el SHA-256 entero; el tamaño y la fecha de
 modificación; y los procesos, como «2 processes were running from it; the system did not let DevHQ look
-at 41 other processes», nunca como que la aplicación está abierta. Debajo dice dónde guardaba el sistema
+at 41 other processes named like it», nunca como que la aplicación está abierta. Debajo dice dónde guardaba el sistema
 el archivo si no era la ruta declarada (`storedAt`) y que un DevHQ lanzado de otra forma puede encontrar
 otro archivo o ninguno; si la lectura se hizo en otra ruta o máquina de las declaradas hoy; la versión
 declarada frente a la del archivo, con las dos y sin decir cuál está al día («One of the two is out of

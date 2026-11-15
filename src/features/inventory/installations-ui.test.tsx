@@ -272,13 +272,13 @@ describe('what the window says of installations', () => {
 
   it('says how many processes were running, in the past, and what it could not look at', () => {
     expect(processesText(read)).toBe(
-      '2 processes were running from it; the system did not let DevHQ look at 41 other processes',
+      '2 processes were running from it; the system did not let DevHQ look at 41 other processes named like it',
     )
     expect(processesText(reading('one', { processes: 1, processesUnexamined: 0 }))).toBe(
       '1 process was running from it',
     )
     expect(processesText(reading('none', { processes: 0, processesUnexamined: 1 }))).toBe(
-      'None was running from it; the system did not let DevHQ look at 1 other process',
+      'None was running from it; the system did not let DevHQ look at 1 other process named like it',
     )
     expect(
       processesText(
