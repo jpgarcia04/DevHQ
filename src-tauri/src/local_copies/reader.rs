@@ -8,6 +8,15 @@
 //! so that if the working tree takes too long the rest has already arrived. A failure of DevHQ
 //! itself (it could not confine itself, libgit2 cannot read this format) is an `error` line.
 //!
+//! Before anything opens, `this_computer` says whether the path leads off this computer's disks
+//! (a share, a network drive, a device, a link on the way to one of those): such a copy is
+//! `unreadable`, with why, and nothing of it is opened, since on Windows looking at a share makes
+//! the system connect and authenticate the person to it. A `.git` file (`gitdir: …`) and a
+//! `commondir` file can send libgit2 off this computer the same way, so they are read here first,
+//! as text, and a copy whose repository is elsewhere is `unreadable` too. What else a repository
+//! can name for libgit2 to open (`objects/info/alternates`, `include.path`) is not checked: the
+//! README says so.
+//!
 //! Only libgit2's read APIs are called. The repository is opened at exactly the declared path
 //! (`NO_SEARCH`), its status is read without updating the index, and nothing is ever written: no
 //! checkout, fetch, ref, index, log or config. Not every libgit2 API that sounds like reading only
@@ -139,6 +148,9 @@ fn libgit2(error: &git2::Error) -> String {
 /// The copy at `path`, as far as it is one: the facts of `refs`, and the repository to read the
 /// working tree from when there is one. An error is a failure of DevHQ, not a fact of the copy.
 pub(crate) fn read_refs(path: &Path) -> Result<(Refs, Option<Repository>), String> {
+    if let Some(why) = crate::this_computer::refusal(path) {
+        return Ok((not_read("unreadable", &why), None));
+    }
     match std::fs::metadata(path) {
         Err(error) if error.kind() == ErrorKind::NotFound => {
             return Ok((not_read("missing", "Nothing is at this path."), None));
@@ -151,6 +163,9 @@ pub(crate) fn read_refs(path: &Path) -> Result<(Refs, Option<Repository>), Strin
             ));
         }
         Ok(_) => {}
+    }
+    if let Some(why) = repository_elsewhere(path) {
+        return Ok((not_read("unreadable", &why), None));
     }
     let repository = match Repository::open_ext(
         path,
@@ -210,6 +225,69 @@ pub(crate) fn read_refs(path: &Path) -> Result<(Refs, Option<Repository>), Strin
             libgit2(&error)
         )),
     }
+}
+
+/// The most of a `.git` or `commondir` file read to see where it points: Git itself reads one line.
+const MAX_POINTER: u64 = 64 * 1024;
+
+/// The first line of a small file that names a folder, as Git reads `.git` (`gitdir: …`) and
+/// `commondir`; `None` when the file is not there, cannot be read or holds no text, which is
+/// then libgit2's to judge.
+fn pointer(file: &Path, prefix: &str) -> Option<String> {
+    let mut text = String::new();
+    File::open(file)
+        .ok()?
+        .take(MAX_POINTER)
+        .read_to_string(&mut text)
+        .ok()?;
+    let line = text.lines().next()?.trim();
+    let target = line.strip_prefix(prefix)?.trim();
+    (!target.is_empty()).then(|| target.to_owned())
+}
+
+/// Why the repository this folder points to is off this computer, if `.git` is a link that leads
+/// there, or a file naming a folder there (`gitdir:`), or the repository's `commondir` names one:
+/// libgit2 would open them where they say. Looked at before libgit2 opens anything, with what
+/// `this_computer` sees without opening a file.
+fn repository_elsewhere(path: &Path) -> Option<String> {
+    let dot_git = path.join(".git");
+    // `.git` itself can be a link or a junction, and everything below would go through it.
+    if let Some(why) = crate::this_computer::refusal(&dot_git) {
+        return Some(why);
+    }
+    let repository = match std::fs::symlink_metadata(&dot_git) {
+        Ok(found) if found.is_file() => {
+            let target = pointer(&dot_git, "gitdir:")?;
+            let target = Path::new(&target);
+            let target = if target.is_absolute()
+                || crate::this_computer::form(&target.display().to_string())
+                    != crate::this_computer::Form::Other
+            {
+                target.to_path_buf()
+            } else {
+                path.join(target)
+            };
+            if let Some(why) = crate::this_computer::refusal(&target) {
+                return Some(format!(
+                    "This copy's .git file names a repository elsewhere. {why}"
+                ));
+            }
+            target
+        }
+        _ => dot_git,
+    };
+    let common = pointer(&repository.join("commondir"), "")?;
+    let common = Path::new(&common);
+    let common = if common.is_absolute()
+        || crate::this_computer::form(&common.display().to_string())
+            != crate::this_computer::Form::Other
+    {
+        common.to_path_buf()
+    } else {
+        repository.join(common)
+    };
+    crate::this_computer::refusal(&common)
+        .map(|why| format!("This copy's repository names its common folder elsewhere. {why}"))
 }
 
 /// Why `facts` has none to give.

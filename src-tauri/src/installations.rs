@@ -55,7 +55,7 @@ pub(crate) const OUTCOMES: [&str; 4] = ["read", "missing", "unreadable", "not_an
 
 /// The reader, as each reading names it: which readings a reader made, if one turns out to have a
 /// fault. The number changes with what the reader reads or how.
-pub(crate) const READER: &str = "DevHQ installation reader 1";
+pub(crate) const READER: &str = "DevHQ installation reader 2";
 
 /// An installation read by a reader. Only `outcome`, `detail` and, when the system keeps the file
 /// elsewhere, `storedAt`, when the file was not read; `detail` is then why.
@@ -77,8 +77,8 @@ pub(crate) struct Facts {
     pub product_name: Option<String>,
     /// …or why that is unknown.
     pub version_unknown: Option<String>,
-    /// The processes running from the file, besides the reader itself, and the processes the
-    /// system did not let the reader look at…
+    /// The processes running from the file, besides the reader itself, and the processes named
+    /// like the file that the system did not let the reader look at…
     pub processes: Option<u32>,
     pub processes_unexamined: Option<u32>,
     /// …or why they are unknown.

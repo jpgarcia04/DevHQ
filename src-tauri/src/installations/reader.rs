@@ -5,7 +5,11 @@
 //! `installation`, with what the file was, or `error`, a failure of DevHQ itself (it could not
 //! confine itself, the request names no absolute path).
 //!
-//! The file is opened to read, once, and nothing else is: no neighbour of it, no folder, no
+//! Before anything opens, `this_computer` says whether the path leads off this computer's disks
+//! (a share, a network drive, a device, a link on the way to one of those): such a file is
+//! `unreadable`, with why, and nothing of it is opened, since on Windows looking at a share makes
+//! the system connect and authenticate the person to it. The file is then opened to read, once,
+//! and nothing else is: no neighbour of it, no folder, no
 //! registry key, no other program's file. It is never run, mapped or loaded. Its bytes go through
 //! SHA-256 whole, so the hash is of what was there, also when an installer was writing it; and the
 //! few structures that lead to its version resource are read by `pe`. Where the system really
@@ -105,6 +109,9 @@ pub(crate) fn read(path: &Path) -> Result<Facts, String> {
         ));
     }
     let path = as_the_system_writes_it(path);
+    if let Some(why) = crate::this_computer::refusal(&path) {
+        return Ok(not_read("unreadable", &why, None));
+    }
     let metadata = match std::fs::metadata(&path) {
         Ok(metadata) => metadata,
         Err(error) if matches!(error.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) => {

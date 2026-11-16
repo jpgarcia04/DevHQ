@@ -16,6 +16,7 @@ mod location;
 mod monitor;
 mod records;
 mod references;
+mod this_computer;
 mod upgrade;
 mod window_lock;
 mod workstation;

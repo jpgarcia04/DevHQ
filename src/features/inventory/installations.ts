@@ -122,7 +122,7 @@ export function processesText(reading: InstallationReading) {
     ? `${counted(running, 'process', 'processes')} ${running === 1 ? 'was' : 'were'} running from it`
     : 'None was running from it'
   return unexamined
-    ? `${found}; the system did not let DevHQ look at ${counted(unexamined, 'other process', 'other processes')}`
+    ? `${found}; the system did not let DevHQ look at ${counted(unexamined, 'other process', 'other processes')} named like it`
     : found
 }
 

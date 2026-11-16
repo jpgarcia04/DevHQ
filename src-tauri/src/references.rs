@@ -19,6 +19,7 @@
 use crate::http_check;
 use crate::inventory::{allowed, bounded_text, ApiError, Application, Resource, MAX_NAME};
 use crate::records::Subject;
+use crate::this_computer::{self, Form};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -120,7 +121,10 @@ pub(crate) fn of(db: &Connection, subject: &Subject) -> Result<Vec<Reference>, A
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Place {
     Web,
+    /// An absolute path on a disk of some machine: `C:\…`, `C:/…` or `/…`.
     Path,
+    /// A share on the network: `\\server\share\…` or `//server/share/…`.
+    Share,
 }
 
 /// Starts with http:// or https://, in any case, as SQLite's LIKE compares it in the schema.
@@ -132,25 +136,16 @@ fn web_scheme(text: &str) -> bool {
 }
 
 /// An absolute path in the form of any system, whatever system DevHQ runs on, since the path can be
-/// on another machine: `C:\…` (or `C:/…`), `\\server\share\…` or `/…`.
-fn absolute_path(text: &str) -> bool {
-    if text.starts_with('/') {
-        return true;
+/// on another machine: `C:\…` (or `C:/…`), `\\server\share\…` (or `//server/share/…`) or `/…`;
+/// which of the two kinds of place it is, as the readers tell them apart (`this_computer`). A
+/// verbatim path (`\\?\…`) or a device (`\\.\…`) is neither: not a place a person names.
+fn absolute_path(text: &str) -> Option<Place> {
+    match this_computer::form(text) {
+        Form::Disk if text.starts_with(r"\\") => None,
+        Form::Disk => Some(Place::Path),
+        Form::Network => Some(Place::Share),
+        Form::Device | Form::Other => None,
     }
-    if let Some(rest) = text.strip_prefix(r"\\") {
-        let mut parts = rest.split('\\');
-        let (server, share) = (
-            parts.next().unwrap_or_default(),
-            parts.next().unwrap_or_default(),
-        );
-        // `\\?\…` and `\\.\…` name a verbatim path or a device, not a server's share.
-        return !server.is_empty() && !share.is_empty() && server != "?" && server != ".";
-    }
-    let bytes = text.as_bytes();
-    bytes.len() >= 3
-        && bytes[0].is_ascii_alphabetic()
-        && bytes[1] == b':'
-        && matches!(bytes[2], b'\\' | b'/')
 }
 
 /// The target as stored, and whether it is a URL or a path, if it suits the kind.
@@ -168,9 +163,9 @@ fn target(kind: &str, value: &str) -> Result<(String, Place), ApiError> {
         // The rules of the HTTP check's URL: a host, no user name or password, 2048 at most.
         http_check::web_url(text, "The reference URL")?;
         Place::Web
-    } else if absolute_path(text) {
+    } else if let Some(place) = absolute_path(text) {
         bounded_text(text, MAX_PATH, "The reference path")?;
-        Place::Path
+        place
     } else {
         return Err(ApiError::invalid(format!(
             r"{text} is neither an http(s) URL nor an absolute path (C:\…, \\server\share\… or /…)."
@@ -188,6 +183,14 @@ fn target(kind: &str, value: &str) -> Result<(String, Place), ApiError> {
         )),
         ("installation", Place::Web) => Err(ApiError::invalid(
             "An installation is the installed executable's file on a workstation: an absolute path, not a URL.",
+        )),
+        // DevHQ reads these two, and reads only this computer's disks: looking at a share would
+        // make the system connect to it and authenticate the person there.
+        ("local_copy", Place::Share) => Err(ApiError::invalid(
+            r"A local copy is a folder on one of the workstation's own disks: DevHQ does not read a share on the network (\\server\share\…). A folder there can be declared as logs or documentation, which DevHQ never reads.",
+        )),
+        ("installation", Place::Share) => Err(ApiError::invalid(
+            r"An installation is the installed executable's file on one of the workstation's own disks: DevHQ does not read a share on the network (\\server\share\…). A file there can be declared as documentation, which DevHQ never reads.",
         )),
         _ => Ok((text.to_owned(), place)),
     }
@@ -281,12 +284,12 @@ pub(crate) fn validated(
                     "{target} is a URL, which is on no machine: leave the machine out."
                 )))
             }
-            (Place::Path, None) => {
+            (Place::Path | Place::Share, None) => {
                 return Err(ApiError::invalid(format!(
                     "Say which machine {target} is on: a path means something only on one."
                 )))
             }
-            (Place::Path, Some(id)) => {
+            (Place::Path | Place::Share, Some(id)) => {
                 let Some((name, kind)) = machine(db, &id, saving)? else {
                     return Err(ApiError::invalid(format!(
                         "Resource {id} does not exist. Choose an existing resource as the machine of {target}."
@@ -659,7 +662,27 @@ mod tests {
                 "is neither",
             ),
             (vec![path_on("logs", r"\\?\C:\logs")], "is neither"),
+            (vec![path_on("logs", r"\\.\PhysicalDrive0")], "is neither"),
+            (vec![path_on("logs", r"\\nas")], "is neither"),
             (vec![path_on("logs", "C:logs")], "is neither"),
+            // DevHQ reads these two, and reads no share: looking at one would make the system
+            // connect to it with the person's credentials.
+            (
+                vec![path_on("local_copy", r"\\nas\src\shop")],
+                "A local copy is a folder on one of the workstation's own disks: DevHQ does not read a share",
+            ),
+            (
+                vec![path_on("local_copy", "//nas/src/shop")],
+                "does not read a share",
+            ),
+            (
+                vec![path_on("installation", r"\\nas\apps\shop.exe")],
+                "An installation is the installed executable's file on one of the workstation's own disks: DevHQ does not read a share",
+            ),
+            (
+                vec![path_on("installation", "//nas/apps/shop.exe")],
+                "does not read a share",
+            ),
             (
                 vec![at(
                     "dashboard",

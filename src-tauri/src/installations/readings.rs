@@ -43,7 +43,7 @@ pub struct InstallationReading {
     pub path: String,
     /// Always `read`: DevHQ read it itself.
     pub source: String,
-    /// DevHQ's reader and its version («DevHQ installation reader 1»).
+    /// DevHQ's reader and its version («DevHQ installation reader 2»).
     pub reader: String,
     /// The agent that asked for it through the gate; None when the person asked in the window.
     pub agent: Option<String>,
