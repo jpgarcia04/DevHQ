@@ -551,6 +551,17 @@ fn says_what_is_at_a_path_and_counts_the_processes_running_from_a_real_executabl
         ),
     ] {
         let started = Instant::now();
+        // Elsewhere than on Windows, a path in Windows' form (`\\server\share\…`, `\\.\…`) is no
+        // absolute path at all: the reader refuses it as its own failure, kept nowhere, before
+        // it looks at anything. `//server/share/…` is absolute there, and refused as a share.
+        if !cfg!(windows) && !path.is_absolute() {
+            assert!(
+                reader.read(&path_text(&path), DEADLINE).is_err(),
+                "{}",
+                path.display()
+            );
+            continue;
+        }
         let read = reader.read(&path_text(&path), DEADLINE).unwrap();
         assert_eq!(read.outcome, outcome, "{}", path.display());
         assert!(read.detail.as_deref().unwrap().contains(detail), "{read:?}");
