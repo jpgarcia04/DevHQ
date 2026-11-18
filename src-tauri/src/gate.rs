@@ -934,19 +934,31 @@ fn text<'a>(arguments: &'a Map<String, Value>, key: &str) -> Result<&'a str, Api
 /// The system an agent names by type and either ID or name (exact, ignoring case).
 fn find_system(inventory: &Inventory, arguments: &Map<String, Value>) -> Result<Subject, ApiError> {
     let kind = system_type(arguments)?;
-    let candidates: Vec<(String, String)> = match kind {
-        "application" => inventory
-            .applications
-            .iter()
-            .map(|item| (item.id.clone(), item.name.clone()))
-            .collect(),
-        _ => inventory
-            .resources
-            .iter()
-            .map(|item| (item.id.clone(), item.name.clone()))
-            .collect(),
+    let systems = |kind: &str| -> Vec<(String, String)> {
+        if kind == "application" {
+            inventory
+                .applications
+                .iter()
+                .map(|item| (item.id.clone(), item.name.clone()))
+                .collect()
+        } else {
+            inventory
+                .resources
+                .iter()
+                .map(|item| (item.id.clone(), item.name.clone()))
+                .collect()
+        }
     };
-    pick(kind, &candidates, arguments).map(|(subject, _)| subject)
+    pick(kind, &systems(kind), &systems(other_kind(kind)), arguments).map(|(subject, _)| subject)
+}
+
+/// The kind a system of `kind` is not: where a name given with the wrong type is looked for.
+fn other_kind(kind: &str) -> &'static str {
+    if kind == "application" {
+        "resource"
+    } else {
+        "application"
+    }
 }
 
 fn system_type(arguments: &Map<String, Value>) -> Result<&'static str, ApiError> {
@@ -962,10 +974,14 @@ fn system_type(arguments: &Map<String, Value>) -> Result<&'static str, ApiError>
 /// Among `candidates` (ID, name) of one kind, the one the arguments name by `id` or by `name`
 /// (exact, ignoring case and surrounding spaces): its subject and name. Given both, they must name
 /// the same one: an agent that sends one system's id with another's name is refused, never taken
-/// at its id.
+/// at its id. A name is never matched loosely, since the system found is what a write acts on:
+/// when none has it, the refusal (`not_found`) lists the systems of either kind whose names are
+/// close (`others` are those of the other kind), by id, so that the agent names one in its next
+/// call instead of guessing again, or tells the person that it is not registered.
 fn pick(
     kind: &str,
     candidates: &[(String, String)],
+    others: &[(String, String)],
     arguments: &Map<String, Value>,
 ) -> Result<(Subject, String), ApiError> {
     let id = arguments.get("id").and_then(Value::as_str);
@@ -988,11 +1004,7 @@ fn pick(
     }
     let (id, name) = match found.as_slice() {
         [(id, name)] => (id.clone(), name.clone()),
-        [] => {
-            return Err(ApiError::invalid(format!(
-                "No {kind} matches. `list_systems` lists them."
-            )))
-        }
+        [] => return Err(not_found(kind, id, name, candidates, others)),
         _ => {
             return Err(ApiError::invalid(format!(
                 "Several {kind}s have that name; use its id."
@@ -1006,11 +1018,76 @@ fn pick(
     Ok((subject, name))
 }
 
+/// How many close names a refusal lists at most.
+const CLOSE_NAMES: usize = 10;
+
+/// The refusal for a system no candidate is: by id, just that; by name, the systems of either kind
+/// whose names are close (see `close`), those of the kind asked for first, each by type, id and
+/// name, or that none is, so that a system that is not registered reads as such and never as a
+/// malformed call.
+fn not_found(
+    kind: &str,
+    id: Option<&str>,
+    name: Option<&str>,
+    candidates: &[(String, String)],
+    others: &[(String, String)],
+) -> ApiError {
+    let message = match (id, name) {
+        (Some(id), _) => format!("No {kind} has the id «{id}». `list_systems` lists them all."),
+        (None, Some(name)) => {
+            let other = other_kind(kind);
+            let near: Vec<String> = candidates
+                .iter()
+                .map(|system| (kind, system))
+                .chain(others.iter().map(|system| (other, system)))
+                .filter(|(_, (_, item))| close(item, name))
+                .map(|(kind, (id, item))| format!("{kind} «{item}» (id {id})"))
+                .collect();
+            let name = name.trim();
+            match near.len() {
+                0 => format!("No {kind} is named «{name}», and no system has a name close to it: it may not be registered. `list_systems` lists them all."),
+                count => format!(
+                    "No {kind} is named «{name}». Close names: {}{}. Name one by its type and id; `list_systems` lists them all.",
+                    near[..count.min(CLOSE_NAMES)].join(", "),
+                    if count > CLOSE_NAMES { format!(", and {} more", count - CLOSE_NAMES) } else { String::new() }
+                ),
+            }
+        }
+        (None, None) => "Name the system by id or by name.".to_owned(),
+    };
+    ApiError {
+        code: "not_found",
+        message,
+    }
+}
+
+/// Whether a system's name is close to the one an agent gave, compared by their letters and digits
+/// alone, ignoring case, spaces and punctuation: one holds the other (with at least three of
+/// them), or they share a word of three or more. «Notebook» is close to «Ana's Notebook»,
+/// «homebudget» to «Home Budget». Accents count as different letters. Only to suggest: nothing is
+/// ever acted on by a close name.
+fn close(name: &str, given: &str) -> bool {
+    let words = |text: &str| -> Vec<String> {
+        text.split(|c: char| !c.is_alphanumeric())
+            .filter(|word| !word.is_empty())
+            .map(str::to_lowercase)
+            .collect()
+    };
+    let (name, given) = (words(name), words(given));
+    let (whole, asked) = (name.concat(), given.concat());
+    let holds = |long: &str, short: &str| short.chars().count() >= 3 && long.contains(short);
+    holds(&whole, &asked)
+        || holds(&asked, &whole)
+        || given
+            .iter()
+            .any(|word| word.chars().count() >= 3 && name.contains(word))
+}
+
 fn system_arguments(extra: Value) -> Value {
     let mut properties = json!({
         "type": { "type": "string", "enum": ["application", "resource"] },
         "id": { "type": "string", "description": "The system's id, from list_systems. Give id, name, or both." },
-        "name": { "type": "string", "description": "Or its exact name, ignoring case. Given with id, it must be that system's name, or nothing is done." },
+        "name": { "type": "string", "description": "Or its exact name, ignoring case and surrounding spaces, never a part of it. Given with id, it must be that system's name, or nothing is done. A name or id no system of the type has is refused as not_found, naming the systems of either type whose names are close, by id: name one of them, or tell the person it is not registered." },
     });
     if let (Value::Object(properties), Value::Object(extra)) = (&mut properties, extra) {
         properties.extend(extra);
@@ -1471,6 +1548,20 @@ mod tests {
     }
 
     #[test]
+    fn close_names_ignore_case_spaces_and_punctuation_but_need_three_letters() {
+        assert!(close("Ana's Notebook", "notebook"));
+        assert!(close("Home Budget", "homebudget"));
+        assert!(close("Home Budget", "HOME  BUDGET app"));
+        assert!(close("Web host", "web-host"));
+        assert!(close("Shop", "shops"));
+        assert!(!close("Home Budget", "Presupuesto"));
+        assert!(!close("Home Budget", "ho"));
+        assert!(!close("Web host", "we"));
+        assert!(!close("Garden", "Notebook"));
+        assert!(!close("Web host", "?!"));
+    }
+
+    #[test]
     fn lists_and_details_systems_with_their_relations_and_records() {
         let path = path();
         let (shop, host) = seed(&path);
@@ -1516,12 +1607,45 @@ mod tests {
         assert_eq!(system["incidents"], json!([]));
         assert_eq!(system["automatedCompleteSince"], Value::Null);
 
-        assert!(refusal(
+        // A name no system has is not_found, never a malformed call, and the refusal names the
+        // systems whose names are close, of either kind, by id; never one taken in its place.
+        let nope = refusal(
             &path,
             "get_system",
-            json!({ "type": "resource", "name": "Nope" })
-        )
-        .contains("No resource matches"));
+            json!({ "type": "resource", "name": "Nope" }),
+        );
+        assert!(nope.contains("No resource is named «Nope»"), "{nope}");
+        assert!(nope.contains("it may not be registered"), "{nope}");
+        assert!(nope.ends_with("(not_found)"), "{nope}");
+        let wrong_kind = refusal(
+            &path,
+            "get_system",
+            json!({ "type": "application", "name": "web-HOST" }),
+        );
+        assert!(
+            wrong_kind.contains(&format!("Close names: resource «Web host» (id {host})")),
+            "{wrong_kind}"
+        );
+        assert!(wrong_kind.ends_with("(not_found)"), "{wrong_kind}");
+        let partial = refusal(
+            &path,
+            "get_system",
+            json!({ "type": "application", "name": "shops" }),
+        );
+        assert!(
+            partial.contains(&format!("application «Shop» (id {shop})")),
+            "{partial}"
+        );
+        let unknown = refusal(
+            &path,
+            "get_system",
+            json!({ "type": "resource", "id": "nope" }),
+        );
+        assert!(
+            unknown.contains("No resource has the id «nope»"),
+            "{unknown}"
+        );
+        assert!(unknown.ends_with("(not_found)"), "{unknown}");
         assert!(
             refusal(&path, "get_system", json!({ "type": "server", "id": host }))
                 .contains("`type` must be one of \"application\", \"resource\"")
@@ -4042,6 +4166,18 @@ mod tests {
             .clone();
         assert_eq!(shown["evidence"]["state"], "unobserved");
         assert_eq!(shown["latestChange"], added["change"]["id"]);
+        // A write that names a system nobody registered is refused as not found, and nothing is done.
+        let missing = use_tool(
+            &mut agent,
+            "record_observation",
+            json!({ "type": "application", "name": "Finanza", "result": "healthy", "summary": "Up", "validForMinutes": 60 }),
+        )
+        .unwrap_err();
+        assert!(
+            missing.contains(&format!("application «Finanzas» (id {finanzas})")),
+            "{missing}"
+        );
+        assert!(missing.ends_with("(not_found)"), "{missing}");
         let attention = use_tool(&mut agent, "attention", json!({})).unwrap();
         assert!(attention["neverObserved"]
             .as_array()

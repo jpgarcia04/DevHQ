@@ -16,7 +16,7 @@
 //!   list it gives adds the items without id and changes the ones it names by id; nothing is ever
 //!   removed by leaving it out, only by naming it (`removeComponents`, `removeReferences`).
 
-use super::{pick, system_type, text, Session};
+use super::{other_kind, pick, system_type, text, Session};
 use crate::access;
 use crate::backup;
 use crate::change_log;
@@ -107,7 +107,12 @@ fn subject_in(
         Some(kind) => kind,
         None => system_type(arguments)?,
     };
-    pick(kind, &candidates(tx, kind)?, arguments)
+    pick(
+        kind,
+        &candidates(tx, kind)?,
+        &candidates(tx, other_kind(kind))?,
+        arguments,
+    )
 }
 
 /// The resource a relation names (a component's `runsOn`, a path's `machine`, given at `path` in
