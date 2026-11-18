@@ -515,7 +515,7 @@ impl Session {
                     id: application.id.clone(),
                 };
                 summary(&inventory, &names, &subject, now, this)
-                    .map(|value| with_latest(value, &latest, &subject))
+                    .map(|value| with_latest(value, &inventory, &latest, &subject))
             })
             .collect::<Result<Vec<_>, _>>()?;
         let resources = inventory
@@ -526,7 +526,7 @@ impl Session {
                     id: resource.id.clone(),
                 };
                 summary(&inventory, &names, &subject, now, this)
-                    .map(|value| with_latest(value, &latest, &subject))
+                    .map(|value| with_latest(value, &inventory, &latest, &subject))
             })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(json!({
@@ -551,6 +551,7 @@ impl Session {
                 now,
                 this.resource_id.as_deref(),
             )?,
+            &inventory,
             &latest,
             &subject,
         );
@@ -616,7 +617,7 @@ impl Session {
     }
 }
 
-const INSTRUCTIONS: &str = "DevHQ is the person's local operations inventory: applications, the resources they run on, where each one is (its references: repository, local copies, installations, documentation, logs, dashboard), and the evidence about them (observations, incidents, events, HTTP checks). Working in a folder, an agent can find its system by a local copy's path or by its repository's URL in `list_systems`. A local copy's readings say what it held when DevHQ read it, never what it holds now; an installation's, what the installed executable's file was then (the version it declares, its hash, the processes running from it), never that the application is running or healthy. Start with `attention` to answer «what needs my attention?». Never present a system without current evidence as healthy: unobserved and expired evidence are gaps, not health. Every record says who produced it (`source`: manual, http or agent) and when. Applications, resources, components and references are declared inventory, by the person or an agent (each change in `changes`, with who made it), never evidence that DevHQ observed. To edit a system, base the edit on its `latestChange` (`basedOn`): DevHQ refuses it if the system changed after you read it, and never removes a component or reference you leave out. A component's `runsOn` and a path's `machine` name a resource by its id, never by its name. Tools that change something refuse while the system keeps the inventory somewhere other than where DevHQ asked (`storedAt` in `status`, location_redirected) or while DevHQ's previous location in AppData still holds the person's inventory (move_pending): read, and tell the person. Every call is checked against its tool's input schema and the rules its description states: an argument the tool does not declare, misspelled or of the wrong type, is refused (invalid_input) and nothing is done.";
+const INSTRUCTIONS: &str = "DevHQ is the person's local operations inventory: applications, the resources they run on, where each one is (its references: repository, local copies, installations, documentation, logs, dashboard), and the evidence about them (observations, incidents, events, HTTP checks). Working in a folder, an agent can find its system by a local copy's path or by its repository's URL in `list_systems`. A local copy's readings say what it held when DevHQ read it, never what it holds now; an installation's, what the installed executable's file was then (the version it declares, its hash, the processes running from it), never that the application is running or healthy. Start with `attention` to answer «what needs my attention?». Never present a system without current evidence as healthy: unobserved and expired evidence are gaps, not health. Every record says who produced it (`source`: manual, http or agent) and when. Applications, resources, components and references are declared inventory, by the person or an agent (who created each system and who changed it last in `declaredBy` and `lastChangedBy`; each change in `changes`, with who made it), never evidence that DevHQ observed. To edit a system, base the edit on its `latestChange` (`basedOn`): DevHQ refuses it if the system changed after you read it, and never removes a component or reference you leave out. A component's `runsOn` and a path's `machine` name a resource by its id, never by its name. Tools that change something refuse while the system keeps the inventory somewhere other than where DevHQ asked (`storedAt` in `status`, location_redirected) or while DevHQ's previous location in AppData still holds the person's inventory (move_pending): read, and tell the person. Every call is checked against its tool's input schema and the rules its description states: an argument the tool does not declare, misspelled or of the wrong type, is refused (invalid_input) and nothing is done.";
 
 /// Every application, then every resource, in the inventory's order.
 fn subjects(inventory: &Inventory) -> Vec<Subject> {
@@ -804,10 +805,39 @@ fn summary(
 }
 
 /// A system's summary with the last change logged about it (`latestChange`, null when there is
-/// none): what an edit of it is based on (`basedOn`).
-fn with_latest(mut value: Value, latest: &HashMap<Subject, String>, subject: &Subject) -> Value {
+/// none): what an edit of it is based on (`basedOn`). And who declared it, from that same log:
+/// who created it (`declaredBy`) and who made that last change (`lastChangedBy`), so that a
+/// system an agent wrote is never read as the person's. Each says `source` (manual: the person,
+/// in the window; agent), `agent` (as its client named itself, unverified; null for the person)
+/// and when; `declaredBy` is null when the log holds no creation (before `changesCompleteSince`
+/// only agents' changes were logged).
+fn with_latest(
+    mut value: Value,
+    inventory: &Inventory,
+    latest: &HashMap<Subject, String>,
+    subject: &Subject,
+) -> Value {
+    let by = |change: &change_log::Change| json!({ "source": change.source, "agent": change.agent, "at": change.occurred_at });
+    // `changes` is newest first: the creation is the oldest entry that says so.
+    let created = inventory
+        .changes
+        .iter()
+        .rev()
+        .find(|change| &change.subject == subject && change.action == "created");
+    let last = latest
+        .get(subject)
+        .and_then(|id| inventory.changes.iter().find(|change| &change.id == id));
     if let Value::Object(object) = &mut value {
         object.insert("latestChange".into(), json!(latest.get(subject)));
+        object.insert("declaredBy".into(), json!(created.map(by)));
+        object.insert(
+            "lastChangedBy".into(),
+            json!(last.map(|change| {
+                let mut value = by(change);
+                value["action"] = json!(change.action);
+                value
+            })),
+        );
     }
     value
 }
@@ -1136,14 +1166,14 @@ fn read_tools() -> Vec<Value> {
         read_only(
             "list_systems",
             "List applications and resources",
-            "Every application and resource with its evidence state and latest observation, active incidents, HTTP check, relations (components and what they run on; what uses each resource) and references: where its repository, its local copies (each path with the machine it is on), its documentation, its logs and its dashboard are, and which other systems declare the same repository (`sameRepositoryAs`, by exact URL). References are declared inventory: DevHQ never opens or checks them. Each local copy also says whether it is on this workstation and its newest reading (`latestReading`, null if never read): what the copy held when DevHQ read it, at `observedAt`, which may no longer be so. In a reading, `lastCommitAt` is the newest commit date (the committer's, as the commits say) among HEAD and every local branch, not the date of HEAD's commit: it moves back when a branch is deleted, with HEAD unchanged; `syncedAt` is the last time the copy talked to a remote as its own files tell (when FETCH_HEAD was written, and the newest entry in the log of each remote branch, which a fetch or a push writes), never a fetch by DevHQ, which never fetches: commits on no remote are counted against what the copy knew then. `localActivity` gives the newest `lastCommitAt` of those readings and how many of the system's copies were never read. Each installation (the installed executable's file) says the same of its own newest reading, with `version` (how the application's declared version compared with the file's ProductVersion: matches, differs, undeclared or unknown) and `build` (since which reading the file is the same build, and the earlier reading that found another, if any). Each system's `latestChange` (the last entry of its change log, null when it has none) is what an edit of it is based on (`basedOn`).",
+            "Every application and resource with its evidence state and latest observation, active incidents, HTTP check, relations (components and what they run on; what uses each resource) and references: where its repository, its local copies (each path with the machine it is on), its documentation, its logs and its dashboard are, and which other systems declare the same repository (`sameRepositoryAs`, by exact URL). References are declared inventory: DevHQ never opens or checks them. Each local copy also says whether it is on this workstation and its newest reading (`latestReading`, null if never read): what the copy held when DevHQ read it, at `observedAt`, which may no longer be so. In a reading, `lastCommitAt` is the newest commit date (the committer's, as the commits say) among HEAD and every local branch, not the date of HEAD's commit: it moves back when a branch is deleted, with HEAD unchanged; `syncedAt` is the last time the copy talked to a remote as its own files tell (when FETCH_HEAD was written, and the newest entry in the log of each remote branch, which a fetch or a push writes), never a fetch by DevHQ, which never fetches: commits on no remote are counted against what the copy knew then. `localActivity` gives the newest `lastCommitAt` of those readings and how many of the system's copies were never read. Each installation (the installed executable's file) says the same of its own newest reading, with `version` (how the application's declared version compared with the file's ProductVersion: matches, differs, undeclared or unknown) and `build` (since which reading the file is the same build, and the earlier reading that found another, if any). Each system's `latestChange` (the last entry of its change log, null when it has none) is what an edit of it is based on (`basedOn`). Who declared each system, from that log: `declaredBy`, who created it (`source`: manual, the person in the window, or agent; `agent`, as its client named itself, unverified, null for the person; `at`), null when the log holds no creation (before `history.changesCompleteSince` only agents' changes were logged), and `lastChangedBy`, who made its latest change, with its `action`. A system is declared inventory, never evidence: an agent's is not the person's.",
             json!({}),
             &[],
         ),
         read_only(
             "get_system",
             "System detail",
-            "One application or resource with its references (as list_systems gives them), every loaded observation, incident and event about it, every change to its configuration (who made it, and each field before and after), newest first, its `latestChange` (what an edit of it is based on), and from when its automated results are complete.",
+            "One application or resource with its references (as list_systems gives them), every loaded observation, incident and event about it, every change to its configuration (who made it, and each field before and after), newest first, its `latestChange` (what an edit of it is based on), who declared it and who changed it last (`declaredBy`, `lastChangedBy`, as list_systems gives them), and from when its automated results are complete.",
             system_arguments(json!({})),
             &["type"],
         ),
@@ -1606,6 +1636,20 @@ mod tests {
         assert_eq!(system["events"].as_array().unwrap().len(), 1);
         assert_eq!(system["incidents"], json!([]));
         assert_eq!(system["automatedCompleteSince"], Value::Null);
+
+        // Who declared each system, from its change log: the seed is the person's, in the window.
+        let declared = &listed["applications"][0]["declaredBy"];
+        assert_eq!(
+            (&declared["source"], &declared["agent"]),
+            (&json!("manual"), &Value::Null)
+        );
+        assert!(declared["at"].is_string());
+        let last = &listed["applications"][0]["lastChangedBy"];
+        assert_eq!(
+            (&last["source"], &last["action"]),
+            (&json!("manual"), &json!("created"))
+        );
+        assert_eq!(by_id["system"]["declaredBy"], web["declaredBy"]);
 
         // A name no system has is not_found, never a malformed call, and the refusal names the
         // systems whose names are close, of either kind, by id; never one taken in its place.
@@ -4166,6 +4210,13 @@ mod tests {
             .clone();
         assert_eq!(shown["evidence"]["state"], "unobserved");
         assert_eq!(shown["latestChange"], added["change"]["id"]);
+        // An agent's system says so where it is listed, never only in its change log.
+        let by_codex =
+            json!({ "source": "agent", "agent": "codex", "at": added["change"]["occurredAt"] });
+        assert_eq!(shown["declaredBy"], by_codex);
+        let mut last = by_codex.clone();
+        last["action"] = json!("created");
+        assert_eq!(shown["lastChangedBy"], last);
         // A write that names a system nobody registered is refused as not found, and nothing is done.
         let missing = use_tool(
             &mut agent,
