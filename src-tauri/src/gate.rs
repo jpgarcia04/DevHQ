@@ -515,7 +515,7 @@ impl Session {
                     id: application.id.clone(),
                 };
                 summary(&inventory, &names, &subject, now, this)
-                    .map(|value| with_latest(value, &latest, &subject))
+                    .map(|value| with_latest(value, &inventory, &latest, &subject))
             })
             .collect::<Result<Vec<_>, _>>()?;
         let resources = inventory
@@ -526,7 +526,7 @@ impl Session {
                     id: resource.id.clone(),
                 };
                 summary(&inventory, &names, &subject, now, this)
-                    .map(|value| with_latest(value, &latest, &subject))
+                    .map(|value| with_latest(value, &inventory, &latest, &subject))
             })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(json!({
@@ -551,6 +551,7 @@ impl Session {
                 now,
                 this.resource_id.as_deref(),
             )?,
+            &inventory,
             &latest,
             &subject,
         );
@@ -616,7 +617,7 @@ impl Session {
     }
 }
 
-const INSTRUCTIONS: &str = "DevHQ is the person's local operations inventory: applications, the resources they run on, where each one is (its references: repository, local copies, installations, documentation, logs, dashboard), and the evidence about them (observations, incidents, events, HTTP checks). Working in a folder, an agent can find its system by a local copy's path or by its repository's URL in `list_systems`. A local copy's readings say what it held when DevHQ read it, never what it holds now; an installation's, what the installed executable's file was then (the version it declares, its hash, the processes running from it), never that the application is running or healthy. Start with `attention` to answer «what needs my attention?». Never present a system without current evidence as healthy: unobserved and expired evidence are gaps, not health. Every record says who produced it (`source`: manual, http or agent) and when. Applications, resources, components and references are declared inventory, by the person or an agent (each change in `changes`, with who made it), never evidence that DevHQ observed. To edit a system, base the edit on its `latestChange` (`basedOn`): DevHQ refuses it if the system changed after you read it, and never removes a component or reference you leave out. A component's `runsOn` and a path's `machine` name a resource by its id, never by its name. Tools that change something refuse while the system keeps the inventory somewhere other than where DevHQ asked (`storedAt` in `status`, location_redirected) or while DevHQ's previous location in AppData still holds the person's inventory (move_pending): read, and tell the person. Every call is checked against its tool's input schema and the rules its description states: an argument the tool does not declare, misspelled or of the wrong type, is refused (invalid_input) and nothing is done.";
+const INSTRUCTIONS: &str = "DevHQ is the person's local operations inventory: applications, the resources they run on, where each one is (its references: repository, local copies, installations, documentation, logs, dashboard), and the evidence about them (observations, incidents, events, HTTP checks). Working in a folder, an agent can find its system by a local copy's path or by its repository's URL in `list_systems`. A local copy's readings say what it held when DevHQ read it, never what it holds now; an installation's, what the installed executable's file was then (the version it declares, its hash, the processes running from it), never that the application is running or healthy. Start with `attention` to answer «what needs my attention?». Never present a system without current evidence as healthy: unobserved and expired evidence are gaps, not health. Every record says who produced it (`source`: manual, http or agent) and when. Applications, resources, components and references are declared inventory, by the person or an agent (who created each system and who changed it last in `declaredBy` and `lastChangedBy`; each change in `changes`, with who made it), never evidence that DevHQ observed. To edit a system, base the edit on its `latestChange` (`basedOn`): DevHQ refuses it if the system changed after you read it, and never removes a component or reference you leave out. A component's `runsOn` and a path's `machine` name a resource by its id, never by its name. Tools that change something refuse while the system keeps the inventory somewhere other than where DevHQ asked (`storedAt` in `status`, location_redirected) or while DevHQ's previous location in AppData still holds the person's inventory (move_pending): read, and tell the person. Every call is checked against its tool's input schema and the rules its description states: an argument the tool does not declare, misspelled or of the wrong type, is refused (invalid_input) and nothing is done.";
 
 /// Every application, then every resource, in the inventory's order.
 fn subjects(inventory: &Inventory) -> Vec<Subject> {
@@ -804,10 +805,39 @@ fn summary(
 }
 
 /// A system's summary with the last change logged about it (`latestChange`, null when there is
-/// none): what an edit of it is based on (`basedOn`).
-fn with_latest(mut value: Value, latest: &HashMap<Subject, String>, subject: &Subject) -> Value {
+/// none): what an edit of it is based on (`basedOn`). And who declared it, from that same log:
+/// who created it (`declaredBy`) and who made that last change (`lastChangedBy`), so that a
+/// system an agent wrote is never read as the person's. Each says `source` (manual: the person,
+/// in the window; agent), `agent` (as its client named itself, unverified; null for the person)
+/// and when; `declaredBy` is null when the log holds no creation (before `changesCompleteSince`
+/// only agents' changes were logged).
+fn with_latest(
+    mut value: Value,
+    inventory: &Inventory,
+    latest: &HashMap<Subject, String>,
+    subject: &Subject,
+) -> Value {
+    let by = |change: &change_log::Change| json!({ "source": change.source, "agent": change.agent, "at": change.occurred_at });
+    // `changes` is newest first: the creation is the oldest entry that says so.
+    let created = inventory
+        .changes
+        .iter()
+        .rev()
+        .find(|change| &change.subject == subject && change.action == "created");
+    let last = latest
+        .get(subject)
+        .and_then(|id| inventory.changes.iter().find(|change| &change.id == id));
     if let Value::Object(object) = &mut value {
         object.insert("latestChange".into(), json!(latest.get(subject)));
+        object.insert("declaredBy".into(), json!(created.map(by)));
+        object.insert(
+            "lastChangedBy".into(),
+            json!(last.map(|change| {
+                let mut value = by(change);
+                value["action"] = json!(change.action);
+                value
+            })),
+        );
     }
     value
 }
@@ -934,19 +964,31 @@ fn text<'a>(arguments: &'a Map<String, Value>, key: &str) -> Result<&'a str, Api
 /// The system an agent names by type and either ID or name (exact, ignoring case).
 fn find_system(inventory: &Inventory, arguments: &Map<String, Value>) -> Result<Subject, ApiError> {
     let kind = system_type(arguments)?;
-    let candidates: Vec<(String, String)> = match kind {
-        "application" => inventory
-            .applications
-            .iter()
-            .map(|item| (item.id.clone(), item.name.clone()))
-            .collect(),
-        _ => inventory
-            .resources
-            .iter()
-            .map(|item| (item.id.clone(), item.name.clone()))
-            .collect(),
+    let systems = |kind: &str| -> Vec<(String, String)> {
+        if kind == "application" {
+            inventory
+                .applications
+                .iter()
+                .map(|item| (item.id.clone(), item.name.clone()))
+                .collect()
+        } else {
+            inventory
+                .resources
+                .iter()
+                .map(|item| (item.id.clone(), item.name.clone()))
+                .collect()
+        }
     };
-    pick(kind, &candidates, arguments).map(|(subject, _)| subject)
+    pick(kind, &systems(kind), &systems(other_kind(kind)), arguments).map(|(subject, _)| subject)
+}
+
+/// The kind a system of `kind` is not: where a name given with the wrong type is looked for.
+fn other_kind(kind: &str) -> &'static str {
+    if kind == "application" {
+        "resource"
+    } else {
+        "application"
+    }
 }
 
 fn system_type(arguments: &Map<String, Value>) -> Result<&'static str, ApiError> {
@@ -962,10 +1004,14 @@ fn system_type(arguments: &Map<String, Value>) -> Result<&'static str, ApiError>
 /// Among `candidates` (ID, name) of one kind, the one the arguments name by `id` or by `name`
 /// (exact, ignoring case and surrounding spaces): its subject and name. Given both, they must name
 /// the same one: an agent that sends one system's id with another's name is refused, never taken
-/// at its id.
+/// at its id. A name is never matched loosely, since the system found is what a write acts on:
+/// when none has it, the refusal (`not_found`) lists the systems of either kind whose names are
+/// close (`others` are those of the other kind), by id, so that the agent names one in its next
+/// call instead of guessing again, or tells the person that it is not registered.
 fn pick(
     kind: &str,
     candidates: &[(String, String)],
+    others: &[(String, String)],
     arguments: &Map<String, Value>,
 ) -> Result<(Subject, String), ApiError> {
     let id = arguments.get("id").and_then(Value::as_str);
@@ -988,11 +1034,7 @@ fn pick(
     }
     let (id, name) = match found.as_slice() {
         [(id, name)] => (id.clone(), name.clone()),
-        [] => {
-            return Err(ApiError::invalid(format!(
-                "No {kind} matches. `list_systems` lists them."
-            )))
-        }
+        [] => return Err(not_found(kind, id, name, candidates, others)),
         _ => {
             return Err(ApiError::invalid(format!(
                 "Several {kind}s have that name; use its id."
@@ -1006,11 +1048,76 @@ fn pick(
     Ok((subject, name))
 }
 
+/// How many close names a refusal lists at most.
+const CLOSE_NAMES: usize = 10;
+
+/// The refusal for a system no candidate is: by id, just that; by name, the systems of either kind
+/// whose names are close (see `close`), those of the kind asked for first, each by type, id and
+/// name, or that none is, so that a system that is not registered reads as such and never as a
+/// malformed call.
+fn not_found(
+    kind: &str,
+    id: Option<&str>,
+    name: Option<&str>,
+    candidates: &[(String, String)],
+    others: &[(String, String)],
+) -> ApiError {
+    let message = match (id, name) {
+        (Some(id), _) => format!("No {kind} has the id «{id}». `list_systems` lists them all."),
+        (None, Some(name)) => {
+            let other = other_kind(kind);
+            let near: Vec<String> = candidates
+                .iter()
+                .map(|system| (kind, system))
+                .chain(others.iter().map(|system| (other, system)))
+                .filter(|(_, (_, item))| close(item, name))
+                .map(|(kind, (id, item))| format!("{kind} «{item}» (id {id})"))
+                .collect();
+            let name = name.trim();
+            match near.len() {
+                0 => format!("No {kind} is named «{name}», and no system has a name close to it: it may not be registered. `list_systems` lists them all."),
+                count => format!(
+                    "No {kind} is named «{name}». Close names: {}{}. Name one by its type and id; `list_systems` lists them all.",
+                    near[..count.min(CLOSE_NAMES)].join(", "),
+                    if count > CLOSE_NAMES { format!(", and {} more", count - CLOSE_NAMES) } else { String::new() }
+                ),
+            }
+        }
+        (None, None) => "Name the system by id or by name.".to_owned(),
+    };
+    ApiError {
+        code: "not_found",
+        message,
+    }
+}
+
+/// Whether a system's name is close to the one an agent gave, compared by their letters and digits
+/// alone, ignoring case, spaces and punctuation: one holds the other (with at least three of
+/// them), or they share a word of three or more. «Notebook» is close to «Ana's Notebook»,
+/// «homebudget» to «Home Budget». Accents count as different letters. Only to suggest: nothing is
+/// ever acted on by a close name.
+fn close(name: &str, given: &str) -> bool {
+    let words = |text: &str| -> Vec<String> {
+        text.split(|c: char| !c.is_alphanumeric())
+            .filter(|word| !word.is_empty())
+            .map(str::to_lowercase)
+            .collect()
+    };
+    let (name, given) = (words(name), words(given));
+    let (whole, asked) = (name.concat(), given.concat());
+    let holds = |long: &str, short: &str| short.chars().count() >= 3 && long.contains(short);
+    holds(&whole, &asked)
+        || holds(&asked, &whole)
+        || given
+            .iter()
+            .any(|word| word.chars().count() >= 3 && name.contains(word))
+}
+
 fn system_arguments(extra: Value) -> Value {
     let mut properties = json!({
         "type": { "type": "string", "enum": ["application", "resource"] },
         "id": { "type": "string", "description": "The system's id, from list_systems. Give id, name, or both." },
-        "name": { "type": "string", "description": "Or its exact name, ignoring case. Given with id, it must be that system's name, or nothing is done." },
+        "name": { "type": "string", "description": "Or its exact name, ignoring case and surrounding spaces, never a part of it. Given with id, it must be that system's name, or nothing is done. A name or id no system of the type has is refused as not_found, naming the systems of either type whose names are close, by id: name one of them, or tell the person it is not registered." },
     });
     if let (Value::Object(properties), Value::Object(extra)) = (&mut properties, extra) {
         properties.extend(extra);
@@ -1059,14 +1166,14 @@ fn read_tools() -> Vec<Value> {
         read_only(
             "list_systems",
             "List applications and resources",
-            "Every application and resource with its evidence state and latest observation, active incidents, HTTP check, relations (components and what they run on; what uses each resource) and references: where its repository, its local copies (each path with the machine it is on), its documentation, its logs and its dashboard are, and which other systems declare the same repository (`sameRepositoryAs`, by exact URL). References are declared inventory: DevHQ never opens or checks them. Each local copy also says whether it is on this workstation and its newest reading (`latestReading`, null if never read): what the copy held when DevHQ read it, at `observedAt`, which may no longer be so. In a reading, `lastCommitAt` is the newest commit date (the committer's, as the commits say) among HEAD and every local branch, not the date of HEAD's commit: it moves back when a branch is deleted, with HEAD unchanged; `syncedAt` is the last time the copy talked to a remote as its own files tell (when FETCH_HEAD was written, and the newest entry in the log of each remote branch, which a fetch or a push writes), never a fetch by DevHQ, which never fetches: commits on no remote are counted against what the copy knew then. `localActivity` gives the newest `lastCommitAt` of those readings and how many of the system's copies were never read. Each installation (the installed executable's file) says the same of its own newest reading, with `version` (how the application's declared version compared with the file's ProductVersion: matches, differs, undeclared or unknown) and `build` (since which reading the file is the same build, and the earlier reading that found another, if any). Each system's `latestChange` (the last entry of its change log, null when it has none) is what an edit of it is based on (`basedOn`).",
+            "Every application and resource with its evidence state and latest observation, active incidents, HTTP check, relations (components and what they run on; what uses each resource) and references: where its repository, its local copies (each path with the machine it is on), its documentation, its logs and its dashboard are, and which other systems declare the same repository (`sameRepositoryAs`, by exact URL). References are declared inventory: DevHQ never opens or checks them. Each local copy also says whether it is on this workstation and its newest reading (`latestReading`, null if never read): what the copy held when DevHQ read it, at `observedAt`, which may no longer be so. In a reading, `lastCommitAt` is the newest commit date (the committer's, as the commits say) among HEAD and every local branch, not the date of HEAD's commit: it moves back when a branch is deleted, with HEAD unchanged; `syncedAt` is the last time the copy talked to a remote as its own files tell (when FETCH_HEAD was written, and the newest entry in the log of each remote branch, which a fetch or a push writes), never a fetch by DevHQ, which never fetches: commits on no remote are counted against what the copy knew then. `localActivity` gives the newest `lastCommitAt` of those readings and how many of the system's copies were never read. Each installation (the installed executable's file) says the same of its own newest reading, with `version` (how the application's declared version compared with the file's ProductVersion: matches, differs, undeclared or unknown) and `build` (since which reading the file is the same build, and the earlier reading that found another, if any). Each system's `latestChange` (the last entry of its change log, null when it has none) is what an edit of it is based on (`basedOn`). Who declared each system, from that log: `declaredBy`, who created it (`source`: manual, the person in the window, or agent; `agent`, as its client named itself, unverified, null for the person; `at`), null when the log holds no creation (before `history.changesCompleteSince` only agents' changes were logged), and `lastChangedBy`, who made its latest change, with its `action`. A system is declared inventory, never evidence: an agent's is not the person's.",
             json!({}),
             &[],
         ),
         read_only(
             "get_system",
             "System detail",
-            "One application or resource with its references (as list_systems gives them), every loaded observation, incident and event about it, every change to its configuration (who made it, and each field before and after), newest first, its `latestChange` (what an edit of it is based on), and from when its automated results are complete.",
+            "One application or resource with its references (as list_systems gives them), every loaded observation, incident and event about it, every change to its configuration (who made it, and each field before and after), newest first, its `latestChange` (what an edit of it is based on), who declared it and who changed it last (`declaredBy`, `lastChangedBy`, as list_systems gives them), and from when its automated results are complete.",
             system_arguments(json!({})),
             &["type"],
         ),
@@ -1471,6 +1578,20 @@ mod tests {
     }
 
     #[test]
+    fn close_names_ignore_case_spaces_and_punctuation_but_need_three_letters() {
+        assert!(close("Ana's Notebook", "notebook"));
+        assert!(close("Home Budget", "homebudget"));
+        assert!(close("Home Budget", "HOME  BUDGET app"));
+        assert!(close("Web host", "web-host"));
+        assert!(close("Shop", "shops"));
+        assert!(!close("Home Budget", "Presupuesto"));
+        assert!(!close("Home Budget", "ho"));
+        assert!(!close("Web host", "we"));
+        assert!(!close("Garden", "Notebook"));
+        assert!(!close("Web host", "?!"));
+    }
+
+    #[test]
     fn lists_and_details_systems_with_their_relations_and_records() {
         let path = path();
         let (shop, host) = seed(&path);
@@ -1516,12 +1637,59 @@ mod tests {
         assert_eq!(system["incidents"], json!([]));
         assert_eq!(system["automatedCompleteSince"], Value::Null);
 
-        assert!(refusal(
+        // Who declared each system, from its change log: the seed is the person's, in the window.
+        let declared = &listed["applications"][0]["declaredBy"];
+        assert_eq!(
+            (&declared["source"], &declared["agent"]),
+            (&json!("manual"), &Value::Null)
+        );
+        assert!(declared["at"].is_string());
+        let last = &listed["applications"][0]["lastChangedBy"];
+        assert_eq!(
+            (&last["source"], &last["action"]),
+            (&json!("manual"), &json!("created"))
+        );
+        assert_eq!(by_id["system"]["declaredBy"], web["declaredBy"]);
+
+        // A name no system has is not_found, never a malformed call, and the refusal names the
+        // systems whose names are close, of either kind, by id; never one taken in its place.
+        let nope = refusal(
             &path,
             "get_system",
-            json!({ "type": "resource", "name": "Nope" })
-        )
-        .contains("No resource matches"));
+            json!({ "type": "resource", "name": "Nope" }),
+        );
+        assert!(nope.contains("No resource is named «Nope»"), "{nope}");
+        assert!(nope.contains("it may not be registered"), "{nope}");
+        assert!(nope.ends_with("(not_found)"), "{nope}");
+        let wrong_kind = refusal(
+            &path,
+            "get_system",
+            json!({ "type": "application", "name": "web-HOST" }),
+        );
+        assert!(
+            wrong_kind.contains(&format!("Close names: resource «Web host» (id {host})")),
+            "{wrong_kind}"
+        );
+        assert!(wrong_kind.ends_with("(not_found)"), "{wrong_kind}");
+        let partial = refusal(
+            &path,
+            "get_system",
+            json!({ "type": "application", "name": "shops" }),
+        );
+        assert!(
+            partial.contains(&format!("application «Shop» (id {shop})")),
+            "{partial}"
+        );
+        let unknown = refusal(
+            &path,
+            "get_system",
+            json!({ "type": "resource", "id": "nope" }),
+        );
+        assert!(
+            unknown.contains("No resource has the id «nope»"),
+            "{unknown}"
+        );
+        assert!(unknown.ends_with("(not_found)"), "{unknown}");
         assert!(
             refusal(&path, "get_system", json!({ "type": "server", "id": host }))
                 .contains("`type` must be one of \"application\", \"resource\"")
@@ -4042,6 +4210,25 @@ mod tests {
             .clone();
         assert_eq!(shown["evidence"]["state"], "unobserved");
         assert_eq!(shown["latestChange"], added["change"]["id"]);
+        // An agent's system says so where it is listed, never only in its change log.
+        let by_codex =
+            json!({ "source": "agent", "agent": "codex", "at": added["change"]["occurredAt"] });
+        assert_eq!(shown["declaredBy"], by_codex);
+        let mut last = by_codex.clone();
+        last["action"] = json!("created");
+        assert_eq!(shown["lastChangedBy"], last);
+        // A write that names a system nobody registered is refused as not found, and nothing is done.
+        let missing = use_tool(
+            &mut agent,
+            "record_observation",
+            json!({ "type": "application", "name": "Finanza", "result": "healthy", "summary": "Up", "validForMinutes": 60 }),
+        )
+        .unwrap_err();
+        assert!(
+            missing.contains(&format!("application «Finanzas» (id {finanzas})")),
+            "{missing}"
+        );
+        assert!(missing.ends_with("(not_found)"), "{missing}");
         let attention = use_tool(&mut agent, "attention", json!({})).unwrap();
         assert!(attention["neverObserved"]
             .as_array()
