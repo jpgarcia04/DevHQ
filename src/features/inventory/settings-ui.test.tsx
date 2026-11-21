@@ -532,6 +532,15 @@ describe('the agent gate in Settings', () => {
         'What you choose here is not an approval of each change. It holds until you change it, for every agent session that opens this inventory: Claude Code, Codex or any other client.',
       ),
     ).toBeVisible()
+    // A client's registration can only lower it, never raise it.
+    expect(
+      gate().getByText((_, element) =>
+        element?.tagName === 'P'
+          ? element.textContent ===
+            'Where you register the gate for a client, you can give that client less: add --access read (or maintain) after --mcp and its sessions get at most that, whatever you choose here. It never gives a client more.'
+          : false,
+      ),
+    ).toBeVisible()
     await user.click(maintain)
     expect(value.setAgentAccess).toHaveBeenCalledWith('maintain')
     expect(gate().getByRole('radio', { name: /^Read and maintain/ })).toBeChecked()
