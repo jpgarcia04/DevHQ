@@ -385,9 +385,9 @@ pub(crate) fn begin_write_for<'a>(
 ) -> Result<Writing<'a>, ApiError> {
     let db: &'a Connection = db;
     let tx = begin_on(db, TransactionBehavior::Immediate)?;
-    let agent = matches!(by, Actor::Agent(_));
+    let agent = matches!(by, Actor::Agent { .. });
     if agent {
-        access::permitted(&access::mode(&tx)?, need)?;
+        access::permitted_under(&tx, by.ceiling(), need)?;
     }
     Ok(Writing { tx, db, agent })
 }
@@ -5400,7 +5400,7 @@ pub(crate) mod tests {
                     .unwrap();
                 Ok(names.collect::<Result<Vec<_>, _>>().unwrap())
             });
-            if let Actor::Agent(_) = by {
+            if let Actor::Agent { .. } = by {
                 assert_eq!(log, 0);
                 assert_eq!(found, Found::Current);
                 assert_eq!(names.unwrap().unwrap(), [name]);

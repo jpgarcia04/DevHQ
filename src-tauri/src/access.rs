@@ -6,6 +6,12 @@
 //! It holds until the person changes it, for every agent session that opens the inventory: it is
 //! never an approval of one change. It is a statement of intent, not a security barrier: the
 //! inventory is the person's own file on their own disk.
+//!
+//! Where a client registers the gate, the person can also give it a ceiling
+//! (`devhq --mcp --access read`): that gate's sessions may then do the lower of the ceiling and
+//! what Settings allows. A ceiling only ever lowers: nothing in a client's configuration raises
+//! what the person chose, and the window never reads it. It lets one client (a test harness that
+//! must only read) keep less than another without the person changing Settings for each.
 
 use crate::inventory::{self, allowed, plain, ApiError};
 use crate::records::Actor;
@@ -68,9 +74,62 @@ pub(crate) fn permitted(mode: &str, need: &str) -> Result<(), ApiError> {
     }
 }
 
-/// The mode in force, read with the caller's connection.
+/// The mode the person chose in Settings, read with the caller's connection.
 pub(crate) fn mode(db: &Connection) -> Result<String, ApiError> {
     Ok(stored(db)?.map_or_else(|| "off".to_owned(), |(mode, _)| mode))
+}
+
+/// A ceiling as `--access` names it: one of `MODES`, as the static string every check compares.
+pub(crate) fn ceiling(given: &str) -> Option<&'static str> {
+    MODES.into_iter().find(|mode| *mode == given)
+}
+
+/// How far `mode` goes among `MODES`; an unknown mode goes nowhere.
+fn rank(mode: &str) -> usize {
+    MODES.iter().position(|known| *known == mode).unwrap_or(0)
+}
+
+/// The lower of what the person chose and the gate's ceiling, if it has one.
+fn capped(chosen: String, ceiling: Option<&str>) -> String {
+    match ceiling {
+        Some(ceiling) if rank(ceiling) < rank(&chosen) => ceiling.to_owned(),
+        _ => chosen,
+    }
+}
+
+/// The mode in force for an agent whose gate has `ceiling`: what the person chose in Settings,
+/// lowered to the ceiling.
+pub(crate) fn effective(db: &Connection, ceiling: Option<&str>) -> Result<String, ApiError> {
+    Ok(capped(mode(db)?, ceiling))
+}
+
+/// `permitted` for an agent whose gate has `ceiling`. When the ceiling is what refuses, the refusal
+/// says so: changing Settings would not help, since the ceiling is set where the client registers
+/// the gate.
+pub(crate) fn permitted_under(
+    db: &Connection,
+    ceiling: Option<&str>,
+    need: &str,
+) -> Result<(), ApiError> {
+    let chosen = mode(db)?;
+    match ceiling {
+        Some(ceiling) if permitted(ceiling, need).is_err() => Err(ApiError::denied(format!(
+            "This agent gate was started with `--access {ceiling}`, set where the client registers it ({}), so its sessions may do at most that, whatever the person chooses in DevHQ under Settings → Agent gate (now {}). Only the person can change where the client registers the gate.",
+            meaning(ceiling),
+            meaning(&chosen)
+        ))),
+        _ => permitted(&chosen, need),
+    }
+}
+
+/// What a mode lets an agent do, in the words Settings uses.
+pub(crate) fn meaning(mode: &str) -> &'static str {
+    match mode {
+        "read" => "Read only",
+        "maintain" => "Read and maintain",
+        "write" => "Read and write",
+        _ => "Off",
+    }
 }
 
 fn stored(db: &Connection) -> Result<Option<(String, i64)>, ApiError> {

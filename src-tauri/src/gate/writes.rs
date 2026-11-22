@@ -415,7 +415,7 @@ fn as_read(
 }
 
 impl Session {
-    /// The agent, by the name its client declared in `initialize`.
+    /// The agent, by the name its client declared in `initialize`, under this gate's ceiling.
     fn actor(&self) -> Result<Actor, ApiError> {
         Actor::agent(
             self.client
@@ -423,6 +423,7 @@ impl Session {
                 .filter(|name| !name.trim().is_empty())
                 .unwrap_or(UNNAMED),
         )
+        .map(|agent| agent.capped(self.ceiling))
     }
 
     /// Makes a configuration change and its log entry in one write transaction, only while the
@@ -753,7 +754,10 @@ impl Session {
             })?;
         // Asked first through the look `allow` made, so that a validity the access does not allow
         // opens nothing that can write; the transaction asks again, and that decides.
-        access::observation_validity(&self.read(|db| access::mode(db))?, valid_for_minutes)?;
+        access::observation_validity(
+            &self.read(|db| access::effective(db, self.ceiling))?,
+            valid_for_minutes,
+        )?;
         let observation = records::record_observation_by(
             &self.database,
             ObservationInput {

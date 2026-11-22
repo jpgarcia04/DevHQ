@@ -39,30 +39,56 @@ const INCIDENT_SELECT: &str = "SELECT id, application_id, resource_id, title, de
 const EVENT_SELECT: &str = "SELECT id, application_id, resource_id, kind, outcome, title, detail, source, observation_id, incident_id, occurred_at, recorded_at, agent FROM events";
 
 /// Who reports a record: the person at the window, or an agent acting for them through the
-/// agent gate, named as its client declared itself (unverified, and shown as such).
+/// agent gate, named as its client declared itself (unverified, and shown as such), with the
+/// ceiling its gate was started with (`devhq --mcp --access <mode>`, see `access::effective`):
+/// what the agent may do is the lower of that and what the person chose in Settings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Actor {
     Person,
-    Agent(String),
+    Agent {
+        name: String,
+        ceiling: Option<&'static str>,
+    },
 }
 
 impl Actor {
-    /// An agent, by the name its client declared: trimmed, and refused if empty or too long.
+    /// An agent, by the name its client declared: trimmed, and refused if empty or too long. No
+    /// ceiling: only what the person chose in Settings limits it.
     pub(crate) fn agent(name: &str) -> Result<Self, ApiError> {
-        required_text(name, MAX_AGENT, "Agent name").map(Actor::Agent)
+        required_text(name, MAX_AGENT, "Agent name").map(|name| Actor::Agent {
+            name,
+            ceiling: None,
+        })
+    }
+
+    /// The same agent under the ceiling its gate was started with, if any.
+    pub(crate) fn capped(self, ceiling: Option<&'static str>) -> Self {
+        match self {
+            Actor::Agent { name, .. } => Actor::Agent { name, ceiling },
+            person => person,
+        }
+    }
+
+    /// The ceiling an agent's gate was started with; None for the person, and for an agent whose
+    /// gate was started without one.
+    pub(crate) fn ceiling(&self) -> Option<&'static str> {
+        match self {
+            Actor::Agent { ceiling, .. } => *ceiling,
+            Actor::Person => None,
+        }
     }
 
     pub(crate) fn source(&self) -> &'static str {
         match self {
             Actor::Person => MANUAL,
-            Actor::Agent(_) => AGENT,
+            Actor::Agent { .. } => AGENT,
         }
     }
 
     pub(crate) fn name(&self) -> Option<&str> {
         match self {
             Actor::Person => None,
-            Actor::Agent(name) => Some(name),
+            Actor::Agent { name, .. } => Some(name),
         }
     }
 }
@@ -677,8 +703,11 @@ pub(crate) fn store_observation(
         "write"
     };
     let tx = inventory::begin_write_for(&mut db, writer, need)?;
-    if matches!(new.reporter, Some(Actor::Agent(_))) {
-        access::observation_validity(&access::mode(&tx)?, new.valid_for_minutes)?;
+    if let Some(reporter @ Actor::Agent { .. }) = new.reporter {
+        access::observation_validity(
+            &access::effective(&tx, reporter.ceiling())?,
+            new.valid_for_minutes,
+        )?;
     }
     ensure_subject(&tx, new.subject)?;
     let (application_id, resource_id) = new.subject.columns();
@@ -742,7 +771,7 @@ pub(crate) fn store_observation(
     let observation = query_one(&tx, OBSERVATION_SELECT, &id, observation_from_row)?
         .ok_or_else(|| ApiError::database("Observation was not saved."))?;
     let change = match (new.http, new.asked_by) {
-        (Some(_), Some(agent @ Actor::Agent(_))) => {
+        (Some(_), Some(agent @ Actor::Agent { .. })) => {
             Some(change_log::check_run(&tx, agent, new.subject, new.summary)?)
         }
         _ => None,
@@ -1569,7 +1598,13 @@ mod tests {
         let (application_id, _) = seed(&path);
         let shop = Subject::Application { id: application_id };
         let agent = Actor::agent("  claude-code ").unwrap();
-        assert_eq!(agent, Actor::Agent("claude-code".into()));
+        assert_eq!(
+            agent,
+            Actor::Agent {
+                name: "claude-code".into(),
+                ceiling: None
+            }
+        );
         // An agent records only while the person lets agents write, asked inside the write
         // transaction: until then each of its records is refused and nothing is kept.
         let refused = [

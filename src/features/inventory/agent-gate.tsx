@@ -124,6 +124,13 @@ export function AgentGate() {
             for every agent session that opens this inventory: Claude Code, Codex or any other
             client.
           </p>
+          <p className="mt-2 text-xs leading-6 text-muted-foreground">
+            Where you register the gate for a client, you can give that client less: add{' '}
+            <span className="font-mono">--access read</span> (or{' '}
+            <span className="font-mono">maintain</span>) after{' '}
+            <span className="font-mono">--mcp</span> and its sessions get at most that, whatever you
+            choose here. It never gives a client more.
+          </p>
           <p role="status" className="mt-2 text-[11px] text-muted-foreground">
             {saving
               ? 'Saving…'

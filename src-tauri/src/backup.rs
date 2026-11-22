@@ -127,8 +127,8 @@ fn source(database: &Path, by: &Actor) -> Result<Connection, ApiError> {
     let mut db = inventory::open_current(database)?;
     {
         let tx = inventory::begin(&mut db, TransactionBehavior::Deferred)?;
-        if let Actor::Agent(_) = by {
-            access::permitted(&access::mode(&tx)?, "write")?;
+        if let Actor::Agent { .. } = by {
+            access::permitted_under(&tx, by.ceiling(), "write")?;
         }
     }
     Ok(db)

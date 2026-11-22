@@ -33,10 +33,12 @@ use std::path::{Path, PathBuf};
 /// gets it; any other gets the newest, and decides whether to go on.
 const PROTOCOL_VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 
-/// `devhq --mcp [--database <path>]`: serves stdin and stdout until the client closes stdin.
-/// Returns the process exit code.
+/// `devhq --mcp [--database <path>] [--access <mode>]`: serves stdin and stdout until the client
+/// closes stdin. `--access` is a ceiling (see `access`): this gate's sessions may do at most that,
+/// whatever Settings allows. Returns the process exit code.
 pub fn main(args: impl IntoIterator<Item = String>) -> i32 {
     let mut database = None;
+    let mut ceiling = None;
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -44,6 +46,11 @@ pub fn main(args: impl IntoIterator<Item = String>) -> i32 {
             "--database" => match args.next() {
                 Some(path) => database = Some(PathBuf::from(path)),
                 None => return usage("--database needs a path"),
+            },
+            "--access" => match args.next().as_deref().map(access::ceiling) {
+                Some(Some(mode)) if ceiling.is_none() => ceiling = Some(mode),
+                Some(Some(_)) => return usage("--access is given once"),
+                _ => return usage("--access needs one of off, read, maintain or write"),
             },
             other => return usage(&format!("unknown argument {other}")),
         }
@@ -64,6 +71,7 @@ pub fn main(args: impl IntoIterator<Item = String>) -> i32 {
     match serve(
         &database,
         previous.as_deref(),
+        ceiling,
         Computer::this_one(folder),
         stdin.lock(),
         std::io::stdout().lock(),
@@ -77,15 +85,19 @@ pub fn main(args: impl IntoIterator<Item = String>) -> i32 {
 }
 
 fn usage(problem: &str) -> i32 {
-    eprintln!("devhq --mcp: {problem}\nusage: devhq --mcp [--database <path>]");
+    eprintln!(
+        "devhq --mcp: {problem}\nusage: devhq --mcp [--database <path>] [--access <off|read|maintain|write>]"
+    );
     2
 }
 
 /// Answers each message read from `input` on `output` until `input` ends, on `computer`, over the
-/// inventory at `database`, where DevHQ kept it before at `previous` (None for `--database`).
+/// inventory at `database`, where DevHQ kept it before at `previous` (None for `--database`), with
+/// the gate's `ceiling` (None without `--access`).
 pub(crate) fn serve(
     database: &Path,
     previous: Option<&Path>,
+    ceiling: Option<&'static str>,
     computer: Computer,
     input: impl BufRead,
     mut output: impl Write,
@@ -93,6 +105,7 @@ pub(crate) fn serve(
     let mut session = Session {
         database: database.to_owned(),
         previous: previous.map(Path::to_owned),
+        ceiling,
         computer,
         reader: None,
         installation_reader: None,
@@ -111,11 +124,18 @@ pub(crate) fn serve(
     Ok(())
 }
 
+/// What `status` reads of an inventory the gate serves: the access in force and as the person
+/// chose it, the counts and this workstation.
+type Served = (Option<(String, String)>, Value, Value);
+
 struct Session {
     database: PathBuf,
     /// Where DevHQ kept the inventory before its data left AppData, looked at on every call (see
     /// `location`); None when the gate was told `--database`.
     previous: Option<PathBuf>,
+    /// The most this gate's sessions may do, from `--access` (None without it): what the person
+    /// chose in Settings is lowered to it, never raised (see `access`).
+    ceiling: Option<&'static str>,
     /// This computer, as the window's DevHQ tells it apart: which workstation it is.
     computer: Computer,
     /// How copies are read; this executable unless a test says otherwise.
@@ -303,10 +323,10 @@ impl Session {
         inventory::read_as_found(&self.database, read)
     }
 
-    /// Whether the person lets agents `read` or `write` through the gate, checked on every call
-    /// so that a change in Settings applies at once.
+    /// Whether the person lets agents `read` or `write` through the gate, under this gate's
+    /// ceiling, checked on every call so that a change in Settings applies at once.
     fn allow(&self, need: &str) -> Result<(), ApiError> {
-        access::permitted(&self.read(|db| access::mode(db))?, need)
+        self.read(|db| access::permitted_under(db, self.ceiling, need))
     }
 
     /// What DevHQ's previous location holds now: the person may rename it while the gate runs.
@@ -348,6 +368,12 @@ impl Session {
             .to_owned(),
             "Supervision's live state (runs in flight, next run, DevHQ's own run errors) exists only in the DevHQ window's process; the gate does not know it.".to_owned(),
         ]);
+        if let Some(ceiling) = self.ceiling {
+            notes.push(format!(
+                "This gate was started with `--access {ceiling}`, set where the client registers it: its sessions may do at most {}, whatever the person chooses in Settings → Agent gate (`accessChosen`). `access` is what they may do now.",
+                access::meaning(ceiling)
+            ));
+        }
         if let Some(stored_at) = &location.stored_at {
             notes.push(format!(
                 "The system keeps this file at {stored_at}, not where DevHQ asked for it. A DevHQ started another way (from the Start menu or File Explorer) may see a different inventory, so agents can read it but not change it."
@@ -387,7 +413,9 @@ impl Session {
                 "integrity": found.stored().map(|_| "not_checked"),
                 "meaning": found.meaning(),
             },
-            "access": access,
+            "access": access.as_ref().map(|(effective, _)| effective),
+            "accessChosen": access.as_ref().map(|(_, chosen)| chosen),
+            "accessCeiling": self.ceiling,
             "windowOpen": window_open,
             "counts": counts,
             "thisWorkstation": this_workstation,
@@ -396,19 +424,18 @@ impl Session {
         }))
     }
 
-    /// The access mode of an inventory the gate serves and, for agents the person let in, how
-    /// many systems it holds and which of its workstations this computer is.
-    fn served(
-        &self,
-        db: &mut rusqlite::Connection,
-    ) -> Result<(Option<String>, Value, Value), ApiError> {
-        let mode = access::mode(db)?;
+    /// The access mode of an inventory the gate serves, in force under this gate's ceiling and as
+    /// the person chose it, and, for agents let in, how many systems it holds and which of its
+    /// workstations this computer is.
+    fn served(&self, db: &mut rusqlite::Connection) -> Result<Served, ApiError> {
+        let chosen = access::mode(db)?;
+        let mode = access::effective(db, self.ceiling)?;
         if mode == "off" {
-            return Ok((Some(mode), Value::Null, Value::Null));
+            return Ok((Some((mode, chosen)), Value::Null, Value::Null));
         }
         let inventory = inventory::list_from(db)?;
         Ok((
-            Some(mode),
+            Some((mode, chosen)),
             json!({ "applications": inventory.applications.len(), "resources": inventory.resources.len() }),
             json!(self.this_workstation(&inventory)),
         ))
@@ -1152,7 +1179,7 @@ fn read_tools() -> Vec<Value> {
         read_only(
             "status",
             "DevHQ status",
-"Which inventory file the gate opened, where the system really keeps it (`database.storedAt`, null when where asked), what DevHQ's previous location in AppData still holds (`database.previous`, null when nothing), what the file is (`schema`: the version it declares, the one this DevHQ supports, its state: current, mismatch, outdated, newer, not_an_inventory, needs_recovery, unreadable or missing; whether it has the structure of this DevHQ's schema, compared table by table and column by column: matches, differs or not_checked for another version; its integrity, never checked by the gate: not_checked; `schemaVersion` is the declared one, null when unknown), how far the person lets agents go through the gate (`access`: off; read; maintain, which also adds and edits applications and resources, reads local copies and records observations that vouch for at most 7 days; or write, everything), which holds for every agent session until the person changes it, whether a DevHQ window is open on it (`windowOpen`; null when the system cannot say), how many systems it holds, which of its workstations this computer is (`thisWorkstation`, or why DevHQ does not know: only the window chooses it), and what the gate cannot know. Access, counts and workstation are null unless the inventory is current, which is the only kind the gate serves. An inventory left needing recovery (a write that did not finish, or a log no connection holds) is reported, never recovered: DevHQ's window recovers it when it starts, only if it is in this DevHQ's schema. No tool that changes something runs while the system keeps the file elsewhere (location_redirected) or while the previous location still holds an inventory of the person's (move_pending): reads go on. Always answered, even with the gate off, and never writes to the inventory or changes what it holds; the one file it can create is an empty log (`-wal`), if the last connection to the inventory closes just as the gate opens it.",
+"Which inventory file the gate opened, where the system really keeps it (`database.storedAt`, null when where asked), what DevHQ's previous location in AppData still holds (`database.previous`, null when nothing), what the file is (`schema`: the version it declares, the one this DevHQ supports, its state: current, mismatch, outdated, newer, not_an_inventory, needs_recovery, unreadable or missing; whether it has the structure of this DevHQ's schema, compared table by table and column by column: matches, differs or not_checked for another version; its integrity, never checked by the gate: not_checked; `schemaVersion` is the declared one, null when unknown), how far this session may go through the gate (`access`: off; read; maintain, which also adds and edits applications and resources, reads local copies and records observations that vouch for at most 7 days; or write, everything): what the person chose in Settings (`accessChosen`), which holds for every agent session until the person changes it, lowered to the ceiling this gate was started with (`accessCeiling`, from `--access` where the client registers it; null when none), which never raises it; whether a DevHQ window is open on it (`windowOpen`; null when the system cannot say), how many systems it holds, which of its workstations this computer is (`thisWorkstation`, or why DevHQ does not know: only the window chooses it), and what the gate cannot know. Access, counts and workstation are null unless the inventory is current, which is the only kind the gate serves. An inventory left needing recovery (a write that did not finish, or a log no connection holds) is reported, never recovered: DevHQ's window recovers it when it starts, only if it is in this DevHQ's schema. No tool that changes something runs while the system keeps the file elsewhere (location_redirected) or while the previous location still holds an inventory of the person's (move_pending): reads go on. Always answered, even with the gate off, and never writes to the inventory or changes what it holds; the one file it can create is an empty log (`-wal`), if the last connection to the inventory closes just as the gate opens it.",
             json!({}),
             &[],
         ),
@@ -1348,6 +1375,7 @@ mod tests {
         serve(
             database,
             None,
+            None,
             computer(database),
             input.as_bytes(),
             &mut output,
@@ -1487,6 +1515,7 @@ mod tests {
         let mut output = Vec::new();
         serve(
             &path,
+            None,
             None,
             computer(&path),
             "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"1999-01-01\"}}\nnot json\n\n".as_bytes(),
@@ -1813,6 +1842,7 @@ mod tests {
         let mut session = Session {
             database: path.clone(),
             previous: None,
+            ceiling: None,
             computer: computer(&path),
             reader: None,
             installation_reader: None,
@@ -1831,6 +1861,161 @@ mod tests {
         assert_eq!(opened["result"]["structuredContent"]["status"], "attention");
         assert_eq!(answer(&path, "status", json!({}))["access"], "read");
         remove(&path);
+    }
+
+    /// A gate started with `--access` lets its sessions do the lower of that ceiling and what the
+    /// person chose in Settings, never more; status says both, and a refusal says which one refused,
+    /// since changing Settings does not lift a ceiling.
+    #[test]
+    fn a_ceiling_lowers_what_settings_allow_and_never_raises_it() {
+        let path = path();
+        seed(&path);
+        crate::access::set_agent_access(&path, "maintain").unwrap();
+        let mut capped = Session {
+            ceiling: Some("read"),
+            ..session(&path, "harness")
+        };
+        let status = use_tool(&mut capped, "status", json!({})).unwrap();
+        assert_eq!(
+            (
+                &status["access"],
+                &status["accessChosen"],
+                &status["accessCeiling"]
+            ),
+            (&json!("read"), &json!("maintain"), &json!("read"))
+        );
+        assert!(
+            status["notes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|note| note.as_str().unwrap().contains("`--access read`")),
+            "{status:#}"
+        );
+        // Reads go on; whatever needs more than the ceiling is refused, naming the ceiling.
+        assert!(use_tool(&mut capped, "list_systems", json!({})).is_ok());
+        for (tool, arguments) in [
+            (
+                "save_application",
+                json!({ "name": "Notes", "lifecycle": "development" }),
+            ),
+            ("read_copies", json!({})),
+            ("backup", json!({})),
+        ] {
+            let refused = use_tool(&mut capped, tool, arguments).unwrap_err();
+            assert!(
+                refused.contains("`--access read`")
+                    && refused.contains("now Read and maintain")
+                    && refused.ends_with("(access_denied)"),
+                "{tool}: {refused}"
+            );
+        }
+        assert!(answer(&path, "list_systems", json!({}))["applications"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["system"]["name"] != "Notes"));
+        // The same gate without a ceiling, as another client registers it, may maintain.
+        let mut other = session(&path, "codex");
+        assert!(use_tool(
+            &mut other,
+            "save_application",
+            json!({ "name": "Notes", "lifecycle": "development" })
+        )
+        .is_ok());
+
+        // A ceiling above what the person chose changes nothing: Settings still decides, and its
+        // refusal says how to open more there.
+        crate::access::set_agent_access(&path, "read").unwrap();
+        let mut high = Session {
+            ceiling: Some("write"),
+            ..session(&path, "harness")
+        };
+        let status = use_tool(&mut high, "status", json!({})).unwrap();
+        assert_eq!(
+            (&status["access"], &status["accessChosen"]),
+            (&json!("read"), &json!("read"))
+        );
+        let refused = use_tool(
+            &mut high,
+            "save_application",
+            json!({ "name": "Garden", "lifecycle": "development" }),
+        )
+        .unwrap_err();
+        assert!(
+            refused.contains("reading only") && !refused.contains("--access"),
+            "{refused}"
+        );
+
+        // Under Read and write, a Read and maintain ceiling keeps an agent's observation to a week,
+        // in the look before the write and in its transaction.
+        crate::access::set_agent_access(&path, "write").unwrap();
+        let mut maintain = Session {
+            ceiling: Some("maintain"),
+            ..session(&path, "harness")
+        };
+        let review = |minutes: i64| {
+            json!({ "type": "application", "name": "Notes", "result": "healthy",
+                    "summary": "Builds", "validForMinutes": minutes })
+        };
+        let longer =
+            use_tool(&mut maintain, "record_observation", review(7 * 24 * 60 + 1)).unwrap_err();
+        assert!(longer.contains("at most 7 days"), "{longer}");
+        assert!(use_tool(&mut maintain, "record_observation", review(7 * 24 * 60)).is_ok());
+        let notes = find_system(
+            &inventory::list(&path).unwrap(),
+            json!({ "type": "application", "name": "Notes" })
+                .as_object()
+                .unwrap(),
+        )
+        .unwrap();
+        let agent = records::Actor::agent("harness")
+            .unwrap()
+            .capped(Some("maintain"));
+        let inside = records::record_observation_by(
+            &path,
+            ObservationInput {
+                subject: notes,
+                result: "healthy".into(),
+                summary: "Builds".into(),
+                observed_at: None,
+                valid_for_minutes: 7 * 24 * 60 + 1,
+            },
+            &agent,
+        )
+        .unwrap_err();
+        assert!(inside.message.contains("at most 7 days"), "{inside:?}");
+        // And an agent's write under a Read only ceiling is refused inside its transaction too.
+        let mut db = inventory::open_current(&path).unwrap();
+        let reader = records::Actor::agent("harness")
+            .unwrap()
+            .capped(Some("read"));
+        let refused = inventory::begin_write_for(&mut db, &reader, "maintain").unwrap_err();
+        assert!(refused.message.contains("`--access read`"), "{refused:?}");
+        drop(db);
+        remove(&path);
+    }
+
+    /// `--access` takes one known mode, once; anything else stops the gate before it opens
+    /// anything.
+    #[test]
+    fn the_ceiling_argument_is_one_known_mode() {
+        let args = |given: &[&str]| {
+            given
+                .iter()
+                .map(|arg| (*arg).to_owned())
+                .collect::<Vec<_>>()
+        };
+        for given in [
+            &["--mcp", "--access"][..],
+            &["--mcp", "--access", "admin"],
+            &["--mcp", "--access", "Read"],
+            &["--mcp", "--access", "read", "--access", "write"],
+        ] {
+            assert_eq!(main(args(given)), 2, "{given:?}");
+        }
+        assert_eq!(crate::access::ceiling("maintain"), Some("maintain"));
+        assert_eq!(crate::access::ceiling("all"), None);
     }
 
     #[test]
@@ -2027,6 +2212,7 @@ mod tests {
         Session {
             database: path.to_owned(),
             previous: None,
+            ceiling: None,
             computer: computer(path),
             reader: None,
             installation_reader: None,
@@ -2942,6 +3128,7 @@ mod tests {
         let mut agent = Session {
             database: path.clone(),
             previous: None,
+            ceiling: None,
             computer: computer(&path),
             reader: None,
             installation_reader: None,

@@ -232,6 +232,10 @@ while a reader finishes, and a fold that does not finish never turns the committ
 the same database. While a window is open, its process notices what other connections
 commit (`Monitor::notice_changes`, `PRAGMA data_version` every 2 s) and holds the lock that tells
 `status` a window is open (`window_lock.rs`). The native walk drives the gate as a child process.
+`--access <mode>` is a ceiling set where a client registers the gate: an agent may do the lower of it
+and what Settings allows, never more. It travels with the agent (`Actor::Agent { ceiling }`), so
+every check of an agent's access, the look before a write and the one inside its transaction, goes
+through `access::effective` or `access::permitted_under`, never `access::mode` alone.
 What remains to check or decide: `docs/puerta-para-agentes.md`. To try it
 with a real client: `claude -p "..." --mcp-config <json> --strict-mcp-config --allowedTools
 "mcp__devhq__*"` with the server's `--database` pointing at a test inventory.
