@@ -590,7 +590,7 @@ build de SemVer (`ProductVersion = 1.4.0+3f9c2ab01d4e`). La lectura lo guarda ta
 comparación con la versión declarada ignora lo que sigue al `+`. DevHQ es el primero en cumplirlo: su
 script de build (`src-tauri/build.rs`) lee el commit de HEAD en el `.git` del checkout, como archivos y
 sin ejecutar `git` (un script de build que arranca programas ejecuta lo que haya primero en el `PATH`),
-y el ejecutable de Windows declara `0.2.1+` y los doce primeros dígitos de ese commit en
+y el ejecutable de Windows declara `0.2.2+` y los doce primeros dígitos de ese commit en
 `ProductVersion` y `FileVersion`. Lee `HEAD`, la referencia que nombra, suelta o en `packed-refs`, y,
 en un worktree enlazado o un submódulo, donde `.git` es un archivo (`gitdir: …`), la carpeta que ese
 archivo nombra y la del repositorio al que está enlazado (`commondir`). Lo que no puede saber no lo
@@ -599,7 +599,7 @@ si el árbol tenía cambios sin confirmar no se puede saber sin comparar cada ar
 es `git status`, así que la versión nombra el commit en el que estaba HEAD y no dice nada del árbol,
 salvo que quien compila lo diga con `DEVHQ_BUILD_DIRTY=1`, y entonces termina en `.dirty`. Solo el
 recurso de versión lleva el commit: la versión de la aplicación y la del instalador siguen siendo
-`0.2.1`. Ese número está escrito en `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`
+`0.2.2`. Ese número está escrito en `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`
 y `src/shared/version.ts`, de donde lo toma la ventana, y una prueba exige que coincidan; sube cuando
 se construye un instalador para instalarlo, no con cada cambio, porque lo que distingue una build de
 otra es el commit.
