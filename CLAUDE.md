@@ -47,7 +47,12 @@ Before every commit, run the checks that what it touches can break, and look at 
 Never pipe a check through `tail` or `head`: the pipeline's exit code is the last command's, which
 hides a failure. The full set costs minutes and a native build; spend it where it can fail:
 
-- Only documentation (`*.md`, `docs/`): `npx prettier --check .`.
+- Only documentation (`*.md`, `docs/`): `npx prettier --check .`. It is the only check such a
+  change gets: `.github/workflows/ci.yml` skips a pull request or a push to `main` that touches
+  nothing else. A test that reads a Markdown file takes that file out of its `paths-ignore` in the
+  same change.
+- Only when a workflow runs (its `on:` triggers, `paths-ignore`): prettier. No local check runs a
+  trigger; the runs the pull request starts or skips are its test.
 - Only the version number in its six files (see «Version»): prettier,
   `npx vitest run src/shared/version.test.ts` and
   `cargo metadata --manifest-path src-tauri/Cargo.toml --locked --format-version 1`, which refuses

@@ -4,10 +4,15 @@
 # The HTTP tests only talk to a server on 127.0.0.1 and the reserved `.invalid` domain.
 name: CI
 
+# A push that changes only Markdown or docs/ has nothing here to test: no test reads them, and the
+# checks for documentation (prettier) run before the commit. A pull request whose whole diff is
+# documentation skips this workflow; one that also touches anything else runs it whole.
 on:
   pull_request:
+    paths-ignore: ['**.md', 'docs/**']
   push:
     branches: [main]
+    paths-ignore: ['**.md', 'docs/**']
   workflow_dispatch:
 
 permissions:
