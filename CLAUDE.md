@@ -43,8 +43,26 @@ demo of invented systems. The person's own use of DevHQ never enters it, in any 
 
 ## Checks
 
-Run all of them before every commit and look at each exit code. Never pipe a check through
-`tail` or `head`: the pipeline's exit code is the last command's, which hides a failure.
+Before every commit, run the checks that what it touches can break, and look at each exit code.
+Never pipe a check through `tail` or `head`: the pipeline's exit code is the last command's, which
+hides a failure. The full set costs minutes and a native build; spend it where it can fail:
+
+- Only documentation (`*.md`, `docs/`): `npx prettier --check .`.
+- Only the version number in its six files (see «Version»): prettier,
+  `npx vitest run src/shared/version.test.ts` and
+  `cargo check --manifest-path src-tauri/Cargo.toml --locked`, which refuses a `Cargo.lock` that
+  no longer matches.
+- Only the window (`src/`, `e2e/` outside `e2e/native/`, `index.html`, `preview.html`): prettier,
+  eslint, `tsc -b`, vitest, `npm run build` and `npm run e2e`. Not when it changes what crosses IPC
+  (`inventoryApi`, the contract tests) or a label, button or heading the native walk finds: those
+  are the next group.
+- Anything else (`src-tauri/`, `contract/`, `e2e/native/`, dependencies, `.github/`, tool
+  configuration), a mix you are unsure of, and the last commit of a pull request in which any
+  commit touched this group: the full set below. Earlier commits of that pull request may run
+  only what their own change can break.
+
+`npm run e2e:native` needs a driver that matches the installed WebView2 (see «Native walk»); when
+it cannot run here, say so, and the Windows jobs run it.
 
 ```sh
 npx prettier --check .
@@ -189,6 +207,11 @@ or documentation skips them. A run costs about 22 billable minutes with a warm c
 group the changes it tests, push rarely, and do not push while a run whose result you need is in
 progress, because a new push cancels it.
 
+A merge does not wait for these jobs once the local checks passed, unless the change touches what
+only Windows can test: code under `cfg(windows)`, the NSIS installer and its hooks,
+`this_computer`, the confinement of the readers (`local_copies::confine`), or a test about
+Defender, NTFS or SChannel. Their result is read afterwards, and a failure is the next fix.
+
 ## IPC
 
 - `contract/commands/<command>.json` holds the exact arguments `inventoryApi` sends and
@@ -321,11 +344,14 @@ images without code (`pe::tests::image`) and the test executable itself, never a
 DevHQ's version is one number in `package.json`, `package-lock.json`, `src-tauri/Cargo.toml`,
 `src-tauri/Cargo.lock`, `src-tauri/tauri.conf.json` and `src/shared/version.ts`
 (`src/shared/version.test.ts` holds them together). Raise it when an installer is built to be
-installed, not with every pull request: what tells one build from another is the commit, which
-`src-tauri/build.rs` writes after the version in the Windows version resource
-(`0.2.0+<12 digits>`). It reads the commit from `.git` as files (`src-tauri/src/build_version.rs`,
-also where `.git` is a file: a linked worktree, a submodule) and never runs `git` or any other
-program. It says `.dirty` only when the builder sets `DEVHQ_BUILD_DIRTY=1`, because it cannot know
+installed, not with every pull request, and raise it in the last pull request of what that installer
+gathers, never in a pull request of its own, which would pay a Windows run for one number. Install
+when the person's use or another application (an agent client that needs a new tool or rule) needs
+what was merged, not after every merge: several pull requests go in one installer. What tells one
+build from another is the commit, which `src-tauri/build.rs` writes after the version in the Windows
+version resource (`0.2.0+<12 digits>`). It reads the commit from `.git` as files
+(`src-tauri/src/build_version.rs`, also where `.git` is a file: a linked worktree, a submodule) and
+never runs `git` or any other program. It says `.dirty` only when the builder sets `DEVHQ_BUILD_DIRTY=1`, because it cannot know
 without `git status`; and without a `.git` it understands, it adds no commit. Never make it guess.
 
 ## Schema
