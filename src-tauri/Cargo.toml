@@ -1,6 +1,6 @@
 [package]
 name = "devhq"
-version = "0.2.3"
+version = "0.2.4"
 description = "The operations home for a personal software ecosystem"
 authors = ["DevHQ"]
 edition = "2021"
