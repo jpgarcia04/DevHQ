@@ -2,7 +2,7 @@
 
 Nota de trabajo, no especificación: dice qué está en marcha y qué toca después para acercar DevHQ a
 [docs/vision.md](vision.md), de modo que una sesión nueva (de Claude Code, de Codex o de quien sea)
-pueda seguir sin la conversación que la escribió. El [README](../README.md) sigue mandando. Cuando un
+pueda seguir sin la conversación que la escribió. El [README, hoy la especificación](especificacion.md) sigue mandando. Cuando un
 paso se termina, sale de aquí en el mismo commit; cuando no quede ninguno, esta nota se borra.
 
 Escrita el 6 oct 2026 desde una sesión local en la laptop con Windows, puesta al día esa noche, al

@@ -1,4 +1,8 @@
-# DevHQ
+# DevHQ — Especificación
+
+> Este documento es la especificación de DevHQ: describe con precisión cómo se comporta. Hasta
+> noviembre de 2026 vivía en `README.md`; el código, `docs/` y los mensajes de la app que remiten a
+> «el README» y a una de sus secciones se refieren a este archivo.
 
 Centro de operaciones **nativo de escritorio** para un ecosistema personal de software.
 Su prioridad es responder **«¿Qué necesita mi atención?»**: observar aplicaciones,
@@ -1152,7 +1156,7 @@ esquema y el acceso en la conexión que copia justo antes de copiar, y la verifi
 rechaza otra versión. Lo que no cierra es la recuperación: si en el instante entre la lectura y la
 escritura otro proceso deja el archivo a medias, SQLite lo recupera al abrirlo, como en cualquier
 escritura, antes de que DevHQ vea qué es. Lo que la lectura sin cambios no cubre está en
-[docs/puerta-para-agentes.md](docs/puerta-para-agentes.md).
+[docs/puerta-para-agentes.md](puerta-para-agentes.md).
 
 Hasta dónde llega un agente lo decides tú en Settings → **Agent gate**: **Off** (por defecto, también
 tras actualizar), **Read only**, **Read and maintain** o **Read and write**; cada uno permite lo del
@@ -1974,7 +1978,7 @@ y de ella guarda dos números y nada más (ver [Instalaciones](#instalaciones)).
    mantiene el inventario cuando se lo pides, con su procedencia siempre visible. Lee y escribe con
    el acceso que eliges en Settings, sus cambios aparecen en Activity y la ventana abierta los nota
    sola. Quedan comprobaciones en Windows:
-   [docs/puerta-para-agentes.md](docs/puerta-para-agentes.md).
+   [docs/puerta-para-agentes.md](puerta-para-agentes.md).
 4. Hecho: un [registro de cambios](#registro-de-cambios) común para ti y para los agentes, con el
    autor, cuándo y cada campo antes y después: la configuración deja rastro igual que la evidencia.
 5. Hecho: las [referencias](#referencias) de cada aplicación y recurso (repositorio, copias locales,
@@ -1987,7 +1991,7 @@ y de ella guarda dos números y nada más (ver [Instalaciones](#instalaciones)).
 7. Hecho en Windows, con la ventana; en Linux faltan sus pruebas en CI: leer, cuando se lo pides, las [instalaciones](#instalaciones) de esta estación de trabajo sin
    ejecutarlas, como evidencia propia: qué versión está instalada, entre qué dos lecturas cambió la
    build y cuántos procesos corrían desde el archivo. Es el primer paso de
-   [docs/observar-apps-locales.md](docs/observar-apps-locales.md); los siguientes (aplicaciones bajo
+   [docs/observar-apps-locales.md](observar-apps-locales.md); los siguientes (aplicaciones bajo
    demanda, servicios de Windows) siguen siendo una propuesta.
 8. Después, automatizaciones con resultado e historial, y seguridad con almacén nativo de
    credenciales y evidencias contextualizadas.
@@ -1999,7 +2003,7 @@ Estos son límites conceptuales, **no módulos vacíos ni integraciones implemen
 La dirección es UI → IPC/casos de uso → dominio. SQLite conserva contexto; las credenciales no deben
 vivir en componentes React, localStorage ni texto plano en SQLite.
 
-Más allá de estos pasos, [docs/vision.md](docs/vision.md) guarda la dirección a largo plazo (DevHQ
+Más allá de estos pasos, [docs/vision.md](vision.md) guarda la dirección a largo plazo (DevHQ
 como capa de contexto y memoria de todo el ecosistema de desarrollo, útil también con 50 proyectos)
 y las preguntas con que se valoran las funcionalidades y las decisiones de arquitectura. Es una guía,
 no una especificación ni un backlog: nada de lo que describe existe hasta que este README lo diga.

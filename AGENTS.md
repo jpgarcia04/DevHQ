@@ -6,8 +6,10 @@ you too, so read it whole before changing anything and follow it as if it were a
 Nothing is copied here, so the two files can never disagree; a rule changes in `CLAUDE.md`, and
 this file only points.
 
-- [`README.md`](README.md) (in Spanish) is the specification. Read it before changing
-  behaviour and update it in the same commit as the change.
+- [`docs/especificacion.md`](docs/especificacion.md) (in Spanish) is the specification. Read it
+  before changing behaviour and update it in the same commit as the change. It was `README.md`
+  until November 2026: older mentions of «the README» mean that file. `README.md` is now only the
+  public presentation of the project.
 - [`docs/vision.md`](docs/vision.md) (in Spanish) holds the long-term direction and the
   questions to ask of any new feature or architectural change. Read it before proposing either.
   It guides and authorizes nothing.

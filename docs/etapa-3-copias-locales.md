@@ -4,7 +4,7 @@
 decisiones y advertencias que lo justificaron, lo que se comprobó antes y durante su implementación,
 y cómo se verificó. La etapa se implementó y se fusionó en `main` con
 [#6](https://github.com/jpgarcia04/DevHQ/pull/6) (`db82470`, 11 oct 2026). Lo que hace DevHQ hoy lo
-dicen el [README](../README.md), que es la especificación, y el código; si algo de aquí difiere de
+dicen el [README, hoy la especificación](especificacion.md), que es la especificación, y el código; si algo de aquí difiere de
 ellos, mandan ellos. Se trasladó desde [siguientes-pasos.md](siguientes-pasos.md), que solo guarda lo
 que está por hacer.
 
