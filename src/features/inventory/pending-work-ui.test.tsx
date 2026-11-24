@@ -118,6 +118,7 @@ const notesInstalled: Installation = {
   movedSinceRead: false,
   version: 'differs',
   build: { sameSince: minutesFromNow(-30), readings: 1, previous: null, complete: true },
+  againstCopy: null,
 }
 
 const reference = (id: string, kind: 'local_copy' | 'installation', target: string) => ({
@@ -207,6 +208,33 @@ describe('Pending work in Overview', () => {
     expect(rows[2]).toHaveTextContent('D:\\spare\\shop')
     expect(rows[2]).toHaveTextContent('Never read on this computer')
     expect(section).toHaveTextContent('Not health: none of it is in Needs attention.')
+  })
+
+  it('says when the installed build is not what the local copy held', () => {
+    const behind = {
+      ...notesInstalled,
+      version: 'matches' as const,
+      againstCopy: {
+        state: 'other_commit' as const,
+        copyReferenceId: 'notes-copy',
+        copyReadingId: 'copy-reading',
+        installedCommit: '3f9c2ab',
+        copyHead: '9b8a7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a07',
+      },
+    }
+    renderWith(
+      inventoryContext({
+        snapshot: { ...snapshot, localCopies: [], installations: [behind] },
+        thisWorkstation: laptop,
+        now: testNow,
+      }),
+      <PendingWorkOverview />,
+    )
+    expect(
+      screen.getByText(
+        "The installed build is commit 3f9c2ab, the local copy's HEAD was 9b8a7c6d5e4f",
+      ),
+    ).toBeInTheDocument()
   })
 
   it('says a reading older than three days is worth renewing, with what it held', () => {

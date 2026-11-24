@@ -12,6 +12,8 @@ import type {
   ThisWorkstation,
 } from '@/features/inventory/inventory-api'
 import {
+  compareWithCopies,
+  declaredCommit,
   previewBackend,
   readOnly,
   remoteLocation,
@@ -158,6 +160,15 @@ describe('the preview’s simulated native process', () => {
     ])
     const [shopInstalled] = snapshot.installations
     expect(shopInstalled!.build).toMatchObject({ complete: true })
+    // The Shop's file declared commit 7c1e9d2; its copy on the same laptop had HEAD elsewhere.
+    expect(shopInstalled!.againstCopy).toEqual({
+      state: 'other_commit',
+      copyReferenceId: 'shop-clone',
+      copyReadingId: 'reading-new',
+      installedCommit: '7c1e9d2',
+      copyHead: '9b8a7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a07',
+    })
+    expect(snapshot.installations[1]!.againstCopy).toBeNull()
     expect(shopInstalled!.build!.sameSince).toBe(shopInstalled!.latest!.observedAt)
     // The comparison the native process makes (`same_version`).
     for (const [declared, installed] of [
@@ -199,6 +210,56 @@ describe('the preview’s simulated native process', () => {
     ).toThrow()
     // Reading an installation writes: refused.
     expect(() => backend('read_installations', {})).toThrow(expect.objectContaining(readOnly))
+  })
+
+  it('compares an installed build with a local copy as the native process does', () => {
+    expect(declaredCommit('0.2.2+3F9C2AB01D4E')).toBe('3f9c2ab01d4e')
+    expect(declaredCommit('1.0+3f9c2ab.dirty')).toBe('3f9c2ab')
+    expect(declaredCommit('1.0+3f9c2a')).toBeNull()
+    expect(declaredCommit('1.0+build7')).toBeNull()
+    expect(declaredCommit('1.0.0')).toBeNull()
+    const { snapshot } = preview()
+    const installed = snapshot.installations[0]!
+    const copy = snapshot.localCopies.find((item) => item.referenceId === 'shop-clone')!
+    const withCopy = (
+      head: string | null,
+      lastCommitAt: string | null,
+      at = '2026-09-30T09:00:00Z',
+    ) => ({
+      ...copy,
+      latest: { ...copy.latest!, head, lastCommitAt, observedAt: at },
+    })
+    const state = (version: string, ...copies: (typeof copy)[]) =>
+      compareWithCopies(
+        [
+          {
+            ...installed,
+            againstCopy: null,
+            latest: {
+              ...installed.latest!,
+              productVersion: version,
+              modifiedAt: '2026-09-20T12:00:00Z',
+            },
+          },
+        ],
+        copies,
+      )[0]!.againstCopy?.state ?? null
+    const head = '7c1e9d2000000000000000000000000000000000'
+    expect(state('2.5.0+7c1e9d2', withCopy(head, null))).toBe('head')
+    // The newest reading decides, not the first.
+    expect(
+      state(
+        '2.5.0+7c1e9d2',
+        withCopy(head, null, '2026-09-29T09:00:00Z'),
+        withCopy('11d2e4f000000000000000000000000000000000', null),
+      ),
+    ).toBe('other_commit')
+    expect(state('2.5.0+7c1e9d2', withCopy(null, null))).toBe('unknown')
+    expect(state('2.5.0', withCopy(null, '2026-09-25T08:00:00Z'))).toBe('newer_commits')
+    expect(state('2.5.0', withCopy(null, '2026-09-20T12:00:00Z'))).toBe('not_newer')
+    expect(state('2.5.0', withCopy(null, null))).toBe('unknown')
+    expect(state('2.5.0')).toBeNull()
+    expect(state('2.5.0', { ...withCopy(head, null), machineId: 'elsewhere' })).toBeNull()
   })
 
   it('carries each declared local copy with its newest reading, as the native process derives it', () => {

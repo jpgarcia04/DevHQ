@@ -244,9 +244,73 @@ export function installations(
             (latest.path !== reference.target || latest.machineId !== reference.machineId),
           version: compared,
           build: read ? buildSince(read, own.slice(1)) : null,
+          againstCopy: null,
         }
       }),
   )
+}
+
+/** The commit a build wrote after a `+` in its version, as the native process reads it. */
+export function declaredCommit(version: string) {
+  const plus = version.indexOf('+')
+  if (plus < 0) return null
+  const commit = version
+    .slice(plus + 1)
+    .trim()
+    .split('.')[0]!
+  return /^[0-9a-fA-F]{7,40}$/.test(commit) ? commit.toLowerCase() : null
+}
+
+/**
+ * Each read installation beside the newest successful reading of a local copy of the same system
+ * on the same machine, as the native process compares them (`compare_with_copies`).
+ */
+export function compareWithCopies(found: Installation[], copies: LocalCopy[]): Installation[] {
+  return found.map((installation) => {
+    const read = installation.latest?.outcome === 'read' ? installation.latest : null
+    if (!read) return installation
+    let newest: { copy: LocalCopy; reading: CopyReading; at: number } | null = null
+    for (const copy of copies) {
+      const reading = copy.latest
+      if (
+        !reading ||
+        reading.outcome !== 'read' ||
+        !sameSubject(copy.subject, installation.subject) ||
+        copy.machineId !== installation.machineId
+      )
+        continue
+      const at = Date.parse(reading.observedAt)
+      if (Number.isNaN(at)) continue
+      if (!newest || at > newest.at) newest = { copy, reading, at }
+    }
+    if (!newest) return installation
+    const { copy, reading } = newest
+    const installedCommit = read.productVersion ? declaredCommit(read.productVersion) : null
+    const modified = read.modifiedAt ? Date.parse(read.modifiedAt) : NaN
+    const lastCommit = reading.lastCommitAt ? Date.parse(reading.lastCommitAt) : NaN
+    const state =
+      installedCommit !== null
+        ? reading.head === null
+          ? ('unknown' as const)
+          : reading.head.toLowerCase().startsWith(installedCommit)
+            ? ('head' as const)
+            : ('other_commit' as const)
+        : Number.isNaN(modified) || Number.isNaN(lastCommit)
+          ? ('unknown' as const)
+          : lastCommit > modified
+            ? ('newer_commits' as const)
+            : ('not_newer' as const)
+    return {
+      ...installation,
+      againstCopy: {
+        state,
+        copyReferenceId: copy.referenceId,
+        copyReadingId: reading.id,
+        installedCommit,
+        copyHead: reading.head,
+      },
+    }
+  })
 }
 
 /**
@@ -356,7 +420,10 @@ export function previewBackend(database: PreviewDatabase) {
       resources,
       sharedRepositories: sharedRepositories(applications, resources),
       localCopies: localCopies(applications, resources, readings),
-      installations: installations(applications, resources, installationReadings),
+      installations: compareWithCopies(
+        installations(applications, resources, installationReadings),
+        localCopies(applications, resources, readings),
+      ),
       observations: observations.filter((item) => !automated(item) || kept.has(item.id)),
       incidents: [...database.incidents].sort(
         (a, b) => Date.parse(b.openedAt) - Date.parse(a.openedAt),

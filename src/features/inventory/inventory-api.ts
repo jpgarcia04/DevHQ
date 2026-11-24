@@ -216,6 +216,26 @@ export interface Installation {
   version: 'matches' | 'differs' | 'undeclared' | 'unknown' | null
   /** Since when the file is the same build; null when it was not read. */
   build: InstallationBuild | null
+  /**
+   * How the installed build compared with the newest reading of a local copy of the same system on
+   * the same machine; null when the file or no such copy was read.
+   */
+  againstCopy: InstallationAgainstCopy | null
+}
+
+/**
+ * The installed build beside a local copy's newest reading. `head`: the file declared the commit
+ * HEAD was on. `other_commit`: it declared another one (newer, older or another branch: DevHQ does
+ * not say which). `newer_commits`: it declared no commit, and the copy held a commit dated after the
+ * file was modified, which may or may not be in it. `not_newer`: no such commit. `unknown`: nothing
+ * could be compared.
+ */
+export interface InstallationAgainstCopy {
+  state: 'head' | 'other_commit' | 'newer_commits' | 'not_newer' | 'unknown'
+  copyReferenceId: string
+  copyReadingId: string
+  installedCommit: string | null
+  copyHead: string | null
 }
 
 /** A system's readings of its installations, a page at a time, newest first. */

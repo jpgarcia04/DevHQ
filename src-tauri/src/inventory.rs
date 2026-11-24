@@ -1715,7 +1715,8 @@ pub(crate) fn list_in(tx: &Transaction) -> Result<Inventory, ApiError> {
     }
     let shared_repositories = references::shared_repositories(&applications, &resources);
     let local_copies = readings::local_copies(tx, &applications, &resources)?;
-    let installations = installation_readings::installations(tx, &applications, &resources)?;
+    let mut installations = installation_readings::installations(tx, &applications, &resources)?;
+    installation_readings::compare_with_copies(&mut installations, &local_copies);
     let subjects: Vec<_> = applications
         .iter()
         .map(|app| records::Subject::Application { id: app.id.clone() })

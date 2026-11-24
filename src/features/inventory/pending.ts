@@ -26,6 +26,7 @@ export const pendingReasons = [
   'unpublished',
   'stashes',
   'version_differs',
+  'not_installed',
   'not_found',
   'never_read',
   'old_reading',
@@ -56,6 +57,8 @@ interface InstallationFacts {
   machineId: string
   latest: { outcome: string; observedAt: string } | null
   version: string | null
+  /** The state of how the installed build compares with a local copy, when compared. */
+  againstCopy?: { state: string } | null
 }
 
 export interface PendingItem {
@@ -119,7 +122,11 @@ export function pendingWork(
       if (here) reasons.push('never_read')
     } else {
       if (reading.outcome !== 'read') reasons.push('not_found')
-      else if (installation.version === 'differs') reasons.push('version_differs')
+      else {
+        if (installation.version === 'differs') reasons.push('version_differs')
+        const against = installation.againstCopy?.state
+        if (against === 'other_commit' || against === 'newer_commits') reasons.push('not_installed')
+      }
       if (old(reading.observedAt, here)) reasons.push('old_reading')
     }
     if (reasons.length)

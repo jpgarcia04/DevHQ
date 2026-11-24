@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import type { ReactNode } from 'react'
 import {
+  againstCopyText,
   buildText,
   installationsOverview,
   processesText,
@@ -82,6 +83,7 @@ function installation(referenceId: string, facts: Partial<Installation> = {}): I
     movedSinceRead: false,
     version: null,
     build: null,
+    againstCopy: null,
     ...facts,
   }
 }
@@ -251,6 +253,23 @@ describe('what the window says of installations', () => {
       "The file's version is unknown, so DevHQ cannot say whether it was the declared 1.4.0.",
     )
     expect(versionText(neverHere, '1.4.0')).toBeNull()
+  })
+
+  it('says how the build compares with a local copy, and never more than it knows', () => {
+    const against = {
+      state: 'other_commit' as const,
+      copyReferenceId: 'notes-copy',
+      copyReadingId: 'copy-reading',
+      installedCommit: '3f9c2ab',
+      copyHead: '9b8a7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a07',
+    }
+    expect(againstCopyText(against)).toBe(
+      "The file declared commit 3f9c2ab; HEAD was on 9b8a7c6d5e4f in the local copy's newest reading. What is installed is not what the copy held: DevHQ does not say whether it is older or newer.",
+    )
+    expect(againstCopyText({ ...against, state: 'head' })).toMatch(/the one HEAD was on/)
+    expect(againstCopyText({ ...against, state: 'newer_commits' })).toMatch(
+      /may or may not be in the installed build/,
+    )
   })
 
   it('says between which two readings the build changed, and never when it was installed', () => {

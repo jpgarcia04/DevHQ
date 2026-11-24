@@ -8,10 +8,11 @@
 //! machine and the path it read, so editing or removing the reference never rewrites it, and it
 //! makes its system's history: a system with readings is archived, not deleted.
 //!
-//! Three things are derived, at each read and never stored: whether the version the application
+//! Four things are derived, at each read and never stored: whether the version the application
 //! declares is the one its file declared; between which two readings the build changed, with both
-//! moments and never a date of its own; and whether the reading was made somewhere else than the
-//! reference points now.
+//! moments and never a date of its own; whether the reading was made somewhere else than the
+//! reference points now; and how the installed build compares with the newest reading of a local
+//! copy of the same system on the same machine (`against_copy`).
 
 use super::{Facts, Reader, DEADLINE, READER};
 use crate::inventory::{self, open_current, ApiError, Application, Resource};
@@ -175,6 +176,110 @@ pub struct Installation {
     pub version: Option<String>,
     /// Since when the file is the build the newest reading found. None when it was not read.
     pub build: Option<Build>,
+    /// How the installed build compares with what a local copy of the same system on the same
+    /// machine held at its newest reading. None when there is nothing to compare: the file or no
+    /// such copy was read.
+    pub against_copy: Option<AgainstCopy>,
+}
+
+/// The installed build beside a local copy's newest reading (see `compare_with_copies`).
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgainstCopy {
+    /// `head`: the file declared the commit HEAD was on. `other_commit`: it declared another
+    /// commit, so the copy's HEAD is not what is installed (newer, older or on another branch:
+    /// DevHQ does not walk the history to say which). `newer_commits`: it declared no commit, and
+    /// the copy held a commit dated after the file was last modified, which may or may not be in
+    /// it. `not_newer`: it declared no commit, and no commit of the copy was dated after the file.
+    /// `unknown`: neither comparison was possible.
+    pub state: String,
+    /// The copy compared with, and the reading it rests on.
+    pub copy_reference_id: String,
+    pub copy_reading_id: String,
+    /// The commit the file declared after a `+` in its ProductVersion, as written.
+    pub installed_commit: Option<String>,
+    /// HEAD's commit at the copy's reading.
+    pub copy_head: Option<String>,
+}
+
+/// The commit a build wrote as SemVer build metadata in its version («1.4.0+3f9c2ab01d4e», also
+/// «1.4.0+3f9c2ab01d4e.dirty»): from 7 to 40 hexadecimal digits right after the `+`. None for any
+/// other version, so that nothing that merely looks like a commit is compared as one.
+pub(crate) fn declared_commit(version: &str) -> Option<String> {
+    let metadata = version.split_once('+')?.1.trim();
+    let commit = metadata.split('.').next()?;
+    ((7..=40).contains(&commit.len()) && commit.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .then(|| commit.to_ascii_lowercase())
+}
+
+/// Compares each read installation with the newest successful reading of a local copy of the
+/// same system on the same machine (the newest by its observed time; among equal ones, the first
+/// declared). A commit the file declared is compared with HEAD's exactly, by prefix; without one,
+/// the file's modification time with the copy's newest commit date, which says only that a newer
+/// commit existed, never that it is missing from the build.
+pub(crate) fn compare_with_copies(
+    installations: &mut [Installation],
+    copies: &[crate::local_copies::readings::LocalCopy],
+) {
+    for installation in installations.iter_mut() {
+        let Some(read) = installation
+            .latest
+            .as_ref()
+            .filter(|reading| reading.outcome == "read")
+        else {
+            continue;
+        };
+        let mut newest: Option<(&crate::local_copies::readings::CopyReading, i64)> = None;
+        let mut reference = None;
+        for copy in copies.iter().filter(|copy| {
+            copy.subject == installation.subject && copy.machine_id == installation.machine_id
+        }) {
+            let Some(reading) = copy
+                .latest
+                .as_ref()
+                .filter(|reading| reading.outcome == "read")
+            else {
+                continue;
+            };
+            // A stored time that cannot be read never wins: it is no evidence of being newest.
+            let Ok(at) = records::parse_time(&reading.observed_at, "") else {
+                continue;
+            };
+            if newest.is_none_or(|(_, best)| at > best) {
+                newest = Some((reading, at));
+                reference = Some(copy.reference_id.clone());
+            }
+        }
+        let (Some((reading, _)), Some(reference)) = (newest, reference) else {
+            continue;
+        };
+        let installed_commit = read.product_version.as_deref().and_then(declared_commit);
+        let state = match (&installed_commit, &reading.head) {
+            (Some(commit), Some(head)) if head.to_ascii_lowercase().starts_with(commit) => "head",
+            (Some(_), Some(_)) => "other_commit",
+            (Some(_), None) => "unknown",
+            (None, _) => match (
+                read.modified_at
+                    .as_deref()
+                    .map(|at| records::parse_time(at, "")),
+                reading
+                    .last_commit_at
+                    .as_deref()
+                    .map(|at| records::parse_time(at, "")),
+            ) {
+                (Some(Ok(modified)), Some(Ok(commit))) if commit > modified => "newer_commits",
+                (Some(Ok(_)), Some(Ok(_))) => "not_newer",
+                _ => "unknown",
+            },
+        };
+        installation.against_copy = Some(AgainstCopy {
+            state: state.to_owned(),
+            copy_reference_id: reference,
+            copy_reading_id: reading.id.clone(),
+            installed_commit,
+            copy_head: reading.head.clone(),
+        });
+    }
 }
 
 /// A version as it is compared: without surrounding whitespace, without a leading `v` before a
@@ -327,6 +432,7 @@ pub(crate) fn installations(
                 path: reference.target.clone(),
                 version,
                 build: read.and_then(|reading| build_since(reading, &earlier, more)),
+                against_copy: None,
                 latest,
             });
         }
@@ -1341,5 +1447,189 @@ mod tests {
         }
         drop(db);
         crate::inventory::tests::remove_now(&world.folder);
+    }
+
+    /// The installation of «notes» on the laptop, read, whose file declared `version` and was
+    /// last modified at `modified`.
+    fn read_installation(version: Option<&str>, modified: Option<&str>) -> Installation {
+        let latest: InstallationReading = serde_json::from_value(serde_json::json!({
+            "id": "installed-reading", "subject": { "type": "application", "id": "notes" },
+            "referenceId": "installed", "machineId": "laptop", "path": "C:\\Notes\\notes.exe",
+            "source": "read", "reader": "test", "observedAt": "2026-11-24T10:00:00Z",
+            "recordedAt": "2026-11-24T10:00:00Z", "outcome": "read",
+            "productVersion": version, "modifiedAt": modified,
+        }))
+        .unwrap();
+        Installation {
+            reference_id: "installed".into(),
+            subject: latest.subject.clone(),
+            machine_id: "laptop".into(),
+            path: latest.path.clone(),
+            latest: Some(latest),
+            moved_since_read: false,
+            version: None,
+            build: None,
+            against_copy: None,
+        }
+    }
+
+    /// A copy of «notes» on `machine`, read at `observed` with `head` and its newest commit.
+    fn read_copy(
+        reference: &str,
+        machine: &str,
+        observed: &str,
+        head: Option<&str>,
+        last_commit: Option<&str>,
+        outcome: &str,
+    ) -> crate::local_copies::readings::LocalCopy {
+        let latest: crate::local_copies::readings::CopyReading =
+            serde_json::from_value(serde_json::json!({
+                "id": format!("{reference}-reading"),
+                "subject": { "type": "application", "id": "notes" },
+                "referenceId": reference, "machineId": machine, "path": "C:\\src\\notes",
+                "source": "read", "reader": "test", "observedAt": observed,
+                "recordedAt": observed, "outcome": outcome, "head": head,
+                "lastCommitAt": last_commit,
+            }))
+            .unwrap();
+        crate::local_copies::readings::LocalCopy {
+            reference_id: reference.into(),
+            subject: latest.subject.clone(),
+            machine_id: machine.into(),
+            path: latest.path.clone(),
+            latest: Some(latest),
+            moved_since_read: false,
+            repository: None,
+            local_work: false,
+        }
+    }
+
+    fn compared(
+        installation: Installation,
+        copies: &[crate::local_copies::readings::LocalCopy],
+    ) -> Option<AgainstCopy> {
+        let mut installations = [installation];
+        compare_with_copies(&mut installations, copies);
+        installations[0].against_copy.clone()
+    }
+
+    #[test]
+    fn a_declared_commit_is_only_hexadecimal_digits_right_after_the_plus() {
+        assert_eq!(
+            declared_commit("0.2.2+3F9C2AB01D4E").as_deref(),
+            Some("3f9c2ab01d4e")
+        );
+        assert_eq!(
+            declared_commit("1.0+3f9c2ab.dirty").as_deref(),
+            Some("3f9c2ab")
+        );
+        assert_eq!(
+            declared_commit("1.0+3f9c2a"),
+            None,
+            "six digits are too few"
+        );
+        assert_eq!(declared_commit("1.0+build7"), None);
+        assert_eq!(declared_commit("1.0.0"), None);
+        assert_eq!(declared_commit(&format!("1.0+{}", "a".repeat(41))), None);
+    }
+
+    #[test]
+    fn compares_the_installed_commit_with_the_newest_reading_of_a_copy_on_the_same_machine() {
+        let head = "3f9c2ab01d4e00000000000000000000000000aa";
+        let other = "11d2e4f000000000000000000000000000000000";
+        let copies = [
+            // Older reading on the laptop, HEAD then on the installed commit.
+            read_copy(
+                "old",
+                "laptop",
+                "2026-11-20T10:00:00Z",
+                Some(head),
+                None,
+                "read",
+            ),
+            // The newest reading on the laptop: HEAD moved on.
+            read_copy(
+                "new",
+                "laptop",
+                "2026-11-24T09:00:00Z",
+                Some(other),
+                None,
+                "read",
+            ),
+            // Newer, but not found, and on another machine: neither counts.
+            read_copy(
+                "gone",
+                "laptop",
+                "2026-11-24T11:00:00Z",
+                None,
+                None,
+                "missing",
+            ),
+            read_copy(
+                "desk",
+                "desk",
+                "2026-11-24T11:00:00Z",
+                Some(head),
+                None,
+                "read",
+            ),
+        ];
+        let against =
+            compared(read_installation(Some("1.5.0+3f9c2ab01d4e"), None), &copies).unwrap();
+        assert_eq!(against.state, "other_commit");
+        assert_eq!(against.copy_reference_id, "new");
+        assert_eq!(against.copy_reading_id, "new-reading");
+        assert_eq!(against.installed_commit.as_deref(), Some("3f9c2ab01d4e"));
+        assert_eq!(against.copy_head.as_deref(), Some(other));
+        let against = compared(
+            read_installation(Some("1.5.0+3f9c2ab01d4e"), None),
+            &copies[..1],
+        )
+        .unwrap();
+        assert_eq!(against.state, "head");
+        // HEAD unknown (a copy without commits): nothing to say.
+        let empty = [read_copy(
+            "empty",
+            "laptop",
+            "2026-11-24T09:00:00Z",
+            None,
+            None,
+            "read",
+        )];
+        let against = compared(read_installation(Some("1.5.0+3f9c2ab"), None), &empty).unwrap();
+        assert_eq!(against.state, "unknown");
+    }
+
+    #[test]
+    fn without_a_declared_commit_it_only_says_whether_a_newer_commit_existed() {
+        let copy = |last: &str| {
+            [read_copy(
+                "copy",
+                "laptop",
+                "2026-11-24T09:00:00Z",
+                None,
+                Some(last),
+                "read",
+            )]
+        };
+        let installed = || read_installation(Some("0.1.0"), Some("2026-11-10T12:00:00Z"));
+        let state = |copies: &[crate::local_copies::readings::LocalCopy]| {
+            compared(installed(), copies).unwrap().state
+        };
+        assert_eq!(state(&copy("2026-11-12T08:00:00Z")), "newer_commits");
+        assert_eq!(state(&copy("2026-11-10T12:00:00Z")), "not_newer");
+        assert_eq!(state(&copy("2026-11-01T08:00:00Z")), "not_newer");
+        let unmodified = read_installation(None, None);
+        assert_eq!(
+            compared(unmodified, &copy("2026-11-12T08:00:00Z"))
+                .unwrap()
+                .state,
+            "unknown"
+        );
+        // No copy read, or the file not read: nothing compared.
+        assert_eq!(compared(installed(), &[]), None);
+        let mut missing = installed();
+        missing.latest.as_mut().unwrap().outcome = "missing".into();
+        assert_eq!(compared(missing, &copy("2026-11-12T08:00:00Z")), None);
     }
 }

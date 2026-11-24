@@ -18,8 +18,8 @@ use crate::backup::{Backup, BackupCounts, BackupFile, BackupFolder};
 use crate::change_log::{Change, FieldChange};
 use crate::http_check::{HttpCheck, HttpCheckInput};
 use crate::installations::readings::{
-    Build, Installation, InstallationReading, InstallationReadingPage, InstallationsRead,
-    PreviousBuild,
+    AgainstCopy, Build, Installation, InstallationReading, InstallationReadingPage,
+    InstallationsRead, PreviousBuild,
 };
 use crate::inventory::{
     self, Application, ApplicationInput, Component, DataLocation, Inventory, Resource,
@@ -836,6 +836,13 @@ fn every_answer_has_the_shape_the_window_expects() {
                     product_version: Some("2.0.0+11d2e4f".into()),
                 }),
                 complete: true,
+            }),
+            against_copy: Some(AgainstCopy {
+                state: "other_commit".into(),
+                copy_reference_id: "shop-copy".into(),
+                copy_reading_id: "reading-2".into(),
+                installed_commit: Some("3f9c2ab".into()),
+                copy_head: Some("0123456789abcdef0123456789abcdef01234567".into()),
             }),
         }],
         observations: vec![
