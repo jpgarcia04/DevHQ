@@ -3,6 +3,7 @@ import { sameSubject, subjectsOf } from '@/domain/evidence'
 import type { EntityRef, Observation, RecordedEvent } from '@/domain/models'
 import type {
   AgentAccess,
+  GithubToken,
   BackupFolder,
   CopyReading,
   Installation,
@@ -556,6 +557,9 @@ export function previewBackend(database: PreviewDatabase) {
           changedAt: null,
           executable: 'C:\\Users\\Ana Ruiz\\AppData\\Local\\DevHQ\\devhq.exe',
         } satisfies AgentAccess
+      // The preview keeps no token; saving or removing one writes, so it is refused.
+      case 'github_token':
+        return { stored: false, store: 'windows_credential_manager' } satisfies GithubToken
       case 'older_observations':
         return olderObservations(args.subject as EntityRef, args.before as string)
       case 'older_events':

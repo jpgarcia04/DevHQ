@@ -17,10 +17,11 @@ sends Codex and other agents here: keep every rule in this file and only pointer
   When a list is cut (history window, paging), the UI says where and why.
 - History is never deleted or rewritten: observations are immutable, subjects with history
   cannot be deleted, a schema change keeps every row.
-- DevHQ observes; it does not operate systems, run in the background or hold credentials. It
-  reads only what the inventory names, when asked or, for this workstation's local copies and
-  installations, once when its window opens (specification «Trabajo pendiente»), and never searches
-  a disk or a network for things to add. Observing never gives the source a way to run code or
+- DevHQ observes; it does not operate systems or run in the background. It holds one credential,
+  a read-only fine-grained GitHub token, and only in the system's credential store (see
+  «Credentials»). It reads only what the inventory names, when asked or, for this workstation's
+  local copies and installations, once when its window opens (specification «Trabajo pendiente»),
+  and never searches a disk or a network for things to add. Observing never gives the source a way to run code or
   change anything: a reader never runs a program the source names and never writes to it, and every
   declared path, and what it holds, is untrusted data.
 - Provenance (`source`), observed and recorded times, and validity are always visible.
@@ -357,6 +358,18 @@ processes running from the file it looks at the system's list of processes and k
 the second counting only the processes the system hid whose listed name is the file's: never a
 process identifier, a name, a command line or another program's path. Tests use synthetic
 images without code (`pe::tests::image`) and the test executable itself, never an installed program.
+
+## Credentials
+
+`src-tauri/src/credentials.rs` keeps DevHQ's only credential, the GitHub token
+(`docs/leer-github.md`, specification «Token de GitHub»), in the system's store under
+`<identifier>:github`: the Credential Manager on Windows, the kernel's user keyring on Linux, nothing
+anywhere else. The window sends it once and only learns whether one is kept; never return it through
+IPC, write it to the inventory, a backup, a log or an error, or let the agent gate reach it. Accepting
+any other credential, or another kind of token, rewrites the product rule above first. Tests use the
+in-memory store (`credentials::tests::in_memory`), never the system's, which may hold the person's
+token; only `the_system_store_keeps_replaces_and_removes_a_secret` touches it, under a name of its
+own that it removes when it ends.
 
 ## Version
 

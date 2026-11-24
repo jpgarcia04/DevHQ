@@ -3,6 +3,7 @@ import { PageHeader } from '@/components/page-header'
 import { Button } from '@/components/ui/button'
 import { AgentGate } from './agent-gate'
 import { Backups } from './backups'
+import { GithubTokenSettings } from './github-token'
 import { useCopy } from './copy'
 import { inventoryError, type DataLocation, type PreviousLocation } from './inventory-api'
 import { useInventory } from './inventory-context'
@@ -161,6 +162,7 @@ export function RealSettingsPage() {
       <DatabaseFile />
       <ThisComputer />
       <AgentGate />
+      <GithubTokenSettings />
       <section className="panel max-w-3xl p-6">
         <h2 className="section-heading">Data source</h2>
         <p className="mt-4 text-xs leading-6 text-muted-foreground">

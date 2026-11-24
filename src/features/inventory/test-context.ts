@@ -65,6 +65,18 @@ export function inventoryContext(
       changedAt: new Date(testNow).toISOString(),
       executable: '/opt/devhq/devhq',
     })),
+    githubToken: vi.fn(async () => ({
+      stored: false,
+      store: 'windows_credential_manager' as const,
+    })),
+    saveGithubToken: vi.fn(async () => ({
+      stored: true,
+      store: 'windows_credential_manager' as const,
+    })),
+    removeGithubToken: vi.fn(async () => ({
+      stored: false,
+      store: 'windows_credential_manager' as const,
+    })),
     saveResource: vi.fn(async () => {}),
     saveApplication: vi.fn(async () => {}),
     deleteApplication: vi.fn(async () => {}),

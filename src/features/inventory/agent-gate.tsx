@@ -82,9 +82,10 @@ export function AgentGate() {
       <p className="mt-4 text-xs leading-6 text-muted-foreground">
         An agent such as Claude Code can act in DevHQ for you through the agent gate, when you ask
         it to in a session. The agent starts the gate with its session and ends it with the session:
-        nothing runs in the background, nothing listens on the network and no credentials are kept.
-        Whatever an agent records is tagged with its name, among your own entries. While this window
-        is open, what an agent changes shows here by itself within about 2 seconds.
+        nothing runs in the background, nothing listens on the network and the gate never reaches
+        the GitHub token. Whatever an agent records is tagged with its name, among your own entries.
+        While this window is open, what an agent changes shows here by itself within about 2
+        seconds.
       </p>
       {access ? (
         <>

@@ -575,3 +575,116 @@ describe('the agent gate in Settings', () => {
     expect(gate().queryByRole('radio')).not.toBeInTheDocument()
   })
 })
+
+describe('the GitHub token in Settings', () => {
+  const section = () => within(screen.getByRole('region', { name: 'GitHub token' }))
+  const invented =
+    'github_pat_11AAAAAAA0invented0for0tests0only_0000000000000000000000000000000000000000000000'
+
+  it('says no token is kept and how to make one that can change nothing', async () => {
+    renderSettings(inventoryContext())
+    expect(await section().findByText('No token is kept.')).toBeInTheDocument()
+    expect(
+      section().getByText(/read-only access to Metadata, Actions and Pull requests/),
+    ).toBeInTheDocument()
+    expect(section().getByText(/hands it to Windows Credential Manager/)).toBeInTheDocument()
+    // Nothing reads it yet, and the section says so instead of promising it.
+    expect(section().getByText(/Reading them is not built yet/)).toBeInTheDocument()
+    expect(section().getByRole('button', { name: 'Save token' })).toBeDisabled()
+    expect(section().queryByRole('button', { name: 'Remove token' })).not.toBeInTheDocument()
+  })
+
+  it('hands the token over once, empties the field and only says that one is kept', async () => {
+    const user = userEvent.setup()
+    const value = inventoryContext()
+    renderSettings(value)
+    const field = await section().findByLabelText('Fine-grained token')
+    expect(field).toHaveAttribute('type', 'password')
+    expect(field).toHaveAttribute('autocomplete', 'off')
+    await user.type(field, invented)
+    await user.click(section().getByRole('button', { name: 'Save token' }))
+    expect(value.saveGithubToken).toHaveBeenCalledWith(invented)
+    expect(await section().findByText('Token saved.')).toBeInTheDocument()
+    expect(
+      section().getByText('A token is kept in Windows Credential Manager.'),
+    ).toBeInTheDocument()
+    expect(section().getByLabelText('Replace it with another fine-grained token')).toHaveValue('')
+    expect(document.body.textContent).not.toContain(invented)
+  })
+
+  it('removes a kept token', async () => {
+    const user = userEvent.setup()
+    const value = inventoryContext({
+      githubToken: vi.fn(async () => ({
+        stored: true,
+        store: 'windows_credential_manager' as const,
+      })),
+    })
+    renderSettings(value)
+    await user.click(await section().findByRole('button', { name: 'Remove token' }))
+    expect(value.removeGithubToken).toHaveBeenCalledTimes(1)
+    expect(await section().findByText('No token is kept.')).toBeInTheDocument()
+    expect(section().getByText('Token removed.')).toBeInTheDocument()
+  })
+
+  it('keeps what was kept when DevHQ refuses a token, and says why', async () => {
+    const user = userEvent.setup()
+    const value = inventoryContext({
+      githubToken: vi.fn(async () => ({
+        stored: true,
+        store: 'windows_credential_manager' as const,
+      })),
+      saveGithubToken: vi.fn(async () => {
+        throw {
+          code: 'invalid_token',
+          message:
+            'This is not a fine-grained token: a classic GitHub token reaches every repository the account can.',
+        }
+      }),
+    })
+    renderSettings(value)
+    await user.type(
+      await section().findByLabelText('Replace it with another fine-grained token'),
+      'ghp_classic',
+    )
+    await user.click(section().getByRole('button', { name: 'Save token' }))
+    expect(await section().findByRole('alert')).toHaveTextContent(
+      'This is not a fine-grained token',
+    )
+    expect(
+      section().getByText('A token is kept in Windows Credential Manager.'),
+    ).toBeInTheDocument()
+  })
+
+  it('offers nothing to save where the system has no store DevHQ knows', async () => {
+    renderSettings(
+      inventoryContext({
+        githubToken: vi.fn(async () => ({ stored: false, store: 'none' as const })),
+      }),
+    )
+    expect(
+      await section().findByText(
+        'This system has no credential store DevHQ knows, so it keeps no token here.',
+      ),
+    ).toBeInTheDocument()
+    expect(section().queryByRole('textbox')).not.toBeInTheDocument()
+    expect(section().queryByRole('button', { name: 'Save token' })).not.toBeInTheDocument()
+  })
+
+  it('says when it cannot ask the store, instead of saying none is kept', async () => {
+    renderSettings(
+      inventoryContext({
+        githubToken: vi.fn(async () => {
+          throw {
+            code: 'credential_store_error',
+            message: "The system's credential store refused: Access is denied.",
+          }
+        }),
+      }),
+    )
+    expect(await section().findByRole('alert')).toHaveTextContent(
+      "DevHQ could not say whether a token is kept. The system's credential store refused: Access is denied.",
+    )
+    expect(section().queryByText('No token is kept.')).not.toBeInTheDocument()
+  })
+})

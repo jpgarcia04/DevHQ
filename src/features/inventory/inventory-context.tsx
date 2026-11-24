@@ -9,6 +9,7 @@ import type {
   DataLocation,
   EventInput,
   EventPage,
+  GithubToken,
   HttpCheckInput,
   IncidentInput,
   IncidentStatusInput,
@@ -60,6 +61,10 @@ export interface InventoryContextValue {
   /** Whether agents may use the agent gate; it reads nothing else. */
   agentAccess: () => Promise<AgentAccess>
   setAgentAccess: (mode: AgentAccessMode) => Promise<AgentAccess>
+  /** Whether a GitHub token is kept; it opens nothing of the inventory. */
+  githubToken: () => Promise<GithubToken>
+  saveGithubToken: (token: string) => Promise<GithubToken>
+  removeGithubToken: () => Promise<GithubToken>
   saveResource: (input: ResourceInput) => Promise<void>
   saveApplication: (input: ApplicationInput) => Promise<void>
   deleteApplication: (id: string) => Promise<void>
