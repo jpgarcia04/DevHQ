@@ -20,7 +20,8 @@ sends Codex and other agents here: keep every rule in this file and only pointer
 - DevHQ observes; it does not operate systems or run in the background. It holds one credential,
   a read-only fine-grained GitHub token, and only in the system's credential store (see
   «Credentials»). It reads only what the inventory names, when asked or, for this workstation's
-  local copies and installations, once when its window opens (specification «Trabajo pendiente»),
+  local copies and installations and the repositories on GitHub, once when its window opens
+  (specification «Trabajo pendiente»),
   and never searches a disk or a network for things to add. Observing never gives the source a way to run code or
   change anything: a reader never runs a program the source names and never writes to it, and every
   declared path, and what it holds, is untrusted data.
@@ -238,8 +239,8 @@ finishes, and a failure is the next fix. If it did not finish, run the workflow 
   ranking, coverage and status). `src/domain/attention-contract.test.ts` and
   `src-tauri/src/attention.rs` check the window's rules and their Rust copy (for the agent
   gate) against them: change a rule on both sides and in the cases together.
-- `contract/pending-work/` does the same for pending work, what the readings of local copies and
-  installations say is waiting: `src/features/inventory/pending-contract.test.ts` and
+- `contract/pending-work/` does the same for pending work, what the readings of local copies,
+  installations and repositories on GitHub say is waiting: `src/features/inventory/pending-contract.test.ts` and
   `src-tauri/src/pending.rs` (for `attention` in the agent gate) rank its cases. It is not health
   and never touches `contract/attention/`.
 - Tauri runs a synchronous command on the thread that received the request: the main thread,
@@ -370,6 +371,20 @@ any other credential, or another kind of token, rewrites the product rule above 
 in-memory store (`credentials::tests::in_memory`), never the system's, which may hold the person's
 token; only `the_system_store_keeps_replaces_and_removes_a_secret` touches it, under a name of its
 own that it removes when it ends.
+
+## GitHub
+
+`src-tauri/src/github.rs` reads a repository a `repository` reference names on github.com
+(specification «Repositorios en GitHub»), and it is the only code that takes the token out of the
+store (`Credentials::github_secret`). It talks only to `api.github.com` over HTTPS, follows no
+redirect, sends the token as a sensitive header and nowhere else, caps every answer while it arrives
+and checks it as untrusted: an element it cannot accept refuses the whole answer. Nothing GitHub says
+decides where a request goes; a value from GitHub that enters a request (the default branch) is
+percent-encoded into one query value. A new request, field or endpoint keeps all of that and gets a
+hostile case in `github::tests`, which drive the reader through the `Fetch` trait with invented
+answers: never a test that reaches GitHub or uses a real token. Readings are kept in
+`github_readings` by `github::readings::store`, only while the reference still names the address read.
+The agent gate never reads GitHub and never reaches the token; it serves the stored readings.
 
 ## Version
 

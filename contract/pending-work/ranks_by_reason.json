@@ -192,6 +192,7 @@
       "version": "matches"
     }
   ],
+  "githubRepositories": [],
   "expected": [
     {
       "kind": "localCopy",

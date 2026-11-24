@@ -103,6 +103,7 @@
       "version": "undeclared"
     }
   ],
+  "githubRepositories": [],
   "expected": [
     {
       "kind": "localCopy",

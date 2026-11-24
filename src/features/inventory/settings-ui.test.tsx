@@ -589,7 +589,9 @@ describe('the GitHub token in Settings', () => {
     ).toBeInTheDocument()
     expect(section().getByText(/hands it to Windows Credential Manager/)).toBeInTheDocument()
     // Nothing reads it yet, and the section says so instead of promising it.
-    expect(section().getByText(/Reading them is not built yet/)).toBeInTheDocument()
+    expect(
+      section().getByText(/once when it opens and when you press Read GitHub/),
+    ).toBeInTheDocument()
     expect(section().getByRole('button', { name: 'Save token' })).toBeDisabled()
     expect(section().queryByRole('button', { name: 'Remove token' })).not.toBeInTheDocument()
   })

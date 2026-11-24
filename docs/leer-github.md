@@ -1,10 +1,9 @@
-# Leer GitHub (propuesta)
+# Leer GitHub
 
-Estado: **en construcción** (24 nov 2026). La persona aprobó esta decisión y su implementación. El
-primer paso, guardar el token, ya existe y reescribió la regla «DevHQ no guarda credenciales»
-([especificación](especificacion.md), «Token de GitHub»); la lectura todavía no. La especificación
-manda. Los repositorios
-y sistemas de los ejemplos son inventados.
+Estado: **hecho** (24 nov 2026). La persona aprobó esta decisión y su implementación: guardar el token
+reescribió la regla «DevHQ no guarda credenciales» ([especificación](especificacion.md), «Token de
+GitHub») y la lectura está descrita en «Repositorios en GitHub». La especificación manda; este documento
+queda como el porqué. Los repositorios y sistemas de los ejemplos son inventados.
 
 ## El problema
 
@@ -137,8 +136,16 @@ en `attention`, y la versión nueva. El lector se prueba contra respuestas inven
 (tamaños enormes, campos que faltan, tipos cambiados, redirecciones), nunca contra la cuenta de la
 persona.
 
-## Preguntas abiertas
+### Lo decidido al construir la lectura
 
-- ¿7 días es el umbral correcto para un pull request olvidado, o conviene que se elija en Settings?
-- ¿Se empieza leyendo solo los repositorios públicos sin token, para ver el lector funcionando antes de
-  guardar la credencial?
+- Siete días fijos para un pull request olvidado, medidos hasta la lectura y no hasta ahora; si se
+  quedan cortos o largos con el uso, se volverá a decidir, y quizá se elijan en Settings.
+- Directamente con el token: leer solo los repositorios públicos sin él no respondía la pregunta en un
+  ecosistema con repositorios privados.
+- Una ejecución cancelada, omitida o caducada no cuenta; `neutral` y `action_required` no son un fallo,
+  y sí lo son `failure`, `timed_out` y `startup_failure`.
+- Un repositorio nunca leído es `never_read` también sin token, para no callar lo que no se sabe; al
+  abrirse sin token, la ventana no pregunta nada a GitHub y dice por qué.
+- Una dirección de GitHub con `.git` al final, como la de clonar, también se lee.
+- La puerta no pide lecturas de GitHub (no alcanza el token) y el historial de lecturas todavía no se
+  muestra en la ventana: es lo siguiente si hace falta.

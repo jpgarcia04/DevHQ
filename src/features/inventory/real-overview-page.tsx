@@ -100,7 +100,7 @@ function OverviewContent() {
           {pending > 0 && (
             <p className="mt-1 text-xs text-muted-foreground">
               Apart from health, {pending} {pending === 1 ? 'thing is' : 'things are'} waiting in
-              local copies and installations: see Pending work.
+              local copies, installations and repositories: see Pending work.
             </p>
           )}
         </div>

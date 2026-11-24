@@ -211,6 +211,84 @@
       }
     }
   ],
+  "githubRepositories": [
+    {
+      "referenceId": "shop-repo",
+      "subject": {
+        "type": "application",
+        "id": "shop"
+      },
+      "repository": "https://github.com/me/platform",
+      "latest": {
+        "id": "github-1",
+        "subject": {
+          "type": "application",
+          "id": "shop"
+        },
+        "referenceId": "shop-repo",
+        "repository": "https://github.com/me/platform",
+        "source": "github",
+        "reader": "DevHQ GitHub reader 1 (REST 2022-11-28)",
+        "agent": null,
+        "observedAt": "2026-01-01T09:30:00Z",
+        "recordedAt": "2026-01-01T09:30:00Z",
+        "outcome": "read",
+        "detail": null,
+        "defaultBranch": "main",
+        "workflows": [
+          {
+            "workflow": "CI",
+            "conclusion": "failure",
+            "commit": "89abcdef0123456789abcdef0123456789abcdef",
+            "finishedAt": "2026-01-01T08:40:00Z",
+            "address": "https://github.com/me/platform/actions/runs/4012"
+          }
+        ],
+        "workflowsMore": false,
+        "pullRequests": [
+          {
+            "number": 41,
+            "title": "Audit dependencies",
+            "draft": true,
+            "updatedAt": "2025-12-20T10:00:00Z",
+            "address": "https://github.com/me/platform/pull/41"
+          }
+        ],
+        "pullRequestsMore": false
+      },
+      "movedSinceRead": false
+    },
+    {
+      "referenceId": "host-repo",
+      "subject": {
+        "type": "resource",
+        "id": "host"
+      },
+      "repository": "https://github.com/me/platform",
+      "latest": {
+        "id": "github-2",
+        "subject": {
+          "type": "resource",
+          "id": "host"
+        },
+        "referenceId": "host-repo",
+        "repository": "https://github.com/me/platform-old",
+        "source": "github",
+        "reader": "DevHQ GitHub reader 1 (REST 2022-11-28)",
+        "agent": null,
+        "observedAt": "2026-01-01T09:30:00Z",
+        "recordedAt": "2026-01-01T09:30:00Z",
+        "outcome": "refused",
+        "detail": "GitHub refused the token (401): it expired, was revoked or is not valid. Save a new one in Settings.",
+        "defaultBranch": null,
+        "workflows": null,
+        "workflowsMore": null,
+        "pullRequests": null,
+        "pullRequestsMore": null
+      },
+      "movedSinceRead": true
+    }
+  ],
   "observations": [
     {
       "id": "obs-http",

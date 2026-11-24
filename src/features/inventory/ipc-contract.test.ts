@@ -136,6 +136,7 @@ const calls: Record<keyof typeof inventoryApi, () => Promise<unknown>> = {
   readCopies: () => inventoryApi.readCopies(['shop-copy']),
   olderReadings: () => inventoryApi.olderReadings(shop, 'reading-1'),
   readInstallations: () => inventoryApi.readInstallations(['shop-installed']),
+  readGithub: () => inventoryApi.readGithub(['shop-repo']),
   olderInstallationReadings: () => inventoryApi.olderInstallationReadings(shop, 'installed-1'),
   inspectUpgrade: () => inventoryApi.inspectUpgrade(),
   upgradeInventory: () =>
@@ -269,6 +270,54 @@ const readInstallations: Answer<'readInstallations'> = {
     },
   ],
   thisWorkstation: laptop,
+}
+
+const platformOnGithub: Answer<'readGithub'>['readings'][number] = {
+  id: 'github-1',
+  subject: shop,
+  referenceId: 'shop-repo',
+  repository: 'https://github.com/me/platform',
+  source: 'github',
+  reader: 'DevHQ GitHub reader 1 (REST 2022-11-28)',
+  agent: null,
+  observedAt: at('09:30'),
+  recordedAt: at('09:30'),
+  outcome: 'read',
+  detail: null,
+  defaultBranch: 'main',
+  workflows: [
+    {
+      workflow: 'CI',
+      conclusion: 'failure',
+      commit: '89abcdef0123456789abcdef0123456789abcdef',
+      finishedAt: at('08:40'),
+      address: 'https://github.com/me/platform/actions/runs/4012',
+    },
+  ],
+  workflowsMore: false,
+  pullRequests: [
+    {
+      number: 41,
+      title: 'Audit dependencies',
+      draft: true,
+      updatedAt: '2025-12-20T10:00:00Z',
+      address: 'https://github.com/me/platform/pull/41',
+    },
+  ],
+  pullRequestsMore: false,
+}
+
+const readGithub: Answer<'readGithub'> = {
+  readings: [platformOnGithub],
+  failures: [
+    {
+      referenceId: 'host-repo',
+      subject: host,
+      repository: 'https://github.com/me/platform',
+      message:
+        'The repository https://github.com/me/platform was removed or changed while DevHQ read it. Nothing was kept.',
+    },
+  ],
 }
 
 const olderInstallationReadings: Answer<'olderInstallationReadings'> = {
@@ -476,6 +525,36 @@ const snapshot: Answer<'list'> = {
         installedCommit: '3f9c2ab',
         copyHead: '0123456789abcdef0123456789abcdef01234567',
       },
+    },
+  ],
+  githubRepositories: [
+    {
+      referenceId: 'shop-repo',
+      subject: shop,
+      repository: 'https://github.com/me/platform',
+      latest: platformOnGithub,
+      movedSinceRead: false,
+    },
+    {
+      referenceId: 'host-repo',
+      subject: host,
+      repository: 'https://github.com/me/platform',
+      latest: {
+        ...platformOnGithub,
+        id: 'github-2',
+        subject: host,
+        referenceId: 'host-repo',
+        repository: 'https://github.com/me/platform-old',
+        outcome: 'refused',
+        detail:
+          'GitHub refused the token (401): it expired, was revoked or is not valid. Save a new one in Settings.',
+        defaultBranch: null,
+        workflows: null,
+        workflowsMore: null,
+        pullRequests: null,
+        pullRequestsMore: null,
+      },
+      movedSinceRead: true,
     },
   ],
   observations: [
@@ -816,6 +895,7 @@ const answers: Record<string, unknown> = {
   read_copies: readCopies,
   older_readings: olderReadings,
   read_installations: readInstallations,
+  read_github: readGithub,
   older_installation_readings: olderInstallationReadings,
   inspect_upgrade: inspection,
   upgrade_inventory: upgraded,

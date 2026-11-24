@@ -29,6 +29,7 @@ export function inventoryContext(
       sharedRepositories: [],
       localCopies: [],
       installations: [],
+      githubRepositories: [],
       observations: [],
       incidents: [],
       events: [],
@@ -114,6 +115,11 @@ export function inventoryContext(
     }),
     readingCopies: [],
     openingRead: null,
+    readGithub: vi.fn(async () => {
+      throw new Error('readGithub is not mocked in this test')
+    }),
+    readingGithub: false,
+    openingGithub: null,
     olderReadings: vi.fn(async () => ({ readings: [], more: false })),
     readInstallations: vi.fn(async () => {
       throw new Error('readInstallations is not mocked in this test')

@@ -122,6 +122,7 @@ const snapshot: InventorySnapshot = {
   sharedRepositories: [],
   localCopies: [],
   installations: [],
+  githubRepositories: [],
 }
 
 function renderTab(applicationId: string) {

@@ -12,9 +12,9 @@
 -- run of each workflow on it (a JSON array of objects: workflow, conclusion, commit, finished time,
 -- address) and the open pull requests (a JSON array of objects: number, title, draft, last change,
 -- address), each list cut at 100 with `more` set when GitHub had more. Any other outcome says why in
--- `detail`: `unreadable` (no answer, an answer DevHQ refused, a limit) or `refused` (GitHub answered
--- that the token cannot see the repository, or that there is no token to ask with). The token is
--- never here. Rust checks each element before writing. A new table: no row changes.
+-- `detail`: `unreadable` (no answer, an answer DevHQ refused, a limit) or `refused` (GitHub refused
+-- the token or answered that it cannot see the repository). Without a token nothing is asked and
+-- nothing is kept. The token is never here. Rust checks each element before writing. A new table: no row changes.
 CREATE TABLE github_readings (
     id TEXT PRIMARY KEY,
     application_id TEXT REFERENCES applications(id) ON DELETE RESTRICT,

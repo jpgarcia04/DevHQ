@@ -285,6 +285,72 @@ export interface InstallationsRead {
   thisWorkstation: ThisWorkstation
 }
 
+/** The newest run that concluded something of one workflow on a repository's default branch. */
+export interface GithubWorkflow {
+  workflow: string
+  /** success, failure, neutral, timed_out, action_required or startup_failure. */
+  conclusion: string
+  commit: string
+  finishedAt: string
+  address: string
+}
+
+export interface GithubPullRequest {
+  number: number
+  title: string
+  draft: boolean
+  /** When it last changed, as GitHub said at the reading. */
+  updatedAt: string
+  address: string
+}
+
+/** What DevHQ read of a repository on GitHub, at one moment. Never health. */
+export interface GithubReading {
+  id: string
+  subject: EntityRef
+  referenceId: string
+  /** The address the reference named when it was read. */
+  repository: string
+  source: 'github'
+  reader: string
+  agent: string | null
+  observedAt: string
+  recordedAt: string
+  /** `read`, `unreadable` (no answer, a limit, an answer DevHQ refused) or `refused` by GitHub. */
+  outcome: 'read' | 'unreadable' | 'refused'
+  detail: string | null
+  defaultBranch: string | null
+  workflows: GithubWorkflow[] | null
+  /** GitHub had more finished runs than the 100 newest DevHQ looked at. */
+  workflowsMore: boolean | null
+  pullRequests: GithubPullRequest[] | null
+  /** GitHub had more open pull requests than the 100 kept. */
+  pullRequestsMore: boolean | null
+}
+
+/** A repository on GitHub a system declares now, with its newest reading. */
+export interface GithubRepository {
+  referenceId: string
+  subject: EntityRef
+  repository: string
+  latest: GithubReading | null
+  /** The newest reading was of another address than the reference names now. */
+  movedSinceRead: boolean
+}
+
+export interface GithubFailure {
+  referenceId: string
+  subject: EntityRef
+  repository: string
+  message: string
+}
+
+/** What reading GitHub did: the readings kept, GitHub's refusals among them, and what kept none. */
+export interface GithubRead {
+  readings: GithubReading[]
+  failures: GithubFailure[]
+}
+
 /**
  * `off`: runs only when asked. `active`: also every interval while DevHQ is open.
  * `paused`: keeps its interval but runs only when asked until resumed.
@@ -366,6 +432,8 @@ export interface InventorySnapshot {
   localCopies: LocalCopy[]
   /** Each installation the systems declare, with its newest reading; older ones are paged. */
   installations: Installation[]
+  /** Each repository on GitHub the systems declare, with its newest reading. */
+  githubRepositories: GithubRepository[]
   observations: Observation[]
   incidents: RecordedIncident[]
   events: RecordedEvent[]
@@ -660,6 +728,12 @@ export const inventoryApi = {
    */
   saveGithubToken: (token: string) => invoke<GithubToken>('save_github_token', { token }),
   removeGithubToken: () => invoke<GithubToken>('remove_github_token'),
+  /**
+   * Reads on GitHub, with the kept token, the repositories named, or with null every repository of
+   * every system but archived applications. Refused (`no_token`) when no token is kept.
+   */
+  readGithub: (referenceIds: string[] | null) =>
+    invoke<GithubRead>('read_github', { referenceIds }),
   saveResource: (input: ResourceInput) => invoke<InventoryResource>('save_resource', { input }),
   saveApplication: (input: ApplicationInput) =>
     invoke<InventoryApplication>('save_application', { input }),

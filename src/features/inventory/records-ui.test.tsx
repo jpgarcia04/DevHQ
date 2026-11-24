@@ -102,6 +102,7 @@ const snapshot: InventorySnapshot = {
   sharedRepositories: [],
   localCopies: [],
   installations: [],
+  githubRepositories: [],
   observations: [
     observation('db-host', 'unhealthy', 10, 50),
     observation('web-host', 'healthy', 180, -120),

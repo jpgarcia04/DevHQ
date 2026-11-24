@@ -10,7 +10,7 @@ const storeNames: Record<CredentialStore, string> = {
 }
 
 /**
- * The fine-grained GitHub token DevHQ will read the repositories the inventory names with
+ * The fine-grained GitHub token DevHQ reads the repositories the inventory names with
  * (docs/leer-github.md). The window sends it once, to the system's credential store, and only ever
  * learns whether one is kept: the field empties as soon as it is saved, and nothing shows it again.
  */
@@ -64,9 +64,10 @@ export function GithubTokenSettings() {
         GitHub token
       </h2>
       <p className="mt-4 text-xs leading-6 text-muted-foreground">
-        DevHQ will read the GitHub repositories your applications and resources name as their
-        repository: whether the default branch passes its checks and which pull requests have waited
-        for days. Reading them is not built yet; for now you can keep the token it will use.
+        With this token DevHQ reads the GitHub repositories your applications and resources name as
+        their repository: whether the default branch passes its checks and which pull requests have
+        waited for days. It reads them once when it opens and when you press Read GitHub in Pending
+        work, never in the background.
       </p>
       <p className="mt-3 text-xs leading-6 text-muted-foreground">
         On GitHub, create a fine-grained token (Settings › Developer settings › Personal access

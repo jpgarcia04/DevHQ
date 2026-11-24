@@ -6,6 +6,7 @@ import {
   inventoryApi,
   inventoryError,
   inventoryErrorCode,
+  type GithubRead,
   type InstallationsRead,
   type InventorySnapshot,
   type MonitorStatus,
@@ -14,7 +15,13 @@ import {
   type UpgradeStep,
   type Upgraded,
 } from './inventory-api'
-import { InventoryContext, type LoadState, type Mode, type OpeningRead } from './inventory-context'
+import {
+  InventoryContext,
+  type LoadState,
+  type Mode,
+  type OpeningGithub,
+  type OpeningRead,
+} from './inventory-context'
 import { readAllInstallations } from './installations'
 import { readAllTargets } from './local-copies'
 
@@ -41,6 +48,10 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
   const [openingRead, setOpeningRead] = useState<OpeningRead | null>(null)
   // The window reads this workstation's copies and installations once, when it opens.
   const openingReadStarted = useRef(false)
+  const [readingGithub, setReadingGithub] = useState(false)
+  const [openingGithub, setOpeningGithub] = useState<OpeningGithub | null>(null)
+  // And the repositories on GitHub once, when it opens, whatever this computer is.
+  const openingGithubStarted = useRef(false)
   // What the last status said, to tell when the inventory may have changed since.
   const seen = useRef<{ recorded: number; changes: number } | null>(null)
   // Reads overlap: a quiet read can still be in flight when a write's reload starts, and answer
@@ -277,6 +288,61 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, loadState, snapshot, thisWorkstation])
 
+  // The repositories are read one after another, each within 30 s; the window stays usable.
+  const readGithub = async (referenceIds: string[] | null) => {
+    setReadingGithub(true)
+    try {
+      let outcome: GithubRead
+      try {
+        outcome = await inventoryApi.readGithub(referenceIds)
+      } catch (cause) {
+        // A refused call read nothing; what GitHub refused once asked is a reading, and kept.
+        const message = inventoryError(cause)
+        const sentence = /[.!?]$/.test(message) ? message : `${message}.`
+        throw new Error(`${sentence} Nothing was read.`, { cause })
+      }
+      if (!(await reload()))
+        throw new Error(
+          'The readings were kept, but the inventory could not be reloaded. Retry loading it.',
+        )
+      return outcome
+    } finally {
+      setReadingGithub(false)
+    }
+  }
+
+  // Once per window, as soon as the inventory is shown: if it names repositories on GitHub and a
+  // token is kept, every one of them is read, as Read GitHub would. Without a token nothing is
+  // asked, and Pending work says why. It never reads again by itself.
+  useEffect(() => {
+    if (mode !== 'real' || loadState !== 'ready' || !snapshot) return
+    if (openingGithubStarted.current) return
+    openingGithubStarted.current = true
+    const archived = new Set(
+      snapshot.applications.filter((app) => app.lifecycle === 'archived').map((app) => app.id),
+    )
+    const wanted = snapshot.githubRepositories.some(
+      (repository) =>
+        repository.subject.type === 'resource' || !archived.has(repository.subject.id),
+    )
+    if (!wanted) return
+    Promise.resolve().then(async () => {
+      try {
+        const token = await inventoryApi.githubToken()
+        if (!token.stored) {
+          setOpeningGithub({ state: 'no_token', outcome: null })
+          return
+        }
+        setOpeningGithub({ state: 'reading', outcome: null })
+        setOpeningGithub({ state: 'done', outcome: await readGithub(null) })
+      } catch (cause) {
+        setOpeningGithub({ state: 'done', outcome: inventoryError(cause) })
+      }
+    })
+    // Once per window, so the read function of later renders is never needed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, loadState, snapshot])
+
   // Once committed, the native process serves the inventory: reading it again shows it, with what
   // the upgrade did above it, which supervision's first reloads must not take away.
   const upgradeInventory = async (
@@ -345,6 +411,9 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
         readCopies,
         readingCopies,
         openingRead,
+        readGithub,
+        readingGithub,
+        openingGithub,
         olderReadings: inventoryApi.olderReadings,
         readInstallations,
         readingInstallations,

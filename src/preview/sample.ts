@@ -10,6 +10,7 @@ import type {
   ConfigurationChange,
   BackupFile,
   CopyReading,
+  GithubReading,
   InstallationReading,
   HttpCheck,
   InventoryApplication,
@@ -36,6 +37,8 @@ export interface PreviewDatabase {
   copyReadings: CopyReading[]
   /** Every reading of an installation, in the order they were recorded. */
   installationReadings: InstallationReading[]
+  /** Every reading of a repository on GitHub, in the order they were recorded. */
+  githubReadings: GithubReading[]
   /** Which workstation this computer is, from the local association beside the inventory. */
   thisWorkstation: ThisWorkstation
   /** The files in the backups folder, newest first. */
@@ -99,6 +102,7 @@ function nothing(): PreviewDatabase {
     changesSince: null,
     copyReadings: [],
     installationReadings: [],
+    githubReadings: [],
     thisWorkstation: notChosen,
     backups: [],
     unavailable: null,
@@ -129,6 +133,65 @@ export const dotfilesReadings = 205
  * - the laptop's backup agent: read once, and not found where it is declared.
  * The Blog's, also on the laptop, was never read.
  */
+/**
+ * What GitHub said of the invented monorepo two hours ago: through Shop's reference, its CI failing
+ * on the default branch and a pull request unchanged for twelve days; through Blog's, an hour
+ * before, the same repository when it still passed.
+ */
+function sampleGithubReadings(now: number): GithubReading[] {
+  const reading = (
+    id: string,
+    subject: EntityRef,
+    referenceId: string,
+    minutesAgo: number,
+    conclusion: string,
+    pulls: GithubReading['pullRequests'],
+  ): GithubReading => ({
+    id,
+    subject,
+    referenceId,
+    repository: 'https://github.com/example/web',
+    source: 'github',
+    reader: 'DevHQ GitHub reader 1 (REST 2022-11-28)',
+    agent: null,
+    observedAt: at(now, minutesAgo),
+    recordedAt: at(now, minutesAgo),
+    outcome: 'read',
+    detail: null,
+    defaultBranch: 'main',
+    workflows: [
+      {
+        workflow: 'CI',
+        conclusion,
+        commit: '9d0c3aa71f2e4b6c8a0d1e3f5a7b9c1d3e5f7a9b',
+        finishedAt: at(now, minutesAgo + 30),
+        address: 'https://github.com/example/web/actions/runs/7001',
+      },
+      {
+        workflow: 'Nightly audit',
+        conclusion: 'success',
+        commit: '9d0c3aa71f2e4b6c8a0d1e3f5a7b9c1d3e5f7a9b',
+        finishedAt: at(now, 10 * 60),
+        address: 'https://github.com/example/web/actions/runs/6990',
+      },
+    ],
+    workflowsMore: false,
+    pullRequests: pulls,
+    pullRequestsMore: false,
+  })
+  const waiting = {
+    number: 18,
+    title: 'Upgrade the payment library',
+    draft: false,
+    updatedAt: at(now, 12 * 24 * 60),
+    address: 'https://github.com/example/web/pull/18',
+  }
+  return [
+    reading('github-blog', blog, 'blog-repo', 3 * 60, 'success', []),
+    reading('github-shop', shop, 'shop-repo', 2 * 60, 'failure', [waiting]),
+  ]
+}
+
 function sampleInstallationReadings(now: number): InstallationReading[] {
   const reading = (
     id: string,
@@ -788,6 +851,7 @@ export function sampleDatabase(scenario: Scenario, now: number): PreviewDatabase
     ],
     copyReadings: sampleReadings(now),
     installationReadings: sampleInstallationReadings(now),
+    githubReadings: sampleGithubReadings(now),
     // This computer is the laptop, chosen a week ago.
     thisWorkstation: {
       resourceId: 'laptop',

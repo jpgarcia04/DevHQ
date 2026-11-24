@@ -183,6 +183,8 @@ pub struct Inventory {
     /// it at this read: whether the declared version is the installed one, and since when the
     /// build is the same. Older readings are paged per system.
     pub installations: Vec<Installation>,
+    /// Each repository on GitHub the systems declare, with its newest reading.
+    pub github_repositories: Vec<crate::github::readings::GithubRepository>,
     pub observations: Vec<records::Observation>,
     pub incidents: Vec<records::Incident>,
     pub events: Vec<records::Event>,
@@ -1718,6 +1720,7 @@ pub(crate) fn list_in(tx: &Transaction) -> Result<Inventory, ApiError> {
     let local_copies = readings::local_copies(tx, &applications, &resources)?;
     let mut installations = installation_readings::installations(tx, &applications, &resources)?;
     installation_readings::compare_with_copies(&mut installations, &local_copies);
+    let github_repositories = crate::github::readings::repositories(tx, &applications, &resources)?;
     let subjects: Vec<_> = applications
         .iter()
         .map(|app| records::Subject::Application { id: app.id.clone() })
@@ -1740,6 +1743,7 @@ pub(crate) fn list_in(tx: &Transaction) -> Result<Inventory, ApiError> {
         shared_repositories,
         local_copies,
         installations,
+        github_repositories,
         observations,
         incidents,
         events,
