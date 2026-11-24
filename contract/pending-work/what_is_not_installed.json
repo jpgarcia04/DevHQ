@@ -1,0 +1,146 @@
+{
+  "about": "An installed build that is not what a local copy of the same system on the same machine held is pending, after another declared version and before not found: another commit than HEAD, or, without a declared commit, a newer commit than the file. The same commit as HEAD, no newer commit, or nothing comparable is not. A file not read compares nothing.",
+  "now": "2026-11-24T12:00:00Z",
+  "thisWorkstation": "laptop",
+  "archived": [],
+  "localCopies": [],
+  "installations": [
+    {
+      "referenceId": "missing",
+      "subject": {
+        "type": "application",
+        "id": "docs"
+      },
+      "machineId": "laptop",
+      "latest": {
+        "outcome": "missing",
+        "observedAt": "2026-11-24T09:00:00Z"
+      },
+      "version": null,
+      "againstCopy": null
+    },
+    {
+      "referenceId": "other-commit",
+      "subject": {
+        "type": "application",
+        "id": "shop"
+      },
+      "machineId": "laptop",
+      "latest": {
+        "outcome": "read",
+        "observedAt": "2026-11-24T09:00:00Z"
+      },
+      "version": "matches",
+      "againstCopy": {
+        "state": "other_commit"
+      }
+    },
+    {
+      "referenceId": "both",
+      "subject": {
+        "type": "application",
+        "id": "blog"
+      },
+      "machineId": "laptop",
+      "latest": {
+        "outcome": "read",
+        "observedAt": "2026-11-24T09:00:00Z"
+      },
+      "version": "differs",
+      "againstCopy": {
+        "state": "newer_commits"
+      }
+    },
+    {
+      "referenceId": "head",
+      "subject": {
+        "type": "application",
+        "id": "notes"
+      },
+      "machineId": "laptop",
+      "latest": {
+        "outcome": "read",
+        "observedAt": "2026-11-24T09:00:00Z"
+      },
+      "version": "matches",
+      "againstCopy": {
+        "state": "head"
+      }
+    },
+    {
+      "referenceId": "not-newer",
+      "subject": {
+        "type": "application",
+        "id": "notes"
+      },
+      "machineId": "laptop",
+      "latest": {
+        "outcome": "read",
+        "observedAt": "2026-11-24T09:00:00Z"
+      },
+      "version": null,
+      "againstCopy": {
+        "state": "not_newer"
+      }
+    },
+    {
+      "referenceId": "unknown",
+      "subject": {
+        "type": "application",
+        "id": "notes"
+      },
+      "machineId": "laptop",
+      "latest": {
+        "outcome": "read",
+        "observedAt": "2026-11-24T09:00:00Z"
+      },
+      "version": null,
+      "againstCopy": {
+        "state": "unknown"
+      }
+    },
+    {
+      "referenceId": "never-compared",
+      "subject": {
+        "type": "application",
+        "id": "notes"
+      },
+      "machineId": "laptop",
+      "latest": {
+        "outcome": "read",
+        "observedAt": "2026-11-24T09:00:00Z"
+      },
+      "version": "matches",
+      "againstCopy": null
+    }
+  ],
+  "expected": [
+    {
+      "kind": "installation",
+      "referenceId": "both",
+      "subject": {
+        "type": "application",
+        "id": "blog"
+      },
+      "reasons": ["version_differs", "not_installed"]
+    },
+    {
+      "kind": "installation",
+      "referenceId": "other-commit",
+      "subject": {
+        "type": "application",
+        "id": "shop"
+      },
+      "reasons": ["not_installed"]
+    },
+    {
+      "kind": "installation",
+      "referenceId": "missing",
+      "subject": {
+        "type": "application",
+        "id": "docs"
+      },
+      "reasons": ["not_found"]
+    }
+  ]
+}

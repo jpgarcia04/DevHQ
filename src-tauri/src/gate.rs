@@ -758,6 +758,7 @@ fn reference_list(
                 value["movedSinceRead"] = json!(installation.moved_since_read);
                 value["version"] = json!(installation.version);
                 value["build"] = json!(installation.build);
+                value["againstCopy"] = json!(installation.against_copy);
             }
             if reference.kind == "repository" {
                 let shared: Vec<Value> = inventory
@@ -962,6 +963,7 @@ fn installations_overview(inventory: &Inventory, names: &Names, this: Option<&st
             "reading": installation.latest,
             "version": installation.version,
             "build": installation.build,
+            "againstCopy": installation.against_copy,
         })
     };
     json!({
@@ -1039,7 +1041,7 @@ fn pending_work(
     Ok(json!({
         "items": items,
         "oldReadingAfterHours": pending::OLD_READING_MS / 3_600_000,
-        "note": "Not health, and never in `items` or `status`: what each local copy or installed executable held when it was last read (`reading.observedAt`), which may no longer be so, most urgent first. Reasons, most urgent first: `operation` (a merge, rebase or similar left halfway), `changes` (changed, new or unverifiable files), `unpublished` (commits on no remote), `stashes`, `version_differs` (the installed file declared another version than its application), `not_found` (not where declared, or not readable), `never_read` (on this workstation), `old_reading` (read on this workstation more than `oldReadingAfterHours` hours ago). DevHQ reads this workstation's copies and installations when its window opens and when asked, never in the background; a gate with Read only cannot ask, so say how old a reading is.",
+        "note": "Not health, and never in `items` or `status`: what each local copy or installed executable held when it was last read (`reading.observedAt`), which may no longer be so, most urgent first. Reasons, most urgent first: `operation` (a merge, rebase or similar left halfway), `changes` (changed, new or unverifiable files), `unpublished` (commits on no remote), `stashes`, `version_differs` (the installed file declared another version than its application), `not_installed` (the installed build is not what a local copy of the same system on the same machine held: another commit than HEAD, or, when the file declares no commit, a commit dated after it, which may or may not be in it; see `againstCopy` in the installation), `not_found` (not where declared, or not readable), `never_read` (on this workstation), `old_reading` (read on this workstation more than `oldReadingAfterHours` hours ago). DevHQ reads this workstation's copies and installations when its window opens and when asked, never in the background; a gate with Read only cannot ask, so say how old a reading is.",
     }))
 }
 
@@ -3172,6 +3174,8 @@ mod tests {
         assert_eq!(installation["build"]["readings"], 3);
         assert_eq!(installation["build"]["sameSince"], reading["observedAt"]);
         assert_eq!(installation["build"]["previous"], Value::Null);
+        // No local copy of Shop was read on the laptop: nothing to compare the build with.
+        assert_eq!(installation["againstCopy"], Value::Null);
         let attention = use_tool(&mut agent, "attention", json!({})).unwrap();
         let differs = &attention["installations"]["versionDiffers"][0];
         assert_eq!(differs["system"]["name"], "Shop");

@@ -201,6 +201,13 @@
           "productVersion": "2.0.0+11d2e4f"
         },
         "complete": true
+      },
+      "againstCopy": {
+        "state": "other_commit",
+        "copyReferenceId": "shop-copy",
+        "copyReadingId": "reading-2",
+        "installedCommit": "3f9c2ab",
+        "copyHead": "0123456789abcdef0123456789abcdef01234567"
       }
     }
   ],

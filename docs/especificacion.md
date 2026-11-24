@@ -553,7 +553,20 @@ la de un instante: un proceso que arranca o termina mientras se lee puede contar
     ni esta ni otra, y una hecha en otra ruta era de otro archivo: lo anterior a ella no cuenta. Para
     que el coste de leer el inventario no crezca con el historial, mira como mucho las 200 lecturas
     anteriores a la última; si todas son de la misma build y quedan más, lo dice (`complete: false`):
-    la build es la misma al menos desde `sameSince`, y desde cuándo no se sabe.
+    la build es la misma al menos desde `sameSince`, y desde cuándo no se sabe;
+  - **si lo instalado es lo que tenía la copia local** (`againstCopy`): la build frente a la última
+    lectura correcta de una copia local del mismo sistema en la misma máquina (la de momento observado
+    más reciente; entre iguales, la primera declarada). Si el archivo declaraba su commit (de 7 a 40
+    dígitos hexadecimales justo tras el `+` de su `ProductVersion`, también seguido de `.dirty`), se
+    compara con el commit de HEAD de esa lectura, por prefijo: `head` si es el mismo, `other_commit`
+    si no. DevHQ no recorre el historial, así que no dice si HEAD iba por delante, por detrás o en otra
+    rama, ni cuántos commits los separan: solo que lo instalado no es lo que la copia tenía. Si el
+    archivo no declaraba commit, compara la fecha de modificación del archivo con el commit más nuevo
+    que encontró esa lectura (HEAD y las ramas locales): `newer_commits` si había uno posterior, que
+    puede estar o no en la build, y `not_newer` si no. `unknown` cuando no hay con qué comparar (HEAD
+    sin commits, o sin fechas), y nada si el archivo o ninguna copia así se leyó. Lleva la copia y la
+    lectura en que se apoya, el commit que declaraba el archivo y el de HEAD. Leer la copia o la
+    instalación otra vez cambia el resultado; ninguna de las dos se lee para calcularlo.
 
   Las lecturas anteriores de un sistema se cargan de 200 en 200 (`older_installation_readings`), por
   el índice de su sistema.
@@ -578,7 +591,7 @@ otro archivo o ninguno; si la lectura se hizo en otra ruta o máquina de las dec
 declarada frente a la del archivo, con las dos y sin decir cuál está al día («One of the two is out of
 date.»), destacada solo cuando difieren; y desde cuándo es la misma build: «it changed between those two
 readings. DevHQ does not know when.», o que la misma build está en todas las lecturas, o en las últimas
-201 «since at least» una fecha cuando DevHQ no miró más atrás. Read aparece solo en las instalaciones de
+201 «since at least» una fecha cuando DevHQ no miró más atrás. Debajo, si se comparó, si lo instalado es lo que tenía la copia local, con los dos commits y sin decir cuál es más nuevo, destacado cuando no lo es. Read aparece solo en las instalaciones de
 esta estación y se desactiva mientras esa instalación se lee; en las de otra máquina, la ventana dice
 que las lee DevHQ allí, y sin estación conocida, por qué no lee ninguna y dónde elegirla. «Show every
 installation reading» carga, solo al abrirlo, las lecturas de las instalaciones del sistema, las más
@@ -600,7 +613,7 @@ build de SemVer (`ProductVersion = 1.4.0+3f9c2ab01d4e`). La lectura lo guarda ta
 comparación con la versión declarada ignora lo que sigue al `+`. DevHQ es el primero en cumplirlo: su
 script de build (`src-tauri/build.rs`) lee el commit de HEAD en el `.git` del checkout, como archivos y
 sin ejecutar `git` (un script de build que arranca programas ejecuta lo que haya primero en el `PATH`),
-y el ejecutable de Windows declara `0.2.2+` y los doce primeros dígitos de ese commit en
+y el ejecutable de Windows declara `0.2.3+` y los doce primeros dígitos de ese commit en
 `ProductVersion` y `FileVersion`. Lee `HEAD`, la referencia que nombra, suelta o en `packed-refs`, y,
 en un worktree enlazado o un submódulo, donde `.git` es un archivo (`gitdir: …`), la carpeta que ese
 archivo nombra y la del repositorio al que está enlazado (`commondir`). Lo que no puede saber no lo
@@ -609,7 +622,7 @@ si el árbol tenía cambios sin confirmar no se puede saber sin comparar cada ar
 es `git status`, así que la versión nombra el commit en el que estaba HEAD y no dice nada del árbol,
 salvo que quien compila lo diga con `DEVHQ_BUILD_DIRTY=1`, y entonces termina en `.dirty`. Solo el
 recurso de versión lleva el commit: la versión de la aplicación y la del instalador siguen siendo
-`0.2.2`. Ese número está escrito en `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`
+`0.2.3`. Ese número está escrito en `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`
 y `src/shared/version.ts`, de donde lo toma la ventana, y una prueba exige que coincidan; sube cuando
 se construye un instalador para instalarlo, no con cada cambio, porque lo que distingue una build de
 otra es el commit.
@@ -627,16 +640,17 @@ o el archivo tenían entonces.
 **Qué cuenta.** Cada copia o instalación declarada da como mucho una entrada, con todos sus motivos, del
 más urgente al menos, y se ordena por el primero:
 
-| Motivo            | Cuándo                                                                                                   |
-| ----------------- | -------------------------------------------------------------------------------------------------------- |
-| `operation`       | La última lectura de la copia encontró un merge, rebase u otra operación a medias                        |
-| `changes`         | …archivos seguidos con cambios, entradas nuevas o archivos que DevHQ no pudo verificar                   |
-| `unpublished`     | …commits que ninguna rama remota de la copia contenía, en HEAD o en otra rama local                      |
-| `stashes`         | …stashes                                                                                                 |
-| `version_differs` | El archivo de la instalación declaraba otra versión que la que declara su aplicación                     |
-| `not_found`       | La copia o el archivo no estaban donde se declaran, o no se pudieron leer                                |
-| `never_read`      | Es de esta estación de trabajo y nunca se leyó                                                           |
-| `old_reading`     | Es de esta estación de trabajo y su última lectura tiene más de tres días (exactamente tres, todavía no) |
+| Motivo            | Cuándo                                                                                                                                   |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `operation`       | La última lectura de la copia encontró un merge, rebase u otra operación a medias                                                        |
+| `changes`         | …archivos seguidos con cambios, entradas nuevas o archivos que DevHQ no pudo verificar                                                   |
+| `unpublished`     | …commits que ninguna rama remota de la copia contenía, en HEAD o en otra rama local                                                      |
+| `stashes`         | …stashes                                                                                                                                 |
+| `version_differs` | El archivo de la instalación declaraba otra versión que la que declara su aplicación                                                     |
+| `not_installed`   | Lo instalado no es lo que tenía la copia local del mismo sistema en la misma máquina (`againstCopy` es `other_commit` o `newer_commits`) |
+| `not_found`       | La copia o el archivo no estaban donde se declaran, o no se pudieron leer                                                                |
+| `never_read`      | Es de esta estación de trabajo y nunca se leyó                                                                                           |
+| `old_reading`     | Es de esta estación de trabajo y su última lectura tiene más de tres días (exactamente tres, todavía no)                                 |
 
 Lo que leyó DevHQ en otro equipo cuenta igual, pero que allí nunca se leyera o se leyera hace mucho no,
 porque solo DevHQ en ese equipo puede leerlo; sin saber qué estación es este equipo, ninguna copia ni

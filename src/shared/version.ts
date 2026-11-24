@@ -5,4 +5,4 @@
  * built to be installed, not with every change: the commit each build writes after it in its
  * version resource («0.2.0+3f9c2ab01d4e») is what tells one build from another.
  */
-export const devhqVersion = '0.2.2'
+export const devhqVersion = '0.2.3'

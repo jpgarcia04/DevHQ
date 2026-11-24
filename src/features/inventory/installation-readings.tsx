@@ -8,6 +8,7 @@ import { formatDateTime, relativeTime } from '@/shared/time'
 import { cn } from '@/shared/utils'
 import { MachineName } from './copy-readings'
 import {
+  againstCopyText,
   buildText,
   declaredVersion,
   installationSummary,
@@ -202,6 +203,19 @@ export function InstallationReadingView({ installation }: { installation: Instal
           )}
           {installation.build && (
             <p className="text-[11px] text-muted-foreground">{buildText(installation.build)}</p>
+          )}
+          {installation.againstCopy && (
+            <p
+              className={cn(
+                'text-[11px]',
+                installation.againstCopy.state === 'other_commit' ||
+                  installation.againstCopy.state === 'newer_commits'
+                  ? 'text-amber-200/90'
+                  : 'text-muted-foreground',
+              )}
+            >
+              {againstCopyText(installation.againstCopy)}
+            </p>
           )}
         </>
       ) : (

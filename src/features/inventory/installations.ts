@@ -3,6 +3,7 @@ import { formatBytes } from '@/shared/size'
 import { formatDateTime } from '@/shared/time'
 import type {
   Installation,
+  InstallationAgainstCopy,
   InstallationBuild,
   InstallationReading,
   InventorySnapshot,
@@ -92,6 +93,28 @@ export function versionText(installation: Installation, declared: string | null)
         : "The file's version is unknown."
     default:
       return null
+  }
+}
+
+/**
+ * How the installed build compared with what a local copy held when it was read, in the past and
+ * saying what DevHQ cannot know: with a declared commit, whether it was HEAD's, never whether the
+ * copy was ahead or behind; without one, only whether a newer commit existed, never whether the
+ * build holds it.
+ */
+export function againstCopyText(against: InstallationAgainstCopy) {
+  const short = (commit: string | null) => commit?.slice(0, 12) ?? 'unknown'
+  switch (against.state) {
+    case 'head':
+      return `The file declared commit ${short(against.installedCommit)}, the one HEAD was on in the local copy's newest reading.`
+    case 'other_commit':
+      return `The file declared commit ${short(against.installedCommit)}; HEAD was on ${short(against.copyHead)} in the local copy's newest reading. What is installed is not what the copy held: DevHQ does not say whether it is older or newer.`
+    case 'newer_commits':
+      return "The file declared no commit, and the local copy's newest reading held a commit dated after the file was last modified. It may or may not be in the installed build."
+    case 'not_newer':
+      return "The file declared no commit, and no commit in the local copy's newest reading was dated after the file was last modified."
+    case 'unknown':
+      return "DevHQ could not compare the installed build with the local copy's newest reading."
   }
 }
 

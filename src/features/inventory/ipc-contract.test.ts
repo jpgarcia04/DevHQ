@@ -463,6 +463,13 @@ const snapshot: Answer<'list'> = {
         },
         complete: true,
       },
+      againstCopy: {
+        state: 'other_commit',
+        copyReferenceId: 'shop-copy',
+        copyReadingId: 'reading-2',
+        installedCommit: '3f9c2ab',
+        copyHead: '0123456789abcdef0123456789abcdef01234567',
+      },
     },
   ],
   observations: [

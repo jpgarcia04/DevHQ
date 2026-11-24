@@ -47,6 +47,10 @@ function reasonText(
       return `the file declared ${installation?.latest?.productVersion ?? 'a version'}, the inventory ${
         installation ? (declaredVersion(snapshot, installation) ?? 'none') : 'another'
       }`
+    case 'not_installed':
+      return installation?.againstCopy?.state === 'newer_commits'
+        ? 'the local copy held a commit newer than the installed file'
+        : `the installed build is commit ${installation?.againstCopy?.installedCommit?.slice(0, 12) ?? 'unknown'}, the local copy's HEAD was ${installation?.againstCopy?.copyHead?.slice(0, 12) ?? 'unknown'}`
     case 'not_found':
       return 'not found where declared, or not readable'
     case 'never_read':
@@ -167,9 +171,10 @@ export function PendingWorkOverview() {
         )}
         <p className="border-t px-4 py-2.5 text-[11px] leading-5 text-muted-foreground">
           Work left halfway, uncommitted or on no remote first, then installations that declared
-          another version, then what was not found, never read or read more than{' '}
-          {counted(oldReadingDays, 'day')} ago on this computer. What each copy or file held when it
-          was read, which may no longer be so. Not health: none of it is in Needs attention.
+          another version or are not what the local copy held, then what was not found, never read
+          or read more than {counted(oldReadingDays, 'day')} ago on this computer. What each copy or
+          file held when it was read, which may no longer be so. Not health: none of it is in Needs
+          attention.
         </p>
       </div>
     </section>

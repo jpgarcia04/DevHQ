@@ -12,7 +12,9 @@
 //!   urgent first; the item ranks by its first reason.
 //! - Reasons, most urgent first: an operation left halfway in a copy (`operation`), changed, new or
 //!   unverifiable files (`changes`), commits on no remote (`unpublished`), stashes (`stashes`), an
-//!   installed file that declared another version than its application (`version_differs`), not
+//!   installed file that declared another version than its application (`version_differs`), an
+//!   installed build that is not what a local copy of the same system on the same machine held
+//!   (`not_installed`: another commit than HEAD, or, without a declared commit, a newer one), not
 //!   found or not readable where declared (`not_found`), never read on this workstation
 //!   (`never_read`), and a reading on this workstation older than `OLD_READING_MS`
 //!   (`old_reading`), which DevHQ could renew by reading it again.
@@ -29,12 +31,13 @@ use serde::{Deserialize, Serialize};
 pub const OLD_READING_MS: i64 = 3 * 24 * 60 * 60 * 1000;
 
 /// Every reason, most urgent first: an item ranks by the position of its first one.
-const REASONS: [&str; 8] = [
+const REASONS: [&str; 9] = [
     "operation",
     "changes",
     "unpublished",
     "stashes",
     "version_differs",
+    "not_installed",
     "not_found",
     "never_read",
     "old_reading",
@@ -83,6 +86,16 @@ pub struct InstallationFacts {
     pub latest: Option<InstallationReadingFacts>,
     /// `matches`, `differs`, `undeclared`, `unknown`, or None (see `Installation::version`).
     pub version: Option<String>,
+    /// How the installed build compared with a local copy (see `Installation::against_copy`).
+    #[serde(default)]
+    pub against_copy: Option<AgainstCopyFacts>,
+}
+
+/// What the rules need of that comparison: its state, `head`, `other_commit`, `newer_commits`,
+/// `not_newer` or `unknown`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AgainstCopyFacts {
+    pub state: String,
 }
 
 impl From<&LocalCopy> for CopyFacts {
@@ -120,6 +133,12 @@ impl From<&Installation> for InstallationFacts {
                     observed_at: reading.observed_at.clone(),
                 }),
             version: installation.version.clone(),
+            against_copy: installation
+                .against_copy
+                .as_ref()
+                .map(|against| AgainstCopyFacts {
+                    state: against.state.clone(),
+                }),
         }
     }
 }
@@ -214,8 +233,19 @@ pub fn assess(
             Some(reading) => {
                 if reading.outcome != "read" {
                     reasons.push("not_found");
-                } else if installation.version.as_deref() == Some("differs") {
-                    reasons.push("version_differs");
+                } else {
+                    if installation.version.as_deref() == Some("differs") {
+                        reasons.push("version_differs");
+                    }
+                    if matches!(
+                        installation
+                            .against_copy
+                            .as_ref()
+                            .map(|against| against.state.as_str()),
+                        Some("other_commit" | "newer_commits")
+                    ) {
+                        reasons.push("not_installed");
+                    }
                 }
                 if old(&reading.observed_at, here, now)? {
                     reasons.push("old_reading");
