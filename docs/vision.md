@@ -397,7 +397,8 @@ concretos y su orden están en «Evolución prevista» del README; este document
    en [observar-apps-locales.md](observar-apps-locales.md).
 7. **Contexto para agentes**: el resumen por sistema en la puerta, más rico con cada paso anterior.
 8. **Fuentes con credenciales**: servidores por SSH de solo lectura, el estado de la CI en GitHub u
-   otra plataforma. Exige el almacén nativo de credenciales.
+   otra plataforma. Exige el almacén nativo de credenciales. La lectura de GitHub está propuesta en
+   [leer-github.md](leer-github.md), sin código.
 9. **Capacidades operativas**: las automatizaciones con resultado e historial que el README ya
    anticipa y acciones sobre servidores y despliegues, lanzadas por ti o por un agente autorizado,
    cada una explícita, segura, controlable y auditable. Exige cambiar «no opera sistemas».
