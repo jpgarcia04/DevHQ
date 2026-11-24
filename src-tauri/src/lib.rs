@@ -14,6 +14,7 @@ mod ipc_contract;
 pub mod local_copies;
 mod location;
 mod monitor;
+mod pending;
 mod records;
 mod references;
 mod this_computer;

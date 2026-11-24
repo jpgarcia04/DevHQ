@@ -196,6 +196,9 @@ Las tres del paso 1 se respondieron antes de escribirlo (12 nov 2026):
   comprobación HTTP.
 - **¿Leer las instalaciones al abrir la ventana se considera «a petición»?** No. Solo Read, Read all on
   this computer y `read_installations`, como las copias. Leerlas solas sigue siendo una decisión aparte.
+  (24 nov 2026: se decidió. La ventana lee una vez al abrirse las copias y las instalaciones de esta
+  estación, para el [trabajo pendiente](especificacion.md#trabajo-pendiente), porque sin lecturas
+  recientes «¿qué necesita mi atención?» no tenía nada que decir de aplicaciones que no son servicios.)
 - **¿El desfase entre versión declarada e instalada debe entrar en «Needs attention»?** No: va en la
   referencia, en un panel Installations de Overview junto a Local copies y, en la puerta, en
   `attention` como lista aparte y sin ordenar. No es salud, así que no toca las reglas de atención ni

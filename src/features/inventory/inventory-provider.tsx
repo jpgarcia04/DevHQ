@@ -14,7 +14,7 @@ import {
   type UpgradeStep,
   type Upgraded,
 } from './inventory-api'
-import { InventoryContext, type LoadState, type Mode } from './inventory-context'
+import { InventoryContext, type LoadState, type Mode, type OpeningRead } from './inventory-context'
 import { readAllInstallations } from './installations'
 import { readAllTargets } from './local-copies'
 
@@ -38,6 +38,9 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
   const [readingCopies, setReadingCopies] = useState<string[]>([])
   const [readingInstallations, setReadingInstallations] = useState<string[]>([])
   const [upgraded, setUpgraded] = useState<Upgraded | null>(null)
+  const [openingRead, setOpeningRead] = useState<OpeningRead | null>(null)
+  // The window reads this workstation's copies and installations once, when it opens.
+  const openingReadStarted = useRef(false)
   // What the last status said, to tell when the inventory may have changed since.
   const seen = useRef<{ recorded: number; changes: number } | null>(null)
   // Reads overlap: a quiet read can still be in flight when a write's reload starts, and answer
@@ -242,6 +245,38 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  // When the window opens, and as soon as it knows which workstation this computer is, it reads
+  // every copy and installation of this workstation once, as Read all would, so that pending work
+  // rests on fresh readings without anyone asking. Copies first, then installations, one call at a
+  // time; the window stays usable meanwhile. It never reads again by itself: Read and Read all do.
+  const readWhenOpening = async (copies: boolean, installations: boolean) => {
+    const outcome = async <T,>(wanted: boolean, read: () => Promise<T>) => {
+      if (!wanted) return null
+      try {
+        return await read()
+      } catch (cause) {
+        return inventoryError(cause)
+      }
+    }
+    setOpeningRead({ state: 'reading', copies: null, installations: null })
+    const copiesRead = await outcome(copies, () => readCopies(null))
+    setOpeningRead({ state: 'reading', copies: copiesRead, installations: null })
+    const installationsRead = await outcome(installations, () => readInstallations(null))
+    setOpeningRead({ state: 'done', copies: copiesRead, installations: installationsRead })
+  }
+  useEffect(() => {
+    if (mode !== 'real' || loadState !== 'ready' || !snapshot || !thisWorkstation?.resourceId)
+      return
+    if (openingReadStarted.current) return
+    openingReadStarted.current = true
+    const copies = readAllTargets(snapshot, thisWorkstation).length > 0
+    const installations = readAllInstallations(snapshot, thisWorkstation).length > 0
+    if (copies || installations)
+      Promise.resolve().then(() => void readWhenOpening(copies, installations))
+    // Once per window, so the read functions of later renders are never needed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, loadState, snapshot, thisWorkstation])
+
   // Once committed, the native process serves the inventory: reading it again shows it, with what
   // the upgrade did above it, which supervision's first reloads must not take away.
   const upgradeInventory = async (
@@ -306,6 +341,7 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
         setThisWorkstation: chooseWorkstation,
         readCopies,
         readingCopies,
+        openingRead,
         olderReadings: inventoryApi.olderReadings,
         readInstallations,
         readingInstallations,

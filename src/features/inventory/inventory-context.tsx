@@ -28,6 +28,16 @@ import type {
 } from './inventory-api'
 
 export type Mode = 'demo' | 'real'
+/**
+ * The window's own read when it opens. Each side holds what the native process answered, the
+ * message of a call it refused (which read nothing), or null when there was nothing to read.
+ */
+export interface OpeningRead {
+  state: 'reading' | 'done'
+  copies: ReadOutcome | string | null
+  installations: InstallationsRead | string | null
+}
+
 export type LoadState = 'idle' | 'loading' | 'ready' | 'error'
 export interface InventoryContextValue {
   mode: Mode
@@ -104,6 +114,12 @@ export interface InventoryContextValue {
     subject: EntityRef,
     before: string | null,
   ) => Promise<InstallationReadingPage>
+  /**
+   * What the window read by itself the first time it knew which workstation this computer is,
+   * once it opened: every copy and installation of this workstation, as Read all reads them. Null
+   * until it tried.
+   */
+  openingRead: OpeningRead | null
   /** Looks at the inventory the window refused as outdated; it changes none of its files. */
   inspectUpgrade: () => Promise<UpgradeInspection>
   /**

@@ -106,7 +106,7 @@ export function InstallationsOverview() {
               </p>
               <p className="mt-1.5 leading-5 text-muted-foreground">
                 {thisWorkstation?.resourceId ? (
-                  'DevHQ reads them only when you ask, one after another, as data: it never runs them. Installations on other computers are read by DevHQ there.'
+                  'DevHQ reads them once when it opens and whenever you ask, one after another, as data: it never runs them. Installations on other computers are read by DevHQ there.'
                 ) : (
                   <>
                     {thisWorkstation?.message ?? workstationError ?? 'Asking…'} It reads no

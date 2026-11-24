@@ -1,0 +1,126 @@
+{
+  "about": "What another computer's copies held when read there is still listed, but a copy or installation there that was never read, or whose reading is old, is not: only DevHQ on that computer can read it. A version DevHQ could not compare is not pending.",
+  "now": "2026-11-24T12:00:00Z",
+  "thisWorkstation": "laptop",
+  "archived": [],
+  "localCopies": [
+    {
+      "referenceId": "desk-never",
+      "subject": {
+        "type": "application",
+        "id": "shop"
+      },
+      "machineId": "desk",
+      "latest": null
+    },
+    {
+      "referenceId": "desk-work-old",
+      "subject": {
+        "type": "application",
+        "id": "shop"
+      },
+      "machineId": "desk",
+      "latest": {
+        "outcome": "read",
+        "observedAt": "2026-11-20T08:00:00Z",
+        "unpublishedOnHead": 2,
+        "unpublishedElsewhere": 0,
+        "stashes": 0,
+        "changed": 0,
+        "untracked": 0,
+        "unverifiable": 0,
+        "operation": null
+      }
+    },
+    {
+      "referenceId": "desk-clean-old",
+      "subject": {
+        "type": "application",
+        "id": "blog"
+      },
+      "machineId": "desk",
+      "latest": {
+        "outcome": "read",
+        "observedAt": "2026-11-20T08:00:00Z",
+        "unpublishedOnHead": 0,
+        "unpublishedElsewhere": 0,
+        "stashes": 0,
+        "changed": 0,
+        "untracked": 0,
+        "unverifiable": 0,
+        "operation": null
+      }
+    }
+  ],
+  "installations": [
+    {
+      "referenceId": "desk-install-never",
+      "subject": {
+        "type": "application",
+        "id": "shop"
+      },
+      "machineId": "desk",
+      "latest": null,
+      "version": null
+    },
+    {
+      "referenceId": "desk-install-old-differs",
+      "subject": {
+        "type": "application",
+        "id": "blog"
+      },
+      "machineId": "desk",
+      "latest": {
+        "outcome": "read",
+        "observedAt": "2026-11-20T08:00:00Z"
+      },
+      "version": "differs"
+    },
+    {
+      "referenceId": "laptop-unknown-version",
+      "subject": {
+        "type": "application",
+        "id": "shop"
+      },
+      "machineId": "laptop",
+      "latest": {
+        "outcome": "read",
+        "observedAt": "2026-11-24T09:00:00Z"
+      },
+      "version": "unknown"
+    },
+    {
+      "referenceId": "laptop-undeclared-version",
+      "subject": {
+        "type": "application",
+        "id": "blog"
+      },
+      "machineId": "laptop",
+      "latest": {
+        "outcome": "read",
+        "observedAt": "2026-11-24T09:00:00Z"
+      },
+      "version": "undeclared"
+    }
+  ],
+  "expected": [
+    {
+      "kind": "localCopy",
+      "referenceId": "desk-work-old",
+      "subject": {
+        "type": "application",
+        "id": "shop"
+      },
+      "reasons": ["unpublished"]
+    },
+    {
+      "kind": "installation",
+      "referenceId": "desk-install-old-differs",
+      "subject": {
+        "type": "application",
+        "id": "blog"
+      },
+      "reasons": ["version_differs"]
+    }
+  ]
+}

@@ -1,0 +1,287 @@
+{
+  "about": "Each copy or installation gives one item with every reason it has, most urgent first, and ranks by its first: an operation halfway, changes, unpublished commits, stashes, another version, not found, never read, an old reading. Ties keep the order given, copies before installations. A fresh reading that held nothing gives no item.",
+  "now": "2026-11-24T12:00:00Z",
+  "thisWorkstation": "laptop",
+  "archived": [],
+  "localCopies": [
+    {
+      "referenceId": "c-stash",
+      "subject": {
+        "type": "application",
+        "id": "shop"
+      },
+      "machineId": "laptop",
+      "latest": {
+        "outcome": "read",
+        "observedAt": "2026-11-24T09:00:00Z",
+        "unpublishedOnHead": 0,
+        "unpublishedElsewhere": 0,
+        "stashes": 2,
+        "changed": 0,
+        "untracked": 0,
+        "unverifiable": 0,
+        "operation": null
+      }
+    },
+    {
+      "referenceId": "c-unpublished-old",
+      "subject": {
+        "type": "application",
+        "id": "blog"
+      },
+      "machineId": "laptop",
+      "latest": {
+        "outcome": "read",
+        "observedAt": "2026-11-20T08:00:00Z",
+        "unpublishedOnHead": 0,
+        "unpublishedElsewhere": 3,
+        "stashes": 0,
+        "changed": 0,
+        "untracked": 0,
+        "unverifiable": 0,
+        "operation": null
+      }
+    },
+    {
+      "referenceId": "c-everything",
+      "subject": {
+        "type": "application",
+        "id": "notes"
+      },
+      "machineId": "laptop",
+      "latest": {
+        "outcome": "read",
+        "observedAt": "2026-11-24T09:00:00Z",
+        "unpublishedOnHead": 1,
+        "unpublishedElsewhere": 0,
+        "stashes": 1,
+        "changed": 1,
+        "untracked": 0,
+        "unverifiable": 0,
+        "operation": "rebase"
+      }
+    },
+    {
+      "referenceId": "c-untracked",
+      "subject": {
+        "type": "application",
+        "id": "shop"
+      },
+      "machineId": "laptop",
+      "latest": {
+        "outcome": "read",
+        "observedAt": "2026-11-24T09:00:00Z",
+        "unpublishedOnHead": 0,
+        "unpublishedElsewhere": 0,
+        "stashes": 0,
+        "changed": 0,
+        "untracked": 4,
+        "unverifiable": 0,
+        "operation": null
+      }
+    },
+    {
+      "referenceId": "c-missing",
+      "subject": {
+        "type": "application",
+        "id": "blog"
+      },
+      "machineId": "laptop",
+      "latest": {
+        "outcome": "missing",
+        "observedAt": "2026-11-24T09:00:00Z",
+        "unpublishedOnHead": null,
+        "unpublishedElsewhere": null,
+        "stashes": null,
+        "changed": null,
+        "untracked": null,
+        "unverifiable": null,
+        "operation": null
+      }
+    },
+    {
+      "referenceId": "c-never",
+      "subject": {
+        "type": "application",
+        "id": "shop"
+      },
+      "machineId": "laptop",
+      "latest": null
+    },
+    {
+      "referenceId": "c-clean",
+      "subject": {
+        "type": "application",
+        "id": "notes"
+      },
+      "machineId": "laptop",
+      "latest": {
+        "outcome": "read",
+        "observedAt": "2026-11-24T09:00:00Z",
+        "unpublishedOnHead": 0,
+        "unpublishedElsewhere": 0,
+        "stashes": 0,
+        "changed": 0,
+        "untracked": 0,
+        "unverifiable": 0,
+        "operation": null
+      }
+    }
+  ],
+  "installations": [
+    {
+      "referenceId": "i-differs",
+      "subject": {
+        "type": "application",
+        "id": "shop"
+      },
+      "machineId": "laptop",
+      "latest": {
+        "outcome": "read",
+        "observedAt": "2026-11-24T09:00:00Z"
+      },
+      "version": "differs"
+    },
+    {
+      "referenceId": "i-unreadable-old",
+      "subject": {
+        "type": "application",
+        "id": "blog"
+      },
+      "machineId": "laptop",
+      "latest": {
+        "outcome": "unreadable",
+        "observedAt": "2026-11-20T08:00:00Z"
+      },
+      "version": null
+    },
+    {
+      "referenceId": "i-never",
+      "subject": {
+        "type": "application",
+        "id": "notes"
+      },
+      "machineId": "laptop",
+      "latest": null,
+      "version": null
+    },
+    {
+      "referenceId": "i-old-matches",
+      "subject": {
+        "type": "application",
+        "id": "shop"
+      },
+      "machineId": "laptop",
+      "latest": {
+        "outcome": "read",
+        "observedAt": "2026-11-20T08:00:00Z"
+      },
+      "version": "matches"
+    },
+    {
+      "referenceId": "i-fresh-matches",
+      "subject": {
+        "type": "application",
+        "id": "notes"
+      },
+      "machineId": "laptop",
+      "latest": {
+        "outcome": "read",
+        "observedAt": "2026-11-24T09:00:00Z"
+      },
+      "version": "matches"
+    }
+  ],
+  "expected": [
+    {
+      "kind": "localCopy",
+      "referenceId": "c-everything",
+      "subject": {
+        "type": "application",
+        "id": "notes"
+      },
+      "reasons": ["operation", "changes", "unpublished", "stashes"]
+    },
+    {
+      "kind": "localCopy",
+      "referenceId": "c-untracked",
+      "subject": {
+        "type": "application",
+        "id": "shop"
+      },
+      "reasons": ["changes"]
+    },
+    {
+      "kind": "localCopy",
+      "referenceId": "c-unpublished-old",
+      "subject": {
+        "type": "application",
+        "id": "blog"
+      },
+      "reasons": ["unpublished", "old_reading"]
+    },
+    {
+      "kind": "localCopy",
+      "referenceId": "c-stash",
+      "subject": {
+        "type": "application",
+        "id": "shop"
+      },
+      "reasons": ["stashes"]
+    },
+    {
+      "kind": "installation",
+      "referenceId": "i-differs",
+      "subject": {
+        "type": "application",
+        "id": "shop"
+      },
+      "reasons": ["version_differs"]
+    },
+    {
+      "kind": "localCopy",
+      "referenceId": "c-missing",
+      "subject": {
+        "type": "application",
+        "id": "blog"
+      },
+      "reasons": ["not_found"]
+    },
+    {
+      "kind": "installation",
+      "referenceId": "i-unreadable-old",
+      "subject": {
+        "type": "application",
+        "id": "blog"
+      },
+      "reasons": ["not_found", "old_reading"]
+    },
+    {
+      "kind": "localCopy",
+      "referenceId": "c-never",
+      "subject": {
+        "type": "application",
+        "id": "shop"
+      },
+      "reasons": ["never_read"]
+    },
+    {
+      "kind": "installation",
+      "referenceId": "i-never",
+      "subject": {
+        "type": "application",
+        "id": "notes"
+      },
+      "reasons": ["never_read"]
+    },
+    {
+      "kind": "installation",
+      "referenceId": "i-old-matches",
+      "subject": {
+        "type": "application",
+        "id": "shop"
+      },
+      "reasons": ["old_reading"]
+    }
+  ]
+}
