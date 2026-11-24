@@ -2,7 +2,7 @@
 
 Estado: **el paso 1 está implementado (14 nov 2026, esquema v14)**; los pasos 2 y 3 siguen siendo una
 propuesta, sin código. Este documento explica por qué y recoge lo que se decidió; la especificación de
-lo que existe es el [README](../README.md) («Instalaciones»), y cada regla que se cite sigue vigente
+lo que existe es el [README, hoy la especificación](especificacion.md) («Instalaciones»), y cada regla que se cite sigue vigente
 hasta que un cambio la reescriba allí. Lo que el paso 1 terminó siendo, y en qué se apartó de lo que
 se propone abajo, está en [«Lo decidido al implementar el paso 1»](#lo-decidido-al-implementar-el-paso-1).
 Los sistemas y rutas de los ejemplos son inventados.

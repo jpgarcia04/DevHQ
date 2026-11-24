@@ -1,9 +1,13 @@
 # DevHQ
 
 Native desktop app (Tauri 2): Rust + SQLite in `src-tauri/`, React + TypeScript + Vite +
-Tailwind 4 in `src/`. The README (in Spanish) is the specification: read it before changing
-behaviour, and update it in the same commit as the change. `AGENTS.md` sends Codex and other
-agents here: keep every rule in this file and only pointers there.
+Tailwind 4 in `src/`. `docs/especificacion.md` (in Spanish) is the specification: read it before
+changing behaviour, and update it in the same commit as the change. It lived in `README.md` until
+November 2026, so wherever code, comments, `docs/`, tests or the app's messages say «the README»
+(often with a «section»), they mean `docs/especificacion.md`; new text names that file. `README.md`
+is now only the public presentation of the project (what it is, screenshots of the demo, stack, how
+to try it, links to the specification): keep it short and never put behaviour there. `AGENTS.md`
+sends Codex and other agents here: keep every rule in this file and only pointers there.
 
 ## Product rules
 
@@ -21,8 +25,8 @@ agents here: keep every rule in this file and only pointers there.
 - Provenance (`source`), observed and recorded times, and validity are always visible.
 - `docs/vision.md` (in Spanish) holds the long-term direction and the questions to ask of any
   new feature or architectural change; read it before proposing either. It guides and
-  authorizes nothing: the README stays the specification, and the rules above hold until a
-  change that must break one rewrites that rule, here and in the README, in the same commit.
+  authorizes nothing: the specification stays the specification, and the rules above hold until a
+  change that must break one rewrites that rule, here and in the specification, in the same commit.
 
 ## What stays out of the repository
 
@@ -184,7 +188,7 @@ person's inventory, and never run anything that writes `%USERPROFILE%\DevHQ` dur
 Anything that resolves a data path goes through `identity`. `identity::previous_database` names where
 DevHQ kept the inventory in AppData before; `src-tauri/src/location.rs` only looks at it, never opens,
 moves or deletes it: the window starts no inventory while it holds one and the new folder none
-(`move_pending`), and the person moves it once, by copying and verifying (README «Trasladar el
+(`move_pending`), and the person moves it once, by copying and verifying (specification «Trasladar el
 inventario fuera de AppData»). The uninstaller never names the home folder, and
 `src-tauri/windows/installer-hooks.nsh` keeps «Delete the application data» from deleting an
 inventory or backups still in the previous location.
@@ -379,4 +383,5 @@ query plan test so its cost never grows with the history.
 - One commit per coherent change. Messages in English: a short imperative title, then a
   body that explains why, wrapped at 72 columns, with the session trailers.
 - Code comments in English, dense and explanatory, like the surrounding code; clear names.
-- README in Spanish, written as prose that states behaviour precisely.
+- Specification in Spanish, written as prose that states behaviour precisely; `README.md` in
+  Spanish too, short and for someone who has just found the repository.

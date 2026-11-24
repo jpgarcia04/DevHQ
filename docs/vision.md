@@ -5,7 +5,7 @@
 
 Este documento guarda hacia dónde quiere ir DevHQ y con qué criterios se valoran las funcionalidades
 y las decisiones de arquitectura que lo acerquen. **No es una especificación ni un backlog**: el
-[README](../README.md) describe lo que DevHQ hace y manda mientras no cambie, y nada de lo que se
+[README, hoy la especificación](especificacion.md) describe lo que DevHQ hace y manda mientras no cambie, y nada de lo que se
 lee aquí existe hasta que el README lo diga. Muchas ideas cambiarán al avanzar el proyecto. Cuando
 una se construye, su comportamiento pasa al README en el mismo commit; cuando se corrige o se
 descarta, se cambia aquí, con su motivo.
