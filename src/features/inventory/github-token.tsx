@@ -5,7 +5,7 @@ import { useInventory } from './inventory-context'
 
 const storeNames: Record<CredentialStore, string> = {
   windows_credential_manager: 'Windows Credential Manager',
-  linux_user_keyring: 'your user keyring in the Linux kernel',
+  linux_session_keyring: 'the Linux kernel keyring of your login session',
   none: 'no credential store',
 }
 
@@ -74,8 +74,8 @@ export function GithubTokenSettings() {
         read-only access to Metadata, Actions and Pull requests: with it, nothing can be changed.
         DevHQ hands it to {where} and never shows it again. It never goes into the inventory, a
         backup or the agent gate.
-        {token?.store === 'linux_user_keyring' &&
-          ' In the Linux kernel keyring it lasts until the computer restarts.'}
+        {token?.store === 'linux_session_keyring' &&
+          ' There it lasts until you log out or the computer restarts.'}
       </p>
 
       {loadError ? (

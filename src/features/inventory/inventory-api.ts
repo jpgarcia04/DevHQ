@@ -433,7 +433,7 @@ export interface AgentAccess {
 }
 
 /** Where DevHQ keeps a GitHub token: the system's credential store, or nowhere on this system. */
-export type CredentialStore = 'windows_credential_manager' | 'linux_user_keyring' | 'none'
+export type CredentialStore = 'windows_credential_manager' | 'linux_session_keyring' | 'none'
 
 /** Whether DevHQ keeps a GitHub token, and where. The token itself never reaches the window. */
 export interface GithubToken {

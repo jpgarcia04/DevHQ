@@ -363,7 +363,7 @@ images without code (`pe::tests::image`) and the test executable itself, never a
 
 `src-tauri/src/credentials.rs` keeps DevHQ's only credential, the GitHub token
 (`docs/leer-github.md`, specification «Token de GitHub»), in the system's store under
-`<identifier>:github`: the Credential Manager on Windows, the kernel's user keyring on Linux, nothing
+`<identifier>:github`: the Credential Manager on Windows, the kernel's session keyring on Linux, nothing
 anywhere else. The window sends it once and only learns whether one is kept; never return it through
 IPC, write it to the inventory, a backup, a log or an error, or let the agent gate reach it. Accepting
 any other credential, or another kind of token, rewrites the product rule above first. Tests use the

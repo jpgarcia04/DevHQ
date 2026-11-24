@@ -9,8 +9,9 @@
 //!
 //! - Windows: the Credential Manager, a generic credential kept on this computer only
 //!   (`CRED_PERSIST_LOCAL_MACHINE`), never roaming with the profile.
-//! - Linux (development and CI only): the kernel's user keyring, readable by the same user alone. It
-//!   does not survive a restart; the specification says so.
+//! - Linux (development and CI only): the kernel's keyring of the login session, which the process
+//!   always possesses, unlike the user keyring, which a service such as a CI runner may reach without
+//!   the right to write to it. It lasts until the session ends; the specification says so.
 //! - Anywhere else, nothing is kept and saving is refused.
 //!
 //! Nothing reads the token yet: the GitHub reader is the next change. Until then a kept token only
@@ -50,7 +51,7 @@ impl Drop for Secret {
 
 /// A place secrets are kept under a name: the system's store, or one in memory for tests.
 pub(crate) trait Store: Send + Sync {
-    /// What the window calls it: `windows_credential_manager`, `linux_user_keyring` or `none`.
+    /// What the window calls it: `windows_credential_manager`, `linux_session_keyring` or `none`.
     fn kind(&self) -> &'static str;
     /// Whether a secret is kept under `name`.
     fn holds(&self, name: &str) -> Result<bool, String>;
@@ -65,7 +66,7 @@ pub(crate) trait Store: Send + Sync {
 #[serde(rename_all = "camelCase")]
 pub struct GithubToken {
     pub stored: bool,
-    /// `windows_credential_manager`, `linux_user_keyring` or `none` (this system keeps nothing).
+    /// `windows_credential_manager`, `linux_session_keyring` or `none` (this system keeps nothing).
     pub store: &'static str,
 }
 
@@ -163,7 +164,7 @@ fn system_store() -> Box<dyn Store> {
 
 #[cfg(target_os = "linux")]
 fn system_store() -> Box<dyn Store> {
-    Box::new(linux::UserKeyring)
+    Box::new(linux::SessionKeyring)
 }
 
 #[cfg(not(any(windows, target_os = "linux")))]
@@ -278,7 +279,7 @@ mod linux {
     use std::ffi::CString;
 
     // From <linux/keyctl.h>.
-    const KEY_SPEC_USER_KEYRING: libc::c_long = -4;
+    const KEY_SPEC_SESSION_KEYRING: libc::c_long = -3;
     const KEYCTL_SETPERM: libc::c_long = 5;
     const KEYCTL_UNLINK: libc::c_long = 9;
     const KEYCTL_SEARCH: libc::c_long = 10;
@@ -287,13 +288,13 @@ mod linux {
     /// anyone else: a process of the same user that does not possess it can still find it.
     const PERMISSIONS: libc::c_long = 0x3f3f_0000;
 
-    pub struct UserKeyring;
+    pub struct SessionKeyring;
 
     fn text(value: &str) -> Result<CString, String> {
         CString::new(value).map_err(|error| error.to_string())
     }
 
-    /// The key kept under `name` in the user keyring, if any.
+    /// The key kept under `name` in the session keyring or a keyring it holds, if any.
     fn find(name: &str) -> Result<Option<libc::c_long>, String> {
         let (kind, description) = (text("user")?, text(name)?);
         // SAFETY: both strings are NUL-terminated and outlive the call; no keyring is linked.
@@ -301,7 +302,7 @@ mod linux {
             libc::syscall(
                 libc::SYS_keyctl,
                 KEYCTL_SEARCH,
-                KEY_SPEC_USER_KEYRING,
+                KEY_SPEC_SESSION_KEYRING,
                 kind.as_ptr(),
                 description.as_ptr(),
                 0,
@@ -317,9 +318,9 @@ mod linux {
         }
     }
 
-    impl Store for UserKeyring {
+    impl Store for SessionKeyring {
         fn kind(&self) -> &'static str {
-            "linux_user_keyring"
+            "linux_session_keyring"
         }
 
         fn holds(&self, name: &str) -> Result<bool, String> {
@@ -338,7 +339,7 @@ mod linux {
                     description.as_ptr(),
                     payload.as_ptr(),
                     payload.len(),
-                    KEY_SPEC_USER_KEYRING,
+                    KEY_SPEC_SESSION_KEYRING,
                 )
             };
             if id < 0 {
@@ -355,15 +356,21 @@ mod linux {
             let Some(id) = find(name)? else {
                 return Ok(());
             };
-            // Invalidating destroys the key at once; unlinking it from the user keyring is the
+            // Invalidating destroys the key at once; unlinking it from the session keyring is the
             // fallback for a kernel older than 3.5.
             // SAFETY: plain integers.
             if unsafe { libc::syscall(libc::SYS_keyctl, KEYCTL_INVALIDATE, id) } == 0 {
                 return Ok(());
             }
             // SAFETY: plain integers.
-            if unsafe { libc::syscall(libc::SYS_keyctl, KEYCTL_UNLINK, id, KEY_SPEC_USER_KEYRING) }
-                < 0
+            if unsafe {
+                libc::syscall(
+                    libc::SYS_keyctl,
+                    KEYCTL_UNLINK,
+                    id,
+                    KEY_SPEC_SESSION_KEYRING,
+                )
+            } < 0
             {
                 return Err(std::io::Error::last_os_error().to_string());
             }

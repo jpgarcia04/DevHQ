@@ -708,8 +708,9 @@ encuentra el token de la instalada:
 
 - En Windows, el Administrador de credenciales, como credencial genérica guardada solo en este equipo
   (`CRED_PERSIST_LOCAL_MACHINE`), que no viaja con un perfil itinerante.
-- En Linux, que solo se usa para desarrollo y CI, el llavero de usuario del núcleo, que solo lee el
-  mismo usuario y que **no sobrevive a un reinicio**; Settings lo dice.
+- En Linux, que solo se usa para desarrollo y CI, el llavero del núcleo de la sesión, que solo leen el
+  mismo usuario y los procesos de esa sesión y que **dura hasta que se cierra la sesión o se reinicia
+  el equipo**; Settings lo dice.
 - En cualquier otro sistema no se guarda nada y Settings no ofrece guardarlo.
 
 Nunca está en el inventario, un respaldo, una exportación, un registro, un mensaje de error, la puerta

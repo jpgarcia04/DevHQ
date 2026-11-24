@@ -113,9 +113,10 @@ opera» y «no funciona en segundo plano» no cambian.
 
 ### Lo decidido al guardar el token
 
-- En Linux, que solo sirve para desarrollo y CI, el almacén es el llavero de usuario del núcleo, que
-  no sobrevive a un reinicio, en vez del Secret Service, que exigiría D-Bus y otra dependencia. En
-  cualquier otro sistema no se guarda nada.
+- En Linux, que solo sirve para desarrollo y CI, el almacén es el llavero del núcleo de la sesión, que
+  dura lo que la sesión, en vez del Secret Service, que exigiría D-Bus y otra dependencia. El llavero
+  del usuario se descartó porque un servicio como el ejecutor de la CI lo alcanza sin permiso para
+  escribir en él. En cualquier otro sistema no se guarda nada.
 - DevHQ comprueba la forma del token (`github_pat_` y letras, dígitos y guiones bajos) y rechaza los
   clásicos por su nombre, pero no pregunta a GitHub si vale: guardarlo no abre ninguna conexión. Lo
   sabrá la primera lectura.
