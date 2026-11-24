@@ -4,6 +4,7 @@ mod backup;
 #[cfg(test)]
 mod build_version;
 mod change_log;
+mod credentials;
 pub mod gate;
 mod http_check;
 mod identity;
@@ -109,6 +110,31 @@ fn set_agent_access(
     mode: String,
 ) -> Result<access::AgentAccess, inventory::ApiError> {
     access::set_agent_access(path.current()?, &mode)
+}
+
+/// Whether DevHQ keeps a GitHub token, and in which store; never the token. It opens nothing of the
+/// inventory, so it answers whatever the window found there.
+#[tauri::command]
+fn github_token(
+    credentials: tauri::State<'_, credentials::Credentials>,
+) -> Result<credentials::GithubToken, inventory::ApiError> {
+    credentials.github()
+}
+
+/// Keeps the token the person gave in place of any kept before. The token never comes back.
+#[tauri::command]
+fn save_github_token(
+    credentials: tauri::State<'_, credentials::Credentials>,
+    token: String,
+) -> Result<credentials::GithubToken, inventory::ApiError> {
+    credentials.save_github(&token)
+}
+
+#[tauri::command]
+fn remove_github_token(
+    credentials: tauri::State<'_, credentials::Credentials>,
+) -> Result<credentials::GithubToken, inventory::ApiError> {
+    credentials.remove_github()
 }
 
 #[tauri::command]
@@ -466,6 +492,9 @@ fn commands<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Sen
         list_backups,
         agent_access,
         set_agent_access,
+        github_token,
+        save_github_token,
+        remove_github_token,
         save_resource,
         save_application,
         delete_application,
@@ -570,6 +599,8 @@ pub fn run() {
             // it refused is never opened again until DevHQ starts again.
             let (monitor, current) =
                 manage(app, path, previous, computer, reader, installation_reader);
+            // The GitHub token, in the system's credential store under this build's identifier.
+            app.manage(credentials::Credentials::system());
             if current {
                 supervise(&monitor);
             }

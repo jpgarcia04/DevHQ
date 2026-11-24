@@ -16,7 +16,8 @@ DevHQ no reemplaza VS Code, una terminal, GitHub Desktop, Docker Desktop, Codex 
 Claude Code. Conserva inventario local, la evidencia que registras a mano, la de
 comprobaciones HTTP(S) que lanzas tú o que supervisa **solo mientras su ventana está
 abierta**, y lo que lee en las copias locales y en las instalaciones de esta estación de trabajo,
-cuando se lo pides y una vez al abrirse su ventana, sin ejecutar nada de lo que nombran. **No funciona en segundo plano ni opera sistemas.**
+cuando se lo pides y una vez al abrirse su ventana, sin ejecutar nada de lo que nombran. **No funciona en segundo plano ni opera sistemas.** Guarda una sola credencial, un token de GitHub de
+solo lectura, y solo en el almacén de credenciales del sistema (ver [Token de GitHub](#token-de-github)).
 
 ## Qué incluye
 
@@ -684,6 +685,41 @@ debajo dice cuántas cosas esperan en el trabajo pendiente.
 motivos, el sistema, la ruta, la máquina y la lectura en que se apoya, el umbral de antigüedad en horas
 y una nota que dice que no es salud. Cuando hay alguna, su `meaning` lo dice y pide nombrarlas también,
 para que un agente no responda solo «nada observado».
+
+### Token de GitHub
+
+DevHQ va a leer los repositorios de GitHub que el inventario nombra, para decir si su rama principal
+pasa sus comprobaciones y qué pull requests llevan días esperando
+([docs/leer-github.md](leer-github.md)). Esa lectura **todavía no existe**: hoy Settings solo permite
+guardar el token que usará, y nada lo lee.
+
+El token es uno de grano fino (`github_pat_…`) que creas en GitHub, limitado a los repositorios que
+elijas y con acceso de solo lectura a `Metadata`, `Actions` y `Pull requests`: con él no se puede
+cambiar nada. DevHQ rechaza, sin repetir lo recibido, un texto que no tenga esa forma (`github_pat_`
+seguido de letras, dígitos y guiones bajos, 255 caracteres como mucho, sin los espacios o saltos de
+línea que trae un pegado), y rechaza por su nombre un token clásico (`ghp_` y los demás prefijos
+clásicos), que alcanza todos los repositorios de la cuenta; un rechazo deja el token anterior como
+estaba.
+
+Vive solo en el almacén de credenciales del sistema, con el nombre `<identificador>:github`, donde el
+identificador es el de la compilación (`com.devhq.desktop` para el ejecutable instalado,
+`com.devhq.desktop.dev` para los datos de desarrollo), de modo que una compilación de desarrollo nunca
+encuentra el token de la instalada:
+
+- En Windows, el Administrador de credenciales, como credencial genérica guardada solo en este equipo
+  (`CRED_PERSIST_LOCAL_MACHINE`), que no viaja con un perfil itinerante.
+- En Linux, que solo se usa para desarrollo y CI, el llavero del núcleo de la sesión, que solo leen el
+  mismo usuario y los procesos de esa sesión y que **dura hasta que se cierra la sesión o se reinicia
+  el equipo**; Settings lo dice.
+- En cualquier otro sistema no se guarda nada y Settings no ofrece guardarlo.
+
+Nunca está en el inventario, un respaldo, una exportación, un registro, un mensaje de error, la puerta
+para agentes ni la ventana. La ventana lo envía una sola vez, al guardarlo; el campo se vacía en cuanto
+se guarda y lo único que vuelve es si hay uno guardado y en qué almacén (`github_token`). Reemplazarlo
+es guardar otro; **Remove token** lo borra del almacén, y borrar lo que no está no es un error. Guardar,
+reemplazar o borrar el token no abre el inventario, así que funciona aunque la ventana no lo sirva, y
+no deja rastro en el registro de cambios, que es del inventario. Si el almacén no responde, Settings
+dice que no sabe si hay uno guardado, nunca que no lo hay.
 
 ### Comprobación HTTP(S)
 
@@ -2074,8 +2110,10 @@ y de ella guarda dos números y nada más (ver [Instalaciones](#instalaciones)).
 8. Hecho: el [trabajo pendiente](#trabajo-pendiente), lo que las lecturas de copias e instalaciones
    dicen que espera, ordenado, en Overview y en `attention`, con esas lecturas hechas al abrir la
    ventana. Responde «¿qué necesita mi atención?» en un ecosistema sin servicios que comprobar.
-9. Después, automatizaciones con resultado e historial, y seguridad con almacén nativo de
-   credenciales y evidencias contextualizadas.
+9. En curso: leer los repositorios de GitHub que el inventario nombra
+   ([docs/leer-github.md](leer-github.md)). El [token](#token-de-github) ya se guarda en el almacén
+   del sistema; la lectura todavía no existe. Después, automatizaciones con resultado e historial, y
+   evidencias contextualizadas.
 10. A largo plazo, una supervisión que siga con la ventana cerrada y avise de lo que necesita
     atención, hecha por DevHQ mismo y no por un agente. Contradice que DevHQ no funcione en segundo plano, así que exige revisar esa regla y
     cuidar lo que consume.

@@ -41,12 +41,14 @@ git2 = { version = "0.21", default-features = false, features = ["vendored-libgi
 # wry; no new crate.
 sha2 = "0.10"
 
-# The reader of local copies forbids itself to start programs: a Job Object on Windows, and the
-# MachineGuid that fingerprints the computer is in the registry.
+# The reader of local copies forbids itself to start programs: a Job Object on Windows, the
+# MachineGuid that fingerprints the computer is in the registry, and the GitHub token is kept in
+# the Credential Manager.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",
+    "Win32_Security_Credentials",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_Storage_FileSystem",
     "Win32_System_IO",

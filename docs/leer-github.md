@@ -1,8 +1,9 @@
 # Leer GitHub (propuesta)
 
-Estado: **propuesta, sin código** (24 nov 2026). La persona aprobó que se escriba esta decisión antes
-de construir nada; aún no aprobó su implementación. Mientras no se implemente, la regla «DevHQ no
-guarda credenciales» sigue vigente, y la [especificación](especificacion.md) manda. Los repositorios
+Estado: **en construcción** (24 nov 2026). La persona aprobó esta decisión y su implementación. El
+primer paso, guardar el token, ya existe y reescribió la regla «DevHQ no guarda credenciales»
+([especificación](especificacion.md), «Token de GitHub»); la lectura todavía no. La especificación
+manda. Los repositorios
 y sistemas de los ejemplos son inventados.
 
 ## El problema
@@ -103,12 +104,24 @@ Es lo que rompe una regla, así que se fija aquí entera.
 
 ### Reglas que cambia
 
-Implementarlo exige reescribir, en el mismo commit que el código, la regla de CLAUDE.md «DevHQ
-observes; it does not operate systems, run in the background or hold credentials», la de la
+El paso que guarda el token reescribió, en el mismo commit que su código, la regla de CLAUDE.md
+«DevHQ observes; it does not operate systems, run in the background or hold credentials», la de la
 especificación que la repite y la fila «Leer servidores o plataformas con credenciales» de
-[vision.md](vision.md) («Tensiones con las reglas actuales»): DevHQ pasaría a guardar **una**
-credencial, de solo lectura, en el almacén del sistema, para leer lo que el inventario nombra.
-«DevHQ observa, no opera» y «no funciona en segundo plano» no cambian.
+[vision.md](vision.md) («Tensiones con las reglas actuales»): DevHQ guarda **una** credencial, de
+solo lectura, en el almacén del sistema, para leer lo que el inventario nombra. «DevHQ observa, no
+opera» y «no funciona en segundo plano» no cambian.
+
+### Lo decidido al guardar el token
+
+- En Linux, que solo sirve para desarrollo y CI, el almacén es el llavero del núcleo de la sesión, que
+  dura lo que la sesión, en vez del Secret Service, que exigiría D-Bus y otra dependencia. El llavero
+  del usuario se descartó porque un servicio como el ejecutor de la CI lo alcanza sin permiso para
+  escribir en él. En cualquier otro sistema no se guarda nada.
+- DevHQ comprueba la forma del token (`github_pat_` y letras, dígitos y guiones bajos) y rechaza los
+  clásicos por su nombre, pero no pregunta a GitHub si vale: guardarlo no abre ninguna conexión. Lo
+  sabrá la primera lectura.
+- No se escribió un almacén propio ni se añadió una dependencia: las llamadas del Administrador de
+  credenciales ya están en `windows-sys`, y las del llavero en `libc`.
 
 ## Lo que queda fuera
 

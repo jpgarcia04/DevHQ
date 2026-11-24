@@ -96,6 +96,8 @@ fn devhq_after(
         crate::local_copies::tests::test_reader("confined", &[]),
         crate::installations::tests::test_reader("confined"),
     );
+    // Never the system's credential store, which may hold the person's token.
+    tauri::Manager::manage(&app, crate::credentials::tests::in_memory());
     let window = WebviewWindowBuilder::new(&app, "main", Default::default())
         .build()
         .unwrap();
@@ -199,8 +201,15 @@ fn arguments(command: &str) -> Vec<(&'static str, Reader)> {
     let subject: Reader = read_completely::<Subject>;
     let text: Reader = read_completely::<String>;
     match command {
-        "list_inventory" | "data_location" | "backup_inventory" | "list_backups"
-        | "agent_access" | "inspect_upgrade" => vec![],
+        "list_inventory"
+        | "data_location"
+        | "backup_inventory"
+        | "list_backups"
+        | "agent_access"
+        | "inspect_upgrade"
+        | "github_token"
+        | "remove_github_token" => vec![],
+        "save_github_token" => vec![("token", text)],
         "set_agent_access" => vec![("mode", text)],
         "save_resource" => vec![("input", read_completely::<ResourceInput>)],
         "save_application" => vec![("input", read_completely::<ApplicationInput>)],
@@ -336,9 +345,16 @@ fn files(folder: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     found
 }
 
-/// Commands that never open the inventory: they say where it is, list its backups folder, or
-/// stream supervision's status.
-const OPEN_NOTHING: [&str; 3] = ["data_location", "list_backups", "watch_http_monitor"];
+/// Commands that never open the inventory: they say where it is, list its backups folder, stream
+/// supervision's status, or keep the GitHub token, which lives in the system's credential store.
+const OPEN_NOTHING: [&str; 6] = [
+    "data_location",
+    "list_backups",
+    "watch_http_monitor",
+    "github_token",
+    "save_github_token",
+    "remove_github_token",
+];
 
 /// The window serves nothing from a file that is not an inventory in this build's schema: started
 /// on it, every command that would open it refuses with what was found, and no file in its folder
@@ -1088,6 +1104,13 @@ fn every_answer_has_the_shape_the_window_expects() {
             }),
         ),
         ("watch_http_monitor".to_owned(), value(&supervision)),
+        (
+            "github_token".to_owned(),
+            value(&crate::credentials::GithubToken {
+                stored: true,
+                store: "windows_credential_manager",
+            }),
+        ),
         (
             "backup_inventory".to_owned(),
             value(&Backup {

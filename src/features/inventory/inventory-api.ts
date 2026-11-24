@@ -432,6 +432,15 @@ export interface AgentAccess {
   executable: string | null
 }
 
+/** Where DevHQ keeps a GitHub token: the system's credential store, or nowhere on this system. */
+export type CredentialStore = 'windows_credential_manager' | 'linux_session_keyring' | 'none'
+
+/** Whether DevHQ keeps a GitHub token, and where. The token itself never reaches the window. */
+export interface GithubToken {
+  stored: boolean
+  store: CredentialStore
+}
+
 /** Where the inventory lives on this device, so that it can be backed up. */
 export interface DataLocation {
   /** The SQLite file. Once DevHQ is closed it holds everything on its own. */
@@ -643,6 +652,14 @@ export const inventoryApi = {
   agentAccess: () => invoke<AgentAccess>('agent_access'),
   /** The gate reads it on every call, so the change applies at once. */
   setAgentAccess: (mode: AgentAccessMode) => invoke<AgentAccess>('set_agent_access', { mode }),
+  /** Whether a GitHub token is kept, and where; never the token. */
+  githubToken: () => invoke<GithubToken>('github_token'),
+  /**
+   * Hands the token to the system's credential store, in place of any kept before. It is the only
+   * time the token crosses: nothing ever sends it back.
+   */
+  saveGithubToken: (token: string) => invoke<GithubToken>('save_github_token', { token }),
+  removeGithubToken: () => invoke<GithubToken>('remove_github_token'),
   saveResource: (input: ResourceInput) => invoke<InventoryResource>('save_resource', { input }),
   saveApplication: (input: ApplicationInput) =>
     invoke<InventoryApplication>('save_application', { input }),

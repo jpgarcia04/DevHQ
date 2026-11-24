@@ -186,8 +186,9 @@ reglas:
    que es algo reportado, no medido.
 2. **Lectura con credenciales.** Un adaptador de solo lectura (por ejemplo SSH con comandos fijos
    que define DevHQ: estado de servicios, contenedores, disco) que produce observaciones con su
-   propio `source`. Exige el almacén nativo de credenciales que el README ya prevé, verificar la
-   clave del servidor y revisar la regla «no guarda credenciales». Nunca una terminal remota dentro
+   propio `source`. Exige el almacén del sistema, que ya guarda el token de GitHub, verificar la
+   clave del servidor y una decisión propia para esa credencial, como la del token
+   ([leer-github.md](leer-github.md)). Nunca una terminal remota dentro
    de DevHQ ni comandos arbitrarios.
 3. **Operaciones**, como reiniciar un servicio o volver a desplegar: el último escalón, construido
    sobre los anteriores, porque una acción necesita saber sobre qué actúa y poder observar qué
@@ -413,7 +414,7 @@ cambia en el mismo commit que la funcionalidad que lo necesita.
 | Idea                                                  | Regla o límite de hoy                                                               | Qué haría falta                                                                                                                        |
 | ----------------------------------------------------- | ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
 | Actuar sobre el ecosistema, tú o un agente autorizado | DevHQ observa; no opera sistemas                                                    | Cambiar la regla con la primera capacidad operativa, construida sobre la observación: explícita, segura, controlable y auditable       |
-| Leer servidores o plataformas con credenciales        | No guarda credenciales                                                              | El almacén nativo de credenciales que el README ya prevé; nunca en SQLite, React ni localStorage                                       |
+| Leer servidores o plataformas con credenciales        | Una sola credencial: el token de GitHub de solo lectura, en el almacén del sistema  | Cada credencial nueva, una decisión propia y el almacén del sistema; nunca en SQLite, React ni localStorage                            |
 | Vigilar con la ventana cerrada                        | No funciona en segundo plano                                                        | Revisar la regla y medir lo que consume; lo hace DevHQ, no un agente                                                                   |
 | Descubrir repositorios o servicios                    | DevHQ no busca qué observar; lee solo lo que el inventario nombra                   | Que lo lances tú, sobre un lugar que eliges, de solo lectura y sin ejecutar nada de lo que encuentre, y que proponga altas que aceptas |
 | Atajos como abrir una carpeta                         | Si solo ahorra un comando sencillo, no pertenece                                    | Solo como subproducto de una referencia que el modelo ya tiene                                                                         |

@@ -315,6 +315,9 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
         listBackups: inventoryApi.listBackups,
         agentAccess: inventoryApi.agentAccess,
         setAgentAccess: inventoryApi.setAgentAccess,
+        githubToken: inventoryApi.githubToken,
+        saveGithubToken: inventoryApi.saveGithubToken,
+        removeGithubToken: inventoryApi.removeGithubToken,
         saveResource: (input) => persist(inventoryApi.saveResource(input), 'Resource'),
         saveApplication: (input) => persist(inventoryApi.saveApplication(input), 'Application'),
         deleteApplication: (id) =>

@@ -41,6 +41,12 @@ const calls: Record<keyof typeof inventoryApi, () => Promise<unknown>> = {
   listBackups: () => inventoryApi.listBackups(),
   agentAccess: () => inventoryApi.agentAccess(),
   setAgentAccess: () => inventoryApi.setAgentAccess('read'),
+  githubToken: () => inventoryApi.githubToken(),
+  saveGithubToken: () =>
+    inventoryApi.saveGithubToken(
+      'github_pat_11AAAAAAA0invented0for0tests0only_0000000000000000000000000000000000000000000000',
+    ),
+  removeGithubToken: () => inventoryApi.removeGithubToken(),
   saveResource: () =>
     inventoryApi.saveResource({
       id: 'host',
@@ -683,6 +689,8 @@ const agentAccess: Answer<'agentAccess'> = {
   executable: 'C:\\Users\\Ana Ruiz\\AppData\\Local\\DevHQ\\devhq.exe',
 }
 
+const githubToken: Answer<'githubToken'> = { stored: true, store: 'windows_credential_manager' }
+
 const backup: Answer<'backupInventory'> = {
   name: 'inventory-20260101T100500.123Z.sqlite3',
   path: `${folder}\\backups\\inventory-20260101T100500.123Z.sqlite3`,
@@ -802,6 +810,7 @@ const answers: Record<string, unknown> = {
   backup_inventory: backup,
   list_backups: backups,
   agent_access: agentAccess,
+  github_token: githubToken,
   watch_http_monitor: supervision,
   this_workstation: laptop,
   read_copies: readCopies,
