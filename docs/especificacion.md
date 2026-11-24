@@ -15,8 +15,8 @@ recordar eventos, relacionar infraestructura y verificar resultados de automatiz
 DevHQ no reemplaza VS Code, una terminal, GitHub Desktop, Docker Desktop, Codex ni
 Claude Code. Conserva inventario local, la evidencia que registras a mano, la de
 comprobaciones HTTP(S) que lanzas tú o que supervisa **solo mientras su ventana está
-abierta**, y lo que lee, cuando se lo pides, en las copias locales y en las instalaciones de esta
-estación de trabajo, sin ejecutar nada de lo que nombran. **No funciona en segundo plano ni opera sistemas.**
+abierta**, y lo que lee en las copias locales y en las instalaciones de esta estación de trabajo,
+cuando se lo pides y una vez al abrirse su ventana, sin ejecutar nada de lo que nombran. **No funciona en segundo plano ni opera sistemas.**
 
 ## Qué incluye
 
@@ -341,7 +341,8 @@ read` («Automated · Local read»), el lector y su versión (`reader`, «libgit
   observado y el registrado, y el agente que la pidió por la puerta, o nada si la pediste tú. No es
   healthy ni unhealthy, no entra en la atención ni en la cobertura de salud, no escribe eventos ni sale
   en Activity, y no caduca, porque nunca afirmó seguir siendo cierta: dice lo que la copia tenía cuando
-  se leyó, y su momento se muestra siempre. Nada la presenta como actual.
+  se leyó, y su momento se muestra siempre. Nada la presenta como actual. Lo que dice sí cuenta en el
+  [trabajo pendiente](#trabajo-pendiente), que tampoco es salud.
 - **Copia lo que leyó**: la referencia, la máquina y la ruta, sin claves foráneas, como una observación
   HTTP copia su URL. Editar o quitar la referencia nunca reescribe una lectura, y una máquina se puede
   borrar cuando ya no guarda rutas. Si la referencia desaparece o cambia mientras se lee, no se guarda
@@ -376,9 +377,11 @@ ventana la elige (`set_this_workstation`); la puerta solo la lee. No es inventar
 registro de cambios; cada lectura guarda en qué máquina se hizo. Las VMs clonadas sin sysprep comparten
 `MachineGuid`, y reinstalar el sistema obliga a elegirla otra vez.
 
-**Solo a petición.** `read_copies` lee las copias que se nombran o, sin nombrar ninguna, todas las de
-esta estación salvo las de aplicaciones archivadas, una tras otra: nunca al abrir DevHQ, nunca con un
-temporizador, nunca con la ventana cerrada. Las copias de otra máquina las lee DevHQ en esa máquina. DevHQ
+**A petición, y una vez al abrirse la ventana.** `read_copies` lee las copias que se nombran o, sin
+nombrar ninguna, todas las de esta estación salvo las de aplicaciones archivadas, una tras otra. La
+ventana pide esto último una sola vez por sí misma al abrirse (ver
+[Trabajo pendiente](#trabajo-pendiente)); por lo demás, nunca con un temporizador ni con la
+supervisión, nunca con la ventana cerrada. Las copias de otra máquina las lee DevHQ en esa máquina. DevHQ
 no busca copias: lee solo las rutas que el inventario declara.
 
 **En la ventana.** Settings › This computer dice qué estación de trabajo es este equipo, desde cuándo y
@@ -519,7 +522,8 @@ la de un instante: un proceso que arranca o termina mientras se lee puede contar
   healthy ni unhealthy, no entra en la atención ni en la cobertura de salud, no escribe eventos ni sale
   en Activity, y no caduca, porque nunca afirmó seguir siendo cierta: dice lo que el archivo era cuando
   se leyó. «Había dos procesos corriendo desde él», nunca «está abierta»: nada la presenta como actual,
-  ni como que la aplicación funciona.
+  ni como que la aplicación funciona. Lo que dice sí cuenta en el
+  [trabajo pendiente](#trabajo-pendiente), que tampoco es salud.
 - **Copia lo que leyó**: la referencia, la máquina y la ruta, sin claves foráneas, como una lectura de
   una copia local. Editar o quitar la referencia nunca reescribe una lectura. Si la referencia
   desaparece, cambia de ruta o de máquina, o deja de ser una instalación mientras se lee, no se guarda
@@ -554,9 +558,11 @@ la de un instante: un proceso que arranca o termina mientras se lee puede contar
   Las lecturas anteriores de un sistema se cargan de 200 en 200 (`older_installation_readings`), por
   el índice de su sistema.
 
-**Solo a petición.** `read_installations` lee las instalaciones que se nombran o, sin nombrar ninguna,
-todas las de esta estación salvo las de aplicaciones archivadas, una tras otra: nunca al abrir DevHQ,
-nunca con un temporizador ni con la supervisión, nunca con la ventana cerrada. Las de otra máquina las
+**A petición, y una vez al abrirse la ventana.** `read_installations` lee las instalaciones que se
+nombran o, sin nombrar ninguna, todas las de esta estación salvo las de aplicaciones archivadas, una
+tras otra. La ventana pide esto último una sola vez por sí misma al abrirse, después de las copias (ver
+[Trabajo pendiente](#trabajo-pendiente)); por lo demás, nunca con un temporizador ni con la
+supervisión, nunca con la ventana cerrada. Las de otra máquina las
 lee DevHQ en esa máquina, y sin saber qué estación de trabajo es este equipo (ver
 [Copias locales](#copias-locales)) no lee ninguna y dice por qué. Un fallo de DevHQ al leer (el lector
 no arranca, no responde en su plazo o responde algo que no se sostiene) se devuelve y no guarda nada.
@@ -607,6 +613,63 @@ recurso de versión lleva el commit: la versión de la aplicación y la del inst
 y `src/shared/version.ts`, de donde lo toma la ventana, y una prueba exige que coincidan; sube cuando
 se construye un instalador para instalarlo, no con cada cambio, porque lo que distingue una build de
 otra es el commit.
+
+### Trabajo pendiente
+
+Un ecosistema personal de aplicaciones de escritorio no tiene casi nada a lo que una comprobación HTTP
+pueda preguntar, así que «¿Qué necesita mi atención?» respondería casi siempre que nada está observado.
+El **trabajo pendiente** responde lo que sí se sabe sin que ninguna aplicación esté abierta: qué dicen
+las últimas lecturas de las [copias locales](#copias-locales) y de las [instalaciones](#instalaciones)
+que espera algo de ti. No es salud: no entra en «Needs attention», ni en la cobertura, ni en el estado
+global, y cada cosa se muestra con el momento de la lectura en que se apoya, porque dice lo que la copia
+o el archivo tenían entonces.
+
+**Qué cuenta.** Cada copia o instalación declarada da como mucho una entrada, con todos sus motivos, del
+más urgente al menos, y se ordena por el primero:
+
+| Motivo            | Cuándo                                                                                                   |
+| ----------------- | -------------------------------------------------------------------------------------------------------- |
+| `operation`       | La última lectura de la copia encontró un merge, rebase u otra operación a medias                        |
+| `changes`         | …archivos seguidos con cambios, entradas nuevas o archivos que DevHQ no pudo verificar                   |
+| `unpublished`     | …commits que ninguna rama remota de la copia contenía, en HEAD o en otra rama local                      |
+| `stashes`         | …stashes                                                                                                 |
+| `version_differs` | El archivo de la instalación declaraba otra versión que la que declara su aplicación                     |
+| `not_found`       | La copia o el archivo no estaban donde se declaran, o no se pudieron leer                                |
+| `never_read`      | Es de esta estación de trabajo y nunca se leyó                                                           |
+| `old_reading`     | Es de esta estación de trabajo y su última lectura tiene más de tres días (exactamente tres, todavía no) |
+
+Lo que leyó DevHQ en otro equipo cuenta igual, pero que allí nunca se leyera o se leyera hace mucho no,
+porque solo DevHQ en ese equipo puede leerlo; sin saber qué estación es este equipo, ninguna copia ni
+instalación es de esta estación. Una versión que DevHQ no pudo comparar (sin versión declarada, o
+desconocida en el archivo) no es trabajo pendiente. Las de aplicaciones archivadas no cuentan, como en
+Read all. Los empates conservan el orden del inventario: primero las copias, luego las instalaciones.
+Las reglas se calculan en la ventana (`src/features/inventory/pending.ts`) y en Rust para la puerta
+(`pending.rs`), y `contract/pending-work/` guarda casos con un instante, copias, instalaciones y el
+resultado esperado, contra los que Vitest y Rust comprueban sus dos versiones, el límite exacto de los
+tres días incluido.
+
+**Al abrirse la ventana.** Para que el trabajo pendiente se apoye en lecturas recientes sin que nadie lo
+pida, la ventana, la primera vez que sabe qué estación de trabajo es este equipo después de abrirse y
+con un inventario que sirve, lee una sola vez todas las copias de esta estación y después todas sus
+instalaciones, como Read all on this computer, con el mismo encierro y los mismos plazos; no lee nada si
+no hay ninguna. La ventana sigue manejable mientras tanto. Las lecturas no llevan agente, como las que
+pides tú. Después no vuelve a leer por su cuenta, y con la ventana cerrada no lee nada: una puerta con
+Read only no puede pedir lecturas, así que lo que dé dependerá de cuándo se abrió DevHQ por última vez, y
+cada entrada dice cuándo se leyó. Un fallo de esa lectura no guarda nada y se dice en el panel.
+
+**En la ventana.** Overview tiene un panel **Pending work**, bajo «Needs attention», con su número y cada
+entrada: el sistema, si es una copia o una instalación y en qué máquina, la ruta, sus motivos en pocas
+palabras («2 commits on no remote · read more than 3 days ago», «the file declared 1.5.0+3f9c2ab, the
+inventory 1.4.0») y cuándo se leyó y quién lo pidió, si fue un agente. Encima dice que se están leyendo
+las copias y las instalaciones al abrir DevHQ y, al terminar, cuántas leyó, cuántas no pudo y qué llamada
+se rechazó. Vacío, dice que ninguna lectura dice que algo espera, o que no hay ninguna copia ni
+instalación declarada, nunca que todo está bien. El estado del ecosistema sigue hablando de salud, y
+debajo dice cuántas cosas esperan en el trabajo pendiente.
+
+**En la puerta.** `attention` lo da como `pendingWork`: las entradas en el mismo orden, cada una con sus
+motivos, el sistema, la ruta, la máquina y la lectura en que se apoya, el umbral de antigüedad en horas
+y una nota que dice que no es salud. Cuando hay alguna, su `meaning` lo dice y pide nombrarlas también,
+para que un agente no responda solo «nada observado».
 
 ### Comprobación HTTP(S)
 
@@ -1192,7 +1255,7 @@ serviría. `status` da lo que puede la sesión (`access`), lo que elegiste (`acc
 | Herramienta    | Qué responde                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `status`       | Qué archivo abrió, dónde lo guarda de verdad el sistema (`storedAt`, como Settings), qué guarda aún la ubicación anterior de DevHQ en `AppData` (`database.previous`, `null` si nada; ver [Trasladar el inventario fuera de AppData](#trasladar-el-inventario-fuera-de-appdata)), qué es ese archivo (`schema`: la versión de esquema que declara, también en `schemaVersion`, o `null` si no es un inventario o no se pudo leer; la que soporta este DevHQ; su estado: `current`, `mismatch`, `outdated`, `newer`, `not_an_inventory`, `needs_recovery`, `unreadable` o `missing`, con qué significa; si tiene la estructura del esquema de este DevHQ, `structure`: `matches`, `differs` o, para otra versión, `not_checked`; y su integridad, `integrity`, que la puerta nunca comprueba: `not_checked`), hasta dónde puede llegar esta sesión (`access`: lo que elegiste en Settings, `accessChosen`, bajado al techo de `--access`, `accessCeiling`), si hay una ventana de DevHQ abierta sobre él (`windowOpen`), cuántos sistemas tiene, qué estación de trabajo es este equipo (`thisWorkstation`, o por qué no se sabe), qué no puede saber y, si su ejecutable no lo empaquetó el instalador, que sin `--database` abre datos de desarrollo. El acceso, los recuentos y la estación solo se dan de un inventario `current`: de cualquier otro son `null` |
-| `attention`    | «¿Qué necesita mi atención?» con el mismo orden que Overview, la cobertura, lo nunca observado y lo que nada supervisa; el estado solo es `covered` si todo tiene evidencia vigente. Aparte, sin ordenar y diciendo que no es salud, `localCopies`: las copias cuya última lectura tenía trabajo que solo existía allí, las que no se encontraron y las de esta estación nunca leídas. Y `installations`, igual de aparte: las instalaciones cuyo archivo declaraba otra versión que la que declara su aplicación, las que no se encontraron y las de esta estación nunca leídas                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `attention`    | «¿Qué necesita mi atención?» con el mismo orden que Overview, la cobertura, lo nunca observado y lo que nada supervisa; el estado solo es `covered` si todo tiene evidencia vigente. Aparte, sin ordenar y diciendo que no es salud, `localCopies`: las copias cuya última lectura tenía trabajo que solo existía allí, las que no se encontraron y las de esta estación nunca leídas. Y `installations`, igual de aparte: las instalaciones cuyo archivo declaraba otra versión que la que declara su aplicación, las que no se encontraron y las de esta estación nunca leídas. Y `pendingWork`, el [trabajo pendiente](#trabajo-pendiente), ordenado y tampoco salud, que su `meaning` menciona cuando no está vacío                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `list_systems` | Cada aplicación y recurso con su estado de evidencia y última observación, incidencias activas, comprobación HTTP, relaciones y referencias, con la máquina de cada ruta y qué otros sistemas declaran el mismo repositorio (`sameRepositoryAs`): un agente encuentra así su sistema por su carpeta o su repositorio. Cada copia local dice si es de esta estación, su última lectura y lo derivado, y cada sistema el commit más nuevo que encontraron (`localActivity`). Cada instalación dice lo mismo de su última lectura, con `version` (la versión declarada frente a la del archivo) y `build` (desde qué lectura es la misma build y, si la hubo, la lectura anterior que encontró otra). Cada sistema dice quién lo declaró (`declaredBy`) y quién hizo su último cambio (`lastChangedBy`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `get_system`   | Una aplicación o recurso (por ID, por nombre exacto sin distinguir mayúsculas, o por ambos si son del mismo sistema) con sus referencias, quién lo declaró y quién lo cambió por última vez, sus observaciones, incidencias y eventos cargados, y desde cuándo su historial automático está completo                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `history`      | Los resultados automáticos anteriores de un sistema, o las lecturas de sus copias locales (`records: "readings"`), de 200 en 200, como la carga bajo demanda de la ventana; con `records: "installation_readings"`, las lecturas de sus instalaciones                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
@@ -1958,7 +2021,8 @@ urgencia, cobertura y estado global) también se calcula en Rust (`attention.rs`
 agentes, que no tiene ventana a la que preguntar; `contract/attention/` guarda casos con un
 inventario, un instante y el resultado esperado, y Vitest y Rust comprueban contra ellos sus dos
 versiones, empates y fin exacto de la vigencia incluidos, así que la puerta nunca responde distinto
-que la ventana. Se conserva la barra nativa de ventana. La CSP limita recursos y las
+que la ventana. El [trabajo pendiente](#trabajo-pendiente) sigue el mismo patrón: `pending.rs` y
+`src/features/inventory/pending.ts`, atados por `contract/pending-work/`. Se conserva la barra nativa de ventana. La CSP limita recursos y las
 capabilities no conceden permisos adicionales. No se implementan autenticación,
 cuentas, cloud, sync, telemetría, automation engine, Runner ni background service. DevHQ no busca
 qué observar: nunca recorre discos, carpetas ni redes en busca de repositorios o servicios. Lee solo
@@ -1984,20 +2048,23 @@ y de ella guarda dos números y nada más (ver [Instalaciones](#instalaciones)).
 5. Hecho: las [referencias](#referencias) de cada aplicación y recurso (repositorio, copias locales,
    documentación, logs y panel), que declaras tú o un agente y DevHQ solo copia.
 6. Hecho el lector, las lecturas y la puerta, con sus pruebas en Linux (CI) y en Windows; falta la
-   ventana: leer, cuando se lo pides, las
+   ventana: leer, cuando se lo pides y al abrir la ventana, las
    [copias locales](#copias-locales) de esta estación de trabajo sin ejecutar nada de lo que nombran,
    como evidencia propia: actividad, trabajo que solo existe en una máquina y el commit de HEAD que
    comparará la etapa de despliegues.
-7. Hecho en Windows, con la ventana; en Linux faltan sus pruebas en CI: leer, cuando se lo pides, las [instalaciones](#instalaciones) de esta estación de trabajo sin
+7. Hecho en Windows, con la ventana; en Linux faltan sus pruebas en CI: leer, cuando se lo pides y al abrir la ventana, las [instalaciones](#instalaciones) de esta estación de trabajo sin
    ejecutarlas, como evidencia propia: qué versión está instalada, entre qué dos lecturas cambió la
    build y cuántos procesos corrían desde el archivo. Es el primer paso de
    [docs/observar-apps-locales.md](observar-apps-locales.md); los siguientes (aplicaciones bajo
    demanda, servicios de Windows) siguen siendo una propuesta.
-8. Después, automatizaciones con resultado e historial, y seguridad con almacén nativo de
+8. Hecho: el [trabajo pendiente](#trabajo-pendiente), lo que las lecturas de copias e instalaciones
+   dicen que espera, ordenado, en Overview y en `attention`, con esas lecturas hechas al abrir la
+   ventana. Responde «¿qué necesita mi atención?» en un ecosistema sin servicios que comprobar.
+9. Después, automatizaciones con resultado e historial, y seguridad con almacén nativo de
    credenciales y evidencias contextualizadas.
-9. A largo plazo, una supervisión que siga con la ventana cerrada y avise de lo que necesita
-   atención, hecha por DevHQ mismo y no por un agente. Contradice que DevHQ no funcione en segundo plano, así que exige revisar esa regla y
-   cuidar lo que consume.
+10. A largo plazo, una supervisión que siga con la ventana cerrada y avise de lo que necesita
+    atención, hecha por DevHQ mismo y no por un agente. Contradice que DevHQ no funcione en segundo plano, así que exige revisar esa regla y
+    cuidar lo que consume.
 
 Estos son límites conceptuales, **no módulos vacíos ni integraciones implementadas**.
 La dirección es UI → IPC/casos de uso → dominio. SQLite conserva contexto; las credenciales no deben

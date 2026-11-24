@@ -19,6 +19,8 @@ import { useInventory } from './inventory-context'
 import { InstallationsOverview } from './installations-overview'
 import { InventoryState } from './inventory-state'
 import { LocalCopiesOverview } from './local-copies-overview'
+import { pendingWorkOf } from './pending'
+import { PendingWorkOverview } from './pending-work-overview'
 import { AttentionList, EventRecordList } from './record-lists'
 import { SupervisionOverview } from './supervision-overview'
 
@@ -48,12 +50,13 @@ export function RealOverviewPage() {
 }
 
 function OverviewContent() {
-  const { snapshot, now } = useInventory()
+  const { snapshot, now, thisWorkstation } = useInventory()
   if (!snapshot) return null
   const subjects = subjectsOf(snapshot)
   const attention = attentionItems(subjects, snapshot.observations, snapshot.incidents, now)
   const coverage = evidenceCoverage(subjects, snapshot.observations, now)
   const status = workspaceStatus(attention, coverage)
+  const pending = pendingWorkOf(snapshot, thisWorkstation, now).length
   const evidence = subjects
     .map((subject) => ({ subject, evidence: subjectEvidence(snapshot.observations, subject, now) }))
     .sort(
@@ -94,6 +97,12 @@ function OverviewContent() {
           <p className="eyebrow mb-2.5">Ecosystem status</p>
           <h2 className="text-lg font-medium tracking-tight">{summary[0]}</h2>
           <p className="mt-1.5 text-xs text-muted-foreground">{summary[1]}</p>
+          {pending > 0 && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              Apart from health, {pending} {pending === 1 ? 'thing is' : 'things are'} waiting in
+              local copies and installations: see Pending work.
+            </p>
+          )}
         </div>
         <dl className="flex gap-6 text-xs">
           {(
@@ -136,6 +145,7 @@ function OverviewContent() {
               )}
             </div>
           </section>
+          <PendingWorkOverview />
           <section aria-labelledby="coverage-heading">
             <h2 id="coverage-heading" className="section-heading mb-3">
               Evidence coverage

@@ -1,0 +1,71 @@
+{
+  "about": "While DevHQ does not know which workstation this computer is, nothing is never read or old here: what readings held is still listed.",
+  "now": "2026-11-24T12:00:00Z",
+  "thisWorkstation": null,
+  "archived": [],
+  "localCopies": [
+    {
+      "referenceId": "never",
+      "subject": {
+        "type": "application",
+        "id": "shop"
+      },
+      "machineId": "laptop",
+      "latest": null
+    },
+    {
+      "referenceId": "changes-old",
+      "subject": {
+        "type": "application",
+        "id": "shop"
+      },
+      "machineId": "laptop",
+      "latest": {
+        "outcome": "read",
+        "observedAt": "2026-11-20T08:00:00Z",
+        "unpublishedOnHead": 0,
+        "unpublishedElsewhere": 0,
+        "stashes": 0,
+        "changed": 3,
+        "untracked": 0,
+        "unverifiable": 0,
+        "operation": null
+      }
+    }
+  ],
+  "installations": [
+    {
+      "referenceId": "not-an-executable-old",
+      "subject": {
+        "type": "application",
+        "id": "shop"
+      },
+      "machineId": "laptop",
+      "latest": {
+        "outcome": "not_an_executable",
+        "observedAt": "2026-11-20T08:00:00Z"
+      },
+      "version": null
+    }
+  ],
+  "expected": [
+    {
+      "kind": "localCopy",
+      "referenceId": "changes-old",
+      "subject": {
+        "type": "application",
+        "id": "shop"
+      },
+      "reasons": ["changes"]
+    },
+    {
+      "kind": "installation",
+      "referenceId": "not-an-executable-old",
+      "subject": {
+        "type": "application",
+        "id": "shop"
+      },
+      "reasons": ["not_found"]
+    }
+  ]
+}

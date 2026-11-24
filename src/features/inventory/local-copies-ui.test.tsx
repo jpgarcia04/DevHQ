@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { render, screen, within } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import type { ReactNode } from 'react'
@@ -603,10 +603,13 @@ describe('the provider', () => {
       </MemoryRouter>,
     )
     await user.click(screen.getByRole('button', { name: 'Select real inventory' }))
+    // The window reads this computer's copies once by itself when it opens; the button waits.
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(2))
     await user.click(await screen.findByRole('button', { name: 'Read all on this computer' }))
     expect(await screen.findByText('Read 1 copy.')).toBeInTheDocument()
-    expect(readCopies).toHaveBeenCalledWith(null)
-    expect(list).toHaveBeenCalledTimes(2)
+    expect(readCopies).toHaveBeenCalledTimes(2)
+    expect(readCopies).toHaveBeenLastCalledWith(null)
+    expect(list).toHaveBeenCalledTimes(3)
   })
 
   // Shop's laptop copy before and after one Read, through the provider, which reloads the
@@ -623,11 +626,15 @@ describe('the provider', () => {
       .mockResolvedValueOnce(withLatest(before))
       .mockResolvedValue(withLatest(after))
     vi.spyOn(inventoryApi, 'thisWorkstation').mockResolvedValue(laptop)
-    vi.spyOn(inventoryApi, 'readCopies').mockResolvedValue({
-      readings: [after],
-      failures: [],
-      thisWorkstation: laptop,
-    })
+    // The read the window makes by itself when it opens is refused, so it keeps nothing and the
+    // inventory stays as it was until the Read this test presses.
+    vi.spyOn(inventoryApi, 'readCopies')
+      .mockRejectedValueOnce({ code: 'read_error', message: 'Refused in this test' })
+      .mockResolvedValue({
+        readings: [after],
+        failures: [],
+        thisWorkstation: laptop,
+      })
     const olderReadings = vi.spyOn(inventoryApi, 'olderReadings')
     render(
       <MemoryRouter initialEntries={['/applications/shop']}>

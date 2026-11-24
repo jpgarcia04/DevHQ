@@ -18,10 +18,11 @@ sends Codex and other agents here: keep every rule in this file and only pointer
 - History is never deleted or rewritten: observations are immutable, subjects with history
   cannot be deleted, a schema change keeps every row.
 - DevHQ observes; it does not operate systems, run in the background or hold credentials. It
-  reads only what the inventory names, when asked, and never searches a disk or a network for things
-  to add. Observing never gives the source a way to run code or change anything: a reader never runs
-  a program the source names and never writes to it, and every declared path, and what it holds, is
-  untrusted data.
+  reads only what the inventory names, when asked or, for this workstation's local copies and
+  installations, once when its window opens (specification «Trabajo pendiente»), and never searches
+  a disk or a network for things to add. Observing never gives the source a way to run code or
+  change anything: a reader never runs a program the source names and never writes to it, and every
+  declared path, and what it holds, is untrusted data.
 - Provenance (`source`), observed and recorded times, and validity are always visible.
 - `docs/vision.md` (in Spanish) holds the long-term direction and the questions to ask of any
   new feature or architectural change; read it before proposing either. It guides and
@@ -236,6 +237,10 @@ finishes, and a failure is the next fix. If it did not finish, run the workflow 
   ranking, coverage and status). `src/domain/attention-contract.test.ts` and
   `src-tauri/src/attention.rs` check the window's rules and their Rust copy (for the agent
   gate) against them: change a rule on both sides and in the cases together.
+- `contract/pending-work/` does the same for pending work, what the readings of local copies and
+  installations say is waiting: `src/features/inventory/pending-contract.test.ts` and
+  `src-tauri/src/pending.rs` (for `attention` in the agent gate) rank its cases. It is not health
+  and never touches `contract/attention/`.
 - Tauri runs a synchronous command on the thread that received the request: the main thread,
   which has no Tokio runtime. A command that spawns a task or waits must be `async`.
 

@@ -1,0 +1,116 @@
+{
+  "about": "Archived applications are left out; a resource's copy is not. A reading is old only once more than three days have passed since it was observed: exactly three days is not old.",
+  "now": "2026-11-24T12:00:00Z",
+  "thisWorkstation": "laptop",
+  "archived": ["retired"],
+  "localCopies": [
+    {
+      "referenceId": "retired-changes",
+      "subject": {
+        "type": "application",
+        "id": "retired"
+      },
+      "machineId": "laptop",
+      "latest": {
+        "outcome": "read",
+        "observedAt": "2026-11-24T09:00:00Z",
+        "unpublishedOnHead": 0,
+        "unpublishedElsewhere": 0,
+        "stashes": 0,
+        "changed": 5,
+        "untracked": 0,
+        "unverifiable": 0,
+        "operation": null
+      }
+    },
+    {
+      "referenceId": "dotfiles",
+      "subject": {
+        "type": "resource",
+        "id": "laptop"
+      },
+      "machineId": "laptop",
+      "latest": {
+        "outcome": "read",
+        "observedAt": "2026-11-24T09:00:00Z",
+        "unpublishedOnHead": 0,
+        "unpublishedElsewhere": 0,
+        "stashes": 1,
+        "changed": 0,
+        "untracked": 0,
+        "unverifiable": 0,
+        "operation": null
+      }
+    },
+    {
+      "referenceId": "three-days",
+      "subject": {
+        "type": "application",
+        "id": "shop"
+      },
+      "machineId": "laptop",
+      "latest": {
+        "outcome": "read",
+        "observedAt": "2026-11-21T12:00:00Z",
+        "unpublishedOnHead": 0,
+        "unpublishedElsewhere": 0,
+        "stashes": 0,
+        "changed": 0,
+        "untracked": 0,
+        "unverifiable": 0,
+        "operation": null
+      }
+    },
+    {
+      "referenceId": "three-days-and-a-second",
+      "subject": {
+        "type": "application",
+        "id": "blog"
+      },
+      "machineId": "laptop",
+      "latest": {
+        "outcome": "read",
+        "observedAt": "2026-11-21T11:59:59Z",
+        "unpublishedOnHead": 0,
+        "unpublishedElsewhere": 0,
+        "stashes": 0,
+        "changed": 0,
+        "untracked": 0,
+        "unverifiable": 0,
+        "operation": null
+      }
+    }
+  ],
+  "installations": [
+    {
+      "referenceId": "retired-never",
+      "subject": {
+        "type": "application",
+        "id": "retired"
+      },
+      "machineId": "laptop",
+      "latest": null,
+      "version": null
+    }
+  ],
+  "expected": [
+    {
+      "kind": "localCopy",
+      "referenceId": "dotfiles",
+      "subject": {
+        "type": "resource",
+        "id": "laptop"
+      },
+      "reasons": ["stashes"]
+    },
+    {
+      "kind": "localCopy",
+      "referenceId": "three-days-and-a-second",
+      "subject": {
+        "type": "application",
+        "id": "blog"
+      },
+      "reasons": ["old_reading"]
+    }
+  ]
+}

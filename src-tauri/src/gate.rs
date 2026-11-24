@@ -21,6 +21,7 @@ use crate::inventory::{self, ApiError, Inventory};
 use crate::local_copies::readings::{self, LocalCopy};
 use crate::local_copies::Reader;
 use crate::location;
+use crate::pending;
 use crate::records::{self, Subject};
 use crate::references::Reference;
 use crate::workstation::{Computer, ThisWorkstation};
@@ -491,12 +492,22 @@ impl Session {
         let this = self.this_workstation(&inventory);
         let local_copies = local_copies_overview(&inventory, &names, this.resource_id.as_deref());
         let installations = installations_overview(&inventory, &names, this.resource_id.as_deref());
-        let meaning = match attention.status {
+        let pending_work = pending_work(&inventory, &names, this.resource_id.as_deref(), now)?;
+        let pending_count = pending_work["items"].as_array().map_or(0, Vec::len);
+        let mut meaning = match attention.status {
             "empty" => "There are no applications or resources yet. That is not healthy: there is nothing to know about.",
             "attention" => "The items need attention, most urgent first.",
             "unobserved" => "Nothing observed needs attention, but some systems were never observed. That is a gap, not health.",
             _ => "Every system has current evidence and nothing needs attention.",
-        };
+        }
+        .to_owned();
+        if pending_count > 0 {
+            meaning.push_str(&format!(
+                " Apart from health, `pendingWork` lists {pending_count} {} in local copies and installations, most urgent first: say {} too.",
+                if pending_count == 1 { "thing waiting" } else { "things waiting" },
+                if pending_count == 1 { "it" } else { "them" },
+            ));
+        }
         Ok(json!({
             "now": records::format_time(now),
             "status": attention.status,
@@ -507,6 +518,7 @@ impl Session {
             "notSupervised": not_supervised,
             "localCopies": local_copies,
             "installations": installations,
+            "pendingWork": pending_work,
             "history": history_note(&inventory),
         }))
     }
@@ -972,6 +984,65 @@ fn installations_overview(inventory: &Inventory, names: &Names, this: Option<&st
     })
 }
 
+/// The work the readings of local copies and installations say is waiting, ranked (see
+/// `pending`), beside «what needs my attention?» and never in its ranking: it is not health.
+fn pending_work(
+    inventory: &Inventory,
+    names: &Names,
+    this: Option<&str>,
+    now: i64,
+) -> Result<Value, ApiError> {
+    let copies: Vec<pending::CopyFacts> = inventory.local_copies.iter().map(Into::into).collect();
+    let installations: Vec<pending::InstallationFacts> =
+        inventory.installations.iter().map(Into::into).collect();
+    let archived: Vec<String> = inventory
+        .applications
+        .iter()
+        .filter(|application| application.lifecycle == "archived")
+        .map(|application| application.id.clone())
+        .collect();
+    let items = pending::assess(&copies, &installations, this, &archived, now)?
+        .into_iter()
+        .map(|item| {
+            let (path, machine, reading) = if item.kind == "localCopy" {
+                let copy = inventory
+                    .local_copies
+                    .iter()
+                    .find(|copy| copy.reference_id == item.reference_id);
+                (
+                    copy.map(|copy| copy.path.clone()),
+                    copy.map(|copy| copy.machine_id.clone()),
+                    json!(copy.and_then(|copy| copy.latest.as_ref())),
+                )
+            } else {
+                let installation = inventory
+                    .installations
+                    .iter()
+                    .find(|installation| installation.reference_id == item.reference_id);
+                (
+                    installation.map(|installation| installation.path.clone()),
+                    installation.map(|installation| installation.machine_id.clone()),
+                    json!(installation.and_then(|installation| installation.latest.as_ref())),
+                )
+            };
+            json!({
+                "kind": item.kind,
+                "reasons": item.reasons,
+                "system": names.system(&item.subject),
+                "referenceId": item.reference_id,
+                "path": path,
+                "machine": machine.map(|id| names.system(&Subject::Resource { id })),
+                "reading": reading,
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(json!({
+        "items": items,
+        "oldReadingAfterHours": pending::OLD_READING_MS / 3_600_000,
+        "note": "Not health, and never in `items` or `status`: what each local copy or installed executable held when it was last read (`reading.observedAt`), which may no longer be so, most urgent first. Reasons, most urgent first: `operation` (a merge, rebase or similar left halfway), `changes` (changed, new or unverifiable files), `unpublished` (commits on no remote), `stashes`, `version_differs` (the installed file declared another version than its application), `not_found` (not where declared, or not readable), `never_read` (on this workstation), `old_reading` (read on this workstation more than `oldReadingAfterHours` hours ago). DevHQ reads this workstation's copies and installations when its window opens and when asked, never in the background; a gate with Read only cannot ask, so say how old a reading is.",
+    }))
+}
+
 /// What the snapshot leaves out, so that an agent never takes a cut history for a short one.
 fn history_note(inventory: &Inventory) -> Value {
     json!({
@@ -1186,7 +1257,7 @@ fn read_tools() -> Vec<Value> {
         read_only(
             "attention",
             "What needs attention",
-            "«What needs my attention?», ranked as DevHQ's Overview ranks it: active incidents and problem evidence, most urgent first, plus coverage (current, expired, never observed) and the systems nothing supervises. An empty list is only reassuring when status is `covered`. Beside it, unranked and not health, `localCopies`: the copies whose last reading held work that existed only there, the ones not found, and the ones on this workstation never read. And `installations`, unranked and not health either: the installed executables whose file declared another version than their application declares, the ones not found, and the ones on this workstation never read.",
+            "«What needs my attention?», ranked as DevHQ's Overview ranks it: active incidents and problem evidence, most urgent first, plus coverage (current, expired, never observed) and the systems nothing supervises. An empty list is only reassuring when status is `covered`. Beside it, unranked and not health, `localCopies`: the copies whose last reading held work that existed only there, the ones not found, and the ones on this workstation never read. And `installations`, unranked and not health either: the installed executables whose file declared another version than their application declares, the ones not found, and the ones on this workstation never read. And `pendingWork`, not health either but ranked: each copy or installation whose last reading says work is waiting (an operation halfway, changes, unpublished commits, stashes, another version, not found), or that was never read or read long ago on this workstation, most urgent first, with every reason.",
             json!({}),
             &[],
         ),
@@ -2963,6 +3034,19 @@ mod tests {
             attention["localCopies"]["work"][0]["system"]["name"],
             "Shop"
         );
+        // Ranked as pending work, with the reading it rests on, and said in the meaning.
+        let pending = &attention["pendingWork"]["items"][0];
+        assert_eq!(
+            (pending["kind"].as_str(), pending["system"]["name"].as_str()),
+            (Some("localCopy"), Some("Shop"))
+        );
+        assert_eq!(pending["machine"]["name"], "Laptop");
+        assert!(pending["reading"]["observedAt"].is_string());
+        assert!(!pending["reasons"].as_array().unwrap().is_empty());
+        assert!(attention["meaning"]
+            .as_str()
+            .unwrap()
+            .contains("`pendingWork` lists 1 thing waiting"));
         // Not health: the ranked list and the status are what they were.
         assert_eq!(attention["status"], "attention");
         let history = use_tool(
@@ -3030,6 +3114,10 @@ mod tests {
             "Shop"
         );
         assert_eq!(attention["installations"]["versionDiffers"], json!([]));
+        assert_eq!(
+            attention["pendingWork"]["items"][0]["reasons"],
+            json!(["never_read"])
+        );
 
         let logged = changes(&path).len();
         let read = use_tool(&mut agent, "read_installations", json!({})).unwrap();
@@ -3088,6 +3176,11 @@ mod tests {
         let differs = &attention["installations"]["versionDiffers"][0];
         assert_eq!(differs["system"]["name"], "Shop");
         assert_eq!(differs["reading"]["productVersion"], "2.1.0+3f9c2ab");
+        let pending = &attention["pendingWork"]["items"][0];
+        assert_eq!(
+            (pending["kind"].as_str(), pending["reasons"].clone()),
+            (Some("installation"), json!(["version_differs"]))
+        );
         assert_eq!(
             attention["installations"]["neverReadOnThisWorkstation"],
             json!([])
@@ -3112,6 +3205,11 @@ mod tests {
         .unwrap();
         let attention = use_tool(&mut agent, "attention", json!({})).unwrap();
         assert_eq!(attention["installations"]["versionDiffers"], json!([]));
+        assert_eq!(attention["pendingWork"]["items"], json!([]));
+        assert!(!attention["meaning"]
+            .as_str()
+            .unwrap()
+            .contains("pendingWork"));
         // Read only shows readings and never causes one.
         crate::access::set_agent_access(&path, "read").unwrap();
         assert!(use_tool(&mut agent, "read_installations", json!({}))

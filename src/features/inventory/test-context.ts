@@ -101,6 +101,7 @@ export function inventoryContext(
       throw new Error('readCopies is not mocked in this test')
     }),
     readingCopies: [],
+    openingRead: null,
     olderReadings: vi.fn(async () => ({ readings: [], more: false })),
     readInstallations: vi.fn(async () => {
       throw new Error('readInstallations is not mocked in this test')
