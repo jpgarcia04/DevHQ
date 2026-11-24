@@ -497,8 +497,8 @@ export function previewBackend(database: PreviewDatabase) {
       database: `${folder}\\inventory.sqlite3`,
       storedAt: null,
       state: 'current',
-      storedVersion: 14,
-      version: 14,
+      storedVersion: 15,
+      version: 15,
       message:
         "DevHQ serves this inventory: it is in this DevHQ's schema, with nothing to upgrade.",
       upgradable: false,
