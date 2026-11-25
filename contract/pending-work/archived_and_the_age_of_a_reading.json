@@ -93,6 +93,7 @@
       "version": null
     }
   ],
+  "githubRepositories": [],
   "expected": [
     {
       "kind": "localCopy",

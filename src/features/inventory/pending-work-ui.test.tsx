@@ -6,6 +6,7 @@ import type { ReactNode } from 'react'
 import {
   inventoryApi,
   type CopyReading,
+  type GithubRepository,
   type Installation,
   type InstallationReading,
   type InventorySnapshot,
@@ -121,6 +122,63 @@ const notesInstalled: Installation = {
   againstCopy: null,
 }
 
+// Read on GitHub an hour ago: CI failing on main, a draft unchanged for ten days and a change
+// from yesterday.
+const shopOnGithub: GithubRepository = {
+  referenceId: 'shop-repo',
+  subject: shop,
+  repository: 'https://github.com/ana-ruiz/shop',
+  latest: {
+    id: 'github-1',
+    subject: shop,
+    referenceId: 'shop-repo',
+    repository: 'https://github.com/ana-ruiz/shop',
+    source: 'github',
+    reader: 'DevHQ GitHub reader 1 (REST 2022-11-28)',
+    agent: null,
+    observedAt: minutesFromNow(-60),
+    recordedAt: minutesFromNow(-60),
+    outcome: 'read',
+    detail: null,
+    defaultBranch: 'main',
+    workflows: [
+      {
+        workflow: 'Audit',
+        conclusion: 'success',
+        commit: 'a'.repeat(40),
+        finishedAt: minutesFromNow(-90),
+        address: 'https://github.com/ana-ruiz/shop/actions/runs/2',
+      },
+      {
+        workflow: 'CI',
+        conclusion: 'timed_out',
+        commit: 'a'.repeat(40),
+        finishedAt: minutesFromNow(-90),
+        address: 'https://github.com/ana-ruiz/shop/actions/runs/1',
+      },
+    ],
+    workflowsMore: false,
+    pullRequests: [
+      {
+        number: 7,
+        title: 'Audit dependencies',
+        draft: true,
+        updatedAt: minutesFromNow(-60 * 24 * 10),
+        address: 'https://github.com/ana-ruiz/shop/pull/7',
+      },
+      {
+        number: 8,
+        title: 'Fix the cart',
+        draft: false,
+        updatedAt: minutesFromNow(-60 * 24),
+        address: 'https://github.com/ana-ruiz/shop/pull/8',
+      },
+    ],
+    pullRequestsMore: false,
+  },
+  movedSinceRead: false,
+}
+
 const reference = (id: string, kind: 'local_copy' | 'installation', target: string) => ({
   id,
   kind,
@@ -172,6 +230,7 @@ const snapshot: InventorySnapshot = {
   sharedRepositories: [],
   localCopies: [shopSpare, shopCopy],
   installations: [notesInstalled],
+  githubRepositories: [],
   observations: [],
   incidents: [],
   events: [],
@@ -261,7 +320,9 @@ describe('Pending work in Overview', () => {
       }),
       <PendingWorkOverview />,
     )
-    expect(screen.getByText(/No local copy or installation is declared/)).toBeInTheDocument()
+    expect(
+      screen.getByText(/No local copy, installation or repository on GitHub is declared/),
+    ).toBeInTheDocument()
     unmount()
     const clean = { ...shopCopy, latest: copyReading({ unpublishedOnHead: 0 }), localWork: false }
     renderWith(
@@ -273,8 +334,52 @@ describe('Pending work in Overview', () => {
       <PendingWorkOverview />,
     )
     expect(
-      screen.getByText('No reading says work is waiting in a local copy or an installation.'),
+      screen.getByText(
+        'No reading says work is waiting in a local copy, an installation or a repository on GitHub.',
+      ),
     ).toBeInTheDocument()
+  })
+
+  it('puts a failing default branch first and a forgotten pull request after the stashes', () => {
+    const refused: GithubRepository = {
+      ...shopOnGithub,
+      referenceId: 'notes-repo',
+      subject: notes,
+      repository: 'https://github.com/ana-ruiz/notes',
+      latest: {
+        ...shopOnGithub.latest!,
+        referenceId: 'notes-repo',
+        subject: notes,
+        repository: 'https://github.com/ana-ruiz/notes',
+        outcome: 'refused',
+        detail: 'GitHub refused the token (401): it expired, was revoked or is not valid.',
+        defaultBranch: null,
+        workflows: null,
+        workflowsMore: null,
+        pullRequests: null,
+        pullRequestsMore: null,
+      },
+    }
+    renderWith(
+      inventoryContext({
+        snapshot: { ...snapshot, githubRepositories: [refused, shopOnGithub] },
+        thisWorkstation: laptop,
+        now: testNow,
+      }),
+      <PendingWorkOverview />,
+    )
+    const section = screen.getByRole('region', { name: /Pending work/ })
+    const rows = within(section).getAllByRole('listitem')
+    expect(rows[0]).toHaveTextContent('Repository on GitHub')
+    expect(rows[0]).toHaveTextContent('https://github.com/ana-ruiz/shop')
+    expect(rows[0]).toHaveTextContent(
+      'CI did not pass on main · 1 pull request unchanged for more than 7 days (#7), 1 draft among them',
+    )
+    expect(rows[0]).toHaveTextContent('Read on GitHub 1 hour ago')
+    expect(rows.at(-2)).toHaveTextContent(
+      'Not read: GitHub refused the token (401): it expired, was revoked or is not valid',
+    )
+    expect(within(section).getByRole('button', { name: 'Read GitHub' })).toBeEnabled()
   })
 
   it('says it beside the ecosystem status, which stays about health', () => {
@@ -285,7 +390,7 @@ describe('Pending work in Overview', () => {
     const status = screen.getByRole('region', { name: 'Ecosystem status' })
     expect(status).toHaveTextContent('No recorded problems, but coverage is incomplete.')
     expect(status).toHaveTextContent(
-      'Apart from health, 3 things are waiting in local copies and installations',
+      'Apart from health, 3 things are waiting in local copies, installations and repositories',
     )
   })
 })
@@ -294,6 +399,78 @@ function SelectRealInventory() {
   const { setMode } = useInventory()
   return <button onClick={() => setMode('real')}>Select real inventory</button>
 }
+
+describe('the read of GitHub when the window opens', () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  function open(stored: boolean) {
+    vi.spyOn(inventoryApi, 'watchHttpMonitor').mockResolvedValue()
+    const list = vi
+      .spyOn(inventoryApi, 'list')
+      .mockResolvedValue({ ...snapshot, githubRepositories: [{ ...shopOnGithub, latest: null }] })
+    // Unknown workstation: copies and installations are not read, GitHub still is.
+    vi.spyOn(inventoryApi, 'thisWorkstation').mockResolvedValue({
+      ...laptop,
+      resourceId: null,
+      chosenAt: null,
+      problem: 'not_chosen',
+      message: 'No workstation has been chosen as this computer yet.',
+    })
+    vi.spyOn(inventoryApi, 'githubToken').mockResolvedValue({
+      stored,
+      store: 'windows_credential_manager',
+    })
+    const readGithub = vi
+      .spyOn(inventoryApi, 'readGithub')
+      .mockResolvedValue({ readings: [shopOnGithub.latest!], failures: [] })
+    render(
+      <MemoryRouter>
+        <InventoryProvider>
+          <SelectRealInventory />
+          <PendingWorkOverview />
+        </InventoryProvider>
+      </MemoryRouter>,
+    )
+    return { list, readGithub }
+  }
+
+  it('reads every repository once when a token is kept, and says what it read', async () => {
+    const { list, readGithub } = open(true)
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: 'Select real inventory' }))
+    expect(
+      await screen.findByText('When DevHQ opened, it read 1 repository on GitHub.'),
+    ).toBeInTheDocument()
+    expect(readGithub).toHaveBeenCalledExactlyOnceWith(null)
+    expect(list).toHaveBeenCalledTimes(2)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(readGithub).toHaveBeenCalledTimes(1)
+  })
+
+  it('asks nothing without a token, and says why', async () => {
+    const { readGithub } = open(false)
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: 'Select real inventory' }))
+    expect(
+      await screen.findByText(/No GitHub token is kept, so DevHQ did not read the repositories/),
+    ).toBeInTheDocument()
+    expect(readGithub).not.toHaveBeenCalled()
+    // The repository is never read, never calm.
+    expect(screen.getByText('Never read on GitHub')).toBeInTheDocument()
+  })
+
+  it('reads again only when asked, and says a refused read read nothing', async () => {
+    const { readGithub } = open(false)
+    readGithub.mockRejectedValue({ code: 'no_token', message: 'No GitHub token is kept.' })
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: 'Select real inventory' }))
+    await user.click(await screen.findByRole('button', { name: 'Read GitHub' }))
+    expect(
+      await screen.findByText('No GitHub token is kept. Nothing was read.'),
+    ).toBeInTheDocument()
+    expect(readGithub).toHaveBeenCalledExactlyOnceWith(null)
+  })
+})
 
 describe('the read when the window opens', () => {
   afterEach(() => vi.restoreAllMocks())

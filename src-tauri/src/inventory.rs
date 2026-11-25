@@ -183,6 +183,8 @@ pub struct Inventory {
     /// it at this read: whether the declared version is the installed one, and since when the
     /// build is the same. Older readings are paged per system.
     pub installations: Vec<Installation>,
+    /// Each repository on GitHub the systems declare, with its newest reading.
+    pub github_repositories: Vec<crate::github::readings::GithubRepository>,
     pub observations: Vec<records::Observation>,
     pub incidents: Vec<records::Incident>,
     pub events: Vec<records::Event>,
@@ -268,11 +270,11 @@ pub(crate) fn plain(path: &Path) -> String {
     }
 }
 
-pub(crate) const SCHEMA_VERSION: i64 = 14;
+pub(crate) const SCHEMA_VERSION: i64 = 15;
 /// Each schema version with the migration that brings an inventory to it from the one before.
 /// They build a new inventory (`create`) and upgrade an older one (`upgrade.rs`), and are never
 /// edited once released: an inventory left at any version has the structure they give it there.
-pub(crate) const MIGRATIONS: [(i64, &str); 14] = [
+pub(crate) const MIGRATIONS: [(i64, &str); 15] = [
     (1, include_str!("../migrations/001_inventory.sql")),
     (2, include_str!("../migrations/002_inventory_details.sql")),
     (3, include_str!("../migrations/003_operational_records.sql")),
@@ -287,6 +289,7 @@ pub(crate) const MIGRATIONS: [(i64, &str); 14] = [
     (12, include_str!("../migrations/012_copy_readings.sql")),
     (13, include_str!("../migrations/013_maintain_access.sql")),
     (14, include_str!("../migrations/014_installations.sql")),
+    (15, include_str!("../migrations/015_github_readings.sql")),
 ];
 
 // How DevHQ reaches its inventory. No opening changes its schema: an inventory in an older schema
@@ -1717,6 +1720,7 @@ pub(crate) fn list_in(tx: &Transaction) -> Result<Inventory, ApiError> {
     let local_copies = readings::local_copies(tx, &applications, &resources)?;
     let mut installations = installation_readings::installations(tx, &applications, &resources)?;
     installation_readings::compare_with_copies(&mut installations, &local_copies);
+    let github_repositories = crate::github::readings::repositories(tx, &applications, &resources)?;
     let subjects: Vec<_> = applications
         .iter()
         .map(|app| records::Subject::Application { id: app.id.clone() })
@@ -1739,6 +1743,7 @@ pub(crate) fn list_in(tx: &Transaction) -> Result<Inventory, ApiError> {
         shared_repositories,
         local_copies,
         installations,
+        github_repositories,
         observations,
         incidents,
         events,
@@ -2064,6 +2069,7 @@ fn history_of(tx: &Transaction, column: &str, id: &str) -> Result<Vec<String>, A
         ("events", "events"),
         ("copy_readings", "readings of its local copies"),
         ("installation_readings", "readings of its installations"),
+        ("github_readings", "readings of its GitHub repositories"),
     ] {
         // EXISTS stops at the first one: a long supervised history costs no more than one.
         let exists: bool = tx
@@ -3764,6 +3770,9 @@ pub(crate) mod tests {
                 "events_observation_id",
                 "events_reported",
                 "events_resource_id",
+                "github_readings_application_id",
+                "github_readings_reference_id",
+                "github_readings_resource_id",
                 "incidents_application_id",
                 "incidents_resource_id",
                 "installation_readings_application_id",
@@ -5235,13 +5244,13 @@ pub(crate) mod tests {
             found_after("DROP INDEX events_reported"),
             Found::Mismatch(vec!["no index events_reported".to_owned()])
         );
-        // Stamped 14 with only the two tables that tell a DevHQ inventory apart.
+        // Stamped 15 with only the two tables that tell a DevHQ inventory apart.
         let stamped = nothing();
         let db = Connection::open(&stamped).unwrap();
         db.execute_batch(
             "CREATE TABLE applications (id TEXT PRIMARY KEY);
              CREATE TABLE resources (id TEXT PRIMARY KEY);
-             PRAGMA user_version = 14;",
+             PRAGMA user_version = 15;",
         )
         .unwrap();
         drop(db);

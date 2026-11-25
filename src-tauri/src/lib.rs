@@ -6,6 +6,7 @@ mod build_version;
 mod change_log;
 mod credentials;
 pub mod gate;
+mod github;
 mod http_check;
 mod identity;
 pub mod installations;
@@ -128,6 +129,29 @@ fn save_github_token(
     token: String,
 ) -> Result<credentials::GithubToken, inventory::ApiError> {
     credentials.save_github(&token)
+}
+
+/// Reads on GitHub the repositories `reference_ids` names, or every one of the systems but archived
+/// applications, with the kept token, and keeps a reading of each. Async: the requests run off the
+/// main thread and the window stays usable.
+#[tauri::command]
+async fn read_github(
+    path: tauri::State<'_, InventoryPath>,
+    credentials: tauri::State<'_, credentials::Credentials>,
+    reference_ids: Option<Vec<String>>,
+) -> Result<github::readings::GithubRead, inventory::ApiError> {
+    let path = path.current()?.to_owned();
+    // What was asked is checked before the token is looked for.
+    let targets = github::readings::targets(&path, reference_ids.as_deref())?;
+    let Some(token) = credentials.github_secret()? else {
+        return Err(inventory::ApiError {
+            code: "no_token",
+            message: "No GitHub token is kept: save one in Settings to read GitHub.".into(),
+        });
+    };
+    let client = github::Https::new(&token).map_err(inventory::ApiError::read)?;
+    drop(token);
+    github::readings::read_github(&path, &client, targets, &records::Actor::Person).await
 }
 
 #[tauri::command]
@@ -495,6 +519,7 @@ fn commands<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Sen
         github_token,
         save_github_token,
         remove_github_token,
+        read_github,
         save_resource,
         save_application,
         delete_application,

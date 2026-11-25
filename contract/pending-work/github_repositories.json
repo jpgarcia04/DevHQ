@@ -1,0 +1,277 @@
+{
+  "about": "Repositories on GitHub. A workflow whose newest run that concluded something failed, timed out or could not start ranks first, above an operation left halfway; neutral and action_required are not failures. A pull request is waiting once more than seven days passed between its last change and the reading (exactly seven is not), measured at the reading, not now; it ranks after stashes. A repository GitHub refused is not_found, one never read is never_read wherever DevHQ runs, and a reading older than three days is old on any workstation. Archived applications are left out.",
+  "now": "2026-11-24T12:00:00Z",
+  "thisWorkstation": "laptop",
+  "archived": ["retired"],
+  "localCopies": [
+    {
+      "referenceId": "copy-stashes",
+      "subject": {
+        "type": "application",
+        "id": "shop"
+      },
+      "machineId": "laptop",
+      "latest": {
+        "outcome": "read",
+        "observedAt": "2026-11-24T09:00:00Z",
+        "unpublishedOnHead": 0,
+        "unpublishedElsewhere": 0,
+        "stashes": 2,
+        "changed": 0,
+        "untracked": 0,
+        "unverifiable": 0,
+        "operation": null
+      }
+    },
+    {
+      "referenceId": "copy-merge",
+      "subject": {
+        "type": "application",
+        "id": "blog"
+      },
+      "machineId": "laptop",
+      "latest": {
+        "outcome": "read",
+        "observedAt": "2026-11-24T09:00:00Z",
+        "unpublishedOnHead": 0,
+        "unpublishedElsewhere": 0,
+        "stashes": 0,
+        "changed": 0,
+        "untracked": 0,
+        "unverifiable": 0,
+        "operation": "merge"
+      }
+    }
+  ],
+  "installations": [
+    {
+      "referenceId": "installed-differs",
+      "subject": {
+        "type": "application",
+        "id": "shop"
+      },
+      "machineId": "laptop",
+      "latest": {
+        "outcome": "read",
+        "observedAt": "2026-11-24T09:00:00Z"
+      },
+      "version": "differs"
+    }
+  ],
+  "githubRepositories": [
+    {
+      "referenceId": "shop-repo",
+      "subject": {
+        "type": "application",
+        "id": "shop"
+      },
+      "latest": {
+        "outcome": "read",
+        "observedAt": "2026-11-24T09:00:00Z",
+        "workflows": [
+          {
+            "conclusion": "success"
+          },
+          {
+            "conclusion": "failure"
+          }
+        ],
+        "pullRequests": [
+          {
+            "updatedAt": "2026-11-23T10:00:00Z"
+          },
+          {
+            "updatedAt": "2026-11-10T08:00:00Z"
+          }
+        ]
+      }
+    },
+    {
+      "referenceId": "blog-repo",
+      "subject": {
+        "type": "application",
+        "id": "blog"
+      },
+      "latest": {
+        "outcome": "read",
+        "observedAt": "2026-11-24T09:00:00Z",
+        "workflows": [
+          {
+            "conclusion": "action_required"
+          },
+          {
+            "conclusion": "neutral"
+          }
+        ],
+        "pullRequests": [
+          {
+            "updatedAt": "2026-11-17T09:00:00Z"
+          }
+        ]
+      }
+    },
+    {
+      "referenceId": "docs-repo",
+      "subject": {
+        "type": "application",
+        "id": "docs"
+      },
+      "latest": {
+        "outcome": "read",
+        "observedAt": "2026-11-20T09:00:00Z",
+        "workflows": [
+          {
+            "conclusion": "startup_failure"
+          }
+        ],
+        "pullRequests": []
+      }
+    },
+    {
+      "referenceId": "timed-repo",
+      "subject": {
+        "type": "application",
+        "id": "blog"
+      },
+      "latest": {
+        "outcome": "read",
+        "observedAt": "2026-11-24T09:00:00Z",
+        "workflows": [
+          {
+            "conclusion": "timed_out"
+          }
+        ],
+        "pullRequests": []
+      }
+    },
+    {
+      "referenceId": "wiki-repo",
+      "subject": {
+        "type": "application",
+        "id": "wiki"
+      },
+      "latest": {
+        "outcome": "read",
+        "observedAt": "2026-11-24T09:00:00Z",
+        "workflows": [],
+        "pullRequests": [
+          {
+            "updatedAt": "2026-11-17T08:59:59Z"
+          }
+        ]
+      }
+    },
+    {
+      "referenceId": "api-repo",
+      "subject": {
+        "type": "resource",
+        "id": "host"
+      },
+      "latest": {
+        "outcome": "refused",
+        "observedAt": "2026-11-24T09:00:00Z",
+        "workflows": null,
+        "pullRequests": null
+      }
+    },
+    {
+      "referenceId": "new-repo",
+      "subject": {
+        "type": "application",
+        "id": "shop"
+      },
+      "latest": null
+    },
+    {
+      "referenceId": "retired-repo",
+      "subject": {
+        "type": "application",
+        "id": "retired"
+      },
+      "latest": null
+    }
+  ],
+  "expected": [
+    {
+      "kind": "repository",
+      "referenceId": "shop-repo",
+      "subject": {
+        "type": "application",
+        "id": "shop"
+      },
+      "reasons": ["main_failing", "pr_waiting"]
+    },
+    {
+      "kind": "repository",
+      "referenceId": "docs-repo",
+      "subject": {
+        "type": "application",
+        "id": "docs"
+      },
+      "reasons": ["main_failing", "old_reading"]
+    },
+    {
+      "kind": "repository",
+      "referenceId": "timed-repo",
+      "subject": {
+        "type": "application",
+        "id": "blog"
+      },
+      "reasons": ["main_failing"]
+    },
+    {
+      "kind": "localCopy",
+      "referenceId": "copy-merge",
+      "subject": {
+        "type": "application",
+        "id": "blog"
+      },
+      "reasons": ["operation"]
+    },
+    {
+      "kind": "localCopy",
+      "referenceId": "copy-stashes",
+      "subject": {
+        "type": "application",
+        "id": "shop"
+      },
+      "reasons": ["stashes"]
+    },
+    {
+      "kind": "repository",
+      "referenceId": "wiki-repo",
+      "subject": {
+        "type": "application",
+        "id": "wiki"
+      },
+      "reasons": ["pr_waiting"]
+    },
+    {
+      "kind": "installation",
+      "referenceId": "installed-differs",
+      "subject": {
+        "type": "application",
+        "id": "shop"
+      },
+      "reasons": ["version_differs"]
+    },
+    {
+      "kind": "repository",
+      "referenceId": "api-repo",
+      "subject": {
+        "type": "resource",
+        "id": "host"
+      },
+      "reasons": ["not_found"]
+    },
+    {
+      "kind": "repository",
+      "referenceId": "new-repo",
+      "subject": {
+        "type": "application",
+        "id": "shop"
+      },
+      "reasons": ["never_read"]
+    }
+  ]
+}

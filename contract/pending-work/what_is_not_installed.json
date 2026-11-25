@@ -114,6 +114,7 @@
       "againstCopy": null
     }
   ],
+  "githubRepositories": [],
   "expected": [
     {
       "kind": "installation",

@@ -8,6 +8,8 @@ import type {
   CopyReading,
   Installation,
   InstallationBuild,
+  GithubReading,
+  GithubRepository,
   InstallationReading,
   InstallationReadingPage,
   DataLocation,
@@ -251,6 +253,46 @@ export function installations(
   )
 }
 
+/** Owner and name of a repository on GitHub as the native reader accepts it (`github::repository`). */
+export function onGithub(url: string): boolean {
+  const match = /^https:\/\/github\.com\/([A-Za-z0-9-]{1,39})\/([A-Za-z0-9._-]+)$/.exec(url)
+  if (!match) return false
+  const name = match[2]!.replace(/\.git$/, '')
+  return name.length >= 1 && name.length <= 100 && name !== '.' && name !== '..'
+}
+
+/** Each repository on GitHub the systems declare, with its newest reading. `readings` newest first. */
+export function githubRepositories(
+  applications: InventoryApplication[],
+  resources: InventoryResource[],
+  readings: GithubReading[],
+): GithubRepository[] {
+  const systems = [
+    ...applications.map((system) => ({
+      subject: { type: 'application' as const, id: system.id },
+      references: system.references,
+    })),
+    ...resources.map((system) => ({
+      subject: { type: 'resource' as const, id: system.id },
+      references: system.references,
+    })),
+  ]
+  return systems.flatMap(({ subject, references }) =>
+    references
+      .filter((reference) => reference.kind === 'repository' && onGithub(reference.target))
+      .map((reference) => {
+        const latest = readings.find((reading) => reading.referenceId === reference.id) ?? null
+        return {
+          referenceId: reference.id,
+          subject,
+          repository: reference.target,
+          latest,
+          movedSinceRead: !!latest && latest.repository !== reference.target,
+        }
+      }),
+  )
+}
+
 /** The commit a build wrote after a `+` in its version, as the native process reads it. */
 export function declaredCommit(version: string) {
   const plus = version.indexOf('+')
@@ -396,6 +438,11 @@ export function previewBackend(database: PreviewDatabase) {
     (item) => item.observedAt,
     (item) => item.recordedAt,
   )
+  const githubReadings = newestFirst(
+    database.githubReadings,
+    (item) => item.observedAt,
+    (item) => item.recordedAt,
+  )
   const exists = (subject: EntityRef) =>
     subjectsOf(database).some((item) => sameSubject(item, subject))
   const automated = (item: Observation | RecordedEvent) => item.source === 'http'
@@ -425,6 +472,7 @@ export function previewBackend(database: PreviewDatabase) {
         installations(applications, resources, installationReadings),
         localCopies(applications, resources, readings),
       ),
+      githubRepositories: githubRepositories(applications, resources, githubReadings),
       observations: observations.filter((item) => !automated(item) || kept.has(item.id)),
       incidents: [...database.incidents].sort(
         (a, b) => Date.parse(b.openedAt) - Date.parse(a.openedAt),
@@ -497,8 +545,8 @@ export function previewBackend(database: PreviewDatabase) {
       database: `${folder}\\inventory.sqlite3`,
       storedAt: null,
       state: 'current',
-      storedVersion: 14,
-      version: 14,
+      storedVersion: 15,
+      version: 15,
       message:
         "DevHQ serves this inventory: it is in this DevHQ's schema, with nothing to upgrade.",
       upgradable: false,

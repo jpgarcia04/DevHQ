@@ -15,8 +15,9 @@ recordar eventos, relacionar infraestructura y verificar resultados de automatiz
 DevHQ no reemplaza VS Code, una terminal, GitHub Desktop, Docker Desktop, Codex ni
 Claude Code. Conserva inventario local, la evidencia que registras a mano, la de
 comprobaciones HTTP(S) que lanzas tú o que supervisa **solo mientras su ventana está
-abierta**, y lo que lee en las copias locales y en las instalaciones de esta estación de trabajo,
-cuando se lo pides y una vez al abrirse su ventana, sin ejecutar nada de lo que nombran. **No funciona en segundo plano ni opera sistemas.** Guarda una sola credencial, un token de GitHub de
+abierta**, lo que lee en las copias locales y en las instalaciones de esta estación de trabajo y lo
+que GitHub dice de los repositorios que nombra el inventario, cuando se lo pides y una vez al abrirse
+su ventana, sin ejecutar nada de lo que nombran. **No funciona en segundo plano ni opera sistemas.** Guarda una sola credencial, un token de GitHub de
 solo lectura, y solo en el almacén de credenciales del sistema (ver [Token de GitHub](#token-de-github)).
 
 ## Qué incluye
@@ -614,7 +615,7 @@ build de SemVer (`ProductVersion = 1.4.0+3f9c2ab01d4e`). La lectura lo guarda ta
 comparación con la versión declarada ignora lo que sigue al `+`. DevHQ es el primero en cumplirlo: su
 script de build (`src-tauri/build.rs`) lee el commit de HEAD en el `.git` del checkout, como archivos y
 sin ejecutar `git` (un script de build que arranca programas ejecuta lo que haya primero en el `PATH`),
-y el ejecutable de Windows declara `0.2.3+` y los doce primeros dígitos de ese commit en
+y el ejecutable de Windows declara `0.2.4+` y los doce primeros dígitos de ese commit en
 `ProductVersion` y `FileVersion`. Lee `HEAD`, la referencia que nombra, suelta o en `packed-refs`, y,
 en un worktree enlazado o un submódulo, donde `.git` es un archivo (`gitdir: …`), la carpeta que ese
 archivo nombra y la del repositorio al que está enlazado (`commondir`). Lo que no puede saber no lo
@@ -623,7 +624,7 @@ si el árbol tenía cambios sin confirmar no se puede saber sin comparar cada ar
 es `git status`, así que la versión nombra el commit en el que estaba HEAD y no dice nada del árbol,
 salvo que quien compila lo diga con `DEVHQ_BUILD_DIRTY=1`, y entonces termina en `.dirty`. Solo el
 recurso de versión lleva el commit: la versión de la aplicación y la del instalador siguen siendo
-`0.2.3`. Ese número está escrito en `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`
+`0.2.4`. Ese número está escrito en `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`
 y `src/shared/version.ts`, de donde lo toma la ventana, y una prueba exige que coincidan; sube cuando
 se construye un instalador para instalarlo, no con cada cambio, porque lo que distingue una build de
 otra es el commit.
@@ -633,35 +634,45 @@ otra es el commit.
 Un ecosistema personal de aplicaciones de escritorio no tiene casi nada a lo que una comprobación HTTP
 pueda preguntar, así que «¿Qué necesita mi atención?» respondería casi siempre que nada está observado.
 El **trabajo pendiente** responde lo que sí se sabe sin que ninguna aplicación esté abierta: qué dicen
-las últimas lecturas de las [copias locales](#copias-locales) y de las [instalaciones](#instalaciones)
-que espera algo de ti. No es salud: no entra en «Needs attention», ni en la cobertura, ni en el estado
-global, y cada cosa se muestra con el momento de la lectura en que se apoya, porque dice lo que la copia
-o el archivo tenían entonces.
+las últimas lecturas de las [copias locales](#copias-locales), de las [instalaciones](#instalaciones) y
+de los [repositorios en GitHub](#repositorios-en-github) que espera algo de ti. No es salud: no entra
+en «Needs attention», ni en la cobertura, ni en el estado global, y cada cosa se muestra con el momento
+de la lectura en que se apoya, porque dice lo que la copia, el archivo o GitHub tenían entonces. Una CI
+en rojo dice que la rama principal no pasa sus comprobaciones, no que la aplicación esté caída.
 
-**Qué cuenta.** Cada copia o instalación declarada da como mucho una entrada, con todos sus motivos, del
-más urgente al menos, y se ordena por el primero:
+**Qué cuenta.** Cada copia, instalación o repositorio declarado da como mucho una entrada, con todos sus
+motivos, del más urgente al menos, y se ordena por el primero:
 
-| Motivo            | Cuándo                                                                                                                                   |
-| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `operation`       | La última lectura de la copia encontró un merge, rebase u otra operación a medias                                                        |
-| `changes`         | …archivos seguidos con cambios, entradas nuevas o archivos que DevHQ no pudo verificar                                                   |
-| `unpublished`     | …commits que ninguna rama remota de la copia contenía, en HEAD o en otra rama local                                                      |
-| `stashes`         | …stashes                                                                                                                                 |
-| `version_differs` | El archivo de la instalación declaraba otra versión que la que declara su aplicación                                                     |
-| `not_installed`   | Lo instalado no es lo que tenía la copia local del mismo sistema en la misma máquina (`againstCopy` es `other_commit` o `newer_commits`) |
-| `not_found`       | La copia o el archivo no estaban donde se declaran, o no se pudieron leer                                                                |
-| `never_read`      | Es de esta estación de trabajo y nunca se leyó                                                                                           |
-| `old_reading`     | Es de esta estación de trabajo y su última lectura tiene más de tres días (exactamente tres, todavía no)                                 |
+| Motivo            | Cuándo                                                                                                                                                      |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `main_failing`    | En la última lectura del repositorio, la última ejecución que concluyó algo de algún workflow de la rama principal falló, agotó su tiempo o no pudo empezar |
+| `operation`       | La última lectura de la copia encontró un merge, rebase u otra operación a medias                                                                           |
+| `changes`         | …archivos seguidos con cambios, entradas nuevas o archivos que DevHQ no pudo verificar                                                                      |
+| `unpublished`     | …commits que ninguna rama remota de la copia contenía, en HEAD o en otra rama local                                                                         |
+| `stashes`         | …stashes                                                                                                                                                    |
+| `pr_waiting`      | Un pull request abierto llevaba más de siete días sin cambios cuando se leyó el repositorio (exactamente siete, todavía no), borradores incluidos           |
+| `version_differs` | El archivo de la instalación declaraba otra versión que la que declara su aplicación                                                                        |
+| `not_installed`   | Lo instalado no es lo que tenía la copia local del mismo sistema en la misma máquina (`againstCopy` es `other_commit` o `newer_commits`)                    |
+| `not_found`       | La copia o el archivo no estaban donde se declaran o no se pudieron leer; del repositorio, GitHub rechazó el token o no respondió                           |
+| `never_read`      | Es de esta estación de trabajo, o es un repositorio, y nunca se leyó                                                                                        |
+| `old_reading`     | Es de esta estación de trabajo, o es un repositorio, y su última lectura tiene más de tres días (exactamente tres, todavía no)                              |
 
 Lo que leyó DevHQ en otro equipo cuenta igual, pero que allí nunca se leyera o se leyera hace mucho no,
 porque solo DevHQ en ese equipo puede leerlo; sin saber qué estación es este equipo, ninguna copia ni
 instalación es de esta estación. Una versión que DevHQ no pudo comparar (sin versión declarada, o
-desconocida en el archivo) no es trabajo pendiente. Las de aplicaciones archivadas no cuentan, como en
-Read all. Los empates conservan el orden del inventario: primero las copias, luego las instalaciones.
-Las reglas se calculan en la ventana (`src/features/inventory/pending.ts`) y en Rust para la puerta
-(`pending.rs`), y `contract/pending-work/` guarda casos con un instante, copias, instalaciones y el
-resultado esperado, contra los que Vitest y Rust comprueban sus dos versiones, el límite exacto de los
-tres días incluido.
+desconocida en el archivo) no es trabajo pendiente. Un repositorio no es de ninguna estación: nunca
+leído o leído hace mucho cuenta donde se abra DevHQ, también sin token guardado, porque nunca se
+presenta como en calma lo que nunca se leyó. `main_failing` va primero porque es lo único de la lista
+que puede estar rompiendo algo ahora; una ejecución cancelada, omitida o caducada no cuenta (cuenta la
+anterior, ver [Repositorios en GitHub](#repositorios-en-github)), y `neutral` o `action_required` no son
+un fallo. Los siete días de `pr_waiting` se miden entre el último cambio del pull request y la lectura,
+no hasta ahora, porque es lo único que la lectura sabe. Las de aplicaciones archivadas no cuentan, como
+en Read all. Los empates conservan el orden del inventario: primero las copias, luego las
+instalaciones y luego los repositorios. Las reglas se calculan en la ventana
+(`src/features/inventory/pending.ts`) y en Rust para la puerta (`pending.rs`), y
+`contract/pending-work/` guarda casos con un instante, copias, instalaciones, repositorios y el
+resultado esperado, contra los que Vitest y Rust comprueban sus dos versiones, los límites exactos de
+los tres y los siete días incluidos.
 
 **Al abrirse la ventana.** Para que el trabajo pendiente se apoye en lecturas recientes sin que nadie lo
 pida, la ventana, la primera vez que sabe qué estación de trabajo es este equipo después de abrirse y
@@ -672,26 +683,37 @@ pides tú. Después no vuelve a leer por su cuenta, y con la ventana cerrada no 
 Read only no puede pedir lecturas, así que lo que dé dependerá de cuándo se abrió DevHQ por última vez, y
 cada entrada dice cuándo se leyó. Un fallo de esa lectura no guarda nada y se dice en el panel.
 
+Aparte, y sin esperar a saber qué estación es este equipo, la primera vez que la ventana sirve el
+inventario después de abrirse, si nombra algún repositorio en GitHub de un sistema que no sea una
+aplicación archivada, pregunta si hay token guardado y, si lo hay, lee todos esos repositorios una
+vez, como **Read GitHub**. Sin token no pregunta nada a GitHub y el panel dice por qué.
+
 **En la ventana.** Overview tiene un panel **Pending work**, bajo «Needs attention», con su número y cada
-entrada: el sistema, si es una copia o una instalación y en qué máquina, la ruta, sus motivos en pocas
-palabras («2 commits on no remote · read more than 3 days ago», «the file declared 1.5.0+3f9c2ab, the
-inventory 1.4.0») y cuándo se leyó y quién lo pidió, si fue un agente. Encima dice que se están leyendo
-las copias y las instalaciones al abrir DevHQ y, al terminar, cuántas leyó, cuántas no pudo y qué llamada
-se rechazó. Vacío, dice que ninguna lectura dice que algo espera, o que no hay ninguna copia ni
-instalación declarada, nunca que todo está bien. El estado del ecosistema sigue hablando de salud, y
-debajo dice cuántas cosas esperan en el trabajo pendiente.
+entrada: el sistema, si es una copia, una instalación o un repositorio en GitHub, en qué máquina, la
+ruta o la dirección del repositorio, sus motivos en pocas palabras («2 commits on no remote · read more
+than 3 days ago», «the file declared 1.5.0+3f9c2ab, the inventory 1.4.0», «CI did not pass on main · 1
+pull request unchanged for more than 7 days (#7), 1 draft among them», «not read: GitHub refused the
+token (401)…») y cuándo se leyó y quién lo pidió, si fue un agente; de un repositorio cuya referencia
+cambió desde la lectura, también qué dirección se leyó. Encima dice que se están leyendo las copias y
+las instalaciones al abrir DevHQ y, al terminar, cuántas leyó, cuántas no pudo y qué llamada se
+rechazó, y lo mismo de GitHub, o que no se leyó por no haber token. Si hay algún repositorio en GitHub
+declarado, ofrece **Read GitHub**, que lee todos los de sistemas no archivados; una llamada rechazada
+dice que no leyó nada. Vacío, dice que ninguna lectura dice que algo espera, o que no hay ninguna copia,
+instalación ni repositorio en GitHub declarado, nunca que todo está bien. El estado del ecosistema sigue
+hablando de salud, y debajo dice cuántas cosas esperan en el trabajo pendiente.
 
 **En la puerta.** `attention` lo da como `pendingWork`: las entradas en el mismo orden, cada una con sus
-motivos, el sistema, la ruta, la máquina y la lectura en que se apoya, el umbral de antigüedad en horas
-y una nota que dice que no es salud. Cuando hay alguna, su `meaning` lo dice y pide nombrarlas también,
+motivos, el sistema, la ruta y la máquina (o, de un repositorio, su dirección) y la lectura en que se
+apoya, el umbral de antigüedad en horas, los días de `pr_waiting` y una nota que dice que no es salud y
+que la puerta nunca lee GitHub: solo muestra lo que leyó la ventana. Cuando hay alguna, su `meaning` lo dice y pide nombrarlas también,
 para que un agente no responda solo «nada observado».
 
 ### Token de GitHub
 
-DevHQ va a leer los repositorios de GitHub que el inventario nombra, para decir si su rama principal
-pasa sus comprobaciones y qué pull requests llevan días esperando
-([docs/leer-github.md](leer-github.md)). Esa lectura **todavía no existe**: hoy Settings solo permite
-guardar el token que usará, y nada lo lee.
+Con este token DevHQ lee los [repositorios en GitHub](#repositorios-en-github) que el inventario nombra,
+para decir si su rama principal pasa sus comprobaciones y qué pull requests llevan días esperando
+([docs/leer-github.md](leer-github.md)). Solo el lector de GitHub lo saca del almacén, para enviarlo a
+`api.github.com` y a ningún otro sitio. Settings dice cuándo se lee.
 
 El token es uno de grano fino (`github_pat_…`) que creas en GitHub, limitado a los repositorios que
 elijas y con acceso de solo lectura a `Metadata`, `Actions` y `Pull requests`: con él no se puede
@@ -720,6 +742,57 @@ es guardar otro; **Remove token** lo borra del almacén, y borrar lo que no est�
 reemplazar o borrar el token no abre el inventario, así que funciona aunque la ventana no lo sirva, y
 no deja rastro en el registro de cambios, que es del inventario. Si el almacén no responde, Settings
 dice que no sabe si hay uno guardado, nunca que no lo hay.
+
+### Repositorios en GitHub
+
+Un repositorio en GitHub es una referencia `repository` cuya dirección es exactamente
+`https://github.com/<propietario>/<repositorio>`, sin nada más detrás salvo un `.git` como el de una
+dirección para clonar (el propietario, de 1 a 39 letras, dígitos y guiones; el nombre, de 1 a 100
+letras, dígitos, guiones, guiones bajos y puntos, ni `.` ni `..`). Cualquier otra dirección, también
+de GitHub, no se lee. DevHQ no lista los repositorios de una cuenta ni busca otros que añadir.
+
+**Qué lee.** Con el [token](#token-de-github), de cada repositorio, uno tras otro y con 30 segundos
+como mucho para los tres:
+
+1. El repositorio, por la rama principal que declara. Si su nombre completo no es el de la referencia,
+   no se acepta la respuesta.
+2. Las 100 ejecuciones terminadas más recientes de esa rama, de las que guarda, por workflow, la más
+   reciente que concluyó algo: su nombre, su conclusión, el commit, cuándo terminó y su dirección. Una
+   cancelada, omitida o caducada (`cancelled`, `skipped`, `stale`) no dice nada de la rama, así que
+   cuenta la anterior; un workflow cuyas ejecuciones entre esas 100 no dijeron nada no se guarda. Si
+   GitHub tenía más de 100, la lectura lo marca (`workflowsMore`): un workflow que no corrió entre
+   ellas falta. Un repositorio sin ninguna (sus workflows solo corren en pull requests) no da ningún
+   motivo, y la lectura no lo presenta como en verde: su lista de workflows queda vacía.
+3. Los pull requests abiertos, 100 como mucho: número, título, si es borrador, cuándo cambió por última
+   vez y su dirección; con 100 justos marca que puede haber más (`pullRequestsMore`).
+
+Nada más: ni el código, ni las issues, ni las ramas, ni los registros de la CI.
+
+**Cómo.** Solo a `api.github.com`, por HTTPS con el certificado verificado y la versión `2022-11-28` de
+la API, sin seguir redirecciones; la rama principal viaja codificada como un solo valor de la consulta,
+y ninguna dirección ni dato de GitHub decide adónde se envía nada. Cada respuesta es dato no confiable:
+se corta al pasar de 8 MiB mientras llega, se comprueba campo a campo y un elemento que DevHQ no acepta
+(un tipo cambiado, un campo que falta, una conclusión desconocida, una ejecución de otra rama, un commit
+que no tiene 40 dígitos hexadecimales, una dirección fuera del repositorio leído, una hora sin zona)
+rechaza la respuesta entera, nunca solo una parte. Un título o un nombre de workflow se guarda como
+texto plano, con los caracteres de control como espacios y cortado a 256 o 120 caracteres.
+
+**Qué guarda.** Cada lectura es una observación inmutable en `github_readings`, con `source` `github`,
+el lector y la versión de la API, su momento y su resultado: `read`, con todo lo anterior;
+`refused`, cuando GitHub rechazó el token (401: caducó, se revocó o no vale) o respondió que no puede
+ver el repositorio o sus Actions (403, 404), con el motivo; o `unreadable`, cuando no respondió, se
+acabaron sus consultas de la hora, el repositorio se movió (una redirección: hay que actualizar la
+referencia) o su respuesta no se aceptó, con el motivo. Copia la referencia y la dirección leída, así
+que editar o quitar la referencia no la reescribe, y hace historial de su sistema. Una lectura solo se
+guarda si la referencia sigue nombrando la misma dirección al terminar; si se quitó o cambió entretanto,
+no se guarda nada y la ventana lo cuenta como un repositorio que no pudo leer. Sin token no se pregunta
+nada ni se guarda nada: **Read GitHub** responde que no hay token. Cada lectura del inventario lleva, por
+repositorio declarado, su última lectura y si era de otra dirección (`movedSinceRead`); las anteriores
+se conservan, pero ni la ventana ni la puerta las muestran todavía.
+
+**Cuándo.** Al abrirse la ventana (ver [Trabajo pendiente](#trabajo-pendiente)) y cuando pulsas **Read
+GitHub**; nunca con la ventana cerrada ni en segundo plano. La puerta para agentes no lee GitHub, porque
+no alcanza el token, pero sirve las lecturas guardadas en `attention`.
 
 ### Comprobación HTTP(S)
 
@@ -911,7 +984,7 @@ anterior solo lo actualiza la persona, desde la ventana, con **Back up and upgra
 hace: ni una consulta, ni la supervisión, ni un respaldo, ni la [puerta para agentes](#puerta-para-agentes),
 que no tiene ninguna herramienta para ello. Lo implementa `src-tauri/src/upgrade.rs`.
 
-- **Ver antes de decidir.** Una ventana que arranca sobre un inventario anterior a la v14 no lo sirve:
+- **Ver antes de decidir.** Una ventana que arranca sobre un inventario anterior a la v15 no lo sirve:
   cada página de Mi inventario muestra **Inventory needs a schema upgrade** con lo que es, leído sin
   cambiar ningún archivo y como lee la puerta, con una conexión que no puede escribir
   (`inspect_upgrade`). Dice la ruta, la versión que declara y la de este DevHQ, y cuántas filas tiene
@@ -944,7 +1017,7 @@ que no tiene ninguna herramienta para ello. Lo implementa `src-tauri/src/upgrade
      y su manifiesto no se migra nada, ni cuando el sistema responde que no pudo hacer alguno de esos
      pasos.
   4. Aplica las migraciones en la misma transacción.
-  5. Antes de confirmar, comprueba el resultado: la versión 14 y su estructura, `integrity_check`,
+  5. Antes de confirmar, comprueba el resultado: la versión 15 y su estructura, `integrity_check`,
      `foreign_key_check`, y que cada fila de cada tabla sigue ahí con su `rowid` y los mismos valores
      en las columnas que ya tenía, comparados valor a valor y tipo a tipo. En cada columna nueva, cada
      fila debe tener el valor por defecto que declara la columna (`NULL` si no declara ninguno), que es
@@ -986,10 +1059,10 @@ que no tiene ninguna herramienta para ello. Lo implementa `src-tauri/src/upgrade
     nada después. Pero el archivo queda con un journal o un log que hay que recuperar, y DevHQ no
     recupera por su cuenta un inventario de un esquema anterior: al arrancar lo rechaza sin tocar sus
     archivos (ver «Un inventario antiguo que necesita recuperación», abajo).
-  - Si termina después del commit, el inventario ya es v14: al arrancar, la ventana lo recupera como
+  - Si termina después del commit, el inventario ya es v15: al arrancar, la ventana lo recupera como
     cualquier inventario actual y lo sirve.
   - Dos actualizaciones a la vez, desde dos ventanas, las ordena el lock. La segunda, al obtenerlo,
-    encuentra el inventario ya en la v14, no hace otro respaldo y la ventana lo sirve (**Inventory
+    encuentra el inventario ya en la v15, no hace otro respaldo y la ventana lo sirve (**Inventory
     already upgraded**); si espera más de 5 s se rechaza con `upgrade_refused` y basta con reintentar.
 - **Los respaldos** van a la misma carpeta `backups/` que los de Back up now, en el mismo disco que el
   inventario: un disco que falla se los lleva, y desinstalar DevHQ con «Delete the application data»
@@ -1046,7 +1119,7 @@ que no tiene ninguna herramienta para ello. Lo implementa `src-tauri/src/upgrade
        Si no coinciden, o no hay respaldo, no pongas ninguno en su lugar y conserva los archivos como
        están: esta versión de DevHQ no ofrece otro camino.
 
-- **Volver a una versión anterior de DevHQ.** Un DevHQ anterior no lee la v14: volver es restaurar el
+- **Volver a una versión anterior de DevHQ.** Un DevHQ anterior no lee la v15: volver es restaurar el
   respaldo previo a la actualización, de su versión, como arriba, y lo escrito después se pierde. Los
   DevHQ anteriores a que ninguna apertura actualizara un inventario actualizan sin respaldo lo que
   abren, y convierten a WAL uno más nuevo antes de rechazarlo: no abras con ellos un inventario que
@@ -1223,14 +1296,14 @@ bloqueo, borra el índice y solo después vuelca y borra el log, y una mirada en
 que nadie mantiene. Si los archivos cambiaron, mira otra vez desde el principio; solo responde
 `needs_recovery` si siguieron igual, lo que retrasa esa respuesta unos 125 ms.
 
-La puerta solo sirve un inventario en el esquema de este DevHQ (v14) y con su estructura. Lo demás lo
+La puerta solo sirve un inventario en el esquema de este DevHQ (v15) y con su estructura. Lo demás lo
 rechaza sin leer ni cambiar nada, también con la puerta cerrada: un inventario más antiguo con
 `schema_outdated` (este DevHQ nunca actualiza un inventario al abrirlo; solo la persona lo actualiza,
 desde la ventana, con [Back up and upgrade](#actualizar-un-inventario-antiguo), y la puerta no tiene
 herramienta para ello), uno más nuevo con `schema_newer`, un archivo SQLite sin las tablas de DevHQ (vacío o de otro
 programa) con `not_an_inventory`, uno que habría que recuperar con `needs_recovery`, y lo que no se puede
 leer como SQLite (otro tipo de archivo, una carpeta, un archivo dañado o bloqueado) con
-`database_error`. Que un archivo declare la versión 14 no basta. La puerta compara sus tablas, columna
+`database_error`. Que un archivo declare la versión 15 no basta. La puerta compara sus tablas, columna
 por columna, y sus índices, por nombre, con el esquema que crean las migraciones de este DevHQ; si algo
 falta o difiere lo rechaza con `schema_mismatch` y dice qué. Las tablas e índices que el esquema no tiene
 no los juzga. Esa comparación no es una comprobación de integridad: la puerta nunca lee cada página y
@@ -1888,7 +1961,7 @@ pánico que en Linux abortaba el proceso al abrir Mi inventario (lo comprueba `n
   (`upgrade.rs`), cuando la persona pulsa Back up and upgrade en la ventana: con su propia conexión
   (`open_to_upgrade`), bajo el lock de escritura, después de un respaldo verificado y comprobando el
   resultado antes de confirmar (ver [Actualizar un inventario antiguo](#actualizar-un-inventario-antiguo)).
-  Las migraciones transaccionales v1→v14 (`PRAGMA user_version`) crean el esquema de un inventario
+  Las migraciones transaccionales v1→v15 (`PRAGMA user_version`) crean el esquema de un inventario
   nuevo y actualizan uno anterior; ninguna apertura, consulta, respaldo, supervisión ni herramienta MCP
   las aplica. Una versión más nueva se rechaza en vez de adivinarse.
 
@@ -2049,7 +2122,11 @@ foráneas, como en `copy_readings`. Sus CHECK exigen que un archivo que no se le
 más (salvo dónde lo guarda el sistema, y eso nunca de una ruta donde no había nada), que uno leído
 tenga su SHA-256 y su tamaño, lo que declara su recurso de versión o por qué se desconoce (nunca
 ambos, nunca ninguno) y sus procesos contados o desconocidos con el motivo (nunca ambos, nunca a
-medias). Los
+medias). La v15 añade `github_readings`, las lecturas de los repositorios de GitHub que nombra el
+inventario ([docs/leer-github.md](leer-github.md)), vacía, con sus índices por referencia y por
+sistema y su sistema `ON DELETE RESTRICT`; copia la referencia y la URL leída sin claves foráneas, y
+sus CHECK exigen que un repositorio que no se leyó diga por qué y nada más, y que uno leído tenga su
+rama principal y sus dos listas (ejecuciones y pull requests, en JSON) con su marca de corte. Los
 registros usan dos columnas con clave foránea (`application_id`/`resource_id`) y un CHECK
 que exige exactamente una; las referencias de historial son `ON DELETE RESTRICT`, así que
 nada puede borrar un sujeto y dejar evidencia huérfana; los casos de uso de borrado lo
@@ -2110,10 +2187,11 @@ y de ella guarda dos números y nada más (ver [Instalaciones](#instalaciones)).
 8. Hecho: el [trabajo pendiente](#trabajo-pendiente), lo que las lecturas de copias e instalaciones
    dicen que espera, ordenado, en Overview y en `attention`, con esas lecturas hechas al abrir la
    ventana. Responde «¿qué necesita mi atención?» en un ecosistema sin servicios que comprobar.
-9. En curso: leer los repositorios de GitHub que el inventario nombra
-   ([docs/leer-github.md](leer-github.md)). El [token](#token-de-github) ya se guarda en el almacén
-   del sistema; la lectura todavía no existe. Después, automatizaciones con resultado e historial, y
-   evidencias contextualizadas.
+9. Hecho: leer los [repositorios en GitHub](#repositorios-en-github) que el inventario nombra
+   ([docs/leer-github.md](leer-github.md)), con un [token](#token-de-github) de solo lectura en el
+   almacén del sistema, y decir en el trabajo pendiente si su rama principal está en rojo o un pull
+   request lleva días esperando. Después, el historial de esas lecturas en la ventana,
+   automatizaciones con resultado e historial, y evidencias contextualizadas.
 10. A largo plazo, una supervisión que siga con la ventana cerrada y avise de lo que necesita
     atención, hecha por DevHQ mismo y no por un agente. Contradice que DevHQ no funcione en segundo plano, así que exige revisar esa regla y
     cuidar lo que consume.
@@ -2130,7 +2208,7 @@ no una especificación ni un backlog: nada de lo que describe existe hasta que e
 Las pruebas cubren navegación, tabs/teclado, filtros, rutas desconocidas, relaciones
 compartidas, cronología de la demo, salud desconocida, persistencia tras reapertura,
 rechazo de referencias inválidas sin escrituras parciales, restricciones del esquema,
-migraciones v1/v2→v3, v3→v4, v4→v5, v5→v6, v6→v7, v7→v8, v8→v9, v9→v10, v10→v11, v11→v12, v12→v13 y v13→v14 (incluida la negativa a confirmar relaciones rotas), la actualización explícita (cada versión de la v1 a la v13, con journal de rollback y en WAL, actualizada con su consentimiento:
+migraciones v1/v2→v3, v3→v4, v4→v5, v5→v6, v6→v7, v7→v8, v8→v9, v9→v10, v10→v11, v11→v12, v12→v13, v13→v14 y v14→v15 (incluida la negativa a confirmar relaciones rotas), la actualización explícita (cada versión de la v1 a la v13, con journal de rollback y en WAL, actualizada con su consentimiento:
 cada fila conservada valor a valor, un respaldo idéntico al inventario anterior con su manifiesto, que
 restaurado vuelve a ser lo que se vio y se actualiza igual; ningún archivo cambia al mirarlo ni al
 rechazar otra versión, otro contenido o un archivo cambiado después de mirarlo; nada se actualiza sin
@@ -2237,11 +2315,11 @@ las que edita una, y con ocho que dan de alta la misma aplicación, de las que q
 que dejan elementos fuera sin quitarlos y bajas de lo que no es del sistema, rechazadas enteras; con
 un alta equivocada que se corrige, se borra en la ventana o, con historial, se archiva; con el log
 que deja un escritor al que se mata, que la puerta rechaza sin tocar ningún archivo y que la ventana
-recupera con cada cambio una sola vez; y con la actualización a la v13, que conserva el modo elegido. La actualización a la v14 se prueba con referencias de cada tipo y un hueco en sus `rowid`, que una reconstrucción que las renumerara cerraría: cada una conserva su `rowid` y sus valores, la tabla sus relaciones y sus índices, solo un inventario v14 admite una instalación, y cada CHECK de las lecturas rechaza lo que debe. Su apertura del inventario se
-prueba con inventarios v6 con journal de rollback y en WAL, v12 con Read only, v14 en WAL con Read only
+recupera con cada cambio una sola vez; y con la actualización a la v13, que conserva el modo elegido. La actualización a la v14 se prueba con referencias de cada tipo y un hueco en sus `rowid`, que una reconstrucción que las renumerara cerraría: cada una conserva su `rowid` y sus valores, la tabla sus relaciones y sus índices, solo un inventario v14 admite una instalación, y cada CHECK de las lecturas rechaza lo que debe. La actualización a la v15 conserva cada fila de la v14 y deja `github_readings` vacía, y sus CHECK rechazan una lectura leída sin sus datos o con un motivo, una que no se leyó sin motivo o con datos, otro resultado y unas ejecuciones que no son una lista. Su apertura del inventario se
+prueba con inventarios v6 con journal de rollback y en WAL, v12 con Read only, v15 en WAL con Read only
 y con Off, la copia de un respaldo (rollback) con Read only, v15, un archivo vacío, una base SQLite de
-otro programa, otra marcada con la versión 14 sin las tablas de DevHQ, otra marcada con la versión 14
-con solo `applications` y `resources`, un v14 sin `agent_access`, un v14 con Off cuyo log dejó con
+otro programa, otra marcada con la versión 15 sin las tablas de DevHQ, otra marcada con la versión 15
+con solo `applications` y `resources`, un v15 sin `agent_access`, un v15 con Off cuyo log dejó con
 cambios un escritor al que se mata (como lo deja un cierre brusco), ese mismo log sin su índice, un v6
 y la copia de un respaldo con el journal de rollback que deja una escritura a la que se mata a medias,
 un archivo de texto, una carpeta y nada: `status` dice qué es cada uno sin presentar como sabido lo que
@@ -2268,7 +2346,7 @@ completo ni buscan un evento automático por su observación, tampoco con estad�
 herramienta haya calculado sobre el archivo. Que ninguna apertura cambia el esquema se prueba con
 cada comando de la ventana, por el manejador real de comandos, sobre un v6 en rollback y en WAL, un
 v11, un v15 en rollback y en WAL, un archivo vacío, una base de otro programa y una marcada con la
-versión 14 sin su estructura: cada comando que abriría el inventario se rechaza con su código y ningún
+versión 15 sin su estructura: cada comando que abriría el inventario se rechaza con su código y ningún
 archivo de la carpeta cambia, aparece ni desaparece. También con casos de uso que abren de verdad un
 v6, un v11 en WAL y un v15 en rollback y en WAL y los rechazan sin cambiar un byte ni su modo de
 journal y sin crear `backups/`; con una conexión cuyo archivo pasa a la v11 después de abrirse, que
@@ -2276,15 +2354,15 @@ rechaza leer y escribir sin actualizarlo; con un agente al que se le cierra la p
 su conexión; con un inventario que desaparece con la ventana abierta y que nadie vuelve a crear; con un
 archivo vacío que nunca se inicializa, tampoco con un journal al lado; con la ventana que arranca donde
 no hay nada y crea un inventario en WAL; con arranques sobre escritores a los que se mata a medias: un
-v14 se recupera con lo confirmado, y un v6 y un v15 se rechazan sin cambiar ningún archivo; con el
+v15 se recupera con lo confirmado, y un v6 y un v16 se rechazan sin cambiar ningún archivo; con el
 journal de una escritura que reescribía doscientos recursos, y con el log de otra ya confirmada, que
 quedan sin su inventario: la ventana no crea ninguno (sin la protección, el journal dañaba el
 inventario nuevo, como dice `PRAGMA integrity_check`, y el log le metía los recursos del anterior),
 no cambia ningún byte de lo que quedó y, devuelto el inventario, lo recupera íntegro y con lo
-confirmado; y con archivos que se sustituyen mientras la ventana recupera un v14: todos, por un v15
-con una escritura sin terminar, después de que la copia resultara actual (el v15 se rechaza y queda
+confirmado; y con archivos que se sustituyen mientras la ventana recupera un v15: todos, por un v16
+con una escritura sin terminar, después de que la copia resultara actual (el v16 se rechaza y queda
 byte a byte como se puso; sin la protección SQLite reproducía su journal), y solo el log, por uno que
-lo hace v15, con la conexión que lo va a recuperar ya abierta (se rechaza igual; si se compara antes
+lo hace v16, con la conexión que lo va a recuperar ya abierta (se rechaza igual; si se compara antes
 de abrirla, SQLite volcaba ese log en el archivo). La concurrencia de SQLite se
 prueba sin esperas medidas: una lectura no espera a una escritura en curso, una escritura no espera a
 una lectura abierta (que conserva su estado), cuatro arranques simultáneos crean un único inventario

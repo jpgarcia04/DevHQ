@@ -131,6 +131,7 @@ const snapshot: InventorySnapshot = {
   sharedRepositories: [],
   localCopies: [],
   installations: [],
+  githubRepositories: [],
 }
 
 function renderWith(ui: ReactNode, value: InventoryContextValue, path = '/') {

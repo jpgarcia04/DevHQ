@@ -196,6 +196,7 @@ const snapshot: InventorySnapshot = {
   sharedRepositories: [],
   localCopies: copies,
   installations: [],
+  githubRepositories: [],
   observations: [],
   incidents: [],
   events: [],

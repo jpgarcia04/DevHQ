@@ -18,6 +18,7 @@ import type {
   ObservationInput,
   ObservationPage,
   InstallationReadingPage,
+  GithubRead,
   InstallationsRead,
   ReadingPage,
   ReadOutcome,
@@ -37,6 +38,15 @@ export interface OpeningRead {
   state: 'reading' | 'done'
   copies: ReadOutcome | string | null
   installations: InstallationsRead | string | null
+}
+
+/**
+ * The window's own read of the repositories on GitHub when it opens: `no_token` when none is kept,
+ * so nothing was asked; otherwise what the native process answered or the message of its refusal.
+ */
+export interface OpeningGithub {
+  state: 'reading' | 'done' | 'no_token'
+  outcome: GithubRead | string | null
 }
 
 export type LoadState = 'idle' | 'loading' | 'ready' | 'error'
@@ -125,6 +135,15 @@ export interface InventoryContextValue {
    * until it tried.
    */
   openingRead: OpeningRead | null
+  /**
+   * Reads on GitHub, now, the repositories named, or (null) every one of every system but archived
+   * applications, with the kept token; resolves once the reloaded inventory shows what was kept.
+   */
+  readGithub: (referenceIds: string[] | null) => Promise<GithubRead>
+  /** Whether this window is reading GitHub. */
+  readingGithub: boolean
+  /** What the window read on GitHub by itself once it opened. Null until it tried. */
+  openingGithub: OpeningGithub | null
   /** Looks at the inventory the window refused as outdated; it changes none of its files. */
   inspectUpgrade: () => Promise<UpgradeInspection>
   /**

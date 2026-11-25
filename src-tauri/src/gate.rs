@@ -503,7 +503,7 @@ impl Session {
         .to_owned();
         if pending_count > 0 {
             meaning.push_str(&format!(
-                " Apart from health, `pendingWork` lists {pending_count} {} in local copies and installations, most urgent first: say {} too.",
+                " Apart from health, `pendingWork` lists {pending_count} {} in local copies, installations and repositories on GitHub, most urgent first: say {} too.",
                 if pending_count == 1 { "thing waiting" } else { "things waiting" },
                 if pending_count == 1 { "it" } else { "them" },
             ));
@@ -986,7 +986,8 @@ fn installations_overview(inventory: &Inventory, names: &Names, this: Option<&st
     })
 }
 
-/// The work the readings of local copies and installations say is waiting, ranked (see
+/// The work the readings of local copies, installations and repositories on GitHub say is
+/// waiting, ranked (see
 /// `pending`), beside «what needs my attention?» and never in its ranking: it is not health.
 fn pending_work(
     inventory: &Inventory,
@@ -1003,9 +1004,28 @@ fn pending_work(
         .filter(|application| application.lifecycle == "archived")
         .map(|application| application.id.clone())
         .collect();
-    let items = pending::assess(&copies, &installations, this, &archived, now)?
+    let repositories: Vec<pending::RepositoryFacts> = inventory
+        .github_repositories
+        .iter()
+        .map(Into::into)
+        .collect();
+    let items = pending::assess(&copies, &installations, &repositories, this, &archived, now)?
         .into_iter()
         .map(|item| {
+            if item.kind == "repository" {
+                let repository = inventory
+                    .github_repositories
+                    .iter()
+                    .find(|repository| repository.reference_id == item.reference_id);
+                return json!({
+                    "kind": item.kind,
+                    "reasons": item.reasons,
+                    "system": names.system(&item.subject),
+                    "referenceId": item.reference_id,
+                    "repository": repository.map(|repository| repository.repository.clone()),
+                    "reading": repository.and_then(|repository| repository.latest.as_ref()),
+                });
+            }
             let (path, machine, reading) = if item.kind == "localCopy" {
                 let copy = inventory
                     .local_copies
@@ -1041,7 +1061,8 @@ fn pending_work(
     Ok(json!({
         "items": items,
         "oldReadingAfterHours": pending::OLD_READING_MS / 3_600_000,
-        "note": "Not health, and never in `items` or `status`: what each local copy or installed executable held when it was last read (`reading.observedAt`), which may no longer be so, most urgent first. Reasons, most urgent first: `operation` (a merge, rebase or similar left halfway), `changes` (changed, new or unverifiable files), `unpublished` (commits on no remote), `stashes`, `version_differs` (the installed file declared another version than its application), `not_installed` (the installed build is not what a local copy of the same system on the same machine held: another commit than HEAD, or, when the file declares no commit, a commit dated after it, which may or may not be in it; see `againstCopy` in the installation), `not_found` (not where declared, or not readable), `never_read` (on this workstation), `old_reading` (read on this workstation more than `oldReadingAfterHours` hours ago). DevHQ reads this workstation's copies and installations when its window opens and when asked, never in the background; a gate with Read only cannot ask, so say how old a reading is.",
+        "waitingAfterDays": pending::WAITING_MS / 86_400_000,
+        "note": "Not health, and never in `items` or `status`: what each local copy or installed executable held, or what GitHub said of each repository, when it was last read (`reading.observedAt`), which may no longer be so, most urgent first. Reasons, most urgent first: `main_failing` (the newest run that concluded something of a workflow on the repository's default branch failed, timed out or could not start; see `reading.workflows`), `operation` (a merge, rebase or similar left halfway), `changes` (changed, new or unverifiable files), `unpublished` (commits on no remote), `stashes`, `pr_waiting` (an open pull request had not changed for more than `waitingAfterDays` days when the repository was read, drafts included; see `reading.pullRequests`), `version_differs` (the installed file declared another version than its application), `not_installed` (the installed build is not what a local copy of the same system on the same machine held: another commit than HEAD, or, when the file declares no commit, a commit dated after it, which may or may not be in it; see `againstCopy` in the installation), `not_found` (not where declared, or not readable; for a repository, GitHub refused the token or did not answer, see `reading.detail`), `never_read` (on this workstation; a repository, wherever), `old_reading` (read on this workstation, or a repository read anywhere, more than `oldReadingAfterHours` hours ago). DevHQ reads this workstation's copies and installations, and the repositories on GitHub when a token is kept, when its window opens and when the person asks, never in the background. The gate never reads GitHub: it cannot reach the token. So say how old a reading is.",
     }))
 }
 
@@ -1259,7 +1280,7 @@ fn read_tools() -> Vec<Value> {
         read_only(
             "attention",
             "What needs attention",
-            "«What needs my attention?», ranked as DevHQ's Overview ranks it: active incidents and problem evidence, most urgent first, plus coverage (current, expired, never observed) and the systems nothing supervises. An empty list is only reassuring when status is `covered`. Beside it, unranked and not health, `localCopies`: the copies whose last reading held work that existed only there, the ones not found, and the ones on this workstation never read. And `installations`, unranked and not health either: the installed executables whose file declared another version than their application declares, the ones not found, and the ones on this workstation never read. And `pendingWork`, not health either but ranked: each copy or installation whose last reading says work is waiting (an operation halfway, changes, unpublished commits, stashes, another version, not found), or that was never read or read long ago on this workstation, most urgent first, with every reason.",
+            "«What needs my attention?», ranked as DevHQ's Overview ranks it: active incidents and problem evidence, most urgent first, plus coverage (current, expired, never observed) and the systems nothing supervises. An empty list is only reassuring when status is `covered`. Beside it, unranked and not health, `localCopies`: the copies whose last reading held work that existed only there, the ones not found, and the ones on this workstation never read. And `installations`, unranked and not health either: the installed executables whose file declared another version than their application declares, the ones not found, and the ones on this workstation never read. And `pendingWork`, not health either but ranked: each copy, installation or repository on GitHub whose last reading says work is waiting (a default branch whose checks did not pass, an operation halfway, changes, unpublished commits, stashes, a pull request waiting for days, another version, not found), or that was never read or read long ago, most urgent first, with every reason. The window reads GitHub; the gate only shows what it read.",
             json!({}),
             &[],
         ),
@@ -2277,6 +2298,60 @@ mod tests {
             Value::Null
         );
         assert_eq!(answer(&path, "status", json!({}))["windowOpen"], false);
+        remove(&path);
+    }
+
+    /// What the window read on GitHub reaches an agent ranked as pending work, though the gate never
+    /// reads GitHub itself.
+    #[test]
+    fn agents_see_what_the_window_read_on_github_as_pending_work() {
+        let path = path();
+        seed(&path);
+        crate::inventory::save_application(
+            &path,
+            crate::inventory::ApplicationInput {
+                id: None,
+                name: "Storefront".into(),
+                description: String::new(),
+                lifecycle: "production".into(),
+                version: None,
+                components: vec![],
+                references: vec![crate::references::ReferenceInput {
+                    id: None,
+                    kind: "repository".into(),
+                    target: "https://github.com/ana-ruiz/shop".into(),
+                    label: None,
+                    machine_id: None,
+                }],
+            },
+        )
+        .unwrap();
+        let targets = crate::github::readings::targets(&path, None).unwrap();
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap()
+            .block_on(crate::github::readings::read_github(
+                &path,
+                &crate::github::tests::shop(),
+                targets,
+                &crate::records::Actor::Person,
+            ))
+            .unwrap();
+        crate::access::set_agent_access(&path, "read").unwrap();
+        let mut agent = session(&path, "claude-code");
+        let attention = use_tool(&mut agent, "attention", json!({})).unwrap();
+        let pending = &attention["pendingWork"]["items"][0];
+        assert_eq!(pending["kind"], "repository");
+        assert_eq!(pending["system"]["name"], "Storefront");
+        assert_eq!(pending["repository"], "https://github.com/ana-ruiz/shop");
+        assert_eq!(pending["reasons"], json!(["main_failing", "pr_waiting"]));
+        assert_eq!(pending["reading"]["workflows"][0]["conclusion"], "failure");
+        assert_eq!(attention["pendingWork"]["waitingAfterDays"], 7);
+        assert!(attention["meaning"]
+            .as_str()
+            .unwrap()
+            .contains("repositories on GitHub"));
         remove(&path);
     }
 
@@ -3759,7 +3834,7 @@ mod tests {
         Option<&'static str>,
     );
 
-    /// A v14 inventory as `seed` leaves it (write-ahead logged, Read only), replaced by a backup
+    /// A v15 inventory as `seed` leaves it (write-ahead logged, Read only), replaced by a backup
     /// of itself: a rollback-journal file, as every DevHQ backup is.
     fn backup_copy(path: &Path) {
         seed(path);
@@ -3825,47 +3900,47 @@ mod tests {
                 Some("schema_outdated"),
             ),
             (
-                "v14 backup, rollback journal, Read only",
+                "v15 backup, rollback journal, Read only",
                 backup_copy,
                 true,
-                json!(14),
+                json!(15),
                 "current",
                 json!("read"),
                 counts.clone(),
                 None,
             ),
             (
-                "v14, write-ahead log, Read only",
+                "v15, write-ahead log, Read only",
                 |path| drop(seed(path)),
                 true,
-                json!(14),
+                json!(15),
                 "current",
                 json!("read"),
                 counts.clone(),
                 None,
             ),
             (
-                "v14, write-ahead log, Off",
+                "v15, write-ahead log, Off",
                 |path| {
                     seed(path);
                     crate::access::set_agent_access(path, "off").unwrap();
                 },
                 true,
-                json!(14),
+                json!(15),
                 "current",
                 json!("off"),
                 Value::Null,
                 Some("access_denied"),
             ),
             (
-                "v15",
+                "v16",
                 |path| {
-                    database_at(path, 14)
-                        .pragma_update(None, "user_version", 15)
+                    database_at(path, 15)
+                        .pragma_update(None, "user_version", 16)
                         .unwrap();
                 },
                 true,
-                json!(15),
+                json!(16),
                 "newer",
                 Value::Null,
                 Value::Null,
@@ -3897,11 +3972,11 @@ mod tests {
                 Some("not_an_inventory"),
             ),
             (
-                "a SQLite database stamped 14 without DevHQ's tables",
+                "a SQLite database stamped 15 without DevHQ's tables",
                 |path| {
                     sqlite(
                         path,
-                        "CREATE TABLE notes (body TEXT); PRAGMA user_version = 14;",
+                        "CREATE TABLE notes (body TEXT); PRAGMA user_version = 15;",
                     )
                 },
                 true,
@@ -3912,37 +3987,37 @@ mod tests {
                 Some("not_an_inventory"),
             ),
             (
-                "v14 stamped, with only the tables that tell an inventory apart",
+                "v15 stamped, with only the tables that tell an inventory apart",
                 |path| {
                     sqlite(
                         path,
                         "CREATE TABLE applications (id TEXT PRIMARY KEY);
                          CREATE TABLE resources (id TEXT PRIMARY KEY);
-                         PRAGMA user_version = 14;",
+                         PRAGMA user_version = 15;",
                     )
                 },
                 true,
-                json!(14),
+                json!(15),
                 "mismatch",
                 Value::Null,
                 Value::Null,
                 Some("schema_mismatch"),
             ),
             (
-                "v14 without agent_access",
+                "v15 without agent_access",
                 |path| {
                     seed(path);
                     sqlite(path, "DROP TABLE agent_access");
                 },
                 true,
-                json!(14),
+                json!(15),
                 "mismatch",
                 Value::Null,
                 Value::Null,
                 Some("schema_mismatch"),
             ),
             (
-                "v14, Off, its write-ahead log left by a writer that was killed",
+                "v15, Off, its write-ahead log left by a writer that was killed",
                 |path| {
                     seed(path);
                     crate::access::set_agent_access(path, "off").unwrap();
@@ -3956,7 +4031,7 @@ mod tests {
                 Some("needs_recovery"),
             ),
             (
-                "v14, Read only, its write-ahead log left without its index",
+                "v15, Read only, its write-ahead log left without its index",
                 |path| {
                     seed(path);
                     kill(writer(path, "log"), path);
@@ -3985,7 +4060,7 @@ mod tests {
                 Some("needs_recovery"),
             ),
             (
-                "v14 backup, Read only, rollback journal left by a write that was killed",
+                "v15 backup, Read only, rollback journal left by a write that was killed",
                 |path| {
                     backup_copy(path);
                     kill(writer(path, "journal"), path);

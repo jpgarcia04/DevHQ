@@ -14,8 +14,8 @@
 //!   the right to write to it. It lasts until the session ends; the specification says so.
 //! - Anywhere else, nothing is kept and saving is refused.
 //!
-//! Nothing reads the token yet: the GitHub reader is the next change. Until then a kept token only
-//! says that one is kept.
+//! Only the GitHub reader (`github`) reads the token back, to send it to `api.github.com` and
+//! nowhere else.
 
 use crate::inventory::ApiError;
 use serde::Serialize;
@@ -32,8 +32,15 @@ const LONGEST: usize = 255;
 pub(crate) struct Secret(Vec<u8>);
 
 impl Secret {
-    fn bytes(&self) -> &[u8] {
+    pub(crate) fn bytes(&self) -> &[u8] {
         &self.0
+    }
+}
+
+#[cfg(test)]
+impl Secret {
+    pub(crate) fn for_tests(text: &str) -> Self {
+        Secret(text.as_bytes().to_vec())
     }
 }
 
@@ -55,6 +62,8 @@ pub(crate) trait Store: Send + Sync {
     fn kind(&self) -> &'static str;
     /// Whether a secret is kept under `name`.
     fn holds(&self, name: &str) -> Result<bool, String>;
+    /// The secret kept under `name`, if any.
+    fn read(&self, name: &str) -> Result<Option<Secret>, String>;
     /// Keeps `secret` under `name`, in place of what was there.
     fn write(&self, name: &str, secret: &Secret) -> Result<(), String>;
     /// Removes what is kept under `name`; nothing kept is not an error.
@@ -121,6 +130,11 @@ impl Credentials {
         self.store.remove(&self.name()).map_err(store_error)?;
         self.github()
     }
+
+    /// The token itself, for the GitHub reader alone; None when none is kept.
+    pub(crate) fn github_secret(&self) -> Result<Option<Secret>, ApiError> {
+        self.store.read(&self.name()).map_err(store_error)
+    }
 }
 
 /// The token in `text`, without the whitespace a paste brings, when it is a fine-grained token:
@@ -184,6 +198,9 @@ impl Store for Nowhere {
     fn holds(&self, _: &str) -> Result<bool, String> {
         Ok(false)
     }
+    fn read(&self, _: &str) -> Result<Option<Secret>, String> {
+        Ok(None)
+    }
     fn write(&self, _: &str, _: &Secret) -> Result<(), String> {
         Err("DevHQ keeps credentials only on Windows and Linux.".into())
     }
@@ -232,6 +249,38 @@ mod windows {
             // SAFETY: CredReadW succeeded, so `found` is its allocation, freed once.
             unsafe { CredFree(found.cast()) };
             Ok(true)
+        }
+
+        fn read(&self, name: &str) -> Result<Option<Secret>, String> {
+            let target = wide(name);
+            let mut found: *mut CREDENTIALW = std::ptr::null_mut();
+            // SAFETY: as in `holds`.
+            let read = unsafe { CredReadW(target.as_ptr(), CRED_TYPE_GENERIC, 0, &mut found) };
+            if read == 0 {
+                // SAFETY: no call since CredReadW.
+                return match unsafe { GetLastError() } {
+                    ERROR_NOT_FOUND => Ok(None),
+                    _ => Err(last_error()),
+                };
+            }
+            // SAFETY: CredReadW succeeded, so `found` points to a credential whose blob holds
+            // `CredentialBlobSize` bytes (or is null when empty). The bytes are copied, then
+            // overwritten in the system's allocation before it is freed, once.
+            let secret = unsafe {
+                let credential = &*found;
+                let size = credential.CredentialBlobSize as usize;
+                let secret = if credential.CredentialBlob.is_null() || size == 0 {
+                    Secret(Vec::new())
+                } else {
+                    let blob = std::slice::from_raw_parts_mut(credential.CredentialBlob, size);
+                    let secret = Secret(blob.to_vec());
+                    blob.fill(0);
+                    secret
+                };
+                CredFree(found.cast());
+                secret
+            };
+            Ok(Some(secret))
         }
 
         fn write(&self, name: &str, secret: &Secret) -> Result<(), String> {
@@ -283,6 +332,7 @@ mod linux {
     const KEYCTL_SETPERM: libc::c_long = 5;
     const KEYCTL_UNLINK: libc::c_long = 9;
     const KEYCTL_SEARCH: libc::c_long = 10;
+    const KEYCTL_READ: libc::c_long = 11;
     const KEYCTL_INVALIDATE: libc::c_long = 21;
     /// Every right for the processes that possess the key and for its user, none for its group or
     /// anyone else: a process of the same user that does not possess it can still find it.
@@ -325,6 +375,34 @@ mod linux {
 
         fn holds(&self, name: &str) -> Result<bool, String> {
             find(name).map(|id| id.is_some())
+        }
+
+        fn read(&self, name: &str) -> Result<Option<Secret>, String> {
+            let Some(id) = find(name)? else {
+                return Ok(None);
+            };
+            // A token is at most `LONGEST` bytes; the room for more only says that the key holds
+            // something else, which is refused rather than cut.
+            let mut buffer = Secret(vec![0; super::LONGEST + 1]);
+            // SAFETY: the buffer is writable for its whole length, which is the length given.
+            let size = unsafe {
+                libc::syscall(
+                    libc::SYS_keyctl,
+                    KEYCTL_READ,
+                    id,
+                    buffer.0.as_mut_ptr(),
+                    buffer.0.len(),
+                )
+            };
+            if size < 0 {
+                return Err(std::io::Error::last_os_error().to_string());
+            }
+            let size = usize::try_from(size).map_err(|error| error.to_string())?;
+            if size > super::LONGEST {
+                return Err("the key holds more than a token".into());
+            }
+            let secret = Secret(buffer.0[..size].to_vec());
+            Ok(Some(secret))
         }
 
         fn write(&self, name: &str, secret: &Secret) -> Result<(), String> {
@@ -397,6 +475,9 @@ pub(crate) mod tests {
         fn holds(&self, name: &str) -> Result<bool, String> {
             Ok(self.0.lock().unwrap().contains_key(name))
         }
+        fn read(&self, name: &str) -> Result<Option<Secret>, String> {
+            Ok(self.0.lock().unwrap().get(name).cloned().map(Secret))
+        }
         fn write(&self, name: &str, secret: &Secret) -> Result<(), String> {
             self.0
                 .lock()
@@ -434,7 +515,13 @@ pub(crate) mod tests {
         assert!(!serde_json::to_string(&saved)
             .unwrap()
             .contains("github_pat_"));
+        // Only the reader gets it back, trimmed as it was kept.
+        assert_eq!(
+            credentials.github_secret().unwrap().unwrap().bytes(),
+            TOKEN.as_bytes()
+        );
         assert!(!credentials.remove_github().unwrap().stored);
+        assert!(credentials.github_secret().unwrap().is_none());
         // Removing what is not there is not an error.
         assert!(!credentials.remove_github().unwrap().stored);
     }
@@ -512,14 +599,24 @@ pub(crate) mod tests {
         );
         let name = entry.1.clone();
         assert!(!store.holds(&name).unwrap());
+        assert!(store.read(&name).unwrap().is_none());
         store.write(&name, &fine_grained(TOKEN).unwrap()).unwrap();
         assert!(store.holds(&name).unwrap());
+        assert_eq!(
+            store.read(&name).unwrap().unwrap().bytes(),
+            TOKEN.as_bytes()
+        );
         store
             .write(&name, &Secret(b"github_pat_replaced".to_vec()))
             .unwrap();
         assert!(store.holds(&name).unwrap());
+        assert_eq!(
+            store.read(&name).unwrap().unwrap().bytes(),
+            b"github_pat_replaced"
+        );
         store.remove(&name).unwrap();
         assert!(!store.holds(&name).unwrap());
+        assert!(store.read(&name).unwrap().is_none());
         store.remove(&name).unwrap();
         drop(entry);
     }

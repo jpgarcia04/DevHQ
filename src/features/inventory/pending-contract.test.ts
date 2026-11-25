@@ -13,6 +13,7 @@ interface PendingCase {
   archived: string[]
   localCopies: Parameters<typeof pendingWork>[0]
   installations: Parameters<typeof pendingWork>[1]
+  githubRepositories: Parameters<typeof pendingWork>[2]
   expected: PendingItem[]
 }
 
@@ -33,6 +34,7 @@ describe('the pending work contract', () => {
       pendingWork(
         item.localCopies,
         item.installations,
+        item.githubRepositories,
         item.thisWorkstation,
         item.archived,
         Date.parse(item.now),

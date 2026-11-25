@@ -16,6 +16,8 @@ use super::{commands, manage};
 use crate::access::AgentAccess;
 use crate::backup::{Backup, BackupCounts, BackupFile, BackupFolder};
 use crate::change_log::{Change, FieldChange};
+use crate::github::readings::{GithubFailure, GithubRead, GithubReading, GithubRepository};
+use crate::github::{PullRequest, Workflow};
 use crate::http_check::{HttpCheck, HttpCheckInput};
 use crate::installations::readings::{
     AgainstCopy, Build, Installation, InstallationReading, InstallationReadingPage,
@@ -230,7 +232,7 @@ fn arguments(command: &str) -> Vec<(&'static str, Reader)> {
         "watch_http_monitor" => vec![("channel", text)],
         "this_workstation" => vec![],
         "set_this_workstation" => vec![("resourceId", read_completely::<Option<String>>)],
-        "read_copies" | "read_installations" => {
+        "read_copies" | "read_installations" | "read_github" => {
             vec![("referenceIds", read_completely::<Option<Vec<String>>>)]
         }
         "older_readings" | "older_installation_readings" => vec![
@@ -325,7 +327,13 @@ fn every_command_reads_and_accepts_exactly_what_the_window_sends() {
         let path = seeded();
         let (app, window) = devhq(&path);
         let answer = invoke(&window, command, args.clone());
-        assert!(answer.is_ok(), "{command}: {answer:?}");
+        // The test's store keeps no token and the test never reaches GitHub: reading it checks
+        // what was asked first, so refusing for want of a token is its arguments passing.
+        let no_token = command == "read_github"
+            && answer
+                .as_ref()
+                .is_err_and(|error| error["code"] == "no_token");
+        assert!(answer.is_ok() || no_token, "{command}: {answer:?}");
         drop((window, app));
         remove(&path);
     }
@@ -407,19 +415,19 @@ fn no_command_changes_an_inventory_the_window_does_not_serve() {
             "schema_outdated",
         ),
         (
-            "v15, rollback journal",
+            "v16, rollback journal",
             |path| {
-                let db = database_at(path, 14);
+                let db = database_at(path, 15);
                 db.execute_batch(ROWS).unwrap();
-                db.pragma_update(None, "user_version", 15).unwrap();
+                db.pragma_update(None, "user_version", 16).unwrap();
             },
             "schema_newer",
         ),
         (
-            "v15, write-ahead log",
+            "v16, write-ahead log",
             |path| {
-                let db = database_at(path, 14);
-                db.pragma_update(None, "user_version", 15).unwrap();
+                let db = database_at(path, 15);
+                db.pragma_update(None, "user_version", 16).unwrap();
                 db.pragma_update(None, "journal_mode", "WAL").unwrap();
             },
             "schema_newer",
@@ -440,9 +448,9 @@ fn no_command_changes_an_inventory_the_window_does_not_serve() {
             "not_an_inventory",
         ),
         (
-            "stamped 14 without the schema's structure",
+            "stamped 15 without the schema's structure",
             |path| {
-                database_at(path, 14)
+                database_at(path, 15)
                     .execute_batch("DROP TABLE agent_access;")
                     .unwrap()
             },
@@ -608,7 +616,7 @@ fn serves_an_outdated_inventory_once_the_person_upgrades_it() {
     let upgraded = invoke(&window, "upgrade_inventory", consent.clone()).unwrap();
     assert_eq!(
         (&upgraded["from"], &upgraded["to"]),
-        (&json!(6), &json!(14))
+        (&json!(6), &json!(15))
     );
     let backup = PathBuf::from(upgraded["backup"]["path"].as_str().unwrap());
     assert!(
@@ -633,7 +641,7 @@ fn serves_an_outdated_inventory_once_the_person_upgrades_it() {
     let again = invoke(&window, "upgrade_inventory", consent).unwrap();
     assert_eq!(
         (&again["from"], &again["backup"]),
-        (&json!(14), &Value::Null)
+        (&json!(15), &Value::Null)
     );
     assert_eq!(
         std::fs::read_dir(backup.parent().unwrap()).unwrap().count(),
@@ -727,6 +735,36 @@ fn every_answer_has_the_shape_the_window_expects() {
         processes: Some(2),
         processes_unexamined: Some(41),
         processes_unknown: None,
+    };
+    let platform_on_github = GithubReading {
+        id: "github-1".into(),
+        subject: shop(),
+        reference_id: "shop-repo".into(),
+        repository: "https://github.com/me/platform".into(),
+        source: "github".into(),
+        reader: crate::github::READER.into(),
+        agent: None,
+        observed_at: at("09:30"),
+        recorded_at: at("09:30"),
+        outcome: "read".into(),
+        detail: None,
+        default_branch: Some("main".into()),
+        workflows: Some(vec![Workflow {
+            workflow: "CI".into(),
+            conclusion: "failure".into(),
+            commit: "89abcdef0123456789abcdef0123456789abcdef".into(),
+            finished_at: at("08:40"),
+            address: "https://github.com/me/platform/actions/runs/4012".into(),
+        }]),
+        workflows_more: Some(false),
+        pull_requests: Some(vec![PullRequest {
+            number: 41,
+            title: "Audit dependencies".into(),
+            draft: true,
+            updated_at: "2025-12-20T10:00:00Z".into(),
+            address: "https://github.com/me/platform/pull/41".into(),
+        }]),
+        pull_requests_more: Some(false),
     };
     let laptop = || ThisWorkstation {
         resource_id: Some("laptop".into()),
@@ -861,6 +899,38 @@ fn every_answer_has_the_shape_the_window_expects() {
                 copy_head: Some("0123456789abcdef0123456789abcdef01234567".into()),
             }),
         }],
+        github_repositories: vec![
+            GithubRepository {
+                reference_id: "shop-repo".into(),
+                subject: shop(),
+                repository: "https://github.com/me/platform".into(),
+                latest: Some(platform_on_github.clone()),
+                moved_since_read: false,
+            },
+            GithubRepository {
+                reference_id: "host-repo".into(),
+                subject: host(),
+                repository: "https://github.com/me/platform".into(),
+                latest: Some(GithubReading {
+                    id: "github-2".into(),
+                    subject: host(),
+                    reference_id: "host-repo".into(),
+                    repository: "https://github.com/me/platform-old".into(),
+                    outcome: "refused".into(),
+                    detail: Some(
+                        "GitHub refused the token (401): it expired, was revoked or is not valid. Save a new one in Settings."
+                            .into(),
+                    ),
+                    default_branch: None,
+                    workflows: None,
+                    workflows_more: None,
+                    pull_requests: None,
+                    pull_requests_more: None,
+                    ..platform_on_github.clone()
+                }),
+                moved_since_read: true,
+            },
+        ],
         observations: vec![
             Observation {
                 id: "obs-http".into(),
@@ -1182,6 +1252,18 @@ fn every_answer_has_the_shape_the_window_expects() {
                     message: r"Reading C:\Program Files\Agent\agent.exe took longer than 30 s, so DevHQ stopped it. Nothing was kept.".into(),
                 }],
                 this_workstation: laptop(),
+            }),
+        ),
+        (
+            "read_github".to_owned(),
+            value(&GithubRead {
+                readings: vec![platform_on_github.clone()],
+                failures: vec![GithubFailure {
+                    reference_id: "host-repo".into(),
+                    subject: host(),
+                    repository: "https://github.com/me/platform".into(),
+                    message: "The repository https://github.com/me/platform was removed or changed while DevHQ read it. Nothing was kept.".into(),
+                }],
             }),
         ),
         (

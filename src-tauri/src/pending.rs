@@ -1,5 +1,5 @@
-//! «What work is waiting for me?»: what the readings of local copies and installations say needs
-//! looking at, ranked. Answered in Rust for the agent gate and in `src/features/inventory/pending.ts`
+//! «What work is waiting for me?»: what the readings of local copies, installations and repositories
+//! on GitHub say needs looking at, ranked. Answered in Rust for the agent gate and in `src/features/inventory/pending.ts`
 //! for the window; both are held to the same fixtures in `contract/pending-work/`, so they can never
 //! disagree. Every rule below mirrors one there, down to how ties are broken.
 //!
@@ -8,19 +8,24 @@
 //! moment. It exists because a personal ecosystem of desktop applications has nothing an HTTP check
 //! can ask, so without it «what needs my attention?» would always come back empty.
 //!
-//! - Each declared copy or installation gives at most one item, with every reason it has, most
-//!   urgent first; the item ranks by its first reason.
-//! - Reasons, most urgent first: an operation left halfway in a copy (`operation`), changed, new or
-//!   unverifiable files (`changes`), commits on no remote (`unpublished`), stashes (`stashes`), an
-//!   installed file that declared another version than its application (`version_differs`), an
+//! - Each declared copy, installation or repository gives at most one item, with every reason it
+//!   has, most urgent first; the item ranks by its first reason.
+//! - Reasons, most urgent first: a workflow whose newest run on a repository's default branch did
+//!   not pass (`main_failing`), the only thing on the list that may be breaking something now; an
+//!   operation left halfway in a copy (`operation`), changed, new or unverifiable files (`changes`),
+//!   commits on no remote (`unpublished`), stashes (`stashes`), a pull request that had not changed
+//!   for more than `WAITING_MS` when its repository was read (`pr_waiting`), an installed file that declared another version than its application (`version_differs`), an
 //!   installed build that is not what a local copy of the same system on the same machine held
 //!   (`not_installed`: another commit than HEAD, or, without a declared commit, a newer one), not
-//!   found or not readable where declared (`not_found`), never read on this workstation
-//!   (`never_read`), and a reading on this workstation older than `OLD_READING_MS`
-//!   (`old_reading`), which DevHQ could renew by reading it again.
-//! - Ties keep the order given: copies in the inventory's order, then installations in theirs.
+//!   found or not readable where declared (`not_found`; for a repository, GitHub's refusal or no
+//!   answer), never read on this workstation (`never_read`), and a reading on this workstation older
+//!   than `OLD_READING_MS` (`old_reading`), which DevHQ could renew by reading it again. A repository
+//!   is on no workstation: it is never read or old wherever DevHQ runs.
+//! - Ties keep the order given: copies in the inventory's order, then installations, then
+//!   repositories, each in theirs.
 //! - Systems of archived applications are left out, as from Read all.
 
+use crate::github::readings::GithubRepository;
 use crate::installations::readings::Installation;
 use crate::inventory::ApiError;
 use crate::local_copies::readings::LocalCopy;
@@ -30,12 +35,18 @@ use serde::{Deserialize, Serialize};
 /// A reading older than this, on this workstation, is worth renewing: three days.
 pub const OLD_READING_MS: i64 = 3 * 24 * 60 * 60 * 1000;
 
+/// A pull request that had not changed for longer than this when its repository was read is
+/// waiting: seven days.
+pub const WAITING_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+
 /// Every reason, most urgent first: an item ranks by the position of its first one.
-const REASONS: [&str; 9] = [
+const REASONS: [&str; 11] = [
+    "main_failing",
     "operation",
     "changes",
     "unpublished",
     "stashes",
+    "pr_waiting",
     "version_differs",
     "not_installed",
     "not_found",
@@ -98,6 +109,70 @@ pub struct AgainstCopyFacts {
     pub state: String,
 }
 
+/// What the rules need of a workflow's newest run that concluded something.
+#[derive(Debug, Clone, Deserialize)]
+pub struct WorkflowFacts {
+    pub conclusion: String,
+}
+
+/// What the rules need of an open pull request.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PullRequestFacts {
+    pub updated_at: String,
+}
+
+/// What the rules need of a repository's newest reading.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepositoryReadingFacts {
+    pub outcome: String,
+    pub observed_at: String,
+    pub workflows: Option<Vec<WorkflowFacts>>,
+    pub pull_requests: Option<Vec<PullRequestFacts>>,
+}
+
+/// What the rules need of a declared repository on GitHub.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepositoryFacts {
+    pub reference_id: String,
+    pub subject: Subject,
+    pub latest: Option<RepositoryReadingFacts>,
+}
+
+impl From<&GithubRepository> for RepositoryFacts {
+    fn from(repository: &GithubRepository) -> Self {
+        RepositoryFacts {
+            reference_id: repository.reference_id.clone(),
+            subject: repository.subject.clone(),
+            latest: repository
+                .latest
+                .as_ref()
+                .map(|reading| RepositoryReadingFacts {
+                    outcome: reading.outcome.clone(),
+                    observed_at: reading.observed_at.clone(),
+                    workflows: reading.workflows.as_ref().map(|workflows| {
+                        workflows
+                            .iter()
+                            .map(|workflow| WorkflowFacts {
+                                conclusion: workflow.conclusion.clone(),
+                            })
+                            .collect()
+                    }),
+                    pull_requests: reading.pull_requests.as_ref().map(|pulls| {
+                        pulls
+                            .iter()
+                            .map(|pull| PullRequestFacts {
+                                updated_at: pull.updated_at.clone(),
+                            })
+                            .collect()
+                    }),
+                }),
+        }
+    }
+}
+
 impl From<&LocalCopy> for CopyFacts {
     fn from(copy: &LocalCopy) -> Self {
         CopyFacts {
@@ -147,7 +222,7 @@ impl From<&Installation> for InstallationFacts {
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingItem {
-    /// `localCopy` or `installation`.
+    /// `localCopy`, `installation` or `repository`.
     pub kind: &'static str,
     pub reference_id: String,
     pub subject: Subject,
@@ -165,12 +240,13 @@ fn old(observed_at: &str, here: bool, now: i64) -> Result<bool, ApiError> {
     Ok(here && now - millis(observed_at)? > OLD_READING_MS)
 }
 
-/// The pending work among the copies and installations given, most urgent first, at `now`
-/// (milliseconds since the Unix epoch). `this` is the workstation this computer is, if DevHQ knows
+/// The pending work among the copies, installations and repositories given, most urgent first, at
+/// `now` (milliseconds since the Unix epoch). `this` is the workstation this computer is, if DevHQ knows
 /// it; `archived` names the applications that are archived.
 pub fn assess(
     copies: &[CopyFacts],
     installations: &[InstallationFacts],
+    repositories: &[RepositoryFacts],
     this: Option<&str>,
     archived: &[String],
     now: i64,
@@ -261,6 +337,45 @@ pub fn assess(
             });
         }
     }
+    for repository in repositories
+        .iter()
+        .filter(|repository| !left_out(&repository.subject))
+    {
+        let mut reasons = Vec::new();
+        match &repository.latest {
+            None => reasons.push("never_read"),
+            Some(reading) => {
+                if reading.outcome == "read" {
+                    if reading.workflows.iter().flatten().any(|workflow| {
+                        crate::github::FAILED.contains(&workflow.conclusion.as_str())
+                    }) {
+                        reasons.push("main_failing");
+                    }
+                    let read_at = millis(&reading.observed_at)?;
+                    let mut waiting = false;
+                    for pull in reading.pull_requests.iter().flatten() {
+                        waiting |= read_at - millis(&pull.updated_at)? > WAITING_MS;
+                    }
+                    if waiting {
+                        reasons.push("pr_waiting");
+                    }
+                } else {
+                    reasons.push("not_found");
+                }
+                if old(&reading.observed_at, true, now)? {
+                    reasons.push("old_reading");
+                }
+            }
+        }
+        if !reasons.is_empty() {
+            items.push(PendingItem {
+                kind: "repository",
+                reference_id: repository.reference_id.clone(),
+                subject: repository.subject.clone(),
+                reasons,
+            });
+        }
+    }
     let rank = |item: &PendingItem| {
         REASONS
             .iter()
@@ -286,6 +401,7 @@ mod tests {
         archived: Vec<String>,
         local_copies: Vec<CopyFacts>,
         installations: Vec<InstallationFacts>,
+        github_repositories: Vec<RepositoryFacts>,
         expected: Value,
     }
 
@@ -301,6 +417,7 @@ mod tests {
             let items = assess(
                 &case.local_copies,
                 &case.installations,
+                &case.github_repositories,
                 case.this_workstation.as_deref(),
                 &case.archived,
                 now,
@@ -332,7 +449,7 @@ mod tests {
                 operation: None,
             }),
         };
-        let error = assess(&[copy], &[], Some("laptop"), &[], 0).unwrap_err();
+        let error = assess(&[copy], &[], &[], Some("laptop"), &[], 0).unwrap_err();
         assert_eq!(error.code, "database_error");
     }
 }

@@ -1630,7 +1630,7 @@ line break', 'manual', 800, 800);",
         drop(db);
         let shown = fingerprint_of(&path);
         let upgraded = upgrade_to(&path, 13, &shown).unwrap();
-        assert_eq!((upgraded.from, upgraded.to), (13, 14));
+        assert_eq!((upgraded.from, upgraded.to), (13, SCHEMA_VERSION));
         assert_eq!((upgraded.tables_kept, upgraded.rows_kept), (12, 5));
         assert_eq!(references(&readonly(&path)), before);
         let db = Connection::open(&path).unwrap();
@@ -1641,6 +1641,71 @@ line break', 'manual', 800, 800);",
             })
             .unwrap();
         assert_eq!(readings, 0);
+        drop(db);
+        remove(&path);
+    }
+
+    /// The upgrade to v15 adds `github_readings`, empty: every row of v14 keeps its rowid and
+    /// values, and the new table takes a reading that is complete or explained, and nothing else.
+    #[test]
+    fn the_upgrade_to_v15_keeps_every_row_and_takes_github_readings() {
+        let path = path();
+        let db = database_at(&path, 14);
+        db.execute_batch(
+            "INSERT INTO applications (id, name, lifecycle, description, version) VALUES ('notes', 'Atlas Notes', 'production', '', '1.4.0');
+             INSERT INTO system_references (id, application_id, kind, target, label, machine_id)
+               VALUES ('notes-repo', 'notes', 'repository', 'https://github.com/ana-ruiz/atlas-notes', NULL, NULL);",
+        )
+        .unwrap();
+        assert!(
+            db.execute("SELECT 1 FROM github_readings", []).is_err(),
+            "v14 had github_readings"
+        );
+        drop(db);
+        let before = dump(&readonly(&path), "system_references");
+        let shown = fingerprint_of(&path);
+        let upgraded = upgrade_to(&path, 14, &shown).unwrap();
+        assert_eq!((upgraded.from, upgraded.to), (14, 15));
+        assert_eq!(dump(&readonly(&path), "system_references"), before);
+        let db = Connection::open(&path).unwrap();
+        let reading = |id: &str, outcome: &str, detail: &str, facts: &str| {
+            format!(
+                "INSERT INTO github_readings (id, application_id, reference_id, repository, source, reader,
+                   observed_at, recorded_at, outcome, detail, default_branch, workflows, workflows_more,
+                   pull_requests, pull_requests_more)
+                 VALUES ('{id}', 'notes', 'notes-repo', 'https://github.com/ana-ruiz/atlas-notes', 'github',
+                   'GitHub REST 2022-11-28', 1000, 1000, '{outcome}', {detail}, {facts})"
+            )
+        };
+        let facts = "'main', '[]', 0, '[]', 0";
+        let none = "NULL, NULL, NULL, NULL, NULL";
+        db.execute(&reading("read", "read", "NULL", facts), [])
+            .unwrap();
+        db.execute(&reading("refused", "refused", "'Not found'", none), [])
+            .unwrap();
+        for (id, outcome, detail, facts) in [
+            ("read without facts", "read", "NULL", none),
+            ("read with a reason", "read", "'why'", facts),
+            ("refused without a reason", "refused", "NULL", none),
+            ("refused with facts", "refused", "'Not found'", facts),
+            ("another outcome", "missing", "'why'", none),
+            (
+                "workflows not a list",
+                "read",
+                "NULL",
+                "'main', '{}', 0, '[]', 0",
+            ),
+        ] {
+            assert!(
+                db.execute(&reading(id, outcome, detail, facts), [])
+                    .is_err(),
+                "{id}"
+            );
+        }
+        // A subject with readings keeps its history.
+        assert!(db
+            .execute("DELETE FROM applications WHERE id = 'notes'", [])
+            .is_err());
         drop(db);
         remove(&path);
     }
